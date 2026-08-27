@@ -1,0 +1,19 @@
+{
+  "deepseek_api_key": "",
+  "deepseek_model": "deepseek-v4-flash",
+  "deepseek_base_url": "https://api.deepseek.com/chat/completions",
+  "ck3_user_dir": "C:/Users/<用户名>/Documents/Paradox Interactive/Crusader Kings III",
+  "save_dir": "C:/Users/<用户名>/Documents/Paradox Interactive/Crusader Kings III/save games",
+  "rakaly_path": "<项目目录>/tools/rakaly.exe",
+  "data_dir": "<项目目录>/data",
+  "cache_dir": "<项目目录>/cache",
+  "output_dir": "<项目目录>/output",
+  "log_dir": "<项目目录>/logs",
+  "poll_interval_seconds": 3600,
+  "max_tokens": 12800,
+  "temperature": 1.1,
+  "prompt_log_enabled": true,
+  "llm_thinking_disabled": true,
+  "auto_bio_on_death": true,
+  "bio_sections": ["lead", "mid", "tail"]
+}
