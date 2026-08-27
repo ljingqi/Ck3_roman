@@ -28,6 +28,8 @@ DEFAULT_CONFIG = {
     # CK3 存档目录 (Documents\\Paradox Interactive\\Crusader Kings III\\save games)
     "ck3_user_dir": "",
     "save_dir": "",
+    # CK3 游戏本体根目录 (含 game/localization 与 game/common; 空则自动发现)
+    "ck3_game_dir": "",
     # rakaly.exe 路径 (存档熔化必需)
     "rakaly_path": os.path.join(SCRIPT_DIR, "tools", "rakaly.exe"),
     # 数据/缓存/输出/日志目录

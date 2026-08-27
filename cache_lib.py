@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CK3 记忆缓存库 v3 (由 expck3/cache_lib.py v2 升级移植)。
+"""CK3 记忆缓存库 v4 (由 expck3/cache_lib.py v2 升级移植)。
 
 记忆系统真实结构 (经 exp6/exp7/exp8 实测验证):
   - character_memory_manager.database : 键 = **记忆 ID** (与角色共享 id 池)。
@@ -8,16 +8,27 @@
     (实测: 868 活有记忆→869 已死 141 人全部清空; 对照活人保留)。
   - 因此必须在角色死前的年度存档里抓取记忆 → 缓存库是唯一可靠方案。
 
-v3 变更 (相对 expck3 v2):
-  1. **每玩家一份缓存** (cache/player_<id>.json), 支持「主角死亡→继承人继位」的
-     多角色长局; 每次玩家角色死亡只生成一篇终传 (bio_generated 标记)。
-  2. **姓名合并**: 角色记录新增 house_name (宗族/姓氏, 如 边) 与 name_full (姓+名,
-     如 边诚); 姓氏取自 dynasties.dynasty_house 的码点名 (dynn_Bian_908A → 边)。
-  3. 全中文解析: resolve_full_name / house_name_zh 统一收口, 供 facts.py 使用。
+v4 变更 (相对 v3):
+  1. **本地化接入**: 名字/姓氏/头衔名查 localization.py 的本地化表
+     (Daria → 达丽娅; dynasty_house.localized_name → 冯·大马士革)。
+  2. **特质日期**: 每快照 diff 特质 → rec["trait_history"] 记录
+     {特质key: [{from, to, first}]} (获得/消失区间, 供「自某日起获得」)。
+  3. **反向亲属索引**: 存档子女 family_data 常为空, 父女关系只在父/母侧的
+     child 列表 (实测 33367.child 含妻 37898) → 每快照构建全档亲属图,
+     补出 rec["family"] 的 father/mother/siblings; 目标集扩展含亲属的亲属,
+     保证妻父(宋帝赵曙)/妻兄(今上赵煦)等入缓存。
+  4. **头衔/朝局历史**: cache["player_title_history"] 记录玩家主头衔名变化
+     (复兴党流亡委员会 1067.6.20 起); cache["realm_history"] 逐年记录
+     帝国/王国级头衔与相关角色头衔的持有者, 供《朝局风云录》数据驱动。
+  5. **输出文件夹绑定**: cache["output_folder"] 记录会话文件夹,
+     watch/continue 据此分文件夹 (重名 → 哈布斯堡2, 见 pipeline)。
 """
+import copy
 import json
 import os
 import re
+
+import localization
 
 # ---------------------------------------------------------------------------
 # 名称解码
@@ -158,27 +169,54 @@ def decode_codepoints(key):
     return key
 
 
+def loc_name(fn):
+    """名字 key → 中文: 本地化表 → 码点解码 → 原样。
+    实测: 'Daria' → '达丽娅'; 'A_zu_963F_8DB3' → '阿足'。"""
+    if not fn:
+        return fn
+    v = localization.loc(localization.table(), fn)
+    if v and v != fn:
+        return v
+    dec = decode_codepoints(fn)
+    if dec and dec != fn:
+        return dec
+    return fn
+
+
 def name_zh(char_obj):
     """角色对象 first_name (名表键) → 中文名。"""
     fn = (char_obj or {}).get("first_name") or ""
-    return zh(decode_codepoints(fn))
+    return zh(loc_name(fn))
 
 
 def house_name_zh(melt, house_id):
-    """宗族 id → 姓氏中文。dynasties.dynasty_house[<id>].name = 'dynn_Bian_908A'
-    → '边'; 解析失败返回 ''。"""
+    """宗族 id → 姓氏中文。取值链 (实测):
+      1) dynasty_house[<id>].localized_name  (存档自带, 如 冯·大马士革)
+      2) .name 的码点 (dynn_Bian_908A → 边)
+      3) 本地化表 (culture_dynasty_title_names / dynasties 键)
+      全部失败返回 ''。"""
     if house_id is None:
         return ""
     try:
         dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
         e = dh.get(str(house_id)) or {}
+        # 1) 存档自带本地化名
+        loc_name = e.get("localized_name") or ""
+        if loc_name and any("\u3400" <= ch <= "\u9fff" for ch in loc_name):
+            return zh(loc_name)
+        # 2) name 字段 (dynn_ 前缀码点解码)
         name = e.get("name") or ""
         if name.startswith("dynn_"):
             name = name[len("dynn_"):]
         dec = zh(decode_codepoints(name))
-        # 去掉残留的拉丁前缀 (个别情况 name 无码点)
         if dec and any("\u3400" <= ch <= "\u9fff" for ch in dec):
             return dec
+        # 3) 本地化表
+        t = localization.table()
+        for cand in (name, e.get("name") or ""):
+            v = localization.loc(t, cand)
+            if v and v != cand:
+                return v
         return ""
     except Exception:
         return ""
@@ -288,7 +326,7 @@ def memory_brief(mem_id, e):
 # ---------------------------------------------------------------------------
 
 EMPTY_CACHE = {
-    "schema": 3,
+    "schema": 4,
     "player_id": None,
     "player_name": None,
     "house_name": None,       # 家族名 (如 边氏), 输出文件夹名依据
@@ -298,9 +336,17 @@ EMPTY_CACHE = {
     "last_date": None,
     "player_death": None,     # 首次检测到玩家 dead_data 即写入 {date, reason, killer}
     "bio_generated": False,   # 终传是否已生成 (每次玩家角色死亡只生成一篇)
+    "output_folder": None,    # 会话输出文件夹名 (watch/continue 绑定, 见 pipeline)
+    "player_title_history": [],  # [{date, name}] 玩家主头衔名变化 (复兴党流亡委员会等)
+    "realm_history": [],         # [{date, holders:{title_id: holder_id}}] 关键头衔持有者逐年
     "characters": {},
     "relations": {},
 }
+
+
+def new_cache():
+    """全新空缓存 (深拷贝, 避免 dict(EMPTY_CACHE) 浅拷贝共享 sources/characters 等容器)。"""
+    return copy.deepcopy(EMPTY_CACHE)
 
 
 def cache_path_for(cache_dir, player_id):
@@ -312,13 +358,13 @@ def load_cache(path):
         try:
             with open(path, encoding="utf-8") as fp:
                 cache = json.load(fp)
-            # 兼容旧 schema: 补齐 v3 字段
+            # 兼容旧 schema: 补齐 v4 字段
             for k, v in EMPTY_CACHE.items():
                 cache.setdefault(k, v)
             return cache
         except Exception:
             pass
-    return dict(EMPTY_CACHE)
+    return new_cache()
 
 
 def save_cache(cache, path):
@@ -342,6 +388,7 @@ def char_record(cache, cid):
             "culture": None,
             "faith": None,
             "traits": [],
+            "trait_history": {},    # {特质key: [{from, to, first}]} 获得/消失区间 (v4)
             "family": {},
             "landed": {},
             "memories": [],
@@ -400,7 +447,69 @@ def resolve_full_name(cache, cid, names_path=None, melt=None):
 
 
 # ---------------------------------------------------------------------------
-# 单档提取 (v3: 每玩家缓存 + 姓名合并)
+# 亲属图 (v4: 反向亲属索引)
+# ---------------------------------------------------------------------------
+
+def _family_graph(chars):
+    """全档角色 → (parent_map, child_map, sibling_map)。
+    - parent_map: {角色: [父/母 id...]}  由 family_data.child 反查 + 直接 father/mother 字段
+    - child_map:  {角色: [子女 id...]}   直接 child 字段 + father/mother 字段反查
+    - sibling_map:{角色: [兄弟姐妹 id...]} 直接 siblings 字段 (双向)
+    实测: 子女 family_data 常为空, 父女关系只在父侧 child 列表 (33367.child 含妻 37898)。"""
+    parent_map = {}
+    child_map = {}
+    sibling_map = {}
+
+    def link(owner, key, val):
+        if val is None:
+            return
+        ids = [int(x) for x in (val if isinstance(val, list) else [val])]
+        for x in ids:
+            if key == "child":
+                parent_map.setdefault(x, []).append(owner)
+                child_map.setdefault(owner, []).append(x)
+            elif key in ("father", "mother"):
+                parent_map.setdefault(x, []).append(owner)
+                child_map.setdefault(owner, []).append(x)
+            elif key == "siblings":
+                sibling_map.setdefault(owner, []).append(x)
+                sibling_map.setdefault(x, []).append(owner)
+
+    for cid, c in chars.items():
+        fd = c.get("family_data") or {}
+        for key in ("child", "father", "mother", "siblings"):
+            link(int(cid), key, fd.get(key))
+    return parent_map, child_map, sibling_map
+
+
+def _parents_of(chars, cid, parent_map, direct):
+    """角色父母 (直接字段 + 反查合并, 按性别分 father/mother)。"""
+    fathers = [int(x) for x in (direct.get("father") or [])]
+    mothers = [int(x) for x in (direct.get("mother") or [])]
+    for p in parent_map.get(cid, []):
+        if p in fathers or p in mothers:
+            continue
+        c = chars.get(str(p)) or {}
+        if c.get("female"):
+            mothers.append(p)
+        else:
+            fathers.append(p)
+    return fathers, mothers
+
+
+def _siblings_of(cid, parent_map, child_map, sibling_map, direct):
+    """角色兄弟姐妹: 直接字段 + 共享父母派生。"""
+    out = set(int(x) for x in (direct.get("siblings") or []))
+    out.update(sibling_map.get(cid, []))
+    for p in parent_map.get(cid, []):
+        for s in child_map.get(p, []):
+            if s != cid:
+                out.add(s)
+    return sorted(out)
+
+
+# ---------------------------------------------------------------------------
+# 单档提取 (v4: 每玩家缓存 + 姓名合并 + 亲属/特质/朝局)
 # ---------------------------------------------------------------------------
 
 def extract_snapshot(cache, melt, date_label):
@@ -427,6 +536,13 @@ def extract_snapshot(cache, melt, date_label):
 
     chars = all_characters(melt)
     db = _db(melt)
+    lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
+    tl = melt.get("traits_lookup") or []
+
+    def trait_key(t):
+        if isinstance(t, int) and 0 <= t < len(tl):
+            return tl[t]
+        return str(t)
 
     # 玩家死亡检测 (首次写入后不再覆盖)
     if player_id is not None:
@@ -484,16 +600,73 @@ def extract_snapshot(cache, melt, date_label):
                         if isinstance(v, int):
                             targets.add(v)
 
+    # 亲属闭包 (v4): 两轮, 把已收角色的一级亲属 (父母/子女/兄弟姐妹/配偶) 纳入目标,
+    # 保证妻父 (宋帝赵曙)/妻兄 (今上赵煦) 等入缓存, 名字可解析。
+    parent_map, child_map, sibling_map = _family_graph(chars)
+    for _round in range(2):
+        snapshot = list(targets)
+        for cid in snapshot:
+            c = chars.get(str(cid))
+            if not c:
+                continue
+            fam = family_of(c)
+            for ids in fam.values():
+                targets.update(int(x) for x in ids)
+            for p in parent_map.get(cid, []):
+                targets.add(p)
+                targets.update(child_map.get(p, []))
+            targets.update(sibling_map.get(cid, []))
+
+    # 朝局持有者 (v4): 帝国(h_/e_)级头衔 + 相关角色持有的头衔, 逐年记录
+    realm_holders = {}
+    for tid, t in lt.items():
+        holder = t.get("holder")
+        key = t.get("key") or ""
+        if holder is None:
+            continue
+        hid = int(holder) if not isinstance(holder, list) else None
+        if key.startswith(("e_", "h_")):
+            realm_holders[tid] = hid
+        elif hid is not None and hid in targets:
+            realm_holders[tid] = hid
+    if realm_holders:
+        cache.setdefault("realm_history", []).append(
+            {"date": date_label, "holders": realm_holders})
+
+    # 玩家主头衔名变化 (v4): 主头衔 title_name_data (custom → name) 或信封名
+    if player_id is not None:
+        tname = ""
+        thn = []
+        ld = (chars.get(str(player_id)) or {}).get("landed_data") or {}
+        dom = ld.get("domain") or []
+        if dom:
+            t = lt.get(str(dom[0])) or {}
+            tnd = t.get("title_name_data") or {}
+            tname = tnd.get("custom") or tnd.get("name") or ""
+            thn = tnd.get("title_history_names") or []
+        if not tname:
+            tname = meta.get("meta_title_name") or ""
+        if tname:
+            hist = cache.setdefault("player_title_history", [])
+            if not hist or hist[-1].get("name") != tname:
+                d = date_label
+                for h in reversed(thn):
+                    if h.get("name") == tname and h.get("date"):
+                        d = h["date"]
+                        break
+                hist.append({"date": d, "name": tname})
+
     for cid in sorted(targets):
         c = chars.get(str(cid))
         if c is None:
             continue
         rec = char_record(cache, cid)
-        if rec["first_name"] is None:
+        first_time = rec["first_name"] is None
+        if first_time:
             rec["first_name"] = c.get("first_name")
             rec["name_zh"] = name_zh(c)
             rec["dynasty_house"] = c.get("dynasty_house")
-            # 姓氏 + 姓名合并 (v3)
+            # 姓氏 + 姓名合并 (v3/v4)
             if rec["dynasty_house"] is not None:
                 h = house_name_zh(melt, rec["dynasty_house"])
                 rec["house_name"] = h
@@ -502,8 +675,41 @@ def extract_snapshot(cache, melt, date_label):
             rec["birth"] = c.get("birth")
             rec["culture"] = c.get("culture")
             rec["faith"] = c.get("faith")
-            rec["traits"] = c.get("traits") or []
-        rec["family"] = family_of(c)
+        # 特质与 trait_history (v4): 每快照 diff
+        new_traits = c.get("traits") or []
+        old_traits = rec.get("traits") or []
+        if first_time or old_traits != new_traits:
+            th = rec.setdefault("trait_history", {})
+            if first_time:
+                # 角色首见: 全部特质记 first=True (至晚自本档起已具)
+                for t in new_traits:
+                    k = trait_key(t)
+                    if k not in th:
+                        th[k] = [{"from": date_label, "to": None, "first": True}]
+            else:
+                old_set, new_set = set(old_traits), set(new_traits)
+                for t in new_set - old_set:
+                    k = trait_key(t)
+                    if not any(iv.get("to") is None for iv in th.get(k, [])):
+                        th.setdefault(k, []).append(
+                            {"from": date_label, "to": None, "first": False})
+                for t in old_set - new_set:
+                    k = trait_key(t)
+                    for iv in th.get(k, []):
+                        if iv.get("to") is None:
+                            iv["to"] = date_label
+            rec["traits"] = new_traits
+        # 家庭: 直接字段 + 反查亲属 (v4)
+        fam = family_of(c)
+        fathers, mothers = _parents_of(chars, cid, parent_map, fam)
+        if fathers:
+            fam["father"] = fathers
+        if mothers:
+            fam["mother"] = mothers
+        sib = _siblings_of(cid, parent_map, child_map, sibling_map, fam)
+        if sib:
+            fam["siblings"] = sib
+        rec["family"] = fam
         if cid == player_id:
             ld = c.get("landed_data") or {}
             rec["landed"] = {
@@ -515,12 +721,14 @@ def extract_snapshot(cache, melt, date_label):
                 "council": ld.get("council"),
                 "laws": ld.get("laws"),
                 "succession": ld.get("succession"),
+                "strength": ld.get("strength"),
+                "max_power": ld.get("max_power"),
             }
-            # 玩家所属家族名 (输出文件夹依据)
+            # 玩家所属家族名 (输出文件夹依据, v4: 存纯家族名)
             if rec.get("dynasty_house") is not None:
                 h = house_name_zh(melt, rec["dynasty_house"])
                 if h:
-                    cache["house_name"] = h + "氏"
+                    cache["house_name"] = h
         dd = c.get("dead_data")
         if dd and rec["death"] is None:
             rec["death"] = {

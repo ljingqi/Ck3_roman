@@ -12,17 +12,19 @@
 工作流:
   1. 检测新存档 (watch: mtime > 基准; scan: 同战役且日期新于缓存)
   2. rakaly json 熔化 → data/melt_<日期>.json
-  3. cache_lib.extract_snapshot → cache/player_<玩家id>.json (每玩家一份, 跨年去重)
+  3. cache_lib.extract_snapshot → output/<家族>/data/player_<玩家id>.json
+     (每玩家一份, 跨年去重; 文件夹按家族名, 重名自动加数字 哈布斯堡2)
   4. 死亡检测 → 自动生成终传 → output/<家族>/<姓名>_终传_<日期>.md + 刷新 index.html
 
 用法:
-  python pipeline.py watch [秒]          # 新档监控: 只处理启动后保存的新存档
-  python pipeline.py continue [秒]       # 旧档续传: 补录当前战役新档后进入监控
+  python pipeline.py watch [秒]          # 新档监控: 只处理启动后保存的新存档 (新战役新建文件夹)
+  python pipeline.py continue [秒]       # 旧档续传: 沿用最新文件夹, 补录当前战役新档后进入监控
   python pipeline.py scan                # 单次: 只补录当前战役的新档
   python pipeline.py status              # 打印各玩家缓存状态
   python pipeline.py bio [玩家id]        # 手动生成传记 (在世传记或终传)
   python pipeline.py demo-death          # 模拟主角死亡, 演示「死后自动生成」链路
   python pipeline.py rebuild-cache       # 从 data/melt_*.json 重建缓存 (迁移/修复)
+  python pipeline.py migrate             # 迁移 v4: 旧文件夹更名 + 缓存移入 output/<家族>/data/ + 重建
 """
 import json
 import os
@@ -108,27 +110,129 @@ def load_latest_melt(cfg, cache):
 
 
 # ---------------------------------------------------------------------------
-# 缓存管理
+# 缓存管理 (v4: 缓存位于 output/<家族>/data/)
 # ---------------------------------------------------------------------------
 
+def find_cache_path(cfg, player_id):
+    """查找玩家缓存现有路径 (output 树 + 旧 cache/); 无则返回 None。"""
+    base = cfg.get("output_dir", "")
+    if os.path.isdir(base):
+        for dp, _dn, fns in os.walk(base):
+            p = os.path.join(dp, f"player_{player_id}.json")
+            if os.path.isfile(p):
+                return p
+    legacy = os.path.join(cfg.get("cache_dir", ""), f"player_{player_id}.json")
+    return legacy if os.path.isfile(legacy) else None
+
+
 def all_caches(cfg):
-    """{player_id: (path, cache)} 全部玩家缓存。"""
+    """{player_id: (path, cache)} 全部玩家缓存 (扫描 output 树 + 旧 cache/)。"""
     out = {}
-    d = cfg.get("cache_dir", "")
-    if not os.path.isdir(d):
-        return out
-    for fn in os.listdir(d):
-        m = re.match(r"player_(\d+)\.json$", fn)
-        if not m:
+    seen = set()
+    for root in (cfg.get("output_dir", ""), cfg.get("cache_dir", "")):
+        if not root or not os.path.isdir(root):
             continue
-        pid = int(m.group(1))
-        path = os.path.join(d, fn)
-        out[pid] = (path, cl.load_cache(path))
+        for dp, _dn, fns in os.walk(root):
+            for fn in fns:
+                m = re.match(r"player_(\d+)\.json$", fn)
+                if not m:
+                    continue
+                pid = int(m.group(1))
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                path = os.path.join(dp, fn)
+                out[pid] = (path, cl.load_cache(path))
     return out
 
 
 def cache_path_for(cfg, player_id):
-    return os.path.join(cfg.get("cache_dir", ""), f"player_{player_id}.json")
+    """(兼容旧调用) 玩家缓存路径; 不存在返回 None。"""
+    return find_cache_path(cfg, player_id)
+
+
+def session_folder_name(cache):
+    """会话文件夹命名基准: 家族名 → 人物名。"""
+    name = cache.get("house_name") or ""
+    if not name:
+        pn = cache.get("player_name") or f"玩家{cache.get('player_id')}"
+        name = pn
+    return sanitize_folder_name(name)
+
+
+def sanitize_folder_name(name):
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", str(name)).strip().strip(".") or "未知家族"
+
+
+def determine_folder(name, output_dir):
+    """重名文件夹加数字: 哈布斯堡 → 哈布斯堡2 → 哈布斯堡3... (仿 D:\\Journal)。"""
+    base = sanitize_folder_name(name)
+    if os.path.exists(os.path.join(output_dir, base)):
+        i = 2
+        while os.path.exists(os.path.join(output_dir, f"{base}{i}")):
+            i += 1
+        return f"{base}{i}"
+    return base
+
+
+def find_latest_session_folder(name, output_dir):
+    """返回该家族已存在的编号最大会话文件夹 (哈布斯堡 → 哈布斯堡2); 无则 None。"""
+    base = sanitize_folder_name(name)
+    found = []
+    i = 1
+    while True:
+        cand = base if i == 1 else f"{base}{i}"
+        if os.path.isdir(os.path.join(output_dir, cand)):
+            found.append(cand)
+            i += 1
+            continue
+        if i > 1:
+            break
+        i += 1
+    return found[-1] if found else None
+
+
+def resolve_output_folder(cfg, cache, continue_mode=False):
+    """纯函数: 该缓存应使用的会话文件夹 (不修改缓存)。
+    同战役(playthrough)沿用 → continue 取该家族最新文件夹 → watch 重名新建。"""
+    out = cfg.get("output_dir", "")
+    cur = cache.get("output_folder")
+    if cur and os.path.isdir(os.path.join(out, cur)):
+        return cur
+    pt = cache.get("playthrough_id")
+    if pt:
+        for _pid, (_path, other) in all_caches(cfg).items():
+            if other.get("playthrough_id") == pt and other.get("output_folder") \
+                    and os.path.isdir(os.path.join(out, other["output_folder"])):
+                return other["output_folder"]
+    name = session_folder_name(cache)
+    if continue_mode:
+        latest = find_latest_session_folder(name, out)
+        if latest:
+            return latest
+    return determine_folder(name, out)
+
+
+def ensure_output_folder(cfg, cache, continue_mode=False):
+    """确定并绑定会话文件夹 (写入 cache.output_folder), 返回文件夹名。"""
+    folder = resolve_output_folder(cfg, cache, continue_mode)
+    cache["output_folder"] = folder
+    return folder
+
+
+def session_data_path(cfg, cache, folder=None):
+    """缓存文件路径: output/<家族>/data/player_<id>.json"""
+    folder = folder or resolve_output_folder(cfg, cache, True)
+    return os.path.join(cfg.get("output_dir", ""), folder, "data",
+                        f"player_{cache.get('player_id')}.json")
+
+
+def save_session_cache(cfg, cache, continue_mode=False):
+    """把缓存写入其会话文件夹并持久化文件夹绑定。"""
+    folder = ensure_output_folder(cfg, cache, continue_mode)
+    path = session_data_path(cfg, cache, folder)
+    cl.save_cache(cache, path)
+    return path
 
 
 def active_cache(cfg):
@@ -160,7 +264,7 @@ def player_char_name(name):
     return str(name).rsplit("，", 1)[-1].rsplit(",", 1)[-1].strip()
 
 
-def _catchup(cfg, cache):
+def _catchup(cfg, cache, continue_mode=False):
     """补录当前战役的新档 (仅当信封角色名与缓存玩家名一致, 否则不熔化直接跳过)。
     返回处理数。"""
     pid = cache.get("player_id")
@@ -194,9 +298,9 @@ def _catchup(cfg, cache):
             continue
         if player_id != pid:
             llm.log(f"  [继位] {s['date']}: 同战役玩家变为 {player_id}, 新建缓存")
-            cache = cl.load_cache(cache_path_for(cfg, player_id))
+            cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
         if cl.extract_snapshot(cache, melt, s["date"]):
-            cl.save_cache(cache, cache_path_for(cfg, cache.get("player_id")))
+            save_session_cache(cfg, cache, continue_mode)
             processed += 1
             llm.log(f"  并入 {s['date']}: 相关人物 {len(cache['characters'])}")
             _cross_check_deaths(cfg, melt, player_id)
@@ -207,12 +311,9 @@ def _catchup(cfg, cache):
 # 传记生成与输出
 # ---------------------------------------------------------------------------
 
-def output_paths(cfg, cache):
-    """(家族文件夹, 输出文件名) — 以家族划分文件夹。"""
-    house = cache.get("house_name") or ""
-    if not house:
-        pn = cache.get("player_name") or f"player_{cache.get('player_id')}"
-        house = re.sub(r"[<>:\"/\\|?*\x00-\x1f]", "", pn).strip().strip(".") or "未知家族"
+def output_paths(cfg, cache, continue_mode=False):
+    """(家族文件夹, 输出文件名) — 会话文件夹 + 传记文件名。"""
+    folder = resolve_output_folder(cfg, cache, continue_mode)
     rec = (cache.get("characters") or {}).get(str(cache.get("player_id"))) or {}
     pname = rec.get("name_full") or rec.get("name_zh") or f"玩家{cache.get('player_id')}"
     death = cache.get("player_death")
@@ -223,7 +324,7 @@ def output_paths(cfg, cache):
         kind = "传记"
         dkey = cl.date_filekey(cache.get("last_date") or "")
     fname = f"{pname}_{kind}_{dkey}.md"
-    return house, fname
+    return folder, fname
 
 
 def generate_bio(cfg, cache, force=False):
@@ -240,6 +341,12 @@ def generate_bio(cfg, cache, force=False):
         llm.log(f"已存在, 跳过 (加 --force 重新生成): {out_path}")
         return out_path, None
     md, facts, articles = bio.generate_biography(cache, melt, cfg, out_path=out_path)
+    # 持久化文件夹绑定 (generate 可能首次解析出文件夹)
+    if cache.get("output_folder") != house:
+        cache["output_folder"] = house
+        path = find_cache_path(cfg, cache.get("player_id"))
+        if path:
+            cl.save_cache(cache, path)
     try:
         import htmlview
         page = htmlview.rebuild_folder(cfg.get("output_dir", ""), house)
@@ -254,7 +361,7 @@ def generate_bio(cfg, cache, force=False):
 # 单档处理与死亡跨查
 # ---------------------------------------------------------------------------
 
-def _process_save(cfg, save, cache=None, log_prefix=""):
+def _process_save(cfg, save, cache=None, log_prefix="", continue_mode=False):
     """熔化并并入一份存档。cache 缺省按存档玩家自动加载/新建。
     返回处理的玩家 id 或 None。"""
     date = save["date"]
@@ -272,12 +379,12 @@ def _process_save(cfg, save, cache=None, log_prefix=""):
         llm.log(f"  {date}: 存档中无玩家角色, 跳过")
         return None
     if cache is None:
-        cache = cl.load_cache(cache_path_for(cfg, player_id))
+        cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
     ok = cl.extract_snapshot(cache, melt, date)
     if not ok:
         llm.log(f"  {date}: 玩家不一致, 跳过")
         return None
-    cl.save_cache(cache, cache_path_for(cfg, cache.get("player_id")))
+    save_session_cache(cfg, cache, continue_mode)
     llm.log(f"  并入 {date}: 玩家 {cache.get('player_name')} (id={cache.get('player_id')}), "
             f"相关人物 {len(cache['characters'])}")
     _cross_check_deaths(cfg, melt, player_id)
@@ -291,8 +398,8 @@ def _cross_check_deaths(cfg, melt, current_player):
         cid = int(cid)
         if cid == current_player:
             continue
-        path = cache_path_for(cfg, cid)
-        if not os.path.isfile(path):
+        path = find_cache_path(cfg, cid)
+        if not path:
             continue
         dd = c.get("dead_data") or {}
         if not dd.get("date"):
@@ -366,7 +473,7 @@ def step_watch(cfg, continue_mode=False):
         if cache:
             llm.log(f"续传模式: 继续战役 {cache.get('player_name')} (id={pid}, "
                     f"家族={cache.get('house_name')}, 最后存档={cache.get('last_date')})")
-            n = _catchup(cfg, cache)
+            n = _catchup(cfg, cache, continue_mode=True)
             if n:
                 llm.log(f"补录并入 {n} 个新档")
             else:
@@ -389,7 +496,7 @@ def step_watch(cfg, continue_mode=False):
                 seen.add(key)
                 llm.log(f"[{time.strftime('%H:%M:%S')}] 检测到新存档: "
                         f"{os.path.basename(s['path'])} ({s['date']})")
-                if _process_save(cfg, s):
+                if _process_save(cfg, s, continue_mode=continue_mode):
                     processed += 1
             if processed:
                 _auto_bio(cfg)
@@ -409,7 +516,7 @@ def step_scan(cfg):
         return
     llm.log(f"当前战役: {cache.get('player_name')} (id={pid}, 家族={cache.get('house_name')}, "
             f"最后存档={cache.get('last_date')})")
-    n = _catchup(cfg, cache)
+    n = _catchup(cfg, cache, continue_mode=True)
     _auto_bio(cfg)
     llm.log(f"补录完成: 处理 {n} 个新档")
 
@@ -454,7 +561,7 @@ def step_bio(cfg, player_id=None):
 
 
 def step_rebuild_cache(cfg):
-    """从 data/melt_*.json 重建缓存 (每玩家一份)。"""
+    """从 data/melt_*.json 重建缓存 (每玩家一份, 输出至 output/<家族>/data/)。"""
     data_dir = cfg.get("data_dir", "")
     melts = sorted(
         (f for f in os.listdir(data_dir) if re.match(r"melt_\d+_\d{2}_\d{2}\.json$", f)),
@@ -462,7 +569,12 @@ def step_rebuild_cache(cfg):
     if not melts:
         llm.log(f"{data_dir} 下无 melt 文件")
         return
+    # 记录既有会话文件夹绑定 (player_id → (folder, playthrough))
+    old_bind = {}
+    for pid, (_path, cache) in all_caches(cfg).items():
+        old_bind[pid] = (cache.get("output_folder"), cache.get("playthrough_id"))
     llm.log(f"重建缓存: {len(melts)} 份 melt")
+    built = {}  # player_id → 本次重建中累积的缓存
     for fn in melts:
         date = ".".join(str(int(x)) for x in fn[5:-5].split("_"))
         melt = cl.load_melt(os.path.join(data_dir, fn))
@@ -470,21 +582,109 @@ def step_rebuild_cache(cfg):
         if player_id is None:
             llm.log(f"  {date}: 无玩家, 跳过")
             continue
-        path = cache_path_for(cfg, player_id)
-        cache = cl.load_cache(path)
-        keep = {}
-        if cache.get("player_death"):
-            keep["player_death"] = cache["player_death"]
-        if cache.get("bio_generated"):
-            keep["bio_generated"] = cache["bio_generated"]
-        if cache.get("playthrough_id"):
-            keep["playthrough_id"] = cache["playthrough_id"]
-        cache = dict(cl.EMPTY_CACHE)
-        cache.update(keep)
+        cache = built.get(player_id)
+        if cache is None:
+            # 首见该玩家: 以磁盘缓存为基底补标记, 从空缓存开始重建
+            prev = cl.load_cache(find_cache_path(cfg, player_id) or "")
+            cache = cl.new_cache()
+            if prev.get("player_death"):
+                cache["player_death"] = prev["player_death"]
+            if prev.get("bio_generated"):
+                cache["bio_generated"] = prev["bio_generated"]
+            if prev.get("playthrough_id"):
+                cache["playthrough_id"] = prev["playthrough_id"]
+            built[player_id] = cache
         cl.extract_snapshot(cache, melt, date)
+        # 会话文件夹: 既有绑定 → 同战役绑定 → 自动解析
+        folder, pt_old = old_bind.get(player_id, (None, None))
+        if not folder and pt_old:
+            for _pid2, (f2, pt2) in old_bind.items():
+                if f2 and pt2 == pt_old:
+                    folder = f2
+                    break
+        if not folder:
+            folder = ensure_output_folder(cfg, cache, continue_mode=True)
+        cache["output_folder"] = folder
+        path = session_data_path(cfg, cache, folder)
         cl.save_cache(cache, path)
-        llm.log(f"  {date}: 玩家 {player_id} → {os.path.basename(path)} "
+        llm.log(f"  {date}: 玩家 {player_id} → {path} "
                 f"(相关人物 {len(cache['characters'])})")
+
+
+def step_migrate(cfg):
+    """迁移到 v4 布局:
+      1) 旧 cache/*.json → output/<家族>/data/ (绑定 output_folder, 用旧文件夹名);
+      2) 历史文件夹更名 大师巴沙尔 → 冯·大马士革 (姓氏修复后的家族名), 同步绑定;
+      3) 重建缓存 (v4 schema)。"""
+    out = cfg.get("output_dir", "")
+    legacy = cfg.get("cache_dir", "")
+    rename_map = {}
+    # 1) 旧缓存迁移 (先用旧文件夹名绑定)
+    moved = 0
+    if os.path.isdir(legacy):
+        for fn in sorted(os.listdir(legacy)):
+            m = re.match(r"player_(\d+)\.json$", fn)
+            if not m:
+                continue
+            pid = int(m.group(1))
+            src = os.path.join(legacy, fn)
+            cache = cl.load_cache(src)
+            folder = _legacy_folder_for(cfg, cache, pid)
+            cache["output_folder"] = folder
+            dst_dir = os.path.join(out, folder, "data")
+            os.makedirs(dst_dir, exist_ok=True)
+            dst = os.path.join(dst_dir, fn)
+            if os.path.abspath(src) != os.path.abspath(dst):
+                if os.path.exists(dst):
+                    os.remove(dst)
+                os.replace(src, dst)
+            cl.save_cache(cache, dst)
+            moved += 1
+            llm.log(f"  缓存迁移: {fn} → {os.path.relpath(dst, out)}")
+    llm.log(f"旧缓存迁移 {moved} 份 → output/<家族>/data/")
+    # 2) 历史文件夹更名 (把 data/ 一起带走)
+    old_dir = os.path.join(out, "大师巴沙尔")
+    if os.path.isdir(old_dir):
+        new_dir = os.path.join(out, "冯·大马士革")
+        if not os.path.isdir(new_dir):
+            os.rename(old_dir, new_dir)
+            rename_map["大师巴沙尔"] = "冯·大马士革"
+            llm.log("文件夹更名: 大师巴沙尔 → 冯·大马士革")
+        else:
+            llm.log("冯·大马士革 已存在, 跳过更名")
+    if rename_map:
+        for pid, (_path, cache) in all_caches(cfg).items():
+            f = cache.get("output_folder")
+            if f in rename_map:
+                cache["output_folder"] = rename_map[f]
+                cl.save_cache(cache, find_cache_path(cfg, pid) or _path)
+    # 3) 重建 (v4)
+    step_rebuild_cache(cfg)
+    llm.log("迁移完成: 缓存已按 v4 重建")
+
+
+def _legacy_folder_for(cfg, cache, pid):
+    """旧缓存 → 会话文件夹 (v4 迁移): 家族名(兼容氏)/人物名/同战役, 逐级匹配现存文件夹。"""
+    out = cfg.get("output_dir", "")
+    folder = cache.get("output_folder")
+    if folder and os.path.isdir(os.path.join(out, folder)):
+        return folder
+    if cache.get("house_name"):
+        cand = cache["house_name"]
+        for f in (cand, cand.rstrip("氏"), cand + "氏"):
+            if f and os.path.isdir(os.path.join(out, f)):
+                return f
+    pn = cache.get("player_name") or f"玩家{pid}"
+    f2 = sanitize_folder_name(pn)
+    if os.path.isdir(os.path.join(out, f2)):
+        return f2
+    pt = cache.get("playthrough_id")
+    if pt:
+        for _pid, (_p, other) in all_caches(cfg).items():
+            if other.get("playthrough_id") == pt and other.get("output_folder") \
+                    and os.path.isdir(os.path.join(out, other["output_folder"])):
+                return other["output_folder"]
+    return session_folder_name(cache)
 
 
 def step_demo_death(cfg):
@@ -537,6 +737,8 @@ def main():
         step_demo_death(cfg)
     elif cmd == "rebuild-cache":
         step_rebuild_cache(cfg)
+    elif cmd == "migrate":
+        step_migrate(cfg)
     else:
         print(__doc__)
 
