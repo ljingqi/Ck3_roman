@@ -292,6 +292,7 @@ EMPTY_CACHE = {
     "player_id": None,
     "player_name": None,
     "house_name": None,       # 家族名 (如 边氏), 输出文件夹名依据
+    "playthrough_id": None,   # 战役标识 (存档 playthrough_id; 同一战役的存档共享)
     "game_version": None,
     "sources": [],
     "last_date": None,
@@ -417,6 +418,9 @@ def extract_snapshot(cache, melt, date_label):
     if meta.get("meta_player_name") and not cache.get("player_name"):
         cache["player_name"] = meta["meta_player_name"]
     cache["game_version"] = meta.get("version") or cache["game_version"]
+    # 战役标识: 同一战役(含继承人继位)的存档共享 playthrough_id
+    if cache.get("playthrough_id") is None and melt.get("playthrough_id"):
+        cache["playthrough_id"] = melt.get("playthrough_id")
     if date_label not in cache["sources"]:
         cache["sources"].append(date_label)
     cache["last_date"] = date_label
