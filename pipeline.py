@@ -426,8 +426,8 @@ def output_paths(cfg, cache, continue_mode=False):
     return folder, fname
 
 
-def generate_bio(cfg, cache, force=False):
-    """为一名玩家生成传记 (终传或在世传记), 刷新家族 index.html。
+def generate_bio(cfg, cache, force=False, decade=None):
+    """为一名玩家生成传记 (终传 / 在世传记 / 第decade个十年传记), 刷新家族 index.html。
     返回 (输出路径, facts) 或 None。"""
     melt = load_latest_melt(cfg, cache)
     if melt is None:
@@ -439,7 +439,8 @@ def generate_bio(cfg, cache, force=False):
     if os.path.exists(out_path) and not force:
         llm.log(f"已存在, 跳过 (加 --force 重新生成): {out_path}")
         return out_path, None
-    md, facts, articles = bio.generate_biography(cache, melt, cfg, out_path=out_path)
+    md, facts, articles = bio.generate_biography(cache, melt, cfg, out_path=out_path,
+                                                 decade=decade)
     # 持久化文件夹绑定 (generate 可能首次解析出文件夹)
     if cache.get("output_folder") != house:
         cache["output_folder"] = house
@@ -567,6 +568,7 @@ def _cross_check_deaths(cfg, melt, current_player):
             "date": dd.get("date"),
             "reason": dd.get("reason"),
             "killer": dd.get("killer"),
+            "kills": dd.get("kills") or [],  # v8: 刺客列传数据源之一
         }
         cl.save_cache(prev, path)
         llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 殁于 {dd.get('date')}, "
@@ -574,8 +576,8 @@ def _cross_check_deaths(cfg, melt, current_player):
 
 
 _BIO_LOCK = threading.Lock()
-_BIO_PENDING = set()        # 待生成终传的玩家 id (去重)
-_BIO_LAST_TRY = {}          # pid -> time.monotonic() 上次尝试时间 (失败退避)
+_BIO_PENDING = set()        # 待生成任务 (pid, kind, decade) 去重; kind ∈ {"death","decade"}
+_BIO_LAST_TRY = {}          # (pid, kind, decade) -> time.monotonic() 上次尝试时间 (失败退避)
 _BIO_RETRY_SECONDS = 300    # 生成失败后至少间隔多久重试
 _BIO_WORKER = None
 
@@ -606,11 +608,12 @@ def _auto_bio(cfg):
                 llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={pid}) 殁于 "
                         f"{death.get('date')}, 但 auto_bio_on_death=false, 跳过")
                 continue
-            if pid in _BIO_PENDING:
+            key = (pid, "death", None)
+            if key in _BIO_PENDING:
                 continue
-            if now - _BIO_LAST_TRY.get(pid, 0) < _BIO_RETRY_SECONDS:
+            if now - _BIO_LAST_TRY.get(key, 0) < _BIO_RETRY_SECONDS:
                 continue
-            _BIO_PENDING.add(pid)
+            _BIO_PENDING.add(key)
             queued += 1
             llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={pid}) 已殁于 "
                     f"{death.get('date')} — 排队生成终传")
@@ -619,39 +622,101 @@ def _auto_bio(cfg):
     return queued
 
 
+def _completed_decades(cache):
+    """v8: 以数据起始年为刻度, 返回已满的十年序号列表 [1,2,...]。
+    第 k 个十年 = [起始年+(k-1)*10, 起始年+k*10); 数据跨度满 10 年才出第 1 篇。"""
+    sources = cache.get("sources") or []
+    last = cache.get("last_date")
+    if len(sources) < 2 or not last:
+        return []
+    try:
+        start_y = int(str(sources[0]).split(".")[0])
+        end_y = int(str(last).split(".")[0])
+    except Exception:
+        return []
+    span = end_y - start_y
+    if span < 10:
+        return []
+    return list(range(1, span // 10 + 1))
+
+
+def _auto_decade_bios(cfg):
+    """v8: 为「在世且已满新十年」的玩家排队生成十年传记 (后台线程执行)。
+    十年传记素材取全部累计数据 (统治40年即读取40年数据);
+    死亡后的角色不再补十年传记 (终传覆盖一生)。返回本轮排队数。"""
+    _ensure_bio_worker(cfg)
+    caches = all_caches(cfg)
+    queued = 0
+    now = time.monotonic()
+    with _BIO_LOCK:
+        for pid, (_path, cache) in caches.items():
+            if cache.get("player_death"):
+                continue
+            done = set(cache.get("bio_decades") or [])
+            for k in _completed_decades(cache):
+                if k in done:
+                    continue
+                key = (pid, "decade", k)
+                if key in _BIO_PENDING:
+                    continue
+                if now - _BIO_LAST_TRY.get(key, 0) < _BIO_RETRY_SECONDS:
+                    continue
+                _BIO_PENDING.add(key)
+                queued += 1
+                llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={pid}) "
+                        f"数据已满第{k}个十年 — 排队生成十年传记")
+    if queued:
+        llm.log(f"待生成 {queued} 篇十年传记")
+    return queued
+
+
 def _bio_worker_loop(cfg):
-    """后台线程: 从队列取玩家 → 生成终传 → 置 bio_generated。
-    以磁盘最新缓存为准只翻转标记, 防覆盖主线程刚写入的新档数据。"""
+    """后台线程: 从队列取任务 (终传 / 十年传记) → 生成 → 置对应标记。
+    以磁盘最新缓存为准只翻转标记, 防覆盖主线程刚写入的新档数据。
+    v8: 队列项为 (pid, kind, decade), kind ∈ {"death", "decade"}。"""
     while True:
-        pid = None
+        key = None
         with _BIO_LOCK:
-            for p in _BIO_PENDING:
-                pid = p
+            for k in _BIO_PENDING:
+                key = k
                 break
-            if pid is not None:
-                _BIO_PENDING.discard(pid)
-        if pid is None:
+            if key is not None:
+                _BIO_PENDING.discard(key)
+        if key is None:
             time.sleep(2)
             continue
+        pid, kind, decade = key
         try:
             path = find_cache_path(cfg, pid)
             if not path:
                 continue
             cache = cl.load_cache(path)
-            death = cache.get("player_death")
-            if not death or cache.get("bio_generated"):
-                continue
-            out_path, _ = generate_bio(cfg, cache)
-            if out_path:
-                cur = cl.load_cache(path)
-                cur["bio_generated"] = True
-                cl.save_cache(cur, path)
-                llm.log(f"终传已生成: {out_path}")
+            if kind == "death":
+                death = cache.get("player_death")
+                if not death or cache.get("bio_generated"):
+                    continue
+                out_path, _ = generate_bio(cfg, cache)
+                if out_path:
+                    cur = cl.load_cache(path)
+                    cur["bio_generated"] = True
+                    cl.save_cache(cur, path)
+                    llm.log(f"终传已生成: {out_path}")
+            elif kind == "decade":
+                if cache.get("player_death"):
+                    continue  # 已死: 跳过十年传记 (终传覆盖)
+                if decade in (cache.get("bio_decades") or []):
+                    continue
+                out_path, _ = generate_bio(cfg, cache, decade=decade)
+                if out_path:
+                    cur = cl.load_cache(path)
+                    cur.setdefault("bio_decades", []).append(decade)
+                    cl.save_cache(cur, path)
+                    llm.log(f"十年传记已生成 (第{decade}个十年): {out_path}")
         except Exception as e:
-            llm.log(f"终传生成失败 (将重试): {e}")
+            llm.log(f"传记生成失败 (将重试): {e}")
         finally:
             with _BIO_LOCK:
-                _BIO_LAST_TRY[pid] = time.monotonic()
+                _BIO_LAST_TRY[key] = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -697,6 +762,7 @@ def step_watch(cfg, continue_mode=False):
         else:
             llm.log("续传模式: 暂无缓存, 等同 watch (首个新存档建立战役)")
     _auto_bio(cfg)
+    _auto_decade_bios(cfg)  # v8: 每轮也检查待生成的十年传记
     # 监控循环
     seen = set()
     interval = cfg.get("poll_interval_seconds", 60)
@@ -723,6 +789,7 @@ def step_watch(cfg, continue_mode=False):
             else:
                 llm.log("无新存档")
             _auto_bio(cfg)  # v7: 每轮都检查待生成终传 (不再依赖 processed)
+            _auto_decade_bios(cfg)  # v8: 每轮也检查待生成的十年传记
         except Exception as e:
             llm.log(f"扫描异常: {e}")
         time.sleep(interval)
@@ -740,6 +807,7 @@ def step_scan(cfg):
             f"最后存档={cache.get('last_date')})")
     n = _catchup(cfg, cache, continue_mode=True)
     _auto_bio(cfg)
+    _auto_decade_bios(cfg)
     llm.log(f"补录完成: 处理 {n} 个新档")
 
 
@@ -837,6 +905,8 @@ def step_rebuild_cache(cfg):
                 cache["player_death"] = prev["player_death"]
             if prev.get("bio_generated"):
                 cache["bio_generated"] = prev["bio_generated"]
+            if prev.get("bio_decades"):
+                cache["bio_decades"] = prev["bio_decades"]  # v8
             if prev.get("playthrough_id"):
                 cache["playthrough_id"] = prev["playthrough_id"]
             built[player_id] = cache

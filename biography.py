@@ -290,6 +290,11 @@ def _profile_lines(facts, cid=None):
         lines.append(f"妻室：{p['spouses']}")
     if p.get("former_spouses"):
         lines.append(f"前妻：{p['former_spouses']}")
+    # v8: 妾 (正向 concubine + 反向 concubinist 合并)
+    if p.get("concubines"):
+        lines.append(f"妾：{p['concubines']}")
+    if p.get("former_concubines"):
+        lines.append(f"前妾：{p['former_concubines']}")
     if p.get("children"):
         lines.append(f"子女：{p['children']}")
     if p.get("father"):
@@ -501,7 +506,9 @@ def build_intro_messages(facts, cfg, articles=None):
     )
     life_note = ""
     if death:
-        life_note = f"【卒年】{death.get('date')}（{death.get('reason')}）——此为终传"
+        # v8: 死因走中文化 (reason_zh), 干净事实铁律——英文 key 不进提示词
+        rz = death.get("reason_zh") or death.get("reason") or "身故"
+        life_note = f"【卒年】{death.get('date')}（{rz}）——此为终传"
     else:
         life_note = "【现状】在世（截至最后一份存档）"
     profile_txt = _render_block("【人物档案】", _profile_lines(facts)) or "（无档案）"
@@ -910,8 +917,9 @@ def _is_admin(facts):
     return gov in ("行政官制", "administrative_government")
 
 
-def generate_biography(cache, melt, cfg, out_path=None):
-    """生成传记 Markdown 并写入 out_path。返回 (md_text, facts, articles)。"""
+def generate_biography(cache, melt, cfg, out_path=None, decade=None):
+    """生成传记 Markdown 并写入 out_path。返回 (md_text, facts, articles)。
+    decade: 十年传记序号 (第N个十年), None 表示终传或普通在世传记。"""
     names_path = os.path.join(cfg.get("data_dir", ""), "names.json")
     facts = F.build_facts(cache, melt, names_path)
     articles = build_articles(facts, cache, cfg)
@@ -966,8 +974,20 @@ def generate_biography(cache, melt, cfg, out_path=None):
                 sections[(ak, sk)] = body
 
     md = _assemble(facts, intro, leads, sections, articles)
+    # v8: 头部注释带 人物/出生/篇目/十年, 供 htmlview 分组与十年标注
+    pp = facts["protagonist"] or {}
+    person = pp.get("name") or facts.get("player_name") or ""
+    birth = pp.get("birth") or ""
+    if facts.get("player_death"):
+        piece = "终传"
+    elif decade:
+        piece = f"第{decade}个十年传记"
+    else:
+        piece = "传记"
     header = (f"<!-- 数据来源: CK3 年度存档快照 | 家族: {facts.get('house', '')} | "
-              f"生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} -->\n\n")
+              f"人物: {person} | 出生: {birth} | 篇目: {piece}"
+              + (f" | 十年: {decade}" if decade else "")
+              + f" | 生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} -->\n\n")
     if out_path:
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as fp:

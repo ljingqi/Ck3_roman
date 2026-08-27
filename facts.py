@@ -254,6 +254,15 @@ class Facts:
             if k:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
+        # v8: 全部层级词并集 (通用 + 各政体 + 伊斯兰国名后缀), 用于「名字已含层级词不追加」
+        self._rank_words = set(L.GENERIC_TIER_ZH.values()) | {"哈里发国", "苏丹国"}
+        for _g in ("celestial", "administrative", "feudal", "clan",
+                   "tribal", "theocracy", "republic"):
+            for _tier in ("empire", "kingdom", "duchy", "county",
+                          "barony", "hegemon"):
+                w = L.tier_word(self.table, _g + "_government", _tier)
+                if w and not w.startswith("$"):
+                    self._rank_words.add(w)
         # v5: 自定义角色 (ruler_designer_characters) — 出身自定, 无谱系
         self._custom_starts = set()
         for x in (melt.get("ruler_designer_characters") or []):
@@ -297,8 +306,15 @@ class Facts:
         return gov
 
     def title(self, tid):
-        """头衔 id → 中文名 + 动态层级词: '复兴党流亡委员会' / '岭西（路）' / '宋（大路）'。
-        名字取值: custom → name → 本地化表 → key; 无地营地 (x_) 只给名字。"""
+        """头衔 id → 中文名 + 动态层级词合并: '复兴党流亡委员会' / '开罗伯爵领' /
+        '埃及王国' / '图伦苏丹国' / '阿拔斯哈里发国' / '宋大路' / '中华天朝'(霸权级)。
+        名字取值: custom → name → 本地化表 → key; 无地营地 (x_) 只给名字。
+        v8: 头衔名与层级词直接合并 (布列塔尼公国), 名字已含层级词时不追加
+        (神圣罗马帝国); 霸权级 h_ 仅天朝制启用「天朝」词 (罗马帝国等不加后缀)。
+        v8.1: 伊斯兰统治者 (最高领主) 的国名按游戏同规则显示为「家族+层级词」——
+        动态国名不存于存档 (k_egypt 静态名仍为「埃及」, 游戏运行时拼出),
+        按 持有者信仰→伊斯兰 + 家族名 + 层级 (k_→苏丹国, e_/h_→哈里发国/帝国
+        依是否兼任哈里发) 复现。"""
         if tid is None:
             return ""
         t = self._lt.get(str(tid)) or {}
@@ -311,6 +327,9 @@ class Facts:
             name = key
         if key.startswith("x_"):  # 无地营地/教团等特殊头衔: 只给名字
             return name
+        rn = self.realm_name(tid)  # v8.1: 伊斯兰统治者动态国名优先
+        if rn:
+            return rn
         tier = ""
         for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
             if key.startswith(pfx):
@@ -319,15 +338,118 @@ class Facts:
         if tier:
             gov = self._title_government(tid)
             word = L.tier_word(self.table, gov, tier)
-            # 帝国级 (e_/h_) 且层级词即通用「帝国」时不加后缀 (神圣罗马帝国 → 不加「（帝国）」)
-            if word and not (key.startswith(("e_", "h_")) and word == "帝国"):
-                return f"{name}（{word}）"
+            # 霸权级 (h_): 仅天朝制启用「天朝」; 其它政体 h_ 不加后缀
+            if key.startswith("h_") and gov != "celestial_government":
+                word = ""
+            # v8.2: 行政制帝国词「大督军」仅在其上有霸权头衔时出现
+            # (拜占庭帝国无上位霸权 → 用通用「帝国」, 实测游戏行为)。
+            generic_word = L.tier_word(self.table, "", tier)
+            if (gov == "administrative_government" and tier == "empire"
+                    and word != generic_word
+                    and not self._has_hegemon_above(tid)):
+                word = generic_word
+            # 名字已含任意层级词 (神圣罗马帝国/大元帝国/逊尼派哈里发国) 或词为空时不追加
+            if word and not any(name.endswith(w) for w in self._rank_words):
+                return f"{name}{word}"
         return name
+
+    def _has_hegemon_above(self, tid):
+        """沿 de_facto_liege 上溯, 是否存在霸权级 (h_) 头衔在上 (v8.2)。"""
+        seen = set()
+        cur = str(tid)
+        while cur and cur not in seen:
+            seen.add(cur)
+            t = self._lt.get(cur) or {}
+            if not t:
+                break
+            if (t.get("key") or "").startswith("h_"):
+                return True
+            liege = t.get("de_facto_liege")
+            cur = str(liege) if liege is not None else None
+        return False
 
     def title_by_key(self, key):
         if not key:
             return None
         return self._title_by_key.get(key)
+
+    # ---- v8.1: 伊斯兰统治者动态国名 (游戏同规则复现) ----
+
+    _ISLAM_RELIGIONS = {"islam_religion", "sunni_religion",
+                        "shia_religion", "ibadi_religion"}
+    _NO_RELIGIOUS_HEAD = 4294967295  # 0xFFFFFFFF = 无宗教领袖
+
+    def _faith_id(self, cid):
+        """角色信仰 id: 缓存优先, 回退最新熔件角色对象。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fid = rec.get("faith")
+        if fid is None:
+            c = self._chars.get(str(cid)) or {}
+            fid = c.get("faith")
+        return fid
+
+    def is_islamic(self, cid):
+        """角色是否伊斯兰教统治者: 信仰 → 宗教 → religion_type ∈ 伊斯兰系。"""
+        fid = self._faith_id(cid)
+        if fid is None:
+            return False
+        faiths = (self.melt.get("religion") or {}).get("faiths") or {}
+        fe = faiths.get(str(fid))
+        if not isinstance(fe, dict):
+            return False
+        rid = fe.get("religion")
+        if not isinstance(rid, int):
+            return False
+        religions = (self.melt.get("religion") or {}).get("religions") or {}
+        re = religions.get(str(rid))
+        return (isinstance(re, dict)
+                and (re.get("religion_type") or "") in self._ISLAM_RELIGIONS)
+
+    def is_caliph(self, cid):
+        """是否兼任哈里发: 其信仰的宗教领袖头衔 (faith.religious_head, 如 d_sunni)
+        的当前持有者 == 本人。"""
+        fid = self._faith_id(cid)
+        if fid is None:
+            return False
+        faiths = (self.melt.get("religion") or {}).get("faiths") or {}
+        fe = faiths.get(str(fid))
+        if not isinstance(fe, dict):
+            return False
+        rh = fe.get("religious_head")
+        if not isinstance(rh, int) or rh == self._NO_RELIGIOUS_HEAD:
+            return False
+        t = self._lt.get(str(rh)) or {}
+        return isinstance(t, dict) and t.get("holder") == cid
+
+    def dynasty_name(self, cid):
+        """角色家族名 (穆斯林国名用): 缓存 house_name → 熔件 dynasty_house 解析。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        if rec.get("house_name"):
+            return rec["house_name"]
+        c = self._chars.get(str(cid)) or {}
+        hid = c.get("dynasty_house")
+        if isinstance(hid, int):
+            return cl.house_name_zh(self.melt, hid)
+        return ""
+
+    def realm_name(self, tid):
+        """伊斯兰统治者国名: k_ → {家族}苏丹国; e_/h_ → {家族}哈里发国(兼任哈里发)
+        或 {家族}帝国。非伊斯兰 / 非王国帝国级 / 家族名缺失返回 '' (走常规渲染)。"""
+        t = self._lt.get(str(tid)) or {}
+        key = t.get("key") or ""
+        holder = t.get("holder")
+        if not key.startswith(("k_", "e_", "h_")) or not isinstance(holder, int):
+            return ""
+        if not self.is_islamic(holder):
+            return ""
+        dyn = self.dynasty_name(holder)
+        if not dyn:
+            return ""
+        if key.startswith("k_"):
+            return f"{dyn}苏丹国"
+        if self.is_caliph(holder):
+            return f"{dyn}哈里发国"
+        return f"{dyn}帝国"
 
     # ---- 文化 / 信仰 / 特质 / 政体 ----
     def culture(self, cid):
@@ -834,6 +956,9 @@ def _protagonist(f):
         (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])))
     p["spouses"] = "、".join(f.name_or(s) for s in spouse_ids if f.name(s))
     p["former_spouses"] = "、".join(f.name_or(s) for s in (fam.get("former_spouses") or []) if f.name(s))
+    # v8: 妾 (正向 concubine + 反向 concubinist, 已在缓存合并去重)
+    p["concubines"] = "、".join(f.name_or(s) for s in (fam.get("concubine") or []) if f.name(s))
+    p["former_concubines"] = "、".join(f.name_or(s) for s in (fam.get("former_concubines") or []) if f.name(s))
     p["children"] = "、".join(f.name_or(c) for c in (fam.get("child") or []) if f.name(c))
     p["father"] = "、".join(f.name_or(x) for x in (fam.get("father") or []) if f.name(x))
     p["mother"] = "、".join(f.name_or(x) for x in (fam.get("mother") or []) if f.name(x))
@@ -885,6 +1010,7 @@ def _character_profiles(f):
         spouse_ids = list(dict.fromkeys(
             (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])))
         prof["spouses"] = "、".join(f.name_or(s) for s in spouse_ids if f.name(s))
+        prof["concubines"] = "、".join(f.name_or(s) for s in (fam.get("concubine") or []) if f.name(s))
         prof["children"] = "、".join(f.name_or(c) for c in (fam.get("child") or []) if f.name(c))
         prof["father"] = "、".join(f.name_or(x) for x in (fam.get("father") or []) if f.name(x))
         prof["mother"] = "、".join(f.name_or(x) for x in (fam.get("mother") or []) if f.name(x))
@@ -956,42 +1082,65 @@ def _realm_facts(f):
 
 
 def _killed_by_player(f):
-    """主角所杀之人 (v5): 三源合一, 去重。
-    源: 1) 主角 dead_data.kills  2) 主角 successful_murder 记忆 victim
-        3) 全缓存 death.killer == 主角。
+    """主角所杀之人 (v8): 五源合一, 去重。
+    源: 1) 主角缓存 kills (alive_data.kills ∪ dead_data.kills 跨年累积)
+        2) player_death.kills (死亡档 dead_data.kills)
+        3) 主角 successful_murder 记忆 victim
+        4) 全缓存死亡记录 killer == 主角
+        5) 最新熔件中 dead_data.killer == 主角 (受害者不在缓存时兜底)
     返回 [(cid, 档案dict, 死句, 相关事件)] 按死亡日期排序。"""
     cache = f.cache
     pid = cache.get("player_id")
     if pid is None:
         return []
     killed = set()
-    # 1) dead_data.kills (死后汇总; 若在缓存 player_death 或 melt 中)
+    # 1) 缓存击杀 (跨年累积: alive_data.kills ∪ dead_data.kills)
+    prec = (cache.get("characters") or {}).get(str(pid)) or {}
+    for k in prec.get("kills") or []:
+        killed.add(int(k))
+    # 2) player_death.kills (死亡检测时已写入 dead_data.kills)
     dd = cache.get("player_death") or {}
     for k in dd.get("kills") or []:
         killed.add(int(k))
-    # 2) 主角 successful_murder 记忆 victim
-    prec = (cache.get("characters") or {}).get(str(pid)) or {}
+    # 3) 主角 successful_murder 记忆 victim
     for mem in prec.get("memories") or []:
         if mem.get("type") == "successful_murder":
             v = (mem.get("participants") or {}).get("victim")
             if isinstance(v, int):
                 killed.add(v)
-    # 3) 全缓存死亡记录 killer == 主角
+    # 4) 全缓存死亡记录 killer == 主角
     for cid, rec in (cache.get("characters") or {}).items():
         if int(cid) == pid:
             continue
         d = rec.get("death") or {}
         if d.get("killer") == pid:
             killed.add(int(cid))
+    # 5) 最新熔件受害者反查 (dead_data.killer == 主角)
+    for cid, c in f._chars.items():
+        if not isinstance(c, dict) or int(cid) == pid:
+            continue
+        d = (c.get("dead_data") or {}).get("killer")
+        if d is not None and int(d) == pid:
+            killed.add(int(cid))
     # 每个被杀者: 档案 + 死句 + 恢复的记忆事件 (由缓存提供, 死前档回溯已并入)
     out = []
     for cid in killed:
         prof = (f.cache.get("characters") or {}).get(str(cid)) or {}
+        # 受害者不在缓存时, 从最新熔件 dead_data 补死句
+        ds = _death_sentence(f, cid)
+        if not ds:
+            mc = f._chars.get(str(cid)) or {}
+            mdd = (mc or {}).get("dead_data") or {}
+            if mdd and mdd.get("date"):
+                reason = _death_reason(f.table, mdd.get("reason"))
+                if reason in ("处决", "谋杀", "毒杀", "刑罚", "决斗", "蛇噬", "斗殴"):
+                    reason = "被" + reason
+                ds = f"{f.name_or(cid)}殁于{f.date(mdd.get('date'))}，{reason}。"
         entry = {
             "id": cid,
             "name": f.name_or(cid),
             "birth": f.date(prof.get("birth")),
-            "death": _death_sentence(f, cid) or "（死因不详）",
+            "death": ds or "（死因不详）",
             "death_date": (prof.get("death") or {}).get("date") or "9999.9.9",
             "house": house_display(prof.get("house_name")),
             "culture": f.culture(cid),
@@ -1122,6 +1271,7 @@ def _genealogy(f):
     lines.append(f"一世 {pname}（{f.date(rec.get('birth'))}生）")
     for key, label in (("father", "父"), ("mother", "母"),
                        ("primary_spouse", "正妻"), ("spouse", "侧室"),
+                       ("concubine", "妾"), ("former_concubines", "前妾"),
                        ("child", "子女"), ("siblings", "兄弟姊妹"),
                        ("former_spouses", "前妻")):
         ids = fam.get(key) or []
@@ -1145,6 +1295,11 @@ def build_facts(cache, melt, names_path=None):
     if sources:
         period = f"{sources[0]} – {sources[-1]}"
     cpl, cpch = f.court_positions_lines()
+    # v8: 死因中文化 (总纲【卒年】不再泄漏英文 key, 干净事实铁律)
+    pd = cache.get("player_death")
+    if pd:
+        pd = dict(pd)
+        pd["reason_zh"] = _death_reason(f.table, pd.get("reason"))
     facts = {
         "house": house_display(cache.get("house_name")),
         "player_name": cache.get("player_name"),
@@ -1155,7 +1310,7 @@ def build_facts(cache, melt, names_path=None):
         "timeline": _timeline(f),
         "characters": _character_profiles(f),
         "realm": _realm_facts(f),
-        "player_death": cache.get("player_death"),
+        "player_death": pd,
         "last_date": cache.get("last_date"),
         # v5 新增
         "bio_style": f.bio_style(),
