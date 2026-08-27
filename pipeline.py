@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -377,23 +378,31 @@ def _catchup(cfg, cache, continue_mode=False):
             except Exception as e:
                 llm.log(f"  熔化失败: {e}")
                 continue
-        melt = cl.load_melt(mp)
-        player_id = cl.find_player(melt)
-        if player_id is None:
+        try:
+            melt = cl.load_melt(mp)
+        except Exception as e:
+            llm.log(f"  [跳过] {s['date']} 读取熔件失败: {e}")
             continue
-        if not same_campaign(cache, melt, player_id):
-            llm.log(f"  [跳过] {s['date']} 属其它战役 (playthrough="
-                    f"{melt.get('playthrough_id')}), 不记录")
+        try:
+            player_id = cl.find_player(melt)
+            if player_id is None:
+                continue
+            if not same_campaign(cache, melt, player_id):
+                llm.log(f"  [跳过] {s['date']} 属其它战役 (playthrough="
+                        f"{melt.get('playthrough_id')}), 不记录")
+                continue
+            if player_id != pid:
+                llm.log(f"  [继位] {s['date']}: 同战役玩家变为 {player_id}, 新建缓存")
+                cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
+            if cl.extract_snapshot(cache, melt, s["date"]):
+                _recover_dead_memories(cfg, cache)
+                save_session_cache(cfg, cache, continue_mode)
+                processed += 1
+                llm.log(f"  并入 {s['date']}: 相关人物 {len(cache['characters'])}")
+                _cross_check_deaths(cfg, melt, player_id)
+        except Exception as e:
+            llm.log(f"  [跳过] {s['date']} 处理失败: {e}")
             continue
-        if player_id != pid:
-            llm.log(f"  [继位] {s['date']}: 同战役玩家变为 {player_id}, 新建缓存")
-            cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
-        if cl.extract_snapshot(cache, melt, s["date"]):
-            _recover_dead_memories(cfg, cache)
-            save_session_cache(cfg, cache, continue_mode)
-            processed += 1
-            llm.log(f"  并入 {s['date']}: 相关人物 {len(cache['characters'])}")
-            _cross_check_deaths(cfg, melt, player_id)
     return processed
 
 
@@ -453,7 +462,8 @@ def generate_bio(cfg, cache, force=False):
 
 def _process_save(cfg, save, continue_mode=False):
     """熔化并并入一份存档 (watch 用): 熔到临时 → 定玩家/战役文件夹 → 归位。
-    返回处理的玩家 id 或 None。"""
+    返回处理的玩家 id 或 None。并入阶段异常会清理临时熔件后重新抛出,
+    由调用方记失败并在下一轮重试 (v7)。"""
     date = save["date"]
     tmp = temp_melt_path(cfg, date)
     llm.log(f"  熔化 {os.path.basename(save['path'])} ({save['magic']}) ...")
@@ -466,32 +476,31 @@ def _process_save(cfg, save, continue_mode=False):
         except OSError:
             pass
         return None
-    melt = cl.load_melt(tmp)
-    player_id = cl.find_player(melt)
-    if player_id is None:
+    try:
+        melt = cl.load_melt(tmp)
+        player_id = cl.find_player(melt)
+        if player_id is None:
+            llm.log(f"  {date}: 存档中无玩家角色, 跳过")
+            return None
+        cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
+        ok = cl.extract_snapshot(cache, melt, date)
+        if not ok:
+            llm.log(f"  {date}: 玩家不一致, 跳过")
+            return None
+        folder = ensure_output_folder(cfg, cache, continue_mode)
+        _move_melt_into(cfg, folder, date, player_id, tmp)
+        _recover_dead_memories(cfg, cache)
+        save_session_cache(cfg, cache, continue_mode)
+        llm.log(f"  并入 {date}: 玩家 {cache.get('player_name')} (id={cache.get('player_id')}), "
+                f"相关人物 {len(cache['characters'])}")
+        _cross_check_deaths(cfg, melt, player_id)
+        return player_id
+    except Exception:
         try:
             os.remove(tmp)
         except OSError:
             pass
-        llm.log(f"  {date}: 存档中无玩家角色, 跳过")
-        return None
-    cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
-    ok = cl.extract_snapshot(cache, melt, date)
-    if not ok:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        llm.log(f"  {date}: 玩家不一致, 跳过")
-        return None
-    folder = ensure_output_folder(cfg, cache, continue_mode)
-    _move_melt_into(cfg, folder, date, player_id, tmp)
-    _recover_dead_memories(cfg, cache)
-    save_session_cache(cfg, cache, continue_mode)
-    llm.log(f"  并入 {date}: 玩家 {cache.get('player_name')} (id={cache.get('player_id')}), "
-            f"相关人物 {len(cache['characters'])}")
-    _cross_check_deaths(cfg, melt, player_id)
-    return player_id
+        raise
 
 
 def _recover_dead_memories(cfg, cache):
@@ -529,18 +538,20 @@ def _recover_dead_memories(cfg, cache):
 
 def _cross_check_deaths(cfg, melt, current_player):
     """检查本档 dead_unprunable 中, 是否存在「既有缓存且身份一致」的前代玩家死亡。
-    **身份校验**: 名字一致 (防跨战役 id 撞号) + 死亡日期晚于其最后存活档。"""
+    **身份校验**: 名字一致 (防跨战役 id 撞号) + 死亡日期晚于其最后存活档。
+    v7: 预计算 {pid: (path, cache)} 一次, 避免为每个死亡角色 os.walk 整个 output 树。"""
+    caches = all_caches(cfg)
     for cid, c in (melt.get("dead_unprunable") or {}).items():
         cid = int(cid)
         if cid == current_player:
             continue
-        path = find_cache_path(cfg, cid)
-        if not path:
+        hit = caches.get(cid)
+        if not hit:
             continue
+        path, prev = hit
         dd = c.get("dead_data") or {}
         if not dd.get("date"):
             continue
-        prev = cl.load_cache(path)
         if prev.get("player_death") is not None:
             continue
         # 身份校验: 名字一致
@@ -562,43 +573,112 @@ def _cross_check_deaths(cfg, melt, current_player):
                 f"原因 {dd.get('reason')} — 待生成终传")
 
 
+_BIO_LOCK = threading.Lock()
+_BIO_PENDING = set()        # 待生成终传的玩家 id (去重)
+_BIO_LAST_TRY = {}          # pid -> time.monotonic() 上次尝试时间 (失败退避)
+_BIO_RETRY_SECONDS = 300    # 生成失败后至少间隔多久重试
+_BIO_WORKER = None
+
+
+def _ensure_bio_worker(cfg):
+    """启动后台终传生成线程 (watch/continue/scan 共用, 只启动一次)。
+    终传生成 (多次 LLM 调用, 数分钟) 在后台进行, watch 轮询不阻塞 (v7)。"""
+    global _BIO_WORKER
+    if _BIO_WORKER is None:
+        _BIO_WORKER = threading.Thread(target=_bio_worker_loop,
+                                       args=(cfg,), daemon=True)
+        _BIO_WORKER.start()
+
+
 def _auto_bio(cfg):
-    """为所有「已死亡且未生成终传」的缓存生成终传 (每次死亡一篇)。"""
+    """为所有「已死亡且未生成终传」的缓存排队生成终传 (后台线程执行, 每次死亡一篇)。
+    失败不置 bio_generated, 下轮自动重试 (带退避)。返回本轮排队数。"""
+    _ensure_bio_worker(cfg)
     caches = all_caches(cfg)
-    generated = []
-    for pid, (path, cache) in caches.items():
-        death = cache.get("player_death")
-        if not death or cache.get("bio_generated"):
+    queued = 0
+    now = time.monotonic()
+    with _BIO_LOCK:
+        for pid, (_path, cache) in caches.items():
+            death = cache.get("player_death")
+            if not death or cache.get("bio_generated"):
+                continue
+            if not cfg.get("auto_bio_on_death", True):
+                llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={pid}) 殁于 "
+                        f"{death.get('date')}, 但 auto_bio_on_death=false, 跳过")
+                continue
+            if pid in _BIO_PENDING:
+                continue
+            if now - _BIO_LAST_TRY.get(pid, 0) < _BIO_RETRY_SECONDS:
+                continue
+            _BIO_PENDING.add(pid)
+            queued += 1
+            llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={pid}) 已殁于 "
+                    f"{death.get('date')} — 排队生成终传")
+    if queued:
+        llm.log(f"待生成 {queued} 篇终传")
+    return queued
+
+
+def _bio_worker_loop(cfg):
+    """后台线程: 从队列取玩家 → 生成终传 → 置 bio_generated。
+    以磁盘最新缓存为准只翻转标记, 防覆盖主线程刚写入的新档数据。"""
+    while True:
+        pid = None
+        with _BIO_LOCK:
+            for p in _BIO_PENDING:
+                pid = p
+                break
+            if pid is not None:
+                _BIO_PENDING.discard(pid)
+        if pid is None:
+            time.sleep(2)
             continue
-        if not cfg.get("auto_bio_on_death", True):
-            llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={pid}) 殁于 "
-                    f"{death.get('date')}, 但 auto_bio_on_death=false, 跳过")
-            continue
-        llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={pid}) 已殁于 "
-                f"{death.get('date')} — 生成终传")
         try:
+            path = find_cache_path(cfg, pid)
+            if not path:
+                continue
+            cache = cl.load_cache(path)
+            death = cache.get("player_death")
+            if not death or cache.get("bio_generated"):
+                continue
             out_path, _ = generate_bio(cfg, cache)
             if out_path:
-                cache["bio_generated"] = True
-                cl.save_cache(cache, path)
-                generated.append(out_path)
+                cur = cl.load_cache(path)
+                cur["bio_generated"] = True
+                cl.save_cache(cur, path)
+                llm.log(f"终传已生成: {out_path}")
         except Exception as e:
-            llm.log(f"终传生成失败: {e}")
-    if generated:
-        llm.log(f"自动生成 {len(generated)} 篇终传")
-    return generated
+            llm.log(f"终传生成失败 (将重试): {e}")
+        finally:
+            with _BIO_LOCK:
+                _BIO_LAST_TRY[pid] = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
 # watch / continue / scan
 # ---------------------------------------------------------------------------
 
+def _cleanup_tmp_melts(cfg):
+    """清理残留的临时熔件 (上次异常退出遗留的 .tmp_melt_*.json)。"""
+    data_dir = cfg.get("data_dir", "")
+    if os.path.isdir(data_dir):
+        for fn in os.listdir(data_dir):
+            if fn.startswith(".tmp_melt_") and fn.endswith(".json"):
+                try:
+                    os.remove(os.path.join(data_dir, fn))
+                except OSError:
+                    pass
+
+
 def step_watch(cfg, continue_mode=False):
     """watch/continue: 以启动时刻为基准, 只处理启动后写入的新存档。
 
     - continue: 启动时先补录当前战役的新档 (日期新于缓存), 再进入监控;
     - watch:    直接进入监控 (无缓存时首个新存档建立战役)。
-    """
+
+    v7: 每档独立容错 (单档失败不中断本轮其余存档, 下轮重试);
+        每轮都检查待生成终传; 终传生成在后台线程, 轮询不阻塞。"""
+    _cleanup_tmp_melts(cfg)
     save_dir = cfg.get("save_dir", "")
     baseline = max((s["mtime"] for s in scan_saves(save_dir)), default=0)
     llm.log("监控存档中 (只处理本程序启动后保存的存档)...")
@@ -632,12 +712,17 @@ def step_watch(cfg, continue_mode=False):
                 seen.add(key)
                 llm.log(f"[{time.strftime('%H:%M:%S')}] 检测到新存档: "
                         f"{os.path.basename(s['path'])} ({s['date']})")
-                if _process_save(cfg, s, continue_mode=continue_mode):
-                    processed += 1
+                try:
+                    if _process_save(cfg, s, continue_mode=continue_mode):
+                        processed += 1
+                except Exception as e:
+                    llm.log(f"  处理失败, 下轮重试: {os.path.basename(s['path'])}: {e}")
+                    seen.discard(key)
             if processed:
-                _auto_bio(cfg)
+                llm.log(f"并入 {processed} 个新档")
             else:
                 llm.log("无新存档")
+            _auto_bio(cfg)  # v7: 每轮都检查待生成终传 (不再依赖 processed)
         except Exception as e:
             llm.log(f"扫描异常: {e}")
         time.sleep(interval)
@@ -646,6 +731,7 @@ def step_watch(cfg, continue_mode=False):
 def step_scan(cfg):
     """单次补录: 只补录当前战役中日期新于缓存的新档。
     信封角色名不一致的存档直接跳过 (不熔化), 其它战役一律不读。"""
+    _cleanup_tmp_melts(cfg)
     pid, cache = active_cache(cfg)
     if not cache:
         llm.log("暂无玩家缓存 — 请先运行 watch (新档) 或 continue (旧档) 建立素材库")

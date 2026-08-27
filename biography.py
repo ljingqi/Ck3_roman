@@ -239,6 +239,9 @@ def _profile_lines(facts, cid=None):
         lines.append(f"姓名：{p['name']}")
     if p.get("house"):
         lines.append(f"家族：{p['house']}")
+    # v7: 家族家训
+    if p.get("motto"):
+        lines.append(f"家训：{p['motto']}")
     if p.get("birth"):
         lines.append(f"生于{p['birth']}")
     if p.get("culture"):
@@ -251,6 +254,11 @@ def _profile_lines(facts, cid=None):
         lines.append(f"特质履历：{p['trait_history']}")
     if p.get("government"):
         lines.append(f"政体：{p['government']}")
+    # v7: 主角宫廷/营地官职 (最新一年) 与该角色在主角处所任官职
+    if p.get("court_positions"):
+        lines.append(f"宫廷官职：{p['court_positions']}")
+    if p.get("court_position"):
+        lines.append(f"在主角处任{p['court_position']}")
     # 无地冒险者: 营地
     if p.get("landless"):
         if p.get("camp_name"):
@@ -384,6 +392,10 @@ def _article_facts(facts, cache, key):
         # 朝局动态: 政治类记忆时间线 + 高位头衔更替
         dyn = list(tl)
         blocks["朝局动态"] = "\n".join(dyn) if dyn else "（无朝局动态记录）"
+        # v7: 玩家宫廷/营地官职任免 (逐年数据驱动)
+        cp_ch = facts.get("court_position_changes") or []
+        if cp_ch:
+            blocks["官职任免"] = "\n".join(cp_ch)
         # 要员名录: 有政治类记忆或历任高位头衔的角色
         names = []
         for cid, rec in (cache.get("characters") or {}).items():

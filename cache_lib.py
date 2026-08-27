@@ -260,6 +260,8 @@ def dynasty_name_zh(melt, dynasty_id):
         dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
         best = None
         for hid, h in dh.items():
+            if not isinstance(h, dict):  # v7: none 条目防护
+                continue
             if h.get("dynasty") == dynasty_id:
                 fd = h.get("found_date") or "9999.1.1"
                 if best is None or fd < best[0]:
@@ -275,9 +277,32 @@ def dynasty_name_zh(melt, dynasty_id):
 # 加载
 # ---------------------------------------------------------------------------
 
+def _sanitize_none(o):
+    """递归把 Clausewitz 空值字符串 'none' 替换为 None (v7)。
+
+    rakaly json 把 `= none` 渲染成字符串 'none'; 而代码里的 `x or {}` 防护
+    对真值字符串 'none' 无效 ('none' or {} → 'none'), 随后 .get() 即崩溃
+    (实测 881.1.11 熔件含 6938 个 'none', living 4508 / dead 262 / 标题 1...)。
+    'none' 语义上等同字段缺失, 替换为 None 后所有 or {} 防护恢复正常。"""
+    if isinstance(o, dict):
+        for k, v in list(o.items()):
+            if v == "none":
+                o[k] = None
+            elif isinstance(v, (dict, list)):
+                _sanitize_none(v)
+    elif isinstance(o, list):
+        for i, v in enumerate(o):
+            if v == "none":
+                o[i] = None
+            elif isinstance(v, (dict, list)):
+                _sanitize_none(v)
+    return o
+
+
 def load_melt(path):
     with open(path, encoding="utf-8") as fp:
-        return json.load(fp)
+        data = json.load(fp)
+    return _sanitize_none(data)
 
 
 def _db(melt):
@@ -390,6 +415,8 @@ EMPTY_CACHE = {
     "output_folder": None,    # 会话输出文件夹名 (watch/continue 绑定, 见 pipeline)
     "player_title_history": [],  # [{date, name}] 玩家主头衔名变化 (复兴党流亡委员会等)
     "realm_history": [],         # [{date, holders:{title_id: holder_id}}] 关键头衔持有者逐年
+    "court_positions": [],       # [{date, positions:[{type, employee, hire_date, task}]}] 玩家宫廷/营地官职逐年 (v7)
+    "house_motto": None,         # 玩家家族家训 (dynasty_house.motto, 字符串或模板 dict) (v7)
     "characters": {},
     "relations": {},
 }
@@ -600,6 +627,8 @@ def _family_graph(chars):
                 sibling_map.setdefault(x, []).append(owner)
 
     for cid, c in chars.items():
+        if not isinstance(c, dict):  # v7: none 条目防护
+            continue
         fd = c.get("family_data") or {}
         for key in ("child", "father", "mother", "siblings"):
             link(int(cid), key, fd.get(key))
@@ -727,6 +756,8 @@ def extract_snapshot(cache, melt, date_label):
             house = p.get("dynasty_house")
             if house is not None:
                 for cid, c in chars.items():
+                    if not isinstance(c, dict):  # v7: none 条目防护
+                        continue
                     if c.get("dynasty_house") == house:
                         targets.add(int(cid))
 
@@ -782,6 +813,8 @@ def extract_snapshot(cache, melt, date_label):
     # 朝局持有者 (v4): 帝国(h_/e_)级头衔 + 相关角色持有的头衔, 逐年记录
     realm_holders = {}
     for tid, t in lt.items():
+        if not isinstance(t, dict):  # v7: 空值条目 (none) 防护
+            continue
         holder = t.get("holder")
         key = t.get("key") or ""
         if holder is None:
@@ -794,6 +827,42 @@ def extract_snapshot(cache, melt, date_label):
     if realm_holders:
         cache.setdefault("realm_history", []).append(
             {"date": date_label, "holders": realm_holders})
+
+    # 玩家宫廷/营地官职 (v7): court_positions.database 中 employer == 玩家,
+    # 逐年记录 (含宫廷职位与营地军官, 供「每年主角宫廷/营地内的人的官职」)。
+    if player_id is not None:
+        cpd = (melt.get("court_positions") or {}).get("database") or {}
+        mine = []
+        for _pos_id, e in cpd.items():
+            if not isinstance(e, dict):  # v7: none 条目防护
+                continue
+            try:
+                if e.get("employer") is None or int(e.get("employer")) != player_id:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            ptype = e.get("court_position")
+            if not ptype:
+                continue
+            emp_id = e.get("employee")
+            if isinstance(emp_id, int):
+                targets.add(emp_id)  # 官职任职者入目标集, 保证姓名可解析
+            mine.append({
+                "type": ptype,
+                "employee": emp_id,
+                "hire_date": e.get("hire_date"),
+                "task": e.get("task_type"),
+            })
+        if mine:
+            cache.setdefault("court_positions", []).append(
+                {"date": date_label, "positions": mine})
+        # 玩家家族家训 (v7): dynasty_house[<id>].motto (字符串或模板 dict)
+        pobj = chars.get(str(player_id))
+        if isinstance(pobj, dict) and pobj.get("dynasty_house") is not None:
+            dh_ = (melt.get("dynasties") or {}).get("dynasty_house") or {}
+            he = dh_.get(str(pobj.get("dynasty_house"))) or {}
+            if isinstance(he, dict) and he.get("motto"):
+                cache["house_motto"] = he.get("motto")
 
     # 玩家主头衔名变化 (v4): 主头衔 title_name_data (custom → name) 或信封名
     if player_id is not None:
@@ -836,6 +905,13 @@ def extract_snapshot(cache, melt, date_label):
                     rec["name_full"] = h + rec["name_zh"]
             rec["birth"] = c.get("birth")
             rec["culture"] = c.get("culture")
+            rec["faith"] = c.get("faith")
+        # 文化/信仰 (v7): 熔件有值即更新 (覆盖文化改信); 缺失时保留最近已知值。
+        # 角色死后游戏清空 culture/faith (实测死档约半数被清, 含前代玩家),
+        # 缓存里存活期直接读到的 id 即为最直接的来源, facts 层缓存优先读取。
+        if c.get("culture") is not None:
+            rec["culture"] = c.get("culture")
+        if c.get("faith") is not None:
             rec["faith"] = c.get("faith")
         # 特质与 trait_history (v4): 每快照 diff
         new_traits = c.get("traits") or []
