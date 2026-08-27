@@ -196,6 +196,40 @@ def _death_reason(table, reason):
     return DEATH_REASON_ZH.get(reason, "身故")
 
 
+def render_motto(motto, table):
+    """家训 → 中文 (v7)。存档 dynasty_house.motto 两种形态:
+    1) 字符串: 已渲染中文原样输出; 本地化键查表 (dynn_harrani_motto → 认识自己本质的人...)。
+    2) 模板 dict: {key, variables:[{key:'1', value:'motto_friendship'}]} →
+       key 查表得模板 (以$1$与$2$之名) → $N$ 按槽位填充 (以坚韧与安全之名) → 剥离动态引用。"""
+    if isinstance(motto, str):
+        s = motto.strip()
+        if not s:
+            return ""
+        if any("\u3400" <= ch <= "\u9fff" for ch in s):
+            return s
+        v = L.loc(table, s)
+        return v or s
+    if isinstance(motto, dict):
+        key = motto.get("key") or ""
+        tpl = L.loc(table, key)
+        if not tpl:
+            return ""
+        slots = {}
+        for v in motto.get("variables") or []:
+            if not isinstance(v, dict):
+                continue
+            sv = v.get("value")
+            if not sv:
+                continue
+            slots[str(v.get("key"))] = L.loc(table, sv) or sv
+        text = tpl
+        for sk, sv in slots.items():
+            text = text.replace("${" + sk + "}", sv)
+        text = re.sub(r"\$\d+\$", "", text)  # 未填充的空槽清理
+        return L.strip_ck3_format(text).strip()
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Facts 上下文
 # ---------------------------------------------------------------------------
@@ -214,6 +248,8 @@ class Facts:
         self.provmap = L.province_map()
         self._title_by_key = {}
         for tid, t in self._lt.items():
+            if not isinstance(t, dict):  # v7: none 条目防护
+                continue
             k = t.get("key")
             if k:
                 self._title_by_key[k] = int(tid)
@@ -295,9 +331,17 @@ class Facts:
 
     # ---- 文化 / 信仰 / 特质 / 政体 ----
     def culture(self, cid):
-        c = self._chars.get(str(cid)) or {}
+        """角色文化 (v7 缓存优先): 缓存记录最近已知值 (存活期直接捕获, 死后清空
+        也保留), 缺失回退最新熔件角色对象。id → culture_manager → 本地化 → 'X族'。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        cul = rec.get("culture")
+        if cul is None:
+            c = self._chars.get(str(cid)) or {}
+            cul = c.get("culture")
         template = (self.melt.get("culture_manager") or {}).get("cultures") or {}
-        e = template.get(str(c.get("culture"))) if c.get("culture") is not None else None
+        e = template.get(str(cul)) if cul is not None else None
+        if isinstance(e, str):  # v7: none 条目防护
+            e = None
         tpl = (e or {}).get("culture_template") or ""
         name = L.loc(self.table, tpl) or CULTURE_TEMPLATE_ZH.get(tpl) or ""
         if name:
@@ -305,9 +349,16 @@ class Facts:
         return "族属不详"
 
     def faith(self, cid):
-        c = self._chars.get(str(cid)) or {}
+        """角色信仰 (v7 缓存优先): 同 culture, id → religion.faiths → 本地化。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fid = rec.get("faith")
+        if fid is None:
+            c = self._chars.get(str(cid)) or {}
+            fid = c.get("faith")
         faiths = (self.melt.get("religion") or {}).get("faiths") or {}
-        e = faiths.get(str(c.get("faith"))) if c.get("faith") is not None else None
+        e = faiths.get(str(fid)) if fid is not None else None
+        if isinstance(e, str):  # v7: none 条目防护
+            e = None
         ft = (e or {}).get("faith_type") or ""
         name = L.loc(self.table, ft) or FAITH_TYPE_ZH.get(ft) or ""
         if name:
@@ -375,6 +426,59 @@ class Facts:
                 seen.add(tname)
                 out.append(f"{self.date(h.get('date'))}：任{tname}之主")
         return out
+
+    def motto(self):
+        """玩家家族家训 (v7) → 中文。"""
+        mot = self.cache.get("house_motto")
+        if not mot:
+            return ""
+        return render_motto(mot, self.table)
+
+    def court_positions_lines(self):
+        """玩家宫廷/营地官职 (v7): 返回 (最新职位行, 任免变化行)。
+        最新职位每条 = 「职位：人名（自X任）」; 变化行 = 跨快照同职位更替。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return [], []
+        hist = self.cache.get("court_positions") or []
+        if not hist:
+            return [], []
+        latest = hist[-1].get("positions") or []
+        latest_lines = []
+        for p in latest:
+            zh = L.loc(self.table, p.get("type")) or ""
+            if not zh or zh == p.get("type"):
+                continue
+            emp = p.get("employee")
+            nm = self.name_or(emp, "") if emp is not None else ""
+            hire = self.date(p.get("hire_date")) if p.get("hire_date") else ""
+            if nm and hire:
+                latest_lines.append(f"{zh}：{nm}（自{hire}任）")
+            elif nm:
+                latest_lines.append(f"{zh}：{nm}")
+        # 任免变化: 相邻快照 (type, employee) 集合差集 → 上任/卸任
+        change_lines = []
+        prev = set()
+        for h in hist:
+            cur = {(p.get("type"), p.get("employee"))
+                   for p in h.get("positions") or [] if p.get("type")}
+            if prev and cur != prev:
+                for t, emp in sorted(prev - cur):
+                    zh = L.loc(self.table, t) or ""
+                    if not zh or zh == t:
+                        continue
+                    nm = self.name_or(emp, "") if emp is not None else "空缺"
+                    if nm:
+                        change_lines.append(f"{self.date(h.get('date'))}：{nm}卸任{zh}")
+                for t, emp in sorted(cur - prev):
+                    zh = L.loc(self.table, t) or ""
+                    if not zh or zh == t:
+                        continue
+                    nm = self.name_or(emp, "") if emp is not None else "空缺"
+                    if nm:
+                        change_lines.append(f"{self.date(h.get('date'))}：{nm}出任{zh}")
+            prev = cur
+        return latest_lines, change_lines
 
     # ---- v5: 文化名序 / 文风 ----
 
@@ -614,6 +718,13 @@ def _protagonist(f):
     thl = f.trait_history_lines(pid)
     if thl:
         p["trait_history"] = "；".join(thl)
+    # v7: 家族家训 + 宫廷/营地官职
+    mot = f.motto()
+    if mot:
+        p["motto"] = mot
+    cpl, _cpch = f.court_positions_lines()
+    if cpl:
+        p["court_positions"] = "、".join(cpl)
     ld = rec.get("landed") or {}
     gov = ld.get("government")
     if gov == "landless_adventurer_government":
@@ -760,6 +871,16 @@ def _character_profiles(f):
         thl = f.trait_history_lines(cid)
         if thl:
             prof["trait_history"] = "；".join(thl)
+        # v7: 该角色在玩家宫廷/营地中的官职 (最新快照, 反向取最后一年)
+        for h in reversed(f.cache.get("court_positions") or []):
+            for p in h.get("positions") or []:
+                if p.get("employee") == cid:
+                    zh = L.loc(f.table, p.get("type")) or ""
+                    if zh and zh != p.get("type"):
+                        prof["court_position"] = zh
+                    break
+            if prof.get("court_position"):
+                break
         fam = rec.get("family") or {}
         spouse_ids = list(dict.fromkeys(
             (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])))
@@ -1023,6 +1144,7 @@ def build_facts(cache, melt, names_path=None):
     sources = cache.get("sources") or []
     if sources:
         period = f"{sources[0]} – {sources[-1]}"
+    cpl, cpch = f.court_positions_lines()
     facts = {
         "house": house_display(cache.get("house_name")),
         "player_name": cache.get("player_name"),
@@ -1041,6 +1163,10 @@ def build_facts(cache, melt, names_path=None):
         "wandering": _wandering_trail(f),
         "luminaries": _court_luminaries(f),
         "genealogy": _genealogy(f),
+        # v7 新增: 宫廷/营地官职 + 家族家训
+        "court_positions": cpl,
+        "court_position_changes": cpch,
+        "house_motto": f.motto(),
     }
     # 妻族传 (仅限公主头衔/中华皇帝之女·姐妹)
     pid = cache.get("player_id")
