@@ -5,10 +5,10 @@
 按**家族分文件夹**存放，附带 **index.html 阅读页**（离线双击即可阅读）。
 
 ```
-CK3 自动存档 (.ck3)
+CK3 自动存档 (.ck3)  —(watch/continue 只处理启动后写入的新存档)
   → rakaly json 熔化 → data/melt_<日期>.json
   → 记忆提取 → cache/player_<玩家id>.json（每玩家一份，跨年去重）
-  → 死亡检测（玩家 dead_data 出现即触发，每次死亡只生成一篇）
+  → 死亡检测（前代玩家 dead_data 出现即触发，身份校验防误判）
   → LLM 生成 → output/<家族>/<姓名>_<终传|传记>_<日期>.md
   → htmlview → output/<家族>/index.html
 ```
@@ -51,21 +51,28 @@ CK3 自动存档 (.ck3)
 
 ```bat
 python build_names.py              :: 重建全档人名表 data/names.json（含姓氏）
-python pipeline.py scan            :: 扫描存档目录，并入新档，检测死亡，自动生成终传
+python pipeline.py watch [秒]      :: 新档监控：只处理本程序启动后保存的新存档
+python pipeline.py continue [秒]   :: 旧档续传：补录当前战役新档后进入监控
+python pipeline.py scan            :: 单次：只补录当前战役（同战役）的新档
 python pipeline.py status          :: 打印各玩家缓存状态（家族/来源档/记忆数/生死）
 python pipeline.py bio [玩家id]    :: 手动生成传记（在世传记或终传）
-python pipeline.py watch [秒]      :: 循环监控：每次玩家角色死亡自动产出一篇终传
 python pipeline.py demo-death      :: 模拟主角死亡，演示「死后自动生成」链路
 python pipeline.py rebuild-cache   :: 从 data/melt_*.json 重建缓存（迁移/修复）
 python htmlview.py rebuild         :: 重建所有家族文件夹的 index.html
 ```
 
-`scan` / `watch` 流程要点：
+**素材库纪律（只记录新扫描到的存档）**：
 
-- **每玩家一份缓存** `cache/player_<id>.json`：主角死亡、继承人继位后自动为新主角
-  建档，长局可累积多位角色的传记。
-- **死亡检测**：玩家角色进入 dead 库（dead_data 出现）即触发；死亡档里前代玩家的
-  dead_data 也会被扫描登记。每次死亡**只生成一篇终传**（`bio_generated` 标记）。
+- `watch` / `continue` 启动时记录基准时间（最新存档的 mtime），**只处理启动后
+  写入的新存档**；目录里已有的老存档（旧战役/历史档）一律不读、不记录——
+  与报纸 Mod 的 watch/continue 语义一致。
+- `scan` 只补录**当前战役**（playthrough_id 一致或玩家一致）中日期新于缓存的新档，
+  其它战役的存档按信封角色名直接跳过，不熔化、不记录。
+- 每玩家一份缓存 `cache/player_<id>.json`：主角死亡、继承人继位（同战役新玩家）
+  后自动为新主角建档，长局可累积多位角色的传记。
+- 死亡检测：新存档中检测到前代玩家（同战役）的 dead_data 即触发；**带身份校验**
+  （名字一致 + 死亡日期晚于最后存活档），杜绝跨战役角色 id 撞号误判。
+  每次死亡**只生成一篇终传**（`bio_generated` 标记）。
 - **家族文件夹**：`output\<家族名>\`（如 `边氏`），家族内每篇传记一个 md，
   `index.html` 一键切换阅读。
 
@@ -73,7 +80,7 @@ python htmlview.py rebuild         :: 重建所有家族文件夹的 index.html
 
 | 文件 | 说明 |
 | --- | --- |
-| `pipeline.py` | 主流水线：scan / status / bio / watch / demo-death / rebuild-cache |
+| `pipeline.py` | 主流水线：watch（新档监控）/ continue（续传）/ scan（补录）/ status / bio / demo-death / rebuild-cache |
 | `cache_lib.py` | 缓存库 v3：每玩家缓存、姓名合并（姓+名）、码点解码、宗族解析 |
 | `facts.py` | 干净事实渲染层（模型只收中文事实，无裸键值） |
 | `biography.py` | 杂志式五篇纪传体传记生成器（并发调 LLM） |
