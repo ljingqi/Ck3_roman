@@ -80,6 +80,52 @@ def _is_ol(ln):
     return bool(re.match(r"^\s*\d+[.)]\s+", ln))
 
 
+def _render_nested_list(rows):
+    """连续列表行 (可能含前导空格缩进) → 按缩进层级构建嵌套 <ul>。
+    例: ['- 1070年', '  - 4月', '    - 9日：事件'] → 三层嵌套 <ul>。"""
+    items = []
+    for r in rows:
+        m = re.match(r"^(\s*)([-*]|\d+[.)])\s+(.*)$", r)
+        if not m:
+            continue
+        items.append((len(m.group(1)), m.group(3).strip()))
+    if not items:
+        return ""
+    out = []
+    stack = []  # [(indent, tag)]
+    first = True
+    for indent, text in items:
+        if first:
+            out.append("<ul>")
+            stack.append((indent, "ul"))
+            out.append(f"<li>{_inline(text)}")
+            first = False
+            continue
+        top = stack[-1][0]
+        if indent > top:
+            out.append("<ul>")
+            stack.append((indent, "ul"))
+            out.append(f"<li>{_inline(text)}")
+        elif indent == top:
+            out.append("</li>")
+            out.append(f"<li>{_inline(text)}")
+        else:
+            while stack and indent < stack[-1][0]:
+                out.append("</li>")
+                out.append(f"</{stack.pop()[1]}>")
+            if stack and indent == stack[-1][0]:
+                out.append("</li>")
+                out.append(f"<li>{_inline(text)}")
+            else:
+                out.append("<ul>")
+                stack.append((indent, "ul"))
+                out.append(f"<li>{_inline(text)}")
+    while stack:
+        out.append("</li>")
+        out.append(f"</{stack.pop()[1]}>")
+    return "".join(out)
+
+
 def md_to_html(text):
     """整篇 Markdown → HTML 片段 (不含 <html> 外壳)。"""
     lines = text.split("\n")
@@ -109,19 +155,12 @@ def md_to_html(text):
                 i += 1
             out.append(_render_table(rows))
             continue
-        if _is_ul(ln):
-            items = []
-            while i < n and _is_ul(lines[i]):
-                items.append(re.sub(r"^\s*[-*]\s+", "", lines[i]).strip())
+        if _is_ul(ln) or _is_ol(ln):
+            rows = []
+            while i < n and (_is_ul(lines[i]) or _is_ol(lines[i])):
+                rows.append(lines[i])
                 i += 1
-            out.append("<ul>" + "".join(f"<li>{_inline(x)}</li>" for x in items) + "</ul>")
-            continue
-        if _is_ol(ln):
-            items = []
-            while i < n and _is_ol(lines[i]):
-                items.append(re.sub(r"^\s*\d+[.)]\s+", "", lines[i]).strip())
-                i += 1
-            out.append("<ol>" + "".join(f"<li>{_inline(x)}</li>" for x in items) + "</ol>")
+            out.append(_render_nested_list(rows))
             continue
         if s.startswith(">"):
             quotes = []

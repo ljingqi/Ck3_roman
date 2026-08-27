@@ -222,6 +222,55 @@ def house_name_zh(melt, house_id):
         return ""
 
 
+def dynasty_id_of(melt, house_id):
+    """家族 id → 所属宗族 id (dynasty_house[<id>].dynasty); 无则 None。"""
+    if house_id is None:
+        return None
+    try:
+        dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
+        return dh.get(str(house_id), {}).get("dynasty")
+    except Exception:
+        return None
+
+
+def dynasty_name_zh(melt, dynasty_id):
+    """宗族 id → 宗族名中文。取值链 (实测):
+      1) dynasties[<id>].localized_name    (Mod 档自带, 如 冯·大马士革 / 崔佛)
+      2) .key 字符串 → 本地化表 (dynn_<key> / <key>)
+      3) 创始家族兜底: 同宗族内 found_date 最早的 house 取名 (边 / 奥尔西尼…)
+      全部失败返回 '' (由调用方回退家族名)。"""
+    if dynasty_id is None:
+        return ""
+    try:
+        dyn = (melt.get("dynasties") or {}).get("dynasties") or {}
+        e = dyn.get(str(dynasty_id)) or {}
+        # 1) 存档自带本地化名
+        ln = e.get("localized_name") or ""
+        if ln and any("\u3400" <= ch <= "\u9fff" for ch in ln):
+            return zh(ln)
+        # 2) key 字符串 → 本地化表变体
+        key = e.get("key")
+        if isinstance(key, str):
+            t = localization.table()
+            for cand in ("dynn_" + key, key):
+                v = localization.loc(t, cand)
+                if v and v != cand:
+                    return v
+        # 3) 创始家族兜底: 同宗族内 found_date 最早的 house
+        dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
+        best = None
+        for hid, h in dh.items():
+            if h.get("dynasty") == dynasty_id:
+                fd = h.get("found_date") or "9999.1.1"
+                if best is None or fd < best[0]:
+                    best = (fd, hid)
+        if best:
+            return house_name_zh(melt, int(best[1]))
+        return ""
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # 加载
 # ---------------------------------------------------------------------------
@@ -275,7 +324,7 @@ def family_of(char_obj):
     fd = (char_obj or {}).get("family_data") or {}
     out = {}
     for key in ("primary_spouse", "spouse", "former_spouses", "child",
-                "father", "mother", "siblings"):
+                "father", "mother", "siblings", "real_father"):
         v = fd.get(key)
         if v is None:
             continue
@@ -329,7 +378,9 @@ EMPTY_CACHE = {
     "schema": 4,
     "player_id": None,
     "player_name": None,
-    "house_name": None,       # 家族名 (如 边氏), 输出文件夹名依据
+    "house_name": None,       # 家族名 (边), 姓名字显示用
+    "dynasty_id": None,       # 宗族 id (v6: 文件夹按宗族划分)
+    "dynasty_name": None,     # 宗族名 (边), 输出文件夹名依据
     "playthrough_id": None,   # 战役标识 (存档 playthrough_id; 同一战役的存档共享)
     "game_version": None,
     "sources": [],
@@ -447,6 +498,79 @@ def resolve_full_name(cache, cid, names_path=None, melt=None):
 
 
 # ---------------------------------------------------------------------------
+# 文化姓名顺序 (v5: 东方姓在前, 西方名在前)
+# ---------------------------------------------------------------------------
+
+EASTERN_NAME_ORDERS = {"DYNASTY_ALWAYS_FIRST", "JAPANESE"}
+
+
+def name_order_of(melt, culture_id):
+    """文化 id → name_order_convention ('' = 西方默认; DYNASTY_ALWAYS_FIRST/
+    JAPANESE = 姓在前)。melt 缺失或文化未知返回 ''。"""
+    if melt is None or culture_id is None:
+        return ""
+    cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
+    e = cultures.get(str(culture_id)) or {}
+    return e.get("name_order_convention") or ""
+
+
+def _family_name_order(cache, rec, melt):
+    """角色自身文化缺失 (死后清空/幼年未录) 时, 依亲属文化推断名序:
+    父 → 母 → 同胞 → 子女 → 配偶 (子承父/母文化, 同胞同源; 配偶跨族婚姻参考价值最低, 放最后)。
+    返回 name_order_convention 字符串 ('' = 西方默认); 亲属文化全部缺失时返回 None。"""
+    if melt is None:
+        return None
+    cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
+    fam = rec.get("family") or {}
+    for key in ("father", "mother", "siblings", "child",
+                "primary_spouse", "spouse", "former_spouses"):
+        for x in (fam.get(key) or []):
+            r = (cache.get("characters") or {}).get(str(x)) or {}
+            cul = r.get("culture")
+            if cul is None or str(cul) not in cultures:
+                continue
+            return cultures[str(cul)].get("name_order_convention") or ""
+    return None
+
+
+def name_display(cache, cid, melt=None, names_path=None):
+    """按文化的显示名: 东方姓在前 (赵阿足), 西方名·姓 (巴沙尔·冯·大马士革)。
+    自身文化缺失 (死后 culture 清空/幼年未录) 时依亲属文化推断名序;
+    无从推断回退原 name_full (姓+名)。"""
+    if cid is None:
+        return ""
+    key = str(cid)
+    rec = (cache.get("characters") or {}).get(key) or {}
+    nm = rec.get("name_zh") or ""
+    h = rec.get("house_name") or ""
+    if not nm and names_path:
+        n = _load_names(names_path).get(key)
+        if n:
+            nm = n.get("name_zh") or ""
+            h = h or n.get("house_name") or ""
+    if not nm:
+        return rec.get("name_full") or ""
+    fallback = rec.get("name_full") or (h + nm if h else nm)
+    cul = rec.get("culture")
+    if cul is None:
+        order = _family_name_order(cache, rec, melt)
+        if order is None:
+            return fallback
+        if order in EASTERN_NAME_ORDERS:
+            return h + nm if h else nm
+        # 亲属文化为西方默认 (order==''): 名·姓
+        return f"{nm}·{h}" if h else nm
+    order = name_order_of(melt, cul)
+    if order in EASTERN_NAME_ORDERS:
+        return h + nm if h else nm
+    cultures = (melt or {}).get("culture_manager") or {}
+    if str(cul) in (cultures.get("cultures") or {}):
+        # 文化已知且为西方默认 (order==''): 名·姓
+        return f"{nm}·{h}" if h else nm
+    return fallback
+
+
+# ---------------------------------------------------------------------------
 # 亲属图 (v4: 反向亲属索引)
 # ---------------------------------------------------------------------------
 
@@ -508,6 +632,42 @@ def _siblings_of(cid, parent_map, child_map, sibling_map, direct):
     return sorted(out)
 
 
+def real_father_of(melt, cid):
+    """角色真正父亲 (v5): family_data.real_father 直接字段;
+    缺失时查秘密 (secret_unmarried_illegitimate_child / secret_disputed_heritage:
+    target=子女, participants 中非 owner 的男性候选人)。"""
+    cid = int(cid)
+    chars = all_characters(melt)
+    c = chars.get(str(cid)) or {}
+    fd = c.get("family_data") or {}
+    rf = fd.get("real_father")
+    if rf is not None:
+        return int(rf)
+    # 秘密推导: participants 中非 owner 的男性候选人 (女眷=owner 时第二人为父)
+    sec = (melt.get("secrets") or {}).get("secrets") or {}
+    for s in sec.values():
+        if not isinstance(s, dict):
+            continue
+        if s.get("type") not in ("secret_unmarried_illegitimate_child",
+                                 "secret_disputed_heritage"):
+            continue
+        tgt = (s.get("target") or {}).get("identity")
+        if tgt is None or int(tgt) != cid:
+            continue
+        owner = s.get("owner")
+        cands = [int(x) for x in (s.get("participants") or []) if isinstance(x, int)]
+        cands = [x for x in cands if x != cid]
+        if owner is not None and isinstance(owner, int):
+            cands = [x for x in cands if x != owner]
+        for cand in cands:
+            cc = chars.get(str(cand)) or {}
+            if not cc.get("female"):
+                return cand
+        if cands:
+            return cands[0]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 单档提取 (v4: 每玩家缓存 + 姓名合并 + 亲属/特质/朝局)
 # ---------------------------------------------------------------------------
@@ -532,7 +692,9 @@ def extract_snapshot(cache, melt, date_label):
         cache["playthrough_id"] = melt.get("playthrough_id")
     if date_label not in cache["sources"]:
         cache["sources"].append(date_label)
-    cache["last_date"] = date_label
+    # last_date 单调更新: 防旧档/跨战役误并把日期回拨
+    if date_key(date_label) > date_key(cache.get("last_date") or "0.0.0"):
+        cache["last_date"] = date_label
 
     chars = all_characters(melt)
     db = _db(melt)
@@ -709,6 +871,10 @@ def extract_snapshot(cache, melt, date_label):
         sib = _siblings_of(cid, parent_map, child_map, sibling_map, fam)
         if sib:
             fam["siblings"] = sib
+        # 真正父亲 (v5): 直接字段 + 秘密推导
+        rf = real_father_of(melt, cid)
+        if rf is not None:
+            fam["real_father"] = [rf]
         rec["family"] = fam
         if cid == player_id:
             ld = c.get("landed_data") or {}
@@ -724,11 +890,25 @@ def extract_snapshot(cache, melt, date_label):
                 "strength": ld.get("strength"),
                 "max_power": ld.get("max_power"),
             }
-            # 玩家所属家族名 (输出文件夹依据, v4: 存纯家族名)
+            # 玩家所在地历史 (v5: 游侠列传·行纪用): 只记位置变化点
+            loc = (c.get("alive_data") or {}).get("location") or {}
+            prov = loc.get("location") if isinstance(loc, dict) else loc
+            if isinstance(prov, int):
+                hist = cache.setdefault("player_locations", [])
+                if not hist or hist[-1].get("province") != prov:
+                    hist.append({"date": date_label, "province": prov})
+            # 玩家所属家族名 (姓名字显示用, v4: 存纯家族名)
             if rec.get("dynasty_house") is not None:
                 h = house_name_zh(melt, rec["dynasty_house"])
                 if h:
                     cache["house_name"] = h
+                # 玩家所属宗族 (v6: 文件夹按宗族划分, 新建家族不新开文件夹)
+                did = dynasty_id_of(melt, rec["dynasty_house"])
+                if did is not None:
+                    cache["dynasty_id"] = did
+                    dname = dynasty_name_zh(melt, did)
+                    if dname:
+                        cache["dynasty_name"] = dname
         dd = c.get("dead_data")
         if dd and rec["death"] is None:
             rec["death"] = {
@@ -752,6 +932,37 @@ def extract_snapshot(cache, melt, date_label):
                 rec["memories"].append(b)
                 seen.add(key)
     return cache
+
+
+# ---------------------------------------------------------------------------
+# 死角色记忆回溯 (v5: 死后记忆被清空 → 从死前最近一份存档恢复)
+# ---------------------------------------------------------------------------
+
+def recover_dead_memories_from(melt, cache, cid):
+    """从某档 melt 恢复角色 cid 的记忆 (死前最后一份存档)。
+    记忆对象存于该档 character_memory_manager.database, 角色 alive_data.memories
+    引用之。返回恢复条数。"""
+    rec = cache["characters"].get(str(cid))
+    if rec is None:
+        return 0
+    c = all_characters(melt).get(str(cid))
+    if c is None:
+        return 0
+    db = _db(melt)
+    seen = {(m.get("id"), m.get("creation_date")) for m in rec["memories"]}
+    added = 0
+    for mid in mem_ids_of(c):
+        e = db.get(str(mid))
+        if not e:
+            continue
+        b = memory_brief(mid, e)
+        key = (b["id"], b.get("creation_date"))
+        if key not in seen:
+            b["first_seen"] = melt.get("date") or "?"
+            rec["memories"].append(b)
+            seen.add(key)
+            added += 1
+    return added
 
 
 # ---------------------------------------------------------------------------

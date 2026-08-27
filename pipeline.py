@@ -11,9 +11,9 @@
 
 工作流:
   1. 检测新存档 (watch: mtime > 基准; scan: 同战役且日期新于缓存)
-  2. rakaly json 熔化 → data/melt_<日期>.json
+  2. rakaly json 熔化 → output/<家族>/data/melt_<日期>.json
   3. cache_lib.extract_snapshot → output/<家族>/data/player_<玩家id>.json
-     (每玩家一份, 跨年去重; 文件夹按家族名, 重名自动加数字 哈布斯堡2)
+     (每玩家一份, 跨年去重; 文件夹按宗族名, 重名自动加数字 哈布斯堡2)
   4. 死亡检测 → 自动生成终传 → output/<家族>/<姓名>_终传_<日期>.md + 刷新 index.html
 
 用法:
@@ -23,7 +23,7 @@
   python pipeline.py status              # 打印各玩家缓存状态
   python pipeline.py bio [玩家id]        # 手动生成传记 (在世传记或终传)
   python pipeline.py demo-death          # 模拟主角死亡, 演示「死后自动生成」链路
-  python pipeline.py rebuild-cache       # 从 data/melt_*.json 重建缓存 (迁移/修复)
+  python pipeline.py rebuild-cache       # 从各战役文件夹熔件重建缓存 (迁移/修复)
   python pipeline.py migrate             # 迁移 v4: 旧文件夹更名 + 缓存移入 output/<家族>/data/ + 重建
 """
 import json
@@ -95,18 +95,96 @@ def scan_saves(save_dir):
 
 
 def melt_path(cfg, date):
+    """(兼容旧布局) 根 data 目录下的日期熔件路径。"""
     return os.path.join(cfg.get("data_dir", ""), f"melt_{cl.date_filekey(date)}.json")
 
 
+def campaign_data_dir(cfg, folder):
+    """战役文件夹的 data 目录: output/<家族>/data/。"""
+    return os.path.join(cfg.get("output_dir", ""), folder, "data")
+
+
+def melt_file_in(cfg, folder, date, player_id=None):
+    """战役文件夹内该日期的熔件路径: 本玩家既有 _p 文件优先, 否则日期文件。"""
+    d = campaign_data_dir(cfg, folder)
+    key = cl.date_filekey(date)
+    if player_id is not None:
+        p = os.path.join(d, f"melt_{key}_p{player_id}.json")
+        if os.path.isfile(p):
+            return p
+    return os.path.join(d, f"melt_{key}.json")
+
+
+def melt_player_id(path):
+    """熔件所属玩家 id (读文件找玩家); 解析失败返回 None。"""
+    try:
+        return cl.find_player(cl.load_melt(path))
+    except Exception:
+        return None
+
+
+def temp_melt_path(cfg, date):
+    """熔化中间文件 (定玩家/战役文件夹前): 根 data 目录, 进程唯一。"""
+    return os.path.join(cfg.get("data_dir", ""),
+                        f".tmp_melt_{cl.date_filekey(date)}_{os.getpid()}.json")
+
+
+def _melt_save_into(cfg, folder, date, player_id, save_path):
+    """把存档熔化写入战役文件夹 (日期文件被他人占用时改用 _p 后缀)。
+    返回实际熔件路径。"""
+    d = campaign_data_dir(cfg, folder)
+    os.makedirs(d, exist_ok=True)
+    key = cl.date_filekey(date)
+    target = os.path.join(d, f"melt_{key}.json")
+    if os.path.isfile(target) and player_id is not None:
+        other = melt_player_id(target)
+        if other is not None and other != player_id:
+            target = os.path.join(d, f"melt_{key}_p{player_id}.json")
+    melt_save(cfg, save_path, target)
+    return target
+
+
+def _move_melt_into(cfg, folder, date, player_id, tmp_path):
+    """把临时熔件归入战役文件夹; 日期文件被他人占用时改用 _p 后缀;
+    本玩家同日期熔件已存在则复用 (丢弃临时)。返回实际熔件路径。"""
+    d = campaign_data_dir(cfg, folder)
+    os.makedirs(d, exist_ok=True)
+    key = cl.date_filekey(date)
+    target = os.path.join(d, f"melt_{key}.json")
+    if os.path.isfile(target):
+        other = melt_player_id(target)
+        if other is not None and other != player_id:
+            target = os.path.join(d, f"melt_{key}_p{player_id}.json")
+    if os.path.isfile(target):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+    else:
+        os.replace(tmp_path, target)
+    return target
+
+
+def melt_path_for_cache(cfg, cache, date):
+    """缓存战役文件夹内的熔件路径 (优先战役文件夹, 兼容旧根目录布局)。"""
+    folder = cache.get("output_folder")
+    if folder:
+        p = melt_file_in(cfg, folder, date, cache.get("player_id"))
+        if os.path.isfile(p):
+            return p
+    return melt_path(cfg, date)
+
+
 def load_latest_melt(cfg, cache):
-    """取缓存最后一份存档的 melt (dict); 缺失返回 None。"""
+    """取缓存最后一份存档的 melt (dict); 缺失返回 None。
+    优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。"""
     last = cache.get("last_date")
     if not last:
         return None
-    p = melt_path(cfg, last)
-    if not os.path.isfile(p):
-        return None
-    return cl.load_melt(p)
+    p = melt_path_for_cache(cfg, cache, last)
+    if os.path.isfile(p):
+        return cl.load_melt(p)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -151,13 +229,20 @@ def cache_path_for(cfg, player_id):
     return find_cache_path(cfg, player_id)
 
 
+def folder_display(name):
+    """文件夹显示名: 单字中文姓加「氏」(边 → 边氏), 其余原样 (冯·大马士革)。"""
+    if len(name) == 1 and "\u4e00" <= name <= "\u9fff":
+        return name + "氏"
+    return name
+
+
 def session_folder_name(cache):
-    """会话文件夹命名基准: 家族名 → 人物名。"""
-    name = cache.get("house_name") or ""
+    """会话文件夹命名基准: 宗族名(氏约定) → 家族名 → 人物名。"""
+    name = cache.get("dynasty_name") or cache.get("house_name") or ""
     if not name:
         pn = cache.get("player_name") or f"玩家{cache.get('player_id')}"
         name = pn
-    return sanitize_folder_name(name)
+    return sanitize_folder_name(folder_display(name))
 
 
 def sanitize_folder_name(name):
@@ -280,11 +365,15 @@ def _catchup(cfg, cache, continue_mode=False):
         if my_name and player_char_name(s["player"]) != my_name:
             llm.log(f"  [跳过] {s['date']} {s['player']} 非本战役人物, 不读")
             continue
-        mp = melt_path(cfg, s["date"])
-        if not os.path.isfile(mp):
+        # 熔件入战役文件夹 output/<家族>/data/ (同一战役的继位玩家共用)
+        folder = resolve_output_folder(cfg, cache, continue_mode)
+        mp = melt_file_in(cfg, folder, s["date"], pid)
+        if os.path.isfile(mp) and melt_player_id(mp) not in (None, pid):
+            mp = None  # 日期文件属他人战役, 需重新熔化
+        if not mp or not os.path.isfile(mp):
             llm.log(f"  熔化 {os.path.basename(s['path'])} ({s['magic']}) ...")
             try:
-                melt_save(cfg, s["path"], mp)
+                mp = _melt_save_into(cfg, folder, s["date"], pid, s["path"])
             except Exception as e:
                 llm.log(f"  熔化失败: {e}")
                 continue
@@ -300,6 +389,7 @@ def _catchup(cfg, cache, continue_mode=False):
             llm.log(f"  [继位] {s['date']}: 同战役玩家变为 {player_id}, 新建缓存")
             cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
         if cl.extract_snapshot(cache, melt, s["date"]):
+            _recover_dead_memories(cfg, cache)
             save_session_cache(cfg, cache, continue_mode)
             processed += 1
             llm.log(f"  并入 {s['date']}: 相关人物 {len(cache['characters'])}")
@@ -361,34 +451,80 @@ def generate_bio(cfg, cache, force=False):
 # 单档处理与死亡跨查
 # ---------------------------------------------------------------------------
 
-def _process_save(cfg, save, cache=None, log_prefix="", continue_mode=False):
-    """熔化并并入一份存档。cache 缺省按存档玩家自动加载/新建。
+def _process_save(cfg, save, continue_mode=False):
+    """熔化并并入一份存档 (watch 用): 熔到临时 → 定玩家/战役文件夹 → 归位。
     返回处理的玩家 id 或 None。"""
     date = save["date"]
-    mp = melt_path(cfg, date)
-    if not os.path.isfile(mp):
-        llm.log(f"  {log_prefix}熔化 {os.path.basename(save['path'])} ({save['magic']}) ...")
+    tmp = temp_melt_path(cfg, date)
+    llm.log(f"  熔化 {os.path.basename(save['path'])} ({save['magic']}) ...")
+    try:
+        melt_save(cfg, save["path"], tmp)
+    except Exception as e:
+        llm.log(f"  熔化失败: {e}")
         try:
-            melt_save(cfg, save["path"], mp)
-        except Exception as e:
-            llm.log(f"  熔化失败: {e}")
-            return None
-    melt = cl.load_melt(mp)
+            os.remove(tmp)
+        except OSError:
+            pass
+        return None
+    melt = cl.load_melt(tmp)
     player_id = cl.find_player(melt)
     if player_id is None:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
         llm.log(f"  {date}: 存档中无玩家角色, 跳过")
         return None
-    if cache is None:
-        cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
+    cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
     ok = cl.extract_snapshot(cache, melt, date)
     if not ok:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
         llm.log(f"  {date}: 玩家不一致, 跳过")
         return None
+    folder = ensure_output_folder(cfg, cache, continue_mode)
+    _move_melt_into(cfg, folder, date, player_id, tmp)
+    _recover_dead_memories(cfg, cache)
     save_session_cache(cfg, cache, continue_mode)
     llm.log(f"  并入 {date}: 玩家 {cache.get('player_name')} (id={cache.get('player_id')}), "
             f"相关人物 {len(cache['characters'])}")
     _cross_check_deaths(cfg, melt, player_id)
     return player_id
+
+
+def _recover_dead_memories(cfg, cache):
+    """v5: 为缓存中「已死且记忆为空」的角色, 从死前最近一份存档恢复记忆。
+    角色死亡时游戏清空其 memories; 死前最后一份自动存档中记忆完好。
+    返回恢复的角色数。"""
+    data_dir = cfg.get("data_dir", "")
+    sources = cache.get("sources") or []
+    recovered = 0
+    for cid, rec in (cache.get("characters") or {}).items():
+        d = rec.get("death") or {}
+        ddate = d.get("date")
+        if not ddate or rec.get("memories"):
+            continue
+        # 死前最近档: sources 中日期 < 死亡日期的最大值
+        before = [s for s in sources if cl.date_key(s) < cl.date_key(ddate)]
+        if not before:
+            continue
+        mp = melt_path_for_cache(cfg, cache, before[-1])
+        if not os.path.isfile(mp):
+            continue
+        try:
+            melt = cl.load_melt(mp)
+            n = cl.recover_dead_memories_from(melt, cache, int(cid))
+            if n:
+                llm.log(f"  [回溯] 角色 {cid} ({rec.get('name_zh') or rec.get('name_full') or ''}) "
+                        f"殁于{ddate}, 从{before[-1]}档恢复 {n} 条记忆")
+                recovered += 1
+        except Exception as e:
+            llm.log(f"  [回溯失败] 角色 {cid}: {e}")
+    if recovered:
+        llm.log(f"死角色记忆回溯: {recovered} 个角色补全记忆")
+    return recovered
 
 
 def _cross_check_deaths(cfg, melt, current_player):
@@ -560,14 +696,39 @@ def step_bio(cfg, player_id=None):
     return out_path
 
 
-def step_rebuild_cache(cfg):
-    """从 data/melt_*.json 重建缓存 (每玩家一份, 输出至 output/<家族>/data/)。"""
+def _iter_melts(cfg):
+    """遍历全部熔件: (所属战役文件夹或 None, 绝对路径, 日期)。
+    优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。"""
+    pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json$")
+    out = []
+    out_dir = cfg.get("output_dir", "")
+    if os.path.isdir(out_dir):
+        for folder in sorted(os.listdir(out_dir)):
+            d = os.path.join(out_dir, folder, "data")
+            if not os.path.isdir(d):
+                continue
+            for fn in os.listdir(d):
+                m = pat.match(fn)
+                if m:
+                    out.append((folder, os.path.join(d, fn),
+                                ".".join(str(int(x)) for x in m.group(1).split("_"))))
     data_dir = cfg.get("data_dir", "")
-    melts = sorted(
-        (f for f in os.listdir(data_dir) if re.match(r"melt_\d+_\d{2}_\d{2}\.json$", f)),
-        key=lambda f: cl.date_key(f[5:-5].replace("_", ".")))
+    if os.path.isdir(data_dir):
+        for fn in os.listdir(data_dir):
+            m = pat.match(fn)
+            if m:
+                out.append((None, os.path.join(data_dir, fn),
+                            ".".join(str(int(x)) for x in m.group(1).split("_"))))
+    out.sort(key=lambda x: cl.date_key(x[2]))
+    return out
+
+
+def step_rebuild_cache(cfg):
+    """从各战役文件夹熔件重建缓存 (每玩家一份, 输出至 output/<家族>/data/)。
+    熔件现存放于战役文件夹; 兼容旧根目录布局。"""
+    melts = _iter_melts(cfg)
     if not melts:
-        llm.log(f"{data_dir} 下无 melt 文件")
+        llm.log("未找到 melt 文件 (战役文件夹 data/ 或根 data/)")
         return
     # 记录既有会话文件夹绑定 (player_id → (folder, playthrough))
     old_bind = {}
@@ -575,9 +736,8 @@ def step_rebuild_cache(cfg):
         old_bind[pid] = (cache.get("output_folder"), cache.get("playthrough_id"))
     llm.log(f"重建缓存: {len(melts)} 份 melt")
     built = {}  # player_id → 本次重建中累积的缓存
-    for fn in melts:
-        date = ".".join(str(int(x)) for x in fn[5:-5].split("_"))
-        melt = cl.load_melt(os.path.join(data_dir, fn))
+    for folder, path, date in melts:
+        melt = cl.load_melt(path)
         player_id = cl.find_player(melt)
         if player_id is None:
             llm.log(f"  {date}: 无玩家, 跳过")
@@ -595,19 +755,20 @@ def step_rebuild_cache(cfg):
                 cache["playthrough_id"] = prev["playthrough_id"]
             built[player_id] = cache
         cl.extract_snapshot(cache, melt, date)
-        # 会话文件夹: 既有绑定 → 同战役绑定 → 自动解析
-        folder, pt_old = old_bind.get(player_id, (None, None))
-        if not folder and pt_old:
-            for _pid2, (f2, pt2) in old_bind.items():
-                if f2 and pt2 == pt_old:
-                    folder = f2
-                    break
+        # 会话文件夹: 熔件所在战役文件夹为准; 旧根目录熔件走既有绑定 → 同战役 → 自动解析
         if not folder:
-            folder = ensure_output_folder(cfg, cache, continue_mode=True)
+            f_old, pt_old = old_bind.get(player_id, (None, None))
+            if not f_old and pt_old:
+                for _pid2, (f2, pt2) in old_bind.items():
+                    if f2 and pt2 == pt_old:
+                        f_old = f2
+                        break
+            folder = f_old or ensure_output_folder(cfg, cache, continue_mode=True)
         cache["output_folder"] = folder
-        path = session_data_path(cfg, cache, folder)
-        cl.save_cache(cache, path)
-        llm.log(f"  {date}: 玩家 {player_id} → {path} "
+        path_out = session_data_path(cfg, cache, folder)
+        _recover_dead_memories(cfg, cache)
+        cl.save_cache(cache, path_out)
+        llm.log(f"  {date}: 玩家 {player_id} → {path_out} "
                 f"(相关人物 {len(cache['characters'])})")
 
 

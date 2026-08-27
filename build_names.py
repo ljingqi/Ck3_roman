@@ -7,7 +7,7 @@
       供姓名合并: 边 + 诚 → 边诚)。
 
 用法:
-  python build_names.py [melt路径]   # 缺省取 data/ 下日期最新的一份 melt
+  python build_names.py [melt路径]   # 缺省取日期最新的一份 melt (战役文件夹优先)
 """
 import json
 import os
@@ -23,12 +23,27 @@ OUT = os.path.join(HERE, "data", "names.json")
 
 
 def _latest_melt():
-    melts = [f for f in os.listdir(DATA)
-             if re.match(r"melt_\d+_\d{2}_\d{2}\.json$", f)]
-    if not melts:
-        return None
-    melts.sort(key=lambda f: cl.date_key(f[5:-5].replace("_", ".")))
-    return os.path.join(DATA, melts[-1])
+    """取日期最新的一份熔件: 战役文件夹 output/<家族>/data/ 优先, 兼容旧根目录。"""
+    pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json$")
+    best, best_path = None, None
+    dirs = []
+    out = os.path.join(HERE, "output")
+    if os.path.isdir(out):
+        for folder in os.listdir(out):
+            d = os.path.join(out, folder, "data")
+            if os.path.isdir(d):
+                dirs.append(d)
+    if os.path.isdir(DATA):
+        dirs.append(DATA)
+    for d in dirs:
+        for fn in os.listdir(d):
+            m = pat.match(fn)
+            if not m:
+                continue
+            date = ".".join(str(int(x)) for x in m.group(1).split("_"))
+            if best is None or cl.date_key(date) > cl.date_key(best):
+                best, best_path = date, os.path.join(d, fn)
+    return best_path
 
 
 def main():
