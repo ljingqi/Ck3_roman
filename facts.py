@@ -152,6 +152,15 @@ PARTICIPANT_SLOTS = {
 # 记忆类型 → 取 vars 中的 landed_title (头衔 id)
 TITLE_VAR_TYPES = {"lost_title_memory", "ascended_throne_memory"}
 
+# 朝局类记忆类型 (群英录/朝局风云录用, 与 biography.POLITICAL_TYPES 同步)
+POLITICAL_TYPES_KEYS = {
+    "ascended_throne_memory", "lost_title_memory", "imprisoned",
+    "released_from_prison_memory", "became_rivals", "became_grudge",
+    "became_nemesis", "stopped_being_rivals", "offensive_war",
+    "defensive_war", "war_won", "war_lost", "joined_allys_war",
+    "battle_won_memory", "battle_lost_memory",
+}
+
 
 # ---------------------------------------------------------------------------
 # 小工具
@@ -209,12 +218,19 @@ class Facts:
             if k:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
+        # v5: 自定义角色 (ruler_designer_characters) — 出身自定, 无谱系
+        self._custom_starts = set()
+        for x in (melt.get("ruler_designer_characters") or []):
+            try:
+                self._custom_starts.add(int(x))
+            except Exception:
+                pass
 
     # ---- 名字 ----
     def name(self, cid):
-        """角色 id → 完整中文名 (姓+名); 未知返回 ''。"""
-        return cl.resolve_full_name(self.cache, cid, names_path=self.names_path,
-                                    melt=self.melt)
+        """角色 id → 显示名 (文化名序: 东方姓在前, 西方名·姓); 未知返回 ''。"""
+        return cl.name_display(self.cache, cid, melt=self.melt,
+                               names_path=self.names_path)
 
     def name_or(self, cid, fallback="一位人物"):
         n = self.name(cid)
@@ -359,6 +375,93 @@ class Facts:
                 seen.add(tname)
                 out.append(f"{self.date(h.get('date'))}：任{tname}之主")
         return out
+
+    # ---- v5: 文化名序 / 文风 ----
+
+    def name_order(self, cid):
+        """角色文化名序约定 ('' = 西方; DYNASTY_ALWAYS_FIRST/JAPANESE = 姓在前)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        return cl.name_order_of(self.melt, rec.get("culture"))
+
+    def is_eastern_culture(self, cid):
+        """东方文化 (姓在前)? 文化未知按 False (保守回退西方/未知)。"""
+        return self.name_order(cid) in cl.EASTERN_NAME_ORDERS
+
+    def is_custom_start(self, cid):
+        """是否为自定义角色开局 (ruler_designer_characters)。"""
+        return int(cid) in self._custom_starts
+
+    def is_administrative(self, cid):
+        """行政制角色? 依据缓存 landed.government。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        return (rec.get("landed") or {}).get("government") == "administrative_government"
+
+    def is_landless(self, cid):
+        """无地冒险者?"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        return (rec.get("landed") or {}).get("government") == "landless_adventurer_government"
+
+    def emperor_of(self, cid):
+        """角色是否为东方皇帝/中华皇帝之女·姐妹判定辅助:
+        返回 (is_emperor, emperor_title)。is_emperor: 现任 h_/e_ 帝国级持有者。"""
+        for h in reversed(self.cache.get("realm_history") or []):
+            for tid, holder in (h.get("holders") or {}).items():
+                if holder != cid:
+                    continue
+                key = (self._lt.get(str(tid)) or {}).get("key") or ""
+                if key.startswith(("h_", "e_")):
+                    return True, self.title(tid)
+        return False, ""
+
+    def east_empire_keys(self):
+        """东方国家帝国 key 集: 中华 (h_china) + 日本/高丽/越南等东亚诸帝国。"""
+        return {"h_china", "e_japan", "e_goryeo", "e_viet", "e_great_liao",
+                "e_jin", "e_great_yuan", "e_mongol_empire", "e_kara_khitai",
+                "e_zhongyuan", "e_yongliang", "e_jingyang", "e_liangyi",
+                "e_lingnan", "e_andong", "e_amur", "e_goryeo"}
+
+    def de_jure_top_key(self, county_tid):
+        """伯爵领头衔 → 沿 de_jure_liege 上溯至顶层帝国, 返回顶层 title key。"""
+        cur = str(county_tid)
+        seen = set()
+        top_key = ""
+        while cur and cur not in seen:
+            seen.add(cur)
+            t = self._lt.get(cur) or {}
+            if not t:
+                break
+            k = t.get("key") or ""
+            if k:
+                top_key = k
+            dj = t.get("de_jure_liege")
+            cur = str(dj) if dj is not None else None
+        return top_key
+
+    def player_top_empire_key(self):
+        """玩家所在地的法理顶层帝国 key:
+        取玩家位置 (location→伯爵领) 或营地 capital → de_jure 上溯。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return ""
+        prov = self.character_location_province(pid)
+        county = self.county_at_province(prov)
+        if county is None:
+            rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+            camp = (rec.get("landed") or {}).get("domain") or [None]
+            if camp[0] is not None:
+                t = self._lt.get(str(camp[0])) or {}
+                county = t.get("capital")
+        if county is None:
+            return ""
+        return self.de_jure_top_key(county)
+
+    def bio_style(self):
+        """传记文风: 东方 (玩家所在地法理帝国属东方) → 'east' 中国式纪传体;
+        否则 → 'west' 西式 (普鲁塔克式)。"""
+        top = self.player_top_empire_key()
+        if top in self.east_empire_keys():
+            return "east"
+        return "west"
 
     # ---- 日期 ----
     def date(self, d):
@@ -624,6 +727,15 @@ def _protagonist(f):
     p["father"] = "、".join(f.name_or(x) for x in (fam.get("father") or []) if f.name(x))
     p["mother"] = "、".join(f.name_or(x) for x in (fam.get("mother") or []) if f.name(x))
     p["siblings"] = "、".join(f.name_or(x) for x in (fam.get("siblings") or []) if f.name(x))
+    # v5: 自定义角色 (无谱系) — 家世通用文本覆盖
+    if f.is_custom_start(pid):
+        p["custom_start"] = True
+    # v5: 真正父亲 (私生子场景; 与法理父不同才渲染)
+    rf = (fam.get("real_father") or [None])[0]
+    if rf is not None:
+        rfname = f.name_or(rf)
+        if rfname:
+            p["real_father"] = rfname
     # 主角历任高位头衔
     ht = f.held_titles(pid)
     if ht:
@@ -656,6 +768,14 @@ def _character_profiles(f):
         prof["father"] = "、".join(f.name_or(x) for x in (fam.get("father") or []) if f.name(x))
         prof["mother"] = "、".join(f.name_or(x) for x in (fam.get("mother") or []) if f.name(x))
         prof["siblings"] = "、".join(f.name_or(x) for x in (fam.get("siblings") or []) if f.name(x))
+        # v5: 自定义角色 + 真正父亲 (私生子)
+        if f.is_custom_start(cid):
+            prof["custom_start"] = True
+        rf = (fam.get("real_father") or [None])[0]
+        if rf is not None:
+            rfname = f.name_or(rf)
+            if rfname:
+                prof["real_father"] = rfname
         ht = f.held_titles(cid)
         if ht:
             prof["titles_held"] = "；".join(ht)
@@ -714,6 +834,188 @@ def _realm_facts(f):
     return out
 
 
+def _killed_by_player(f):
+    """主角所杀之人 (v5): 三源合一, 去重。
+    源: 1) 主角 dead_data.kills  2) 主角 successful_murder 记忆 victim
+        3) 全缓存 death.killer == 主角。
+    返回 [(cid, 档案dict, 死句, 相关事件)] 按死亡日期排序。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return []
+    killed = set()
+    # 1) dead_data.kills (死后汇总; 若在缓存 player_death 或 melt 中)
+    dd = cache.get("player_death") or {}
+    for k in dd.get("kills") or []:
+        killed.add(int(k))
+    # 2) 主角 successful_murder 记忆 victim
+    prec = (cache.get("characters") or {}).get(str(pid)) or {}
+    for mem in prec.get("memories") or []:
+        if mem.get("type") == "successful_murder":
+            v = (mem.get("participants") or {}).get("victim")
+            if isinstance(v, int):
+                killed.add(v)
+    # 3) 全缓存死亡记录 killer == 主角
+    for cid, rec in (cache.get("characters") or {}).items():
+        if int(cid) == pid:
+            continue
+        d = rec.get("death") or {}
+        if d.get("killer") == pid:
+            killed.add(int(cid))
+    # 每个被杀者: 档案 + 死句 + 恢复的记忆事件 (由缓存提供, 死前档回溯已并入)
+    out = []
+    for cid in killed:
+        prof = (f.cache.get("characters") or {}).get(str(cid)) or {}
+        entry = {
+            "id": cid,
+            "name": f.name_or(cid),
+            "birth": f.date(prof.get("birth")),
+            "death": _death_sentence(f, cid) or "（死因不详）",
+            "death_date": (prof.get("death") or {}).get("date") or "9999.9.9",
+            "house": house_display(prof.get("house_name")),
+            "culture": f.culture(cid),
+            "faith": f.faith(cid),
+            "traits": "、".join(f.traits(cid)),
+            "events": [],
+            "role": "",   # 与主角的关系 (子/友/敌...) 由 biography 侧根据记忆推断
+        }
+        for mem in prof.get("memories") or []:
+            s = _mem_sentence(f, cid, mem)
+            if s:
+                entry["events"].append(f"{f.date(mem.get('creation_date'))}，{s}")
+        entry["events"].sort()
+        out.append(entry)
+    out.sort(key=lambda e: cl.date_key(e["death_date"]))
+    return out
+
+
+def _imperial_daughters_sisters(f, spouses):
+    """妻妾中「XX公主头衔 或 中华皇帝之女/姐妹」者。
+    判定: 1) 该妻妾曾任/现任 h_/e_ 帝国级头衔 (公主/女王头衔);
+         2) 其父或兄弟 (family.father/siblings) 中有人为 h_china 或中华系帝国持有者。"""
+    pid = f.cache.get("player_id")
+    out = []
+    # 中华皇帝集: realm_history 中 h_china (及中华法理域帝国) 历任持有者
+    china_emperors = set()
+    for h in f.cache.get("realm_history") or []:
+        for tid, holder in (h.get("holders") or {}).items():
+            if holder is None:
+                continue
+            key = (f._lt.get(str(tid)) or {}).get("key") or ""
+            if key == "h_china" or key in ("e_zhongyuan", "e_yongliang",
+                                           "e_jingyang", "e_liangyi", "e_lingnan"):
+                china_emperors.add(int(holder))
+    for sid in spouses:
+        rec = (f.cache.get("characters") or {}).get(str(sid)) or {}
+        name = f.name_or(sid)
+        if not name:
+            continue
+        reasons = []
+        # 1) 自身有公主/女王头衔 (帝国级, 女眷)
+        is_emp, etitle = f.emperor_of(sid)
+        if is_emp:
+            reasons.append(f"自任{etitle}")
+        # 2) 父/兄弟为中华皇帝
+        fam = rec.get("family") or {}
+        rel = []
+        for fid in (fam.get("father") or []):
+            if int(fid) in china_emperors:
+                rel.append(f"父{f.name_or(fid)}")
+        for bid in (fam.get("siblings") or []):
+            if int(bid) in china_emperors:
+                rel.append(f"兄{f.name_or(bid)}")
+        if rel:
+            reasons.extend(rel)
+        if reasons:
+            out.append({"id": sid, "name": name, "reasons": reasons})
+    return out
+
+
+def _wandering_trail(f):
+    """游侠行纪 (v5): 玩家所在地历史 (cache.player_locations) → 中文轨迹。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return []
+    out = []
+    hist = cache.get("player_locations") or []
+    for i, loc in enumerate(hist):
+        prov = loc.get("province")
+        county = f.county_at_province(prov)
+        if county is None:
+            continue
+        cname = f.title(county)
+        holder = ""
+        chain = f.liege_chain(county) if county else []
+        if chain:
+            h = chain[0][1]
+            if h is not None:
+                holder = f.name_or(h, "")
+        bits = [f"{f.date(loc.get('date'))}驻{cname}"]
+        if holder:
+            bits.append(f"{holder}执掌")
+        top = chain[-1] if chain else None
+        if top and top[1] is not None:
+            bits.append(f"最高领主{f.name_or(top[1])}")
+        out.append("，".join(bits) + "。")
+    return out
+
+
+def _court_luminaries(f):
+    """群英录 (v5): 行政制玩家时, 朝中要员 (有政治类记忆或历任高位头衔者)。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return []
+    names = []
+    seen = set()
+    for cid, rec in (cache.get("characters") or {}).items():
+        if int(cid) == pid:
+            continue
+        prof = (f.cache.get("characters") or {}).get(cid) or {}
+        if not prof.get("name"):
+            continue
+        # 有政治类记忆 或 历任高位头衔
+        has_pol = any(m["type"] in POLITICAL_TYPES_KEYS
+                      for m in rec.get("memories") or [])
+        if has_pol or prof.get("titles_held"):
+            n = prof.get("house") or ""
+            nm = prof["name"]
+            full = f"{n}{nm}" if n and nm and not nm.startswith(n) else nm
+            if full not in seen:
+                seen.add(full)
+                names.append(full)
+    return names
+
+
+def _genealogy(f):
+    """世系 (v5 终传附录): 主角 + 父母 + 妻妾 + 子女 + 兄弟姊妹 谱系行。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return []
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    fam = rec.get("family") or {}
+    lines = []
+    pname = f.name_or(pid)
+    lines.append(f"一世 {pname}（{f.date(rec.get('birth'))}生）")
+    for key, label in (("father", "父"), ("mother", "母"),
+                       ("primary_spouse", "正妻"), ("spouse", "侧室"),
+                       ("child", "子女"), ("siblings", "兄弟姊妹"),
+                       ("former_spouses", "前妻")):
+        ids = fam.get(key) or []
+        if not ids:
+            continue
+        bits = []
+        for x in ids:
+            n = f.name_or(x)
+            if n:
+                bits.append(n)
+        if bits:
+            lines.append(f"　{label}：{'、'.join(bits)}")
+    return lines
+
+
 def build_facts(cache, melt, names_path=None):
     """渲染干净事实集。melt 为 dict (已加载)。"""
     f = Facts(cache, melt, names_path)
@@ -733,7 +1035,24 @@ def build_facts(cache, melt, names_path=None):
         "realm": _realm_facts(f),
         "player_death": cache.get("player_death"),
         "last_date": cache.get("last_date"),
+        # v5 新增
+        "bio_style": f.bio_style(),
+        "killed": _killed_by_player(f),
+        "wandering": _wandering_trail(f),
+        "luminaries": _court_luminaries(f),
+        "genealogy": _genealogy(f),
     }
+    # 妻族传 (仅限公主头衔/中华皇帝之女·姐妹)
+    pid = cache.get("player_id")
+    if pid is not None:
+        rec = (cache.get("characters") or {}).get(str(pid)) or {}
+        fam = rec.get("family") or {}
+        spouse_ids = list(dict.fromkeys(
+            (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])
+            + (fam.get("former_spouses") or [])))
+        facts["imperial_spouses"] = _imperial_daughters_sisters(f, spouse_ids)
+    else:
+        facts["imperial_spouses"] = []
     return facts
 
 

@@ -6,7 +6,7 @@
   "save_dir": "C:/Users/<用户名>/Documents/Paradox Interactive/Crusader Kings III/save games",
   "ck3_game_dir": "<CK3游戏根目录, 含 game/localization 与 game/common; 留空自动发现>",
   "rakaly_path": "<项目目录>/tools/rakaly.exe",
-  "data_dir": "<项目目录>/data",
+  "data_dir": "<项目目录>/data (仅全局表: names/localization/province; 熔化存档位于 output/<宗族>/data/)",
   "cache_dir": "<项目目录>/cache (仅迁移用, v4 起缓存位于 output/<家族>/data/)>",
   "output_dir": "<项目目录>/output",
   "log_dir": "<项目目录>/logs",
