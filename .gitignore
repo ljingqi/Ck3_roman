@@ -1,0 +1,12 @@
+# 隐私与密钥
+config.json
+
+# 生成物 (可再生成)
+data/melt_*.json
+cache/
+logs/
+output/
+
+# Python
+__pycache__/
+*.pyc
