@@ -205,11 +205,15 @@ TEMPLATE = """<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{min-height:100%}
 body{font-family:"Songti SC","Noto Serif CJK SC","Source Han Serif SC","SimSun",serif;background:#e9e0cb;color:var(--ink)}
-#toolbar{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:10px 18px;background:var(--bar);color:var(--bar-ink);box-shadow:0 2px 10px rgba(30,22,8,.35)}
+#toolbar{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:10px 14px;padding:10px 18px;background:var(--bar);color:var(--bar-ink);box-shadow:0 2px 10px rgba(30,22,8,.35)}
+#toolbar .left{display:flex;flex-direction:column;gap:8px;min-width:0}
 #toolbar .session{font-weight:700;letter-spacing:2px;font-size:17px}
 #tabs{display:flex;flex-wrap:wrap;gap:6px}
-#tabs button{font:inherit;padding:5px 16px;border:1px solid #8f7d55;background:#3a3121;color:var(--bar-ink);border-radius:5px;cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tabs button{font:inherit;padding:5px 14px;border:1px solid #8f7d55;background:#3a3121;color:var(--bar-ink);border-radius:5px;cursor:pointer;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #tabs button.active{background:var(--gold);border-color:var(--gold);color:#211a0c;font-weight:700}
+#char-box{display:flex;align-items:center;gap:8px;padding:4px 0}
+#char-box label{font-size:14px;color:#cbbf9f}
+#char-sel{font:inherit;font-size:14px;padding:5px 8px;border:1px solid #8f7d55;border-radius:5px;background:#3a3121;color:var(--bar-ink);cursor:pointer;max-width:200px}
 #stage{max-width:880px;margin:28px auto 8px;padding:0 14px}
 .paper{background:var(--paper);border:1px solid var(--paper-edge);box-shadow:0 6px 22px rgba(60,45,20,.18);padding:38px 46px 46px;border-radius:2px}
 #meta-line{max-width:880px;margin:10px auto 60px;padding:0 14px;text-align:center;color:#6f6247;font-size:13px}
@@ -233,40 +237,93 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
 </head>
 <body>
 <div id="toolbar">
-  <span class="session">__FOLDER__ · 家传阅读页</span>
-  <div id="tabs"></div>
+  <div class="left">
+    <span class="session">__FOLDER__ · 家传阅读页</span>
+    <div id="tabs"></div>
+  </div>
+  <div id="char-box">
+    <label for="char-sel">角色</label>
+    <select id="char-sel"></select>
+  </div>
 </div>
 <div id="stage"></div>
 <div id="meta-line"></div>
 <script>
-const ARTICLES = __ARTICLES__;
-let cur = 0;
-function show(i){
-  cur = i;
-  document.querySelectorAll('#tabs button').forEach((b,k)=>b.classList.toggle('active', k===i));
-  const a = ARTICLES[i];
+const DATA = __DATA__;
+let ci = 0, ai = 0;
+function show(nci, nai){
+  ci = nci; ai = nai;
+  const ch = DATA[ci];
   const stage = document.getElementById('stage');
-  if(!a){ stage.innerHTML = '<div class="empty">（无传记）</div>'; return; }
-  stage.innerHTML = '<div class="paper">' + a.html + '</div>';
   const meta = document.getElementById('meta-line');
-  meta.textContent = a.label + (a.meta ? ' ｜ ' + a.meta : '');
+  if(!ch){ stage.innerHTML = '<div class="empty">（无传记）</div>'; meta.textContent = ''; return; }
+  const tabs = document.getElementById('tabs');
+  tabs.innerHTML = '';
+  ch.items.forEach((it, i) => {
+    const b = document.createElement('button');
+    b.textContent = it.label;
+    b.className = i === ai ? 'active' : '';
+    b.onclick = () => show(ci, i);
+    tabs.appendChild(b);
+  });
+  const a = ch.items[ai];
+  stage.innerHTML = a ? '<div class="paper">' + a.html + '</div>' : '<div class="empty">（无传记）</div>';
+  meta.textContent = a ? ch.name + ' ｜ ' + (a.meta || '') : ch.name;
 }
-const tabs = document.getElementById('tabs');
-ARTICLES.forEach((a,i)=>{
-  const b = document.createElement('button');
-  b.textContent = a.label;
-  b.onclick = ()=>show(i);
-  tabs.appendChild(b);
+const sel = document.getElementById('char-sel');
+DATA.forEach((ch, i) => {
+  const o = document.createElement('option');
+  o.value = i; o.textContent = ch.name;
+  sel.appendChild(o);
 });
-show(0);
+sel.onchange = () => show(parseInt(sel.value, 10), 0);
+show(0, 0);
 </script>
 </body>
 </html>
 """
 
 
-def _article_label(fn, text):
-    """从文件第一个 # 标题取标签; 附上 传记/终传 与日期; 失败用文件名。"""
+def _parse_header(text):
+    """从 md 头部注释解析 人物/出生/篇目/十年 (v8)。"""
+    out = {}
+    for ln in (text or "").split("\n"):
+        if not ln.strip().startswith("<!--"):
+            continue
+        m = re.search(r"人物:\s*([^|]+)", ln)
+        p = re.search(r"篇目:\s*([^|]+)", ln)
+        d = re.search(r"十年:\s*(\d+)", ln)
+        if m:
+            out["person"] = m.group(1).strip()
+        if p:
+            out["piece"] = p.group(1).strip()
+        if d:
+            out["decade"] = int(d.group(1))
+        break
+    return out
+
+
+def _person_of(fn, folder, text):
+    """角色名: 优先头部注释 人物; 回退文件名去 家族前缀 (菲利普崔佛 → 崔佛)。"""
+    h = _parse_header(text)
+    if h.get("person"):
+        return h["person"]
+    base = fn
+    for sep in ("_终传_", "_传记_"):
+        if sep in fn:
+            base = fn.split(sep, 1)[0]
+            break
+    if folder and base.startswith(folder):
+        base = base[len(folder):]
+    return base or fn
+
+
+def _article_label(fn, text, folder=None):
+    """标签: 十年传记/终传 语义化 (v8)。返回 (label, meta)。
+    - 十年传记: 「第N个十年传记」+「至<日期>」
+    - 终传: 「终传」+「殁于<日期>」
+    - 普通传记: 「传记」+「至<日期>」
+    - 旧文件 (无头部注释): 回退文件名/首行标题。"""
     title = os.path.splitext(fn)[0]
     for ln in (text or "").split("\n"):
         s = ln.strip()
@@ -280,16 +337,22 @@ def _article_label(fn, text):
             break
         break  # 首个非注释非空行不是标题 → 用文件名
     m = re.search(r"_(终传|传记)_(\d+_\d{2}_\d{2})", fn)
-    if m:
-        d = m.group(2).replace("_", ".")
-        if m.group(1) == "终传":
-            return f"{title}（终传·殁于{d}）"
-        return f"{title}（至{d}）"
-    return title
+    date = m.group(2).replace("_", ".") if m else ""
+    h = _parse_header(text)
+    kind = m.group(1) if m else ""
+    if h.get("decade") is not None:
+        label = f"第{h['decade']}个十年传记"
+        return label, f"至{date}" if date else ""
+    if h.get("piece") == "终传" or kind == "终传":
+        return f"{title}（终传）", f"殁于{date}" if date else ""
+    if kind == "传记":
+        return f"{title}（传记）", f"至{date}" if date else ""
+    return title, ""
 
 
 def rebuild_folder(output_dir, folder):
-    """为单个家族文件夹生成/更新 index.html; 无任何 md 时返回 None。"""
+    """为单个家族文件夹生成/更新 index.html; 无任何 md 时返回 None。
+    v8: 按角色分组 — 右上角色菜单, 左上该角色的十年传记/终传列表。"""
     base = os.path.join(output_dir, folder)
     if not os.path.isdir(base):
         return None
@@ -305,18 +368,29 @@ def rebuild_folder(output_dir, folder):
                 text = f.read()
         except OSError:
             continue
+        label, meta = _article_label(fn, text, folder)
         entries.append({
-            "label": _article_label(fn, text),
+            "person": _person_of(fn, folder, text),
+            "label": label,
+            "meta": meta,
             "html": md_to_html(text),
-            "meta": "",
         })
     if not entries:
         return None
+    # 按角色分组 (保持首次出现顺序)
+    groups = []
+    by_name = {}
+    for e in entries:
+        if e["person"] not in by_name:
+            by_name[e["person"]] = len(groups)
+            groups.append({"name": e["person"], "items": []})
+        groups[by_name[e["person"]]]["items"].append(
+            {"label": e["label"], "meta": e["meta"], "html": e["html"]})
     title = f"{folder} · 家传阅读页"
     out = (TEMPLATE
            .replace("__TITLE__", html.escape(title))
            .replace("__FOLDER__", html.escape(folder))
-           .replace("__ARTICLES__", json.dumps(entries, ensure_ascii=False)))
+           .replace("__DATA__", json.dumps(groups, ensure_ascii=False)))
     path = os.path.join(base, "index.html")
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

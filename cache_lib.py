@@ -189,11 +189,27 @@ def name_zh(char_obj):
     return zh(loc_name(fn))
 
 
+def _dynn_lookup(table, name):
+    """'abbasid' → 'dynn_Abbasid' → '阿拔斯' (大小写不敏感, v8.2)。
+    CK3 家族名本地化键形如 dynn_<Name> (dynn_Abbasid/dynn_Tulunid)。"""
+    if not name:
+        return ""
+    global _DYNN_INDEX
+    if _DYNN_INDEX is None:
+        _DYNN_INDEX = {k.lower(): v for k, v in table.items()
+                       if k.startswith("dynn_")}
+    return _DYNN_INDEX.get("dynn_" + str(name).lower()) or ""
+
+
+_DYNN_INDEX = None
+
+
 def house_name_zh(melt, house_id):
     """宗族 id → 姓氏中文。取值链 (实测):
       1) dynasty_house[<id>].localized_name  (存档自带, 如 冯·大马士革)
       2) .name 的码点 (dynn_Bian_908A → 边)
       3) 本地化表 (culture_dynasty_title_names / dynasties 键)
+      4) .key 字段 (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
       全部失败返回 ''。"""
     if house_id is None:
         return ""
@@ -216,6 +232,12 @@ def house_name_zh(melt, house_id):
         for cand in (name, e.get("name") or ""):
             v = localization.loc(t, cand)
             if v and v != cand:
+                return v
+        # 4) house key (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
+        hkey = e.get("key")
+        if isinstance(hkey, str) and hkey.startswith("house_"):
+            v = _dynn_lookup(t, hkey[len("house_"):])
+            if v:
                 return v
         return ""
     except Exception:
@@ -331,8 +353,14 @@ def all_characters(melt):
 
 
 def mem_ids_of(char_obj):
-    """角色 alive_data.memories (记忆ID列表)。"""
-    return (char_obj or {}).get("alive_data", {}).get("memories") or []
+    """角色 alive_data.memories (记忆ID列表); 死者 alive_data 被移除时,
+    回退 dead_data.memories (v8: 曾为玩家 was_playable 的角色死亡时,
+    游戏把记忆复制进 dead_data.memories 保留, 实测崔佛死档 6 条全在)。"""
+    c = char_obj or {}
+    ids = (c.get("alive_data") or {}).get("memories") or []
+    if ids:
+        return ids
+    return (c.get("dead_data") or {}).get("memories") or []
 
 
 def find_player(melt):
@@ -349,13 +377,22 @@ def family_of(char_obj):
     fd = (char_obj or {}).get("family_data") or {}
     out = {}
     for key in ("primary_spouse", "spouse", "former_spouses", "child",
-                "father", "mother", "siblings", "real_father"):
+                "father", "mother", "siblings", "real_father",
+                "concubine", "former_concubines"):
         v = fd.get(key)
         if v is None:
             continue
         ids = [int(x) for x in (v if isinstance(v, list) else [v])]
         out[key] = ids
     return out
+
+
+def kills_of(char_obj):
+    """角色击杀 id 列表: 在世读 alive_data.kills, 死后读 dead_data.kills。"""
+    c = char_obj or {}
+    out = list((c.get("alive_data") or {}).get("kills") or [])
+    out += list((c.get("dead_data") or {}).get("kills") or [])
+    return [int(x) for x in out if isinstance(x, int) or str(x).isdigit()]
 
 
 def date_key(s):
@@ -410,8 +447,9 @@ EMPTY_CACHE = {
     "game_version": None,
     "sources": [],
     "last_date": None,
-    "player_death": None,     # 首次检测到玩家 dead_data 即写入 {date, reason, killer}
+    "player_death": None,     # 首次检测到玩家 dead_data 即写入 {date, reason, killer, kills}
     "bio_generated": False,   # 终传是否已生成 (每次玩家角色死亡只生成一篇)
+    "bio_decades": [],        # v8: 已生成的十年传记序号 [1,2,...] (每活满10年一篇)
     "output_folder": None,    # 会话输出文件夹名 (watch/continue 绑定, 见 pipeline)
     "player_title_history": [],  # [{date, name}] 玩家主头衔名变化 (复兴党流亡委员会等)
     "realm_history": [],         # [{date, holders:{title_id: holder_id}}] 关键头衔持有者逐年
@@ -470,6 +508,7 @@ def char_record(cache, cid):
             "family": {},
             "landed": {},
             "memories": [],
+            "kills": [],        # v8: 击杀 id 列表 (alive_data.kills ∪ dead_data.kills, 跨年累积)
         }
     return cache["characters"][key]
 
@@ -735,7 +774,7 @@ def extract_snapshot(cache, melt, date_label):
             return tl[t]
         return str(t)
 
-    # 玩家死亡检测 (首次写入后不再覆盖)
+    # 玩家死亡检测 (首次写入后不再覆盖; v8: 同时记录 dead_data.kills)
     if player_id is not None:
         pdead = (chars.get(str(player_id)) or {}).get("dead_data")
         if pdead and cache.get("player_death") is None:
@@ -743,6 +782,7 @@ def extract_snapshot(cache, melt, date_label):
                 "date": pdead.get("date"),
                 "reason": pdead.get("reason"),
                 "killer": pdead.get("killer"),
+                "kills": pdead.get("kills") or [],
             }
 
     # 目标角色集: 玩家 + 家族/家庭 + 记忆参与者 (两轮)
@@ -887,6 +927,22 @@ def extract_snapshot(cache, melt, date_label):
                         break
                 hist.append({"date": d, "name": tname})
 
+    # v8: 击杀受害者入目标集 (保证刺客列传能取到姓名/档案)
+    for _cid in list(targets):
+        _c = chars.get(str(_cid))
+        for _v in kills_of(_c):
+            targets.add(int(_v))
+
+    # v8: 妾的反向索引 {男主id: [妾id...]} (family_data.concubinist);
+    # 实测正向 family_data.concubine 只列 1 人, 反向才有 2 人 (崔佛: 艾丽丝+ED_la)。
+    concubinist_map = {}
+    for _cid, _c in chars.items():
+        if not isinstance(_c, dict):
+            continue
+        _m = (_c.get("family_data") or {}).get("concubinist")
+        if isinstance(_m, int):
+            concubinist_map.setdefault(_m, []).append(int(_cid))
+
     for cid in sorted(targets):
         c = chars.get(str(cid))
         if c is None:
@@ -951,7 +1007,16 @@ def extract_snapshot(cache, melt, date_label):
         rf = real_father_of(melt, cid)
         if rf is not None:
             fam["real_father"] = [rf]
+        # v8: 妾 (正向字段 + 反向 concubinist 并集, 去重)
+        rev_cons = concubinist_map.get(cid, [])
+        if rev_cons:
+            fam["concubine"] = list(dict.fromkeys(
+                (fam.get("concubine") or []) + rev_cons))
         rec["family"] = fam
+        # v8: 击杀 (alive_data.kills / dead_data.kills, 跨年累积去重)
+        kills = kills_of(c)
+        if kills:
+            rec["kills"] = sorted(set(rec.get("kills") or []) | set(kills))
         if cid == player_id:
             ld = c.get("landed_data") or {}
             rec["landed"] = {

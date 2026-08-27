@@ -358,10 +358,10 @@ def load_province_map(cfg, force=False):
 # ---------------------------------------------------------------------------
 
 TIER_KEY_OF_PREFIX = {"e_": "empire", "k_": "kingdom", "d_": "duchy",
-                      "c_": "county", "b_": "barony"}
+                      "c_": "county", "b_": "barony", "h_": "hegemon"}
 
 GENERIC_TIER_ZH = {"empire": "帝国", "kingdom": "王国", "duchy": "公国",
-                   "county": "县", "barony": "堡"}
+                   "county": "伯爵领", "barony": "堡", "hegemon": "皇朝"}
 
 
 def government_prefix(government):
@@ -372,10 +372,22 @@ def government_prefix(government):
 
 
 def tier_word(table, government, tier):
-    """政体下的层级词: 优先 <政体>_salary_rank_<层级>_short 本地化键
+    """政体下的层级词: 优先 DLC 领地层级词 (culture_titles: 天朝制
+    县/州府/镇/路/行台/皇朝), 再 <政体>_salary_rank_<层级>_short 俸禄词
     (celestial: 路/大路/镇/州府; administrative: 督军/大督军/军区),
-    缺失回退通用表 (王国/帝国/公国/县/堡)。"""
+    缺失回退通用表 (王国/帝国/公国/伯爵领/堡/皇朝)。"""
     prefix = government_prefix(government)
+    # v8.3: DLC「All Under Heaven」领地层级词 (culture_titles):
+    #   barony_celestial_chinese_vassal=县, county=州府, duchy=镇,
+    #   kingdom=路, empire=行台, hegemony_celestial_chinese=皇朝。
+    if prefix == "celestial":
+        key = ("hegemony_celestial_chinese" if tier == "hegemon"
+               else f"{tier}_celestial_chinese_vassal")
+        v = table.get(key)
+        if v:
+            c = clean_loc_value(v, table)
+            if c and not c.startswith("$") and not c.startswith("["):
+                return c
     if prefix:
         for key in (f"{prefix}_salary_rank_{tier}_short",
                     f"{prefix}_salary_rank_{tier}"):
