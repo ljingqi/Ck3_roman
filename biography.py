@@ -13,7 +13,7 @@
   2. 《列传·<好友>》  好友传记 (无结友记忆时取最紧密同僚)
   3. 《列传·<仇人>》  仇人传记 (结仇记忆的对手)
   4. 《家室列传》     妻室子女 (前妻/正妻/子女)
-  5. 《山南风云录》   官场沉浮 (登位/失土/囚狱等朝局大事)
+  5. 《朝局风云录》   朝局官制沉浮 (帝位更替/登位/失土/囚狱等朝局大事)
 
 铁律: 提示词只含 facts.py 渲染的**干净中文事实**, 不含任何内部 id/键/英文枚举。
 """
@@ -36,8 +36,9 @@ JIZHUANTI_RULE = (
 )
 
 NONFICTION_RULE = (
-    "「非虚构铁律」: 资料给出的人名、地名、日期、数字、事件一律原样使用, 不得改动; "
-    "人物的心理、对话、场景、细节允许合情演绎; 资料未提供的内容简写或略去。"
+    "「非虚构铁律」: 资料给出的人名、地名、日期、数字、事件一律按资料原样书写; "
+    "人物的心理、对话、场景、细节在资料允许的范围内合情演绎; "
+    "资料未提供的内容简写或略去。"
 )
 
 WORLD_FRAME_RULE = (
@@ -51,14 +52,14 @@ SECTION_TITLES = {
     "friend":  {"lead": "开篇·家世与交游", "mid": "纪事·一生际遇", "tail": "评曰·太史公曰"},
     "enemy":   {"lead": "开篇·仇家身世",   "mid": "纪事·一生行迹", "tail": "评曰·太史公曰"},
     "jiashi":  {"lead": "开篇·结缡与离异", "mid": "纪事·门庭恩怨", "tail": "评曰·太史公曰"},
-    "shannan": {"lead": "开篇·官制轮换",   "mid": "纪事·群臣浮沉", "tail": "评曰·太史公曰"},
+    "chaoju":  {"lead": "开篇·天下大势",   "mid": "纪事·朝局浮沉", "tail": "评曰·太史公曰"},
 }
 
-# 板块要求 (按文章, 首段/中段/尾段)
+# 板块要求 (按文章, 首段/中段/尾段) — 全部数据驱动, 无战役硬编码
 SECTION_REQ = {
     "benji": {
         "lead": "从家世出身写起: 生于何年、家族渊源、族属信仰、性情特质, 立起人物一生基调。",
-        "mid": "按时间次序叙述一生大事: 执掌领地、受任官职、让土、结仇、家变、再娶等, 以年表资料为限。",
+        "mid": "按时间次序叙述一生大事: 执掌领地或经营营地、受任官职、让土、结仇、家变、再娶等, 以年表资料为限。",
         "tail": "总评其一生的功过得失与性格命运, 以「太史公曰」收束。",
     },
     "friend": {
@@ -68,22 +69,22 @@ SECTION_REQ = {
     },
     "enemy": {
         "lead": "写仇家身世与结仇之由: 传主何许人也, 与主角因何成仇。",
-        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观叙事不加贬抑。",
+        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。",
         "tail": "评点这段恩怨与传主的命运, 以「太史公曰」收束。",
     },
     "jiashi": {
-        "lead": "写主角婚配始末: 结缡、离异、前妻之死、再娶, 立起门庭画卷。",
+        "lead": "写主角婚配始末: 结缡、离异、前妻之死、再娶, 立起门庭画卷; 妻族门第 (妻之父兄等显贵亲眷) 若有资料一并铺陈。",
         "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。",
         "tail": "评点家室之兴衰与人物命运, 以「太史公曰」收束。",
     },
-    "shannan": {
-        "lead": "写官制轮换之变: 867年9月8日天朝官制大轮换, 多人登位失土, 主角受任一方。",
-        "mid": "写群臣浮沉: 各官员的登位、失土、囚狱、起复, 以资料为限。",
-        "tail": "评点朝局与官制之得失, 以「太史公曰」收束。",
+    "chaoju": {
+        "lead": "写天下大势: 以最高领主或皇帝及其更替为纲, 铺陈本期朝局格局与主角所处疆域, 以资料为限。",
+        "mid": "写朝局浮沉: 依朝局动态与要员名录, 叙述登位、失土、囚狱、结仇、战争等朝局大事, 以资料为限。",
+        "tail": "评点朝局之得失与人物命运, 以「太史公曰」收束。",
     },
 }
 
-# 朝局类记忆类型 (山南风云录用)
+# 朝局类记忆类型 (朝局风云录用)
 POLITICAL_TYPES = {
     "ascended_throne_memory", "lost_title_memory", "imprisoned",
     "released_from_prison_memory", "became_rivals", "became_grudge",
@@ -204,8 +205,28 @@ def _profile_lines(facts, cid=None):
         lines.append(f"信仰：{p['faith']}")
     if p.get("traits"):
         lines.append(f"为人{p['traits']}")
+    if p.get("trait_history"):
+        lines.append(f"特质履历：{p['trait_history']}")
     if p.get("government"):
         lines.append(f"政体：{p['government']}")
+    # 无地冒险者: 营地
+    if p.get("landless"):
+        if p.get("camp_name"):
+            lines.append(f"营地：{p['camp_name']}")
+        if p.get("camp_county"):
+            bits = [f"现驻{p['camp_county']}"]
+            if p.get("camp_county_holder"):
+                bits.append(f"{p['camp_county_holder']}执掌")
+            if p.get("camp_liege_chain"):
+                bits.append(f"其上为{p['camp_liege_chain']}")
+            if p.get("camp_top_liege"):
+                bits.append(f"最高领主为{p['camp_top_liege']}")
+            lines.append("，".join(bits) + "。")
+        if p.get("camp_laws"):
+            lines.append(f"营规：{p['camp_laws']}")
+        if p.get("camp_strength"):
+            lines.append(f"营力{p['camp_strength']}")
+    # 有地领主
     if p.get("ruler_since"):
         lines.append(f"{p['ruler_since']}起执掌一方")
     if p.get("domain"):
@@ -221,6 +242,14 @@ def _profile_lines(facts, cid=None):
         lines.append(f"前妻：{p['former_spouses']}")
     if p.get("children"):
         lines.append(f"子女：{p['children']}")
+    if p.get("father"):
+        lines.append(f"父：{p['father']}")
+    if p.get("mother"):
+        lines.append(f"母：{p['mother']}")
+    if p.get("siblings"):
+        lines.append(f"兄弟姊妹：{p['siblings']}")
+    if p.get("titles_held"):
+        lines.append(f"历任：{p['titles_held']}")
     if p.get("status"):
         lines.append(f"现状：{p['status']}")
     if p.get("death"):
@@ -294,20 +323,32 @@ def _article_facts(facts, cache, key):
         tl = _timeline_texts(facts, names=fam_names)
         if tl:
             blocks["相关年表"] = "\n".join(tl)
-    elif key == "shannan":
+    elif key == "chaoju":
         blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        realm = facts.get("realm") or {}
+        dashi = []
+        if realm.get("liege_chain"):
+            dashi.append(f"主角所处疆域：{realm['liege_chain']}")
+        for hc in (realm.get("holder_changes") or []):
+            dashi.append(hc)
+        blocks["天下大势"] = "\n".join(dashi) if dashi else "（无天下大势记录）"
         tl = _timeline_texts(facts, types=POLITICAL_TYPES)
-        blocks["朝局动态"] = "\n".join(tl) if tl else "（无朝局动态记录）"
-        # 要员名录: 有朝局类记忆的角色
+        # 朝局动态: 政治类记忆时间线 + 高位头衔更替
+        dyn = list(tl)
+        blocks["朝局动态"] = "\n".join(dyn) if dyn else "（无朝局动态记录）"
+        # 要员名录: 有政治类记忆或历任高位头衔的角色
         names = []
         for cid, rec in (cache.get("characters") or {}).items():
             if int(cid) == pid:
                 continue
-            if any(m["type"] in POLITICAL_TYPES for m in rec.get("memories") or []):
-                p = facts["characters"].get(cid) or {}
-                if p.get("name"):
-                    n = p.get("house") or ""
-                    names.append(f"{n}{p['name']}" if n and p['name'] and not p['name'].startswith(n) else p['name'])
+            prof = facts["characters"].get(cid) or {}
+            if not prof.get("name"):
+                continue
+            if any(m["type"] in POLITICAL_TYPES for m in rec.get("memories") or []) \
+                    or prof.get("titles_held"):
+                n = prof.get("house") or ""
+                nm = prof["name"]
+                names.append(f"{n}{nm}" if n and nm and not nm.startswith(n) else nm)
         if names:
             blocks["朝中要员"] = "、".join(names)
     return blocks
@@ -355,7 +396,7 @@ def build_intro_messages(facts, cfg, articles=None):
             "二、《列传·好友》——最亲近同僚的一生\n"
             "三、《列传·仇人》——一生劲敌的传记\n"
             "四、《家室列传》——妻室子女的门庭画卷\n"
-            "五、《山南风云录》——朝局官制沉浮"
+            "五、《朝局风云录》——朝局官制沉浮"
         )
     user_msg = (
         "本期修传对象:\n"
@@ -387,9 +428,9 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     subject_note = ""
     if article.get("subject"):
         subject_note = (
-            f"本篇传主为{article['subject']}。全篇以{article['subject']}为唯一叙述中心，"
-            f"主角{(facts['protagonist'] or {}).get('name')}只在其与传主交游/结仇的"
-            "场合出现；总纲为全传背景，不得以主角事迹替代传主生平。\n\n"
+            f"本篇传主为{article['subject']}。全篇以{article['subject']}为唯一叙述中心；"
+            f"主角{(facts['protagonist'] or {}).get('name')}的事迹仅在{article['subject']}"
+            "与主角交游或结仇的场合出现，传主生平以本篇资料为准。\n\n"
         )
     user_msg = (
         subject_note
@@ -399,8 +440,8 @@ def build_lead_messages(article, facts, cache, intro, cfg):
         f"传记总纲:\n{intro}\n\n"
         f"请撰写开篇板块《{sec['title']}》正文, 相关事实如下:\n"
         f"{facts_txt}\n\n"
-        "输出格式: 直接输出正文, 不要再写标题行; 正文使用 Markdown, "
-        "分2~4个自然段, 段与段之间以空行分隔。"
+        "输出格式: 直接输出正文, 正文使用 Markdown, "
+        "分2~4个自然段, 段与段之间以空行分隔; 板块标题行由组装侧统一添加。"
     )
     return [{"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg}]
@@ -419,9 +460,9 @@ def build_section_messages(article, section, facts, cache, intro, lead_text, cfg
     subject_note = ""
     if article.get("subject"):
         subject_note = (
-            f"本篇传主为{article['subject']}。全篇以{article['subject']}为唯一叙述中心，"
-            f"主角{(facts['protagonist'] or {}).get('name')}只在其与传主交游/结仇的"
-            "场合出现；总纲为全传背景，不得以主角事迹替代传主生平。\n\n"
+            f"本篇传主为{article['subject']}。全篇以{article['subject']}为唯一叙述中心；"
+            f"主角{(facts['protagonist'] or {}).get('name')}的事迹仅在{article['subject']}"
+            "与主角交游或结仇的场合出现，传主生平以本篇资料为准。\n\n"
         )
     user_msg = (
         subject_note
@@ -507,9 +548,9 @@ def _assemble(facts, intro, leads, sections, articles):
     death = facts.get("player_death")
     span = ""
     if death:
-        span = f"卒于{death.get('date')}（终传）"
+        span = f"卒于{llm.fmt_cn_date(death.get('date'))}（终传）"
     else:
-        span = f"截至{facts.get('last_date') or '?'}"
+        span = f"截至{llm.fmt_cn_date(facts.get('last_date') or '?')}"
     parts.append(f"> 家族：{house}｜人物：{p.get('name')}｜{span}")
     parts.append(f"> 存档来源：{' / '.join(facts.get('sources') or [])}（共{len(facts.get('sources') or [])}份快照）")
     parts.append("")
@@ -562,8 +603,8 @@ def build_articles(facts, cache, cfg):
          "theme": "仇人传记（一生劲敌）", "sections": mk_sections("enemy")},
         {"key": "jiashi", "title": "家室列传", "subject": None,
          "theme": "妻室子女的门庭画卷", "sections": mk_sections("jiashi")},
-        {"key": "shannan", "title": "山南风云录", "subject": None,
-         "theme": "朝局官制沉浮", "sections": mk_sections("shannan")},
+        {"key": "chaoju", "title": "朝局风云录", "subject": None,
+         "theme": "朝局官制沉浮", "sections": mk_sections("chaoju")},
     ]
     return articles
 
