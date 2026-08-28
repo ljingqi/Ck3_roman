@@ -23,6 +23,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 import llm
+import cache_lib as cl
 import facts as F
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,9 @@ SECTION_TITLES = {
     "youxia":  {"lead": "开篇·萍踪浪迹",   "mid": "纪事·辗转行迹", "tail": None},
     "qizu":    {"lead": "开篇·帝胄姻亲",   "mid": "纪事·门第荣枯", "tail": None},
     "qunying": {"lead": "开篇·朝堂群英",   "mid": "纪事·要员浮沉", "tail": None},
+    # v9 新增
+    "feuds":   {"lead": "开篇·世仇渊薮",   "mid": "纪事·恩怨始末", "tail": None},
+    "artifacts": {"lead": "开篇·传家重宝", "mid": "纪事·流转始末", "tail": None},
 }
 
 # 板块要求 (按文章, 首段/中段/尾段) — 全部数据驱动, 无战役硬编码
@@ -124,6 +128,17 @@ SECTION_REQ = {
         "mid": "依朝局动态叙述要员浮沉: 登位、结仇、囚狱、战争等, 以资料为限。",
         "tail": None,
     },
+    # v9 新增
+    "feuds": {
+        "lead": "写与主角家族关系不和的各家族: 结怨之由、恩怨始末、当前关系档位 (世仇/敌对/争吵), 以资料为限。",
+        "mid": "依事件史叙述各家族的恩怨始末: 联姻、囚禁、处决、宣战、反目等, 以资料为限。",
+        "tail": None,
+    },
+    "artifacts": {
+        "lead": "写主角家族所藏重宝: 宝物名称、形制、稀有度, 立起传家重宝的画卷, 以资料为限。",
+        "mid": "依流转史叙述每件宝物的来历与流转: 何人造、何时被何人夺得或继承、现藏何处, 以资料为限。",
+        "tail": None,
+    },
 }
 
 # 朝局类记忆类型 (朝局风云录用)
@@ -148,31 +163,48 @@ def _enemy_types():
     return {"became_rivals", "became_grudge", "became_nemesis"}
 
 
+def _is_dead(cache, cid):
+    """该角色是否已死 (缓存有死亡记录)。"""
+    return bool((cache.get("characters") or {}).get(str(cid), {}).get("death"))
+
+
 def _select_friend(cache):
-    """好友: 先找与主角结友/灵魂伴侣/血盟的参与者; 无则取非家人非仇人中
-    记忆最多者 (优先有结友记忆者)。返回 cid 或 None。"""
+    """好友: 与主角结友/灵魂伴侣/血盟、且在世的角色中, 取结友时间最早者
+    (死了就换新的); 全部已死时回退最早结友者; 无结友记忆时取非家人非仇人中
+    记忆最多者 (在世优先)。返回 cid 或 None。"""
     pid = cache.get("player_id")
     if pid is None:
         return None
-    # 1) 结友类记忆直接参与者
+    fam = _family_ids(cache)
+    # 1) 结友类记忆直接参与者 → 在世优先 + 最早结友时间
+    dates = {}  # cid -> 最早结友日期
     for cid, rec in (cache.get("characters") or {}).items():
         cid = int(cid)
+        if cid == pid or cid in fam:
+            continue
+        best = None
         for mem in rec.get("memories") or []:
             if mem["type"] in _friend_types():
                 for v in (mem.get("participants") or {}).values():
                     if isinstance(v, int) and v == pid:
-                        return cid
-    # 2) 兜底: 排除家人与仇人, 取记忆最多者
+                        d = mem.get("creation_date") or "9999.9.9"
+                        if best is None or cl.date_key(d) < cl.date_key(best):
+                            best = d
+        if best:
+            dates[cid] = best
+    if dates:
+        alive = {c: d for c, d in dates.items() if not _is_dead(cache, c)}
+        pool = alive or dates  # 全部已死时回退最早结友者
+        return min(pool, key=lambda c: cl.date_key(pool[c]))
+    # 2) 兜底: 排除家人与仇人, 取记忆最多者 (在世优先)
     enemies = _select_enemies(cache)
-    fam = set()
-    prec = (cache.get("characters") or {}).get(str(pid)) or {}
-    for ids in (prec.get("family") or {}).values():
-        fam.update(int(x) for x in ids)
     best, best_score = None, -1
     for cid, rec in (cache.get("characters") or {}).items():
         cid = int(cid)
         if cid == pid or cid in fam or cid in enemies:
             continue
+        if _is_dead(cache, cid):
+            continue  # 死了就换新的
         n = len(rec.get("memories") or [])
         has_friend = any(m["type"] in _friend_types()
                          for m in rec.get("memories") or [])
@@ -182,33 +214,42 @@ def _select_friend(cache):
     return best
 
 
-def _select_enemies(cache):
-    """所有与主角结仇/结怨/死敌的对手 id 集合。"""
+def _enemy_dates(cache):
+    """{cid: 最早与主角结仇/结怨/死敌日期} (含死者)。"""
     pid = cache.get("player_id")
-    out = set()
+    out = {}
     if pid is None:
         return out
     for cid, rec in (cache.get("characters") or {}).items():
+        cid = int(cid)
+        best = None
         for mem in rec.get("memories") or []:
             if mem["type"] in _enemy_types():
                 parts = mem.get("participants") or {}
                 for v in parts.values():
                     if isinstance(v, int) and v == pid:
-                        out.add(int(cid))
+                        d = mem.get("creation_date") or "9999.9.9"
+                        if best is None or cl.date_key(d) < cl.date_key(best):
+                            best = d
+        if best:
+            out[cid] = best
     return out
 
 
+def _select_enemies(cache):
+    """所有与主角结仇/结怨/死敌的对手 id 集合。"""
+    return set(_enemy_dates(cache))
+
+
 def _select_primary_enemy(cache):
-    """主仇人: 与主角结仇的对手中记忆最多者。"""
-    pid = cache.get("player_id")
-    enemies = _select_enemies(cache)
-    best, best_n = None, -1
-    for cid in enemies:
-        rec = (cache.get("characters") or {}).get(str(cid)) or {}
-        n = len(rec.get("memories") or [])
-        if n > best_n:
-            best, best_n = cid, n
-    return best
+    """主仇人: 与主角结仇/结怨/死敌、且在世的对手中, 取结怨时间最早者
+    (死了就换新的); 全部已死时回退最早结怨者。"""
+    dates = _enemy_dates(cache)
+    if not dates:
+        return None
+    alive = {c: d for c, d in dates.items() if not _is_dead(cache, c)}
+    pool = alive or dates  # 全部已死时回退最早结怨者
+    return min(pool, key=lambda c: cl.date_key(pool[c]))
 
 
 def _family_ids(cache):
@@ -235,8 +276,15 @@ def _profile_lines(facts, cid=None):
     else:
         p = (facts["characters"].get(str(cid)) or {})
     lines = []
-    if p.get("name"):
+    if p.get("patronym"):
+        # 父名制文化: 名·父名 (富兰克林·崔佛松); 父名替代家族名
+        lines.append(f"姓名：{p.get('name_zh') or p.get('name')}·{p['patronym']}")
+    elif p.get("name"):
         lines.append(f"姓名：{p['name']}")
+    if p.get("office"):
+        lines.append(f"官职：{p['office']}")
+    if p.get("prince"):
+        lines.append(f"称号：{p['prince']}")
     if p.get("house"):
         lines.append(f"家族：{p['house']}")
     # v7: 家族家训
@@ -354,7 +402,7 @@ def _article_facts(facts, cache, key):
     if key == "benji":
         blocks["人物档案"] = "\n".join(_profile_lines(facts))
         tl = _timeline_texts(facts)
-        blocks["大事年表"] = "\n".join(tl) if tl else "（两年间无重大事件记录）"
+        blocks["大事年表"] = "\n".join(tl) if tl else "（无重大事件记录）"
     elif key in ("friend", "enemy"):
         cid = (_select_friend(cache) if key == "friend"
                else _select_primary_enemy(cache))
@@ -401,10 +449,21 @@ def _article_facts(facts, cache, key):
         cp_ch = facts.get("court_position_changes") or []
         if cp_ch:
             blocks["官职任免"] = "\n".join(cp_ch)
-        # 要员名录: 有政治类记忆或历任高位头衔的角色
+        # 要员名录: 主角相关角色 (家人/好友/仇人/宫廷任官) 中有政治类记忆或历任高位头衔者
+        # (剔除路人; 截断 60 名防提示词膨胀)
         names = []
+        related = set()
+        for _fid in (_select_friend(cache), _select_primary_enemy(cache)):
+            if _fid is not None:
+                related.add(_fid)
+        for h in cache.get("court_positions") or []:
+            for p in h.get("positions") or []:
+                if isinstance(p.get("employee"), int):
+                    related.add(p["employee"])
         for cid, rec in (cache.get("characters") or {}).items():
-            if int(cid) == pid:
+            if len(names) >= 60:
+                break
+            if int(cid) == pid or int(cid) not in related:
                 continue
             prof = facts["characters"].get(cid) or {}
             if not prof.get("name"):
@@ -413,7 +472,9 @@ def _article_facts(facts, cache, key):
                     or prof.get("titles_held"):
                 n = prof.get("house") or ""
                 nm = prof["name"]
-                names.append(f"{n}{nm}" if n and nm and not nm.startswith(n) else nm)
+                full = f"{n}{nm}" if n and nm and not nm.startswith(n) else nm
+                if full not in names:
+                    names.append(full)
         if names:
             blocks["朝中要员"] = "、".join(names)
     # ---- v5 新增文章 ----
@@ -476,6 +537,27 @@ def _article_facts(facts, cache, key):
             blocks["朝堂群英"] = "（无要员名录）"
         tl = _timeline_texts(facts, types=POLITICAL_TYPES)
         blocks["朝局动态"] = "\n".join(tl) if tl else "（无朝局动态记录）"
+    # ---- v9 新增文章 ----
+    elif key == "feuds":
+        blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        feuds = facts.get("house_feuds") or []
+        if feuds:
+            parts = []
+            for fd in feuds:
+                parts.append(f"家族：{fd['house']}（关系：{fd['level']}）")
+                if fd.get("events"):
+                    parts.append("恩怨史：")
+                    parts.extend("  " + e for e in fd["events"])
+            blocks["家族恩怨"] = "\n\n".join(parts)
+        else:
+            blocks["家族恩怨"] = "（无家族恩怨记录）"
+    elif key == "artifacts":
+        blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        arts = facts.get("family_artifacts") or []
+        if arts:
+            blocks["传家重宝"] = "\n\n".join(arts)
+        else:
+            blocks["传家重宝"] = "（无传家重宝记录）"
     return blocks
 
 
@@ -489,13 +571,33 @@ def _system_msg(style="east", extra=""):
             f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}")
 
 
-def build_intro_messages(facts, cfg, articles=None):
-    """总纲提示词。"""
+def _shared_facts_block(facts):
+    """所有调用共享的事实前缀 (v9 输入缓存优化): 传主+人物档案+主角大事年表。
+    逐字节一致, 置于每条 user 消息最前, 供 DeepSeek 前缀缓存命中
+    (总纲/各文章/各板块调用全部共享)。"""
     p = facts["protagonist"]
     name = p.get("name") or "主角"
     house = facts.get("house") or p.get("house") or ""
     period = facts.get("period") or "?"
     death = facts.get("player_death")
+    if death:
+        rz = death.get("reason_zh") or death.get("reason") or "身故"
+        life_note = f"【卒年】{death.get('date')}（{rz}）——此为终传"
+    else:
+        life_note = "【现状】在世（截至最后一份存档）"
+    profile_txt = _render_block("【人物档案】", _profile_lines(facts)) or "（无档案）"
+    timeline_txt = _render_block("【主角大事年表】",
+                                 _timeline_texts(facts) or ["（无重大事件记录）"])
+    return (f"【传主】{name}\n【家族】{house}\n【时期】{period}\n{life_note}\n\n"
+            f"{profile_txt}\n\n{timeline_txt}")
+
+
+def build_intro_messages(facts, cfg, articles=None):
+    """总纲提示词 (共享前缀 + 篇目预告)。"""
+    p = facts["protagonist"]
+    name = p.get("name") or "主角"
+    house = facts.get("house") or p.get("house") or ""
+    period = facts.get("period") or "?"
     style = facts.get("bio_style") or "east"
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
     sys_msg = (
@@ -504,22 +606,14 @@ def build_intro_messages(facts, cfg, articles=None):
         "撰写传记「总纲」: 概括此人的一生大势, 预告以下各篇文章, "
         "点明其家族与身份。总纲正文控制在400–600字。"
     )
-    life_note = ""
-    if death:
-        # v8: 死因走中文化 (reason_zh), 干净事实铁律——英文 key 不进提示词
-        rz = death.get("reason_zh") or death.get("reason") or "身故"
-        life_note = f"【卒年】{death.get('date')}（{rz}）——此为终传"
-    else:
-        life_note = "【现状】在世（截至最后一份存档）"
-    profile_txt = _render_block("【人物档案】", _profile_lines(facts)) or "（无档案）"
-    timeline_txt = _render_block("【大事年表】",
-                                 _timeline_texts(facts) or ["（无重大事件记录）"])
+    shared = _shared_facts_block(facts)
     # 文章预告: 用实际文章标题 (好友/仇人姓名已定; v5 支持任意篇数)
     CN_NUMS = "一二三四五六七八九"
     if articles:
         preview = "\n".join(
             f"{CN_NUMS[i]}、《{a['title']}》——{a.get('theme') or a['key']}"
             for i, a in enumerate(articles))
+        n_articles = len(articles)
     else:
         preview = (
             f"一、《本纪·{name}》——人物生平\n"
@@ -528,25 +622,21 @@ def build_intro_messages(facts, cfg, articles=None):
             "四、《家室列传》——妻室子女的门庭画卷\n"
             "五、《朝局风云录》——朝局官制沉浮"
         )
-    n_articles = len(articles) if articles else 5
+        n_articles = 5
     user_msg = (
-        "本期修传对象:\n"
-        f"【传主】{name}\n【家族】{house}\n"
-        f"【时期】{period}\n{life_note}\n\n"
-        f"{n_articles}篇文章预告:\n{preview}\n\n"
+        f"{shared}\n\n"
+        f"本传共{n_articles}篇, 篇目预告:\n{preview}\n\n"
         "输出格式:\n"
         f"# 《{name}传》\n"
         f"家族：{house}｜人物：{name}｜时期：{period}\n\n"
-        "总纲正文…（一段至两段）\n\n"
-        "以下为唯一事实依据:\n"
-        f"{profile_txt}\n\n{timeline_txt}\n\n请据此撰写总纲。"
+        "总纲正文…（一段至两段）\n\n请据此撰写总纲。"
     )
     return [{"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg}]
 
 
 def build_lead_messages(article, facts, cache, intro, cfg):
-    """五篇文章的首段提示词。"""
+    """五篇文章的首段提示词 (共享前缀 + 总纲 + 文章专属, 输入缓存友好)。"""
     key = article["key"]
     sec = article["sections"][0]
     title = article["title"]
@@ -573,14 +663,14 @@ def build_lead_messages(article, facts, cache, intro, cfg):
             "先世父母名姓与事迹以资料载明者为限，未载则省去、以「先世无考」带过。\n\n"
         )
     user_msg = (
-        custom_note
+        f"{_shared_facts_block(facts)}\n\n"
+        f"【总纲】\n{intro}\n\n"
+        + custom_note
         + subject_note
-        + f"本篇文章标题已定为《{title}》。\n\n"
+        + f"相关事实:\n{facts_txt}\n\n"
+        f"本篇文章标题已定为《{title}》。\n\n"
         f"这是文章的开篇板块《{sec['title']}》。要求: {sec['req']}\n\n"
         f"篇幅要求: 开篇板块正文800–1200字, 立起人物与场景。\n\n"
-        f"传记总纲:\n{intro}\n\n"
-        f"请撰写开篇板块《{sec['title']}》正文, 相关事实如下:\n"
-        f"{facts_txt}\n\n"
         "输出格式: 直接输出正文, 正文使用 Markdown, "
         "分2~4个自然段, 段与段之间以空行分隔; 板块标题行由组装侧统一添加。"
     )
@@ -608,15 +698,16 @@ def build_section_messages(article, section, facts, cache, intro, lead_text, cfg
             "与主角交游或结仇的场合出现，传主生平以本篇资料为准。\n\n"
         )
     user_msg = (
-        subject_note
-        + f"本篇文章标题已定为《{title}》。\n\n"
+        f"{_shared_facts_block(facts)}\n\n"
+        f"【总纲】\n{intro}\n\n"
+        + subject_note
+        + f"相关事实:\n{facts_txt}\n\n"
+        f"本篇文章标题已定为《{title}》。\n\n"
         f"请撰写板块《{section['title']}》。要求: {section['req']}\n\n"
         f"篇幅要求: 板块正文1200–1800字。\n\n"
-        f"传记总纲:\n{intro}\n\n"
         f"本文开篇板块《{article['sections'][0]['title']}》内容(以下为开篇全文):\n"
         f"{lead_text}\n\n"
-        f"请撰写后续板块《{section['title']}》, 须与开篇呼应。相关事实:\n"
-        f"{facts_txt}\n\n"
+        f"请撰写后续板块《{section['title']}》, 须与开篇呼应。\n\n"
         "输出格式: 直接输出正文, 正文使用 Markdown; 以「太史公曰」作结的板块请确保"
         "评点在文末。"
     )
@@ -882,6 +973,17 @@ def build_articles(facts, cache, cfg):
         {"key": "chaoju", "title": "朝局风云录", "subject": None,
          "theme": "朝局官制沉浮", "sections": mk_sections("chaoju")},
     ]
+    # v9: 家族恩怨录 / 宝物志 — 插在中间 (家室列传之后, 朝局风云录之前)
+    if facts.get("house_feuds"):
+        articles.insert(4, {"key": "feuds", "title": "家族恩怨录",
+                            "subject": None,
+                            "theme": "与主角家族关系不和的家族恩怨",
+                            "sections": mk_sections("feuds")})
+    if facts.get("family_artifacts"):
+        articles.insert(5, {"key": "artifacts", "title": "宝物志",
+                            "subject": None,
+                            "theme": "主角家族所藏重宝的流转历史",
+                            "sections": mk_sections("artifacts")})
     # v5: 刺客列传 (主角杀 >5 人)
     killed = facts.get("killed") or []
     if len(killed) > 5:

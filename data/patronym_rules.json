@@ -1,0 +1,292 @@
+{
+ "pictish": {
+  "pm": "dynnpat_pre_uab",
+  "pf": "dynnpat_pre_ach",
+  "sm": "",
+  "sf": "",
+  "pm_zh": "瓦布·",
+  "pf_zh": "阿赫·",
+  "sm_zh": "",
+  "sf_zh": ""
+ },
+ "welsh": {
+  "pm": "dynnpat_pre_ap",
+  "pf": "dynnpat_pre_ferch",
+  "sm": "",
+  "sf": "",
+  "pm_zh": "阿普·",
+  "pf_zh": "韦尔赫·",
+  "sm_zh": "",
+  "sf_zh": ""
+ },
+ "breton": {
+  "pm": "dynnpat_pre_mab",
+  "pf": "dynnpat_pre_verch",
+  "sm": "",
+  "sf": "",
+  "pm_zh": "马布·",
+  "pf_zh": "韦尔赫·",
+  "sm_zh": "",
+  "sf_zh": ""
+ },
+ "cornish": {
+  "pm": "dynnpat_pre_ab",
+  "pf": "dynnpat_pre_merch",
+  "sm": "",
+  "sf": "",
+  "pm_zh": "阿布·",
+  "pf_zh": "梅尔赫·",
+  "sm_zh": "",
+  "sf_zh": ""
+ },
+ "cumbrian": {
+  "pm": "dynnpat_pre_map",
+  "pf": "dynnpat_pre_vch",
+  "sm": "",
+  "sf": "",
+  "pm_zh": "马普·",
+  "pf_zh": "弗赫·",
+  "sm_zh": "",
+  "sf_zh": ""
+ },
+ "frisian": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_sson",
+  "sf": "dynnpat_suf_sdohtor",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "松",
+  "sf_zh": "斯多赫托尔"
+ },
+ "dutch": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_szoon",
+  "sf": "dynnpat_suf_sdochter",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "松",
+  "sf_zh": "斯多赫特尔"
+ },
+ "gothic": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_iz",
+  "sf": "dynnpat_suf_iz",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "斯",
+  "sf_zh": "斯"
+ },
+ "irish": {
+  "pm": "dynnpat_pre_mac",
+  "pf": "dynnpat_pre_nic",
+  "sm": "",
+  "sf": "",
+  "pm_zh": "麦克·",
+  "pf_zh": "妮克·",
+  "sm_zh": "",
+  "sf_zh": ""
+ },
+ "gaelic": {
+  "pm": "dynnpat_pre_Mac",
+  "pf": "dynnpat_pre_Mac",
+  "sm": "",
+  "sf": "",
+  "pm_zh": "麦克",
+  "pf_zh": "麦克",
+  "sm_zh": "",
+  "sf_zh": ""
+ },
+ "basque": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_ez",
+  "sf": "dynnpat_suf_ez",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "斯",
+  "sf_zh": "斯"
+ },
+ "castilian": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_ez",
+  "sf": "dynnpat_suf_ez",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "斯",
+  "sf_zh": "斯"
+ },
+ "catalan": {
+  "pm": "",
+  "pf": "",
+  "sm": "",
+  "sf": "",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "",
+  "sf_zh": ""
+ },
+ "portuguese": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_es",
+  "sf": "dynnpat_suf_es",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "斯",
+  "sf_zh": "斯"
+ },
+ "visigothic": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_iz",
+  "sf": "dynnpat_suf_iz",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "斯",
+  "sf_zh": "斯"
+ },
+ "galician": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_ez",
+  "sf": "dynnpat_suf_ez",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "斯",
+  "sf_zh": "斯"
+ },
+ "asturleonese": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_ez",
+  "sf": "dynnpat_suf_ez",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "斯",
+  "sf_zh": "斯"
+ },
+ "aragonese": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_iz",
+  "sf": "dynnpat_suf_iz",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "斯",
+  "sf_zh": "斯"
+ },
+ "suebi": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_az",
+  "sf": "dynnpat_suf_az",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "兹",
+  "sf_zh": "兹"
+ },
+ "norse": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_sson",
+  "sf": "dynnpat_suf_sdottir",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "松",
+  "sf_zh": "斯多蒂尔"
+ },
+ "swedish": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_sson",
+  "sf": "dynnpat_suf_sdotter",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "松",
+  "sf_zh": "斯多特"
+ },
+ "norwegian": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_sson",
+  "sf": "dynnpat_suf_sdatter",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "松",
+  "sf_zh": "斯达特"
+ },
+ "danish": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_sen",
+  "sf": "dynnpat_suf_sdatter",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "森",
+  "sf_zh": "斯达特"
+ },
+ "croatian": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_iC_",
+  "sf": "",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "奇",
+  "sf_zh": ""
+ },
+ "bosnian": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_iC_",
+  "sf": "",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "奇",
+  "sf_zh": ""
+ },
+ "serbian": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_iC_",
+  "sf": "",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "奇",
+  "sf_zh": ""
+ },
+ "albanian": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_i",
+  "sf": "",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "",
+  "sf_zh": ""
+ },
+ "anglo_saxon": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_son",
+  "sf": "dynnpat_suf_sdohtor",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "森",
+  "sf_zh": "斯多赫托尔"
+ },
+ "old_saxon": {
+  "pm": "",
+  "pf": "",
+  "sm": "dynnpat_suf_sunu",
+  "sf": "dynnpat_suf_sdohtar",
+  "pm_zh": "",
+  "pf_zh": "",
+  "sm_zh": "苏努",
+  "sf_zh": "斯多赫塔尔"
+ }
+}

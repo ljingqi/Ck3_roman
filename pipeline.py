@@ -179,13 +179,20 @@ def melt_path_for_cache(cfg, cache, date):
 
 def load_latest_melt(cfg, cache):
     """取缓存最后一份存档的 melt (dict); 缺失返回 None。
-    优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。"""
+    优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。
+    最后日期熔件缺失 (损坏/被清理) 时, 按 sources 降序回退到该会话文件夹
+    最近一份现存熔件 (保证传记/十年传记仍可生成), 全无则返回 None。"""
     last = cache.get("last_date")
     if not last:
         return None
     p = melt_path_for_cache(cfg, cache, last)
     if os.path.isfile(p):
         return cl.load_melt(p)
+    for d in sorted(cache.get("sources") or [], key=cl.date_key, reverse=True):
+        p2 = melt_path_for_cache(cfg, cache, d)
+        if os.path.isfile(p2):
+            llm.log(f"  [回退] {last} 熔件缺失, 用最近现存熔件 {d} 生成")
+            return cl.load_melt(p2)
     return None
 
 
@@ -193,22 +200,56 @@ def load_latest_melt(cfg, cache):
 # 缓存管理 (v4: 缓存位于 output/<家族>/data/)
 # ---------------------------------------------------------------------------
 
+def _session_folder_seq(folder):
+    """会话文件夹序号: '菲利普' → ('菲利普', 0), '菲利普2' → ('菲利普', 2)。"""
+    m = re.match(r"^(.*?)(\d+)$", str(folder or ""))
+    return (m.group(1), int(m.group(2))) if m else (str(folder or ""), 0)
+
+
+def _cache_pick_key(path, cache):
+    """同玩家多份会话缓存的优先级键 (越大越优先):
+    当前 watch 会话文件夹 > 会话文件夹编号大 (菲利普2 > 菲利普) > last_date 新 > mtime 新。
+    重开老档后新会话日期 (883) 小于旧会话 (886), 故不能只看 last_date;
+    会话文件夹编号 (determine_folder 递增) 才是「最新会话」的稳定判据。"""
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        mt = 0.0
+    dkey = cl.date_key(cache.get("last_date") or "0.0.0")
+    folder = cache.get("output_folder") or ""
+    if (_WATCH_SESSION["active"] and _WATCH_SESSION["folder"]
+            and folder == _WATCH_SESSION["folder"]):
+        return (2, 0, dkey, mt)
+    _base, seq = _session_folder_seq(folder)
+    return (1, seq, dkey, mt)
+
+
 def find_cache_path(cfg, player_id):
-    """查找玩家缓存现有路径 (output 树 + 旧 cache/); 无则返回 None。"""
+    """查找玩家缓存现有路径 (output 树 + 旧 cache/); 无则返回 None。
+    同玩家存在多个会话副本 (菲利普 / 菲利普2 ...) 时, 取当前/最新会话的一份
+    (_cache_pick_key, 对齐 D:\\Journal _latest_session_folder_by_tag):
+    优先当前 watch 会话文件夹, 其次会话文件夹编号大者 (菲利普2 > 菲利普),
+    再兜底 last_date 最新 — 避免 os.walk 顺序不确定导致新会话加载到陈旧基底,
+    或把旧会话数据误当基底缝合进新会话。"""
     base = cfg.get("output_dir", "")
+    best = None
     if os.path.isdir(base):
         for dp, _dn, fns in os.walk(base):
             p = os.path.join(dp, f"player_{player_id}.json")
             if os.path.isfile(p):
-                return p
+                cache = cl.load_cache(p)
+                if best is None or _cache_pick_key(p, cache) > _cache_pick_key(best[0], best[1]):
+                    best = (p, cache)
+    if best:
+        return best[0]
     legacy = os.path.join(cfg.get("cache_dir", ""), f"player_{player_id}.json")
     return legacy if os.path.isfile(legacy) else None
 
 
 def all_caches(cfg):
-    """{player_id: (path, cache)} 全部玩家缓存 (扫描 output 树 + 旧 cache/)。"""
+    """{player_id: (path, cache)} 全部玩家缓存 (扫描 output 树 + 旧 cache/)。
+    同玩家多会话副本 (菲利普/菲利普2 ...) 只保留当前/最新会话者。"""
     out = {}
-    seen = set()
     for root in (cfg.get("output_dir", ""), cfg.get("cache_dir", "")):
         if not root or not os.path.isdir(root):
             continue
@@ -218,11 +259,11 @@ def all_caches(cfg):
                 if not m:
                     continue
                 pid = int(m.group(1))
-                if pid in seen:
-                    continue
-                seen.add(pid)
                 path = os.path.join(dp, fn)
-                out[pid] = (path, cl.load_cache(path))
+                cache = cl.load_cache(path)
+                prev = out.get(pid)
+                if prev is None or _cache_pick_key(path, cache) > _cache_pick_key(prev[0], prev[1]):
+                    out[pid] = (path, cache)
     return out
 
 
@@ -318,6 +359,7 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
         folder = determine_folder(name, out)
         _WATCH_SESSION["folder"] = folder
         _WATCH_SESSION["player_key"] = key
+        llm.log(f"  新会话文件夹: [{folder}] (本次 watch 运行新建)")
         return folder
     # 非 watch 运行上下文 (独立 bio/rebuild 等): 沿用绑定/同战役, 否则新建
     cur = cache.get("output_folder")
@@ -347,9 +389,20 @@ def session_data_path(cfg, cache, folder=None):
 
 
 def save_session_cache(cfg, cache, continue_mode=False):
-    """把缓存写入其会话文件夹并持久化文件夹绑定。"""
+    """把缓存写入其会话文件夹并持久化文件夹绑定。
+    v8.1: 写前合并磁盘上的 bio_decades/bio_generated — 后台传记线程可能在主线程
+    读缓存之后、写缓存之前更新了这两个标记, 主线程整写会把它覆盖丢失
+    (实测 15:12:50 覆盖 15:12:48, 导致第2个十年重复触发、重复烧 token)。"""
     folder = ensure_output_folder(cfg, cache, continue_mode)
     path = session_data_path(cfg, cache, folder)
+    try:
+        disk = cl.load_cache(path)
+        bd = set(disk.get("bio_decades") or []) | set(cache.get("bio_decades") or [])
+        cache["bio_decades"] = sorted(bd)
+        if disk.get("bio_generated"):
+            cache["bio_generated"] = True
+    except Exception:
+        pass
     cl.save_cache(cache, path)
     return path
 
@@ -527,9 +580,20 @@ def generate_bio(cfg, cache, force=False, decade=None):
     house, fname = output_paths(cfg, cache, decade=decade)
     out_dir = os.path.join(cfg.get("output_dir", ""), house)
     out_path = os.path.join(out_dir, fname)
-    if os.path.exists(out_path) and not force:
-        llm.log(f"已存在, 跳过 (加 --force 重新生成): {out_path}")
-        return out_path, None
+    if not force:
+        if decade:
+            # 十年传记: 磁盘推导 — 输出目录任一 第N个十年_*.md 已存在即视为已生成。
+            # 文件名带 last_date (第2个十年_903 / _912), 直接比精确路径会在日期前进后漏检。
+            pname = os.path.basename(fname).split("_传记_", 1)[0]
+            pat = re.compile(re.escape(pname)
+                             + rf"_传记_第{decade}个十年_.*\.md$")
+            if os.path.isdir(out_dir) and any(
+                    pat.match(fn) for fn in os.listdir(out_dir)):
+                llm.log(f"已存在第{decade}个十年传记, 跳过 (加 --force 重新生成)")
+                return out_path, None
+        elif os.path.exists(out_path):
+            llm.log(f"已存在, 跳过 (加 --force 重新生成): {out_path}")
+            return out_path, None
     md, facts, articles = bio.generate_biography(cache, melt, cfg, out_path=out_path,
                                                  decade=decade)
     # 持久化文件夹绑定 (generate 可能首次解析出文件夹)
@@ -574,9 +638,12 @@ def _process_save(cfg, save, continue_mode=False):
         if player_id is None:
             llm.log(f"  {date}: 存档中无玩家角色, 跳过")
             return None
-        cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
-        # 权威去重: 该玩家战役已记录过此日期 (轮转副本/同日期重存) → 丢弃临时熔件跳过
-        if date in (cache.get("sources") or []):
+        path0 = find_cache_path(cfg, player_id)
+        cache = cl.load_cache(path0 or "")
+        # 去重: continue 沿用旧会话 — 该玩家战役已记录过此日期 (轮转副本/同日期重存)
+        # → 丢弃临时熔件跳过; watch 每次运行 = 新存档期 (对齐 D:\Journal): 一律新建
+        # 编号文件夹并入, 不做跨会话去重, 单次运行内重复由 step_watch 的 mtime/日期兜住。
+        if continue_mode and date in (cache.get("sources") or []):
             llm.log(f"  {date}: 已并入过 (轮转副本/重存), 跳过")
             try:
                 os.remove(tmp)
@@ -589,6 +656,19 @@ def _process_save(cfg, save, continue_mode=False):
             llm.log(f"  {date}: 玩家不一致, 跳过")
             return None
         folder = ensure_output_folder(cfg, cache, continue_mode)
+        # 新会话首档: watch 定出的会话文件夹 ≠ 缓存所在文件夹 → 丢弃旧会话数据,
+        # 用本档从空缓存重建 (防把 菲利普 旧战役数据缝合进 菲利普2, 出现 886 事件)。
+        if not continue_mode and path0:
+            dir0 = os.path.normpath(os.path.dirname(path0))
+            dir1 = os.path.normpath(os.path.join(cfg.get("output_dir", ""), folder, "data"))
+            if dir0 != dir1:
+                house0 = os.path.basename(os.path.normpath(os.path.dirname(path0)))
+                llm.log(f"  {date}: 新会话首档 ({house0} → {folder}), "
+                        f"从空缓存重建, 不缝合旧会话数据")
+                cache = cl.new_cache()
+                cache["output_folder"] = folder
+                new_deaths = []
+                cl.extract_snapshot(cache, melt, date, _new_deaths=new_deaths)
         _move_melt_into(cfg, folder, date, player_id, tmp)
         _recover_dead_memories(cfg, cache, new_deaths)
         save_session_cache(cfg, cache, continue_mode)
@@ -785,6 +865,24 @@ def _completed_decades(cache):
     return list(range(1, span // 10 + 1))
 
 
+def _generated_decades_on_disk(cfg, cache):
+    """磁盘推导: 已生成的十年序号 = 输出文件夹中「第N个十年_*.md」的 N 集合。
+    以输出文件为准 (十年文件命名含 last_date, 且 bio_decades 会被并发写覆盖丢失),
+    跨崩溃/多进程安全。"""
+    folder = cache.get("output_folder") or resolve_output_folder(cfg, cache, True)
+    out_dir = os.path.join(cfg.get("output_dir", ""), folder)
+    rec = (cache.get("characters") or {}).get(str(cache.get("player_id"))) or {}
+    pname = rec.get("name_full") or rec.get("name_zh") or f"玩家{cache.get('player_id')}"
+    done = set()
+    if os.path.isdir(out_dir):
+        pat = re.compile(re.escape(pname) + r"_传记_第(\d+)个十年_.*\.md$")
+        for fn in os.listdir(out_dir):
+            m = pat.match(fn)
+            if m:
+                done.add(int(m.group(1)))
+    return done
+
+
 def _auto_decade_bios(cfg, caches=None):
     """v8: 为「在世且已满新十年」的玩家排队生成十年传记 (后台线程执行)。
     十年传记素材取全部累计数据 (统治40年即读取40年数据);
@@ -804,7 +902,9 @@ def _auto_decade_bios(cfg, caches=None):
                     llm.log(f"  [十年] 玩家 {cache.get('player_name')} (id={pid}) "
                             f"数据已满十年 {ds} 但已死亡, 按设计跳过 (终传覆盖一生)")
                 continue
-            done = set(cache.get("bio_decades") or [])
+            # 已生成 = 缓存标记 ∪ 磁盘文件推导 (防 bio_decades 被并发写覆盖后重复触发)
+            done = (set(cache.get("bio_decades") or [])
+                    | _generated_decades_on_disk(cfg, cache))
             for k in _completed_decades(cache):
                 if k in done:
                     continue
@@ -857,8 +957,9 @@ def _bio_worker_loop(cfg):
             elif kind == "decade":
                 if cache.get("player_death"):
                     continue  # 已死: 跳过十年传记 (终传覆盖)
-                if decade in (cache.get("bio_decades") or []):
-                    continue
+                if (decade in (cache.get("bio_decades") or [])
+                        or decade in _generated_decades_on_disk(cfg, cache)):
+                    continue  # 磁盘上已有该十年文件 (或缓存标记), 不再生成
                 out = generate_bio(cfg, cache, decade=decade)
                 if out:
                     out_path, _ = out
@@ -926,7 +1027,9 @@ def step_watch(cfg, continue_mode=False):
       - 熔化前等待文件写入稳定 (_wait_save_stable), 根除「读到写入中的坏存档」崩溃;
       - 会话级去重: 同一文件 (mtime 未变) 或同一日期 (重存/轮转副本) 只处理一次;
         换玩家 (新局) 后同日期允许重新出现;
-      - _process_save 内另有权威检查 (日期已入缓存 sources 则跳过), 兜住跨会话重启;
+      - _process_save 去重: continue 沿用旧会话时日期已入缓存 sources 则跳过
+        (兜住跨会话重启); watch 每次运行 = 新存档期, 一律新建编号文件夹并入,
+        不做跨会话去重 (对齐 D:\\Journal);
       - 处理失败不中止循环, 下轮重试 (存档轮转后旧文件自然不再被选中)。
 
     v7: 每档独立容错 (单档失败不中断本轮其余存档, 下轮重试);
@@ -1111,48 +1214,65 @@ def _iter_melts(cfg):
 
 
 def step_rebuild_cache(cfg):
-    """从各战役文件夹熔件重建缓存 (每玩家一份, 输出至 output/<家族>/data/)。
-    熔件现存放于战役文件夹; 兼容旧根目录布局。"""
+    """从各战役文件夹熔件重建缓存 (每玩家每会话文件夹一份, 输出至 output/<家族>/data/)。
+    熔件现存放于战役文件夹; 兼容旧根目录布局。
+    同玩家跨会话文件夹 (菲利普 / 菲利普2) 的熔件各自独立重建, 防跨会话缝合。"""
     melts = _iter_melts(cfg)
     if not melts:
         llm.log("未找到 melt 文件 (战役文件夹 data/ 或根 data/)")
         return
-    # 记录既有会话文件夹绑定 (player_id → (folder, playthrough))
-    old_bind = {}
-    for pid, (_path, cache) in all_caches(cfg).items():
-        old_bind[pid] = (cache.get("output_folder"), cache.get("playthrough_id"))
     llm.log(f"重建缓存: {len(melts)} 份 melt")
-    built = {}  # player_id → 本次重建中累积的缓存
+    built = {}  # player_id → (folder, cache); 同玩家换会话文件夹 (菲利普→菲利普2) 时另起新缓存
     for folder, path, date in melts:
         melt = cl.load_melt(path)
         player_id = cl.find_player(melt)
         if player_id is None:
             llm.log(f"  {date}: 无玩家, 跳过")
             continue
-        cache = built.get(player_id)
-        if cache is None:
-            # 首见该玩家: 以磁盘缓存为基底补标记, 从空缓存开始重建
-            prev = cl.load_cache(find_cache_path(cfg, player_id) or "")
-            cache = cl.new_cache()
-            if prev.get("player_death"):
-                cache["player_death"] = prev["player_death"]
-            if prev.get("bio_generated"):
-                cache["bio_generated"] = prev["bio_generated"]
-            if prev.get("bio_decades"):
-                cache["bio_decades"] = prev["bio_decades"]  # v8
-            if prev.get("playthrough_id"):
-                cache["playthrough_id"] = prev["playthrough_id"]
-            built[player_id] = cache
-        cl.extract_snapshot(cache, melt, date)
-        # 会话文件夹: 熔件所在战役文件夹为准; 旧根目录熔件走既有绑定 → 同战役 → 自动解析
+        ent = built.get(player_id)
         if not folder:
-            f_old, pt_old = old_bind.get(player_id, (None, None))
-            if not f_old and pt_old:
-                for _pid2, (f2, pt2) in old_bind.items():
-                    if f2 and pt2 == pt_old:
-                        f_old = f2
-                        break
-            folder = f_old or ensure_output_folder(cfg, cache, continue_mode=True)
+            # 旧根目录熔件 (legacy 布局): 与既有根熔件合并, 首次并入后解析会话文件夹
+            if ent is None:
+                prev = cl.load_cache(find_cache_path(cfg, player_id) or "")
+                cache = cl.new_cache()
+                if prev.get("player_death"):
+                    cache["player_death"] = prev["player_death"]
+                if prev.get("bio_generated"):
+                    cache["bio_generated"] = prev["bio_generated"]
+                if prev.get("bio_decades"):
+                    cache["bio_decades"] = prev["bio_decades"]  # v8
+                if prev.get("playthrough_id"):
+                    cache["playthrough_id"] = prev["playthrough_id"]
+                built[player_id] = ("", cache)
+                ent = built[player_id]
+            else:
+                cache = ent[1]
+            cl.extract_snapshot(cache, melt, date)
+            if not ent[0]:
+                folder = ensure_output_folder(cfg, cache, continue_mode=True)
+                built[player_id] = (folder, cache)
+            else:
+                folder = ent[0]
+        else:
+            # 熔件所在战役文件夹为准; 同玩家换文件夹 = 另一会话 (菲利普 / 菲利普2),
+            # 各自独立重建 (仅用本文件夹熔件), 防跨会话缝合。
+            if ent is None or ent[0] != folder:
+                prev = cl.load_cache(os.path.join(
+                    cfg.get("output_dir", ""), folder, "data",
+                    f"player_{player_id}.json"))
+                cache = cl.new_cache()
+                if prev.get("player_death"):
+                    cache["player_death"] = prev["player_death"]
+                if prev.get("bio_generated"):
+                    cache["bio_generated"] = prev["bio_generated"]
+                if prev.get("bio_decades"):
+                    cache["bio_decades"] = prev["bio_decades"]  # v8
+                if prev.get("playthrough_id"):
+                    cache["playthrough_id"] = prev["playthrough_id"]
+                built[player_id] = (folder, cache)
+            else:
+                cache = ent[1]
+            cl.extract_snapshot(cache, melt, date)
         cache["output_folder"] = folder
         path_out = session_data_path(cfg, cache, folder)
         _recover_dead_memories(cfg, cache)
