@@ -237,6 +237,12 @@ def call_deepseek(messages, cfg, retries=3):
             last_err = Exception(f"模型返回空内容 (finish_reason={finish})")
         except Exception as e:
             last_err = e
+            if isinstance(e, requests.HTTPError) and e.response is not None \
+                    and e.response.status_code == 400:
+                # 400 = 客户端错误 (上下文超限/参数非法): 同一 payload 重试必败且烧 token
+                body = str(e.response.text)[:300]
+                log(f"DeepSeek 调用失败 (400, 不再重试): {e} | {body}")
+                raise
             log(f"DeepSeek 调用失败 (第{i + 1}/{retries}次): {e}")
         if i < retries - 1:
             time.sleep(3 * (i + 1))

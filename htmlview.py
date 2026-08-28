@@ -16,7 +16,7 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-FILE_RE = re.compile(r"^(.+_(?:终传|传记)_\d+_\d{2}_\d{2}|demo_.+)\.md$")
+FILE_RE = re.compile(r"^(.+_(?:终传|传记)(?:_第\d+个十年)?_\d+_\d{2}_\d{2}|demo_.+)\.md$")
 
 
 def _output_dir():

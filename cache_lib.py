@@ -485,8 +485,10 @@ def load_cache(path):
 
 def save_cache(cache, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fp:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fp:
         json.dump(cache, fp, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)  # 原子替换, 防并发读写撕裂
 
 
 def char_record(cache, cid):

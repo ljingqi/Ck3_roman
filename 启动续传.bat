@@ -1,5 +1,8 @@
 @echo off
-rem 旧档续传: 补录当前战役新档后进入监控
-cd /d %~dp0
+chcp 936 >nul
+title CK3 记忆素材库续传（旧档）
+cd /d "%~dp0"
 python pipeline.py continue
-pause
+echo.
+echo 程序已退出，按任意键关闭窗口。
+pause >nul

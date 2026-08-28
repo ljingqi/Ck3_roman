@@ -1,5 +1,8 @@
 @echo off
-rem 新档监控: 只处理本程序启动后保存的新存档
-cd /d %~dp0
+chcp 936 >nul
+title CK3 记忆素材库监控（新档）
+cd /d "%~dp0"
 python pipeline.py watch
-pause
+echo.
+echo 程序已退出，按任意键关闭窗口。
+pause >nul
