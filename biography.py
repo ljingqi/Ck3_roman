@@ -978,10 +978,10 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None):
     pp = facts["protagonist"] or {}
     person = pp.get("name") or facts.get("player_name") or ""
     birth = pp.get("birth") or ""
-    if facts.get("player_death"):
-        piece = "终传"
-    elif decade:
+    if decade:
         piece = f"第{decade}个十年传记"
+    elif facts.get("player_death"):
+        piece = "终传"
     else:
         piece = "传记"
     header = (f"<!-- 数据来源: CK3 年度存档快照 | 家族: {facts.get('house', '')} | "

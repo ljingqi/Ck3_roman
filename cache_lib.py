@@ -740,8 +740,10 @@ def real_father_of(melt, cid):
 # 单档提取 (v4: 每玩家缓存 + 姓名合并 + 亲属/特质/朝局)
 # ---------------------------------------------------------------------------
 
-def extract_snapshot(cache, melt, date_label):
-    """把一个存档快照并入缓存。返回 False 表示玩家不一致被拒绝。"""
+def extract_snapshot(cache, melt, date_label, _new_deaths=None):
+    """把一个存档快照并入缓存。返回 False 表示玩家不一致被拒绝。
+    _new_deaths: 可选列表, 本次并入「首次记录死亡」的角色 id (int) 会追加进来,
+    供调用方只对「新死亡」角色做死档记忆回溯, 避免每轮全量扫描 (v9)。"""
     player_id = find_player(melt)
     if cache["player_id"] is not None and player_id is not None \
             and cache["player_id"] != player_id:
@@ -1060,6 +1062,8 @@ def extract_snapshot(cache, melt, date_label):
                 "liege_title": dd.get("liege_title"),
                 "named_title": dd.get("named_title"),
             }
+            if _new_deaths is not None:
+                _new_deaths.append(cid)
         # 记忆: alive_data.memories → database
         seen = {(m.get("id"), m.get("creation_date")) for m in rec["memories"]}
         for mid in mem_ids_of(c):

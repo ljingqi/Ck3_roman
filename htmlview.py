@@ -336,7 +336,7 @@ def _article_label(fn, text, folder=None):
             title = s.lstrip("# ").strip()
             break
         break  # 首个非注释非空行不是标题 → 用文件名
-    m = re.search(r"_(终传|传记)_(\d+_\d{2}_\d{2})", fn)
+    m = re.search(r"_(终传|传记)_(?:第\d+个十年_)?(\d+_\d{2}_\d{2})", fn)
     date = m.group(2).replace("_", ".") if m else ""
     h = _parse_header(text)
     kind = m.group(1) if m else ""
