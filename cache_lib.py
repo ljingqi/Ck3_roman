@@ -702,18 +702,15 @@ def _siblings_of(cid, parent_map, child_map, sibling_map, direct):
     return sorted(out)
 
 
-def real_father_of(melt, cid):
-    """角色真正父亲 (v5): family_data.real_father 直接字段;
-    缺失时查秘密 (secret_unmarried_illegitimate_child / secret_disputed_heritage:
-    target=子女, participants 中非 owner 的男性候选人)。"""
-    cid = int(cid)
-    chars = all_characters(melt)
-    c = chars.get(str(cid)) or {}
-    fd = c.get("family_data") or {}
-    rf = fd.get("real_father")
-    if rf is not None:
-        return int(rf)
-    # 秘密推导: participants 中非 owner 的男性候选人 (女眷=owner 时第二人为父)
+def _secret_father_candidates(melt):
+    """预索引秘密生父: {target_id: [[候选父id...], ...]}。
+
+    两类秘密 (secret_unmarried_illegitimate_child / secret_disputed_heritage) 按
+    原对象顺序分组保存候选列表; 组内已排除 target 自身与 owner。保持与逐条扫描
+    完全相同的返回语义: 首个含候选的秘密组优先, 组内先返回非女性候选人。
+    v11: extract_snapshot 主循环对每个目标角色调 real_father_of, 旧实现每次
+    全量遍历 secrets → O(目标×秘密), 预建后 O(1) 查询。"""
+    out = {}
     sec = (melt.get("secrets") or {}).get("secrets") or {}
     for s in sec.values():
         if not isinstance(s, dict):
@@ -722,13 +719,39 @@ def real_father_of(melt, cid):
                                  "secret_disputed_heritage"):
             continue
         tgt = (s.get("target") or {}).get("identity")
-        if tgt is None or int(tgt) != cid:
+        if tgt is None:
             continue
+        tgt = int(tgt)
         owner = s.get("owner")
         cands = [int(x) for x in (s.get("participants") or []) if isinstance(x, int)]
-        cands = [x for x in cands if x != cid]
+        cands = [x for x in cands if x != tgt]
         if owner is not None and isinstance(owner, int):
             cands = [x for x in cands if x != owner]
+        if cands:  # 空候选组在原逻辑中会被跳过, 不建索引
+            out.setdefault(tgt, []).append(cands)
+    return out
+
+
+def real_father_of(melt, cid, chars=None, sec_candidates=None):
+    """角色真正父亲 (v5): family_data.real_father 直接字段;
+    缺失时查秘密 (secret_unmarried_illegitimate_child / secret_disputed_heritage:
+    target=子女, participants 中非 owner 的男性候选人)。
+
+    v11: chars / sec_candidates 由调用方预建一次传入 (extract_snapshot 主循环每个
+    目标角色调用一次, 旧实现每次重建全角色字典 → O(目标×世界) 二次方,
+    实测 913.1.1 并入 129s; 预建后 O(1) 查询)。"""
+    cid = int(cid)
+    if chars is None:
+        chars = all_characters(melt)
+    c = chars.get(str(cid)) or {}
+    fd = c.get("family_data") or {}
+    rf = fd.get("real_father")
+    if rf is not None:
+        return int(rf)
+    # 秘密推导: participants 中非 owner 的男性候选人 (女眷=owner 时第二人为父)
+    if sec_candidates is None:
+        sec_candidates = _secret_father_candidates(melt)
+    for cands in sec_candidates.get(cid, []):
         for cand in cands:
             cc = chars.get(str(cand)) or {}
             if not cc.get("female"):
@@ -946,6 +969,8 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         _m = (_c.get("family_data") or {}).get("concubinist")
         if isinstance(_m, int):
             concubinist_map.setdefault(_m, []).append(int(_cid))
+    # v11: 秘密生父索引预建一次 (real_father_of 对每个目标调用, 避免重复全量扫描)
+    sec_candidates = _secret_father_candidates(melt)
 
     for cid in sorted(targets):
         c = chars.get(str(cid))
@@ -1007,8 +1032,8 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         sib = _siblings_of(cid, parent_map, child_map, sibling_map, fam)
         if sib:
             fam["siblings"] = sib
-        # 真正父亲 (v5): 直接字段 + 秘密推导
-        rf = real_father_of(melt, cid)
+        # 真正父亲 (v5): 直接字段 + 秘密推导 (v11: 预建索引, O(1) 查询)
+        rf = real_father_of(melt, cid, chars, sec_candidates)
         if rf is not None:
             fam["real_father"] = [rf]
         # v8: 妾 (正向字段 + 反向 concubinist 并集, 去重)
@@ -1085,14 +1110,18 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
 # 死角色记忆回溯 (v5: 死后记忆被清空 → 从死前最近一份存档恢复)
 # ---------------------------------------------------------------------------
 
-def recover_dead_memories_from(melt, cache, cid):
+def recover_dead_memories_from(melt, cache, cid, chars=None):
     """从某档 melt 恢复角色 cid 的记忆 (死前最后一份存档)。
     记忆对象存于该档 character_memory_manager.database, 角色 alive_data.memories
-    引用之。返回恢复条数。"""
+    引用之。返回恢复条数。
+    v11: chars 由调用方按熔件预建一次传入 (回溯对每个死者调用, 旧实现每次重建
+    全角色字典)。"""
     rec = cache["characters"].get(str(cid))
     if rec is None:
         return 0
-    c = all_characters(melt).get(str(cid))
+    if chars is None:
+        chars = all_characters(melt)
+    c = chars.get(str(cid))
     if c is None:
         return 0
     db = _db(melt)

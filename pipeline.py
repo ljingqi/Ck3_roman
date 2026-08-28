@@ -724,9 +724,10 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
             for cid, _d, _s, _r in items:
                 llm.log(f"  [回溯失败] 角色 {cid}: {e}")
             continue
+        chars = cl.all_characters(melt)  # v11: 每份熔件只建一次全角色索引
         for cid, ddate, src, rec in items:
             try:
-                n = cl.recover_dead_memories_from(melt, cache, int(cid))
+                n = cl.recover_dead_memories_from(melt, cache, int(cid), chars=chars)
                 if n:
                     llm.log(f"  [回溯] 角色 {cid} ({rec.get('name_zh') or rec.get('name_full') or ''}) "
                             f"殁于{ddate}, 从{src}档恢复 {n} 条记忆")
