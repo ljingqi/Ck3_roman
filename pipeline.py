@@ -5,7 +5,7 @@
   - `watch`  / `continue`: 启动时记录基准 (当前最新存档的 mtime), **只处理本程序
     启动后写入的新存档**; 目录里已有的老存档(旧战役/历史档)一律不读、不记录。
   - `scan`: 单次补录——只补录**当前战役**(playthrough_id 一致或玩家一致)中日期
-    新于缓存的新档; 其它战役的存档一律跳过。
+    新于缓存且 mtime 晚于缓存文件的新档; 其它战役的存档一律跳过。
   - 每次玩家角色死亡只生成一篇「终传」(`bio_generated` 标记); 死亡跨查带
     **身份校验**(名字一致 + 死亡日期晚于最后存活档), 防跨战役 id 撞号误判。
 
@@ -322,11 +322,55 @@ def save_session_cache(cfg, cache, continue_mode=False):
 
 
 def active_cache(cfg):
-    """当前战役缓存: 最后日期最新的那份。"""
+    """当前战役缓存: 取「最新存档(mtime)」所属战役的缓存; 逐级回退, 最后才用日期兜底。
+    a) 最新档日期已并入某缓存 → 该缓存战役; b) 信封人物名匹配缓存;
+    c) 熔化最新档一次按 playthrough_id 找同战役缓存; d) 回退最后日期最新。"""
     caches = all_caches(cfg)
     if not caches:
         return None, None
-    pid = max(caches, key=lambda p: cl.date_key(caches[p][1].get("last_date") or ""))
+
+    def best(ids):
+        return max(ids, key=lambda p: cl.date_key(caches[p][1].get("last_date") or ""))
+
+    try:
+        saves = scan_saves(cfg.get("save_dir", ""))
+    except Exception:
+        saves = []
+    if saves:
+        newest = max(saves, key=lambda s: s["mtime"])
+        hit = []
+        # a) 该档日期已并入某缓存 → 该缓存所属战役 (零成本, 最可靠)
+        hit = [p for p, (_pp, c) in caches.items()
+               if newest["date"] in (c.get("sources") or [])]
+        if not hit:
+            # b) 信封人物名 → 匹配缓存 (与 _catchup 预过滤同一规范化)
+            nm = player_char_name(newest["player"])
+            hit = [p for p, (_pp, c) in caches.items()
+                   if nm and player_char_name(c.get("player_name")) == nm]
+        if not hit:
+            # c) 熔化最新档一次 → 按 playthrough_id 找同战役缓存 (覆盖「新玩家无缓存」)
+            try:
+                tmp = temp_melt_path(cfg, newest["date"])
+                melt_save(cfg, newest["path"], tmp)
+                pt = cl.load_melt(tmp).get("playthrough_id")
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                if pt:
+                    hit = [p for p, (_pp, c) in caches.items()
+                           if c.get("playthrough_id") == pt]
+            except Exception:
+                hit = []
+        if hit:
+            pid = best(hit)
+            pt = caches[pid][1].get("playthrough_id")
+            if pt:  # 同战役内取最新缓存 (继位后锚定新统治者)
+                pid = best([p for p, (_pp, c) in caches.items()
+                            if c.get("playthrough_id") == pt])
+            return pid, caches[pid][1]
+    # d) 全部失败: 回退原逻辑 (最后日期最新)
+    pid = best(list(caches))
     return pid, caches[pid][1]
 
 
@@ -352,16 +396,22 @@ def player_char_name(name):
 
 def _catchup(cfg, cache, continue_mode=False):
     """补录当前战役的新档 (仅当信封角色名与缓存玩家名一致, 否则不熔化直接跳过)。
-    返回处理数。"""
+    新档 = 日期新于缓存 last_date 且 mtime 晚于缓存文件写入时刻 (上次运行已见过的
+    老档一律不扫不记录, 防误读历史战役存档)。返回处理数。"""
     pid = cache.get("player_id")
     my_name = player_char_name(cache.get("player_name"))
     save_dir = cfg.get("save_dir", "")
+    # 缓存文件写入时刻 = 上次运行已处理完这些存档的分界; 晚于它的存档才是「新档」
+    cache_path = find_cache_path(cfg, pid)
+    cache_mtime = os.path.getmtime(cache_path) if cache_path else 0.0
     processed = 0
     for s in scan_saves(save_dir):
         if s["date"] in (cache.get("sources") or []):
             continue
         if cl.date_key(s["date"]) <= cl.date_key(cache.get("last_date") or "0.0.0"):
             continue
+        if cache_mtime and s["mtime"] <= cache_mtime:
+            continue  # 上次运行已见过的存档, 不补录
         # 信封级预过滤: 角色名不一致 → 其它战役/其它人物, 不熔化不记录
         if my_name and player_char_name(s["player"]) != my_name:
             llm.log(f"  [跳过] {s['date']} {s['player']} 非本战役人物, 不读")
@@ -796,7 +846,7 @@ def step_watch(cfg, continue_mode=False):
 
 
 def step_scan(cfg):
-    """单次补录: 只补录当前战役中日期新于缓存的新档。
+    """单次补录: 只补录当前战役中「日期新于缓存且 mtime 晚于缓存文件」的新档。
     信封角色名不一致的存档直接跳过 (不熔化), 其它战役一律不读。"""
     _cleanup_tmp_melts(cfg)
     pid, cache = active_cache(cfg)
@@ -835,13 +885,13 @@ def step_status(cfg):
 
 
 def step_bio(cfg, player_id=None):
-    """手动生成传记。player_id 缺省取最后日期最新的玩家。"""
+    """手动生成传记。player_id 缺省取当前战役 (最新存档所属战役) 的玩家。"""
     caches = all_caches(cfg)
     if not caches:
         llm.log("暂无玩家缓存 (先运行 watch/continue)")
         return None
     if player_id is None:
-        player_id = max(caches, key=lambda p: cl.date_key(caches[p][1].get("last_date") or ""))
+        player_id, _ = active_cache(cfg)
     if player_id not in caches:
         llm.log(f"玩家 {player_id} 无缓存")
         return None
