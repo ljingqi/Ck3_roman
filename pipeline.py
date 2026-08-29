@@ -536,7 +536,7 @@ def _catchup(cfg, cache, continue_mode=False):
                 continue
             if player_id != pid:
                 llm.log(f"  [继位] {s['date']}: 同战役玩家变为 {player_id}, 新建缓存")
-                cache = cl.load_cache(find_cache_path(cfg, player_id) or "")
+                cache = cl.load_cache(find_cache_path(cfg, player_id) or "", fresh=True)
             new_deaths = []
             if cl.extract_snapshot(cache, melt, s["date"], _new_deaths=new_deaths):
                 _recover_dead_memories(cfg, cache, new_deaths)
@@ -554,13 +554,23 @@ def _catchup(cfg, cache, continue_mode=False):
 # 传记生成与输出
 # ---------------------------------------------------------------------------
 
+def _bio_pname(cache):
+    """传记文件名用人物标识 (v13): 显示名+生年, 如「崔佛·菲利普(844)」。
+    同宗同名 (祖孙都叫崔佛) 靠生年区分, 根治十年判重/文件名撞车。"""
+    pid = cache.get("player_id")
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    pname = rec.get("name_full") or rec.get("name_zh") or f"玩家{pid}"
+    birth = rec.get("birth") or ""
+    by = str(birth).split(".")[0] if birth else ""
+    return f"{pname}({by})" if by and by.isdigit() else pname
+
+
 def output_paths(cfg, cache, continue_mode=False, decade=None):
     """(家族文件夹, 输出文件名) — 会话文件夹 + 传记文件名。
     decade 非空时输出十年传记独立命名, 避免与普通在世传记同日期重名
     被 generate_bio 的 exists 检查误跳过。"""
     folder = resolve_output_folder(cfg, cache, continue_mode)
-    rec = (cache.get("characters") or {}).get(str(cache.get("player_id"))) or {}
-    pname = rec.get("name_full") or rec.get("name_zh") or f"玩家{cache.get('player_id')}"
+    pname = _bio_pname(cache)
     death = cache.get("player_death")
     if death:
         kind = "终传"
@@ -672,7 +682,7 @@ def _process_save(cfg, save, continue_mode=False):
             llm.log(f"  {date}: 存档中无玩家角色, 跳过")
             return None
         path0 = find_cache_path(cfg, player_id)
-        cache = cl.load_cache(path0 or "")
+        cache = cl.load_cache(path0 or "", fresh=True)  # v13: 提取路径独立副本
         # 去重: continue 沿用旧会话 — 该玩家战役已记录过此日期 (轮转副本/同日期重存)
         # → 丢弃临时熔件跳过; watch 每次运行 = 新存档期 (对齐 D:\Journal): 一律新建
         # 编号文件夹并入, 不做跨会话去重, 单次运行内重复由 step_watch 的 mtime/日期兜住。
@@ -931,11 +941,10 @@ def _completed_decades(cache):
 def _generated_decades_on_disk(cfg, cache):
     """磁盘推导: 已生成的十年序号 = 输出文件夹中「第N个十年_*.md」的 N 集合。
     以输出文件为准 (十年文件命名含 last_date, 且 bio_decades 会被并发写覆盖丢失),
-    跨崩溃/多进程安全。"""
+    跨崩溃/多进程安全。v13: 文件标识含生年 (崔佛·菲利普(844)), 同宗同名不再误判。"""
     folder = cache.get("output_folder") or resolve_output_folder(cfg, cache, True)
     out_dir = os.path.join(cfg.get("output_dir", ""), folder)
-    rec = (cache.get("characters") or {}).get(str(cache.get("player_id"))) or {}
-    pname = rec.get("name_full") or rec.get("name_zh") or f"玩家{cache.get('player_id')}"
+    pname = _bio_pname(cache)
     done = set()
     if os.path.isdir(out_dir):
         pat = re.compile(re.escape(pname) + r"_传记_第(\d+)个十年_.*\.md$")
@@ -1013,7 +1022,7 @@ def _bio_worker_loop(cfg):
                 out = generate_bio(cfg, cache)
                 if out:
                     out_path, _ = out
-                    cur = cl.load_cache(path)
+                    cur = cl.load_cache(path, fresh=True)  # v13: 写入路径独立副本
                     cur["bio_generated"] = True
                     cl.save_cache(cur, path)
                     llm.log(f"终传已生成: {out_path}")
@@ -1026,7 +1035,7 @@ def _bio_worker_loop(cfg):
                 out = generate_bio(cfg, cache, decade=decade)
                 if out:
                     out_path, _ = out
-                    cur = cl.load_cache(path)
+                    cur = cl.load_cache(path, fresh=True)
                     cur.setdefault("bio_decades", []).append(decade)
                     cl.save_cache(cur, path)
                     llm.log(f"十年传记已生成 (第{decade}个十年): {out_path}")
