@@ -210,8 +210,9 @@ _DYNN_INDEX = None
 def house_name_zh(melt, house_id):
     """宗族 id → 姓氏中文。取值链 (实测):
       1) dynasty_house[<id>].localized_name  (存档自带, 如 冯·大马士革)
-      2) .name 的码点 (dynn_Bian_908A → 边)
-      3) 本地化表 (culture_dynasty_title_names / dynasties 键)
+      2) 本地化表 (name / dynn_ 键, 与其他文化一致 — 简体中文显示为准, 如
+         dynn_Dou_9B26 → 斗; 表值优先于键内码点, 键码点 9B26=鬦 是游戏造键笔误)
+      3) .name 的码点兜底 (dynn_Bian_908A → 边, 表缺键时的最后手段)
       4) .key 字段 (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
       全部失败返回 ''。"""
     if house_id is None:
@@ -223,19 +224,18 @@ def house_name_zh(melt, house_id):
         loc_name = e.get("localized_name") or ""
         if loc_name and any("\u3400" <= ch <= "\u9fff" for ch in loc_name):
             return zh(loc_name)
-        # 2) name 字段 (dynn_ 前缀码点解码)
+        # 2) 本地化表 (与其他文化同名取值链: 表优先)
         name = e.get("name") or ""
-        if name.startswith("dynn_"):
-            name = name[len("dynn_"):]
-        dec = zh(decode_codepoints(name))
-        if dec and any("\u3400" <= ch <= "\u9fff" for ch in dec):
-            return dec
-        # 3) 本地化表
         t = localization.table()
-        for cand in (name, e.get("name") or ""):
+        for cand in (name, name[len("dynn_"):] if name.startswith("dynn_") else name):
             v = localization.loc(t, cand)
             if v and v != cand:
                 return v
+        # 3) name 字段码点兜底 (dynn_ 前缀码点解码; 表缺键时用)
+        if name.startswith("dynn_"):
+            dec = zh(decode_codepoints(name[len("dynn_"):]))
+            if dec and any("\u3400" <= ch <= "\u9fff" for ch in dec):
+                return dec
         # 4) house key (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
         hkey = e.get("key")
         if isinstance(hkey, str) and hkey.startswith("house_"):
@@ -1025,6 +1025,11 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
             rec["culture"] = c.get("culture")
         if c.get("faith") is not None:
             rec["faith"] = c.get("faith")
+        # v11: 语言 (alive_data.languages): 同 culture 处理 — 有值即更新,
+        # 缺失 (死后 alive_data 被清) 保留最近已知值, 供父名/族属推断与「语言」行。
+        langs = (c.get("alive_data") or {}).get("languages") or []
+        if langs:
+            rec["languages"] = list(langs)
         # 特质与 trait_history (v4): 每快照 diff
         new_traits = c.get("traits") or []
         old_traits = rec.get("traits") or []

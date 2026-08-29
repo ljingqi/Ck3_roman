@@ -46,8 +46,8 @@ DEFAULT_CONFIG = {
     "llm_thinking_disabled": True,
     # 流水线开关: scan 检测到玩家死亡后是否自动生成终传
     "auto_bio_on_death": True,
-    # 传记板块结构: lead=首段, mid=中段, tail=尾段 (每篇文章的板块数 = 1 + 是否有 mid + 是否有 tail)
-    "bio_sections": ["lead", "mid", "tail"],
+    # 传记板块结构: lead=首段, mid=中段 (v11: 尾段评曰已删, 太史公曰只留总纲)
+    "bio_sections": ["lead", "mid"],
 }
 
 
