@@ -7,6 +7,9 @@ cache/
 logs/
 output/
 
+# 研究文档 (一次性排查脚本与输出)
+experiments/
+
 # Python
 __pycache__/
 *.pyc
