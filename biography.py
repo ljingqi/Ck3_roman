@@ -176,72 +176,107 @@ def _is_dead(cache, cid):
     return bool((cache.get("characters") or {}).get(str(cid), {}).get("death"))
 
 
-def _select_friend(cache):
-    """好友: 与主角结友/灵魂伴侣/血盟、且在世的角色中, 取结友时间最早者
-    (死了就换新的); 全部已死时回退最早结友者; 无结友记忆时取非家人非仇人中
-    记忆最多者 (在世优先)。返回 cid 或 None。"""
-    pid = cache.get("player_id")
-    if pid is None:
-        return None
-    fam = _family_ids(cache)
-    # 1) 结友类记忆直接参与者 → 在世优先 + 最早结友时间
-    dates = {}  # cid -> 最早结友日期
-    for cid, rec in (cache.get("characters") or {}).items():
-        cid = int(cid)
-        if cid == pid or cid in fam:
-            continue
-        best = None
-        for mem in rec.get("memories") or []:
-            if mem["type"] in _friend_types():
-                for v in (mem.get("participants") or {}).values():
-                    if isinstance(v, int) and v == pid:
-                        d = mem.get("creation_date") or "9999.9.9"
-                        if best is None or cl.date_key(d) < cl.date_key(best):
-                            best = d
-        if best:
-            dates[cid] = best
-    if dates:
-        alive = {c: d for c, d in dates.items() if not _is_dead(cache, c)}
-        pool = alive or dates  # 全部已死时回退最早结友者
-        return min(pool, key=lambda c: cl.date_key(pool[c]))
-    # 2) 兜底: 排除家人与仇人, 取记忆最多者 (在世优先)
-    enemies = _select_enemies(cache)
-    best, best_score = None, -1
-    for cid, rec in (cache.get("characters") or {}).items():
-        cid = int(cid)
-        if cid == pid or cid in fam or cid in enemies:
-            continue
-        if _is_dead(cache, cid):
-            continue  # 死了就换新的
-        n = len(rec.get("memories") or [])
-        has_friend = any(m["type"] in _friend_types()
-                         for m in rec.get("memories") or [])
-        score = n + (10 if has_friend else 0)
-        if score > best_score:
-            best, best_score = cid, score
-    return best
-
-
-def _enemy_dates(cache):
-    """{cid: 最早与主角结仇/结怨/死敌日期} (含死者)。"""
+def _relation_dates(cache, types):
+    """{cid: 最早与主角结友/结仇日期} — 双通道 (v13):
+    ① 他人记忆 (participants 含主角 id);
+    ② 主角自身记忆 (CK3 结友/结仇记忆挂在主角名下, participants 只存对方 id)。
+    修: 旧实现只扫①, 主角自己的结友/结仇全漏 (富兰克林 884/925/930 三次结友
+    被漏检 → 好友列传选成零关系路人)。"""
     pid = cache.get("player_id")
     out = {}
     if pid is None:
         return out
+
+    def add(cid, d):
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return
+        if cid == pid:
+            return
+        dk = cl.date_key(d or "9999.9.9")
+        if cid not in out or dk < cl.date_key(out[cid]):
+            out[cid] = d
+
+    # ① 他人记忆
     for cid, rec in (cache.get("characters") or {}).items():
-        cid = int(cid)
-        best = None
         for mem in rec.get("memories") or []:
-            if mem["type"] in _enemy_types():
-                parts = mem.get("participants") or {}
-                for v in parts.values():
-                    if isinstance(v, int) and v == pid:
-                        d = mem.get("creation_date") or "9999.9.9"
-                        if best is None or cl.date_key(d) < cl.date_key(best):
-                            best = d
-        if best:
-            out[cid] = best
+            if mem.get("type") not in types:
+                continue
+            parts = mem.get("participants") or {}
+            if any(isinstance(v, int) and v == pid for v in parts.values()):
+                add(cid, mem.get("creation_date"))
+    # ② 主角自身记忆
+    prec = (cache.get("characters") or {}).get(str(pid)) or {}
+    for mem in prec.get("memories") or []:
+        if mem.get("type") not in types:
+            continue
+        for v in (mem.get("participants") or {}).values():
+            if isinstance(v, int):
+                add(v, mem.get("creation_date"))
     return out
+
+
+def _select_friend(cache):
+    """好友: 与主角结友/灵魂伴侣/血盟者中, 在世优先 + 结友最早;
+    排除家人 (妻妾/子女/兄弟姊妹 — 手足之情归家室列传)。
+    全部已死时回退最早结友者; 无真好友返回 None (由 _pick_friend 走同朝共事者代打)。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return None
+    fam = _family_ids(cache)
+    dates = {c: d for c, d in _relation_dates(cache, _friend_types()).items()
+             if c not in fam}
+    if not dates:
+        return None
+    alive = {c: d for c, d in dates.items() if not _is_dead(cache, c)}
+    pool = alive or dates  # 全部已死时回退最早结友者
+    return min(pool, key=lambda c: cl.date_key(pool[c]))
+
+
+def _select_fallback_friend(cache):
+    """无真好友时 (v13): 同朝共事者 (宫廷任官/朝局事件参与者) 中记忆最多者,
+    在世优先; 提示词另行注明「无结友记录, 以同朝共事者代之」。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return None
+    fam = _family_ids(cache)
+    enemies = _select_enemies(cache)
+    candidates = set()
+    for h in cache.get("court_positions") or []:
+        for p in h.get("positions") or []:
+            if isinstance(p.get("employee"), int):
+                candidates.add(p["employee"])
+    for cid, rec in (cache.get("characters") or {}).items():
+        for mem in rec.get("memories") or []:
+            if mem.get("type") in POLITICAL_TYPES:
+                for v in (mem.get("participants") or {}).values():
+                    if isinstance(v, int) and v != pid:
+                        candidates.add(v)
+    best, best_score = None, -1
+    for cid in candidates:
+        cid = int(cid)
+        if cid == pid or cid in fam or cid in enemies:
+            continue
+        if _is_dead(cache, cid):
+            continue
+        n = len((cache.get("characters") or {}).get(str(cid), {}).get("memories") or [])
+        if n > best_score:
+            best, best_score = cid, n
+    return best
+
+
+def _pick_friend(cache):
+    """好友选择 (v13): 真好友 → 无则同朝共事者代打。返回 (cid, is_fallback)。"""
+    f = _select_friend(cache)
+    if f is not None:
+        return f, False
+    return _select_fallback_friend(cache), True
+
+
+def _enemy_dates(cache):
+    """{cid: 最早与主角结仇/结怨/死敌日期} (含死者, 双通道, 见 _relation_dates)。"""
+    return _relation_dates(cache, _enemy_types())
 
 
 def _select_enemies(cache):
@@ -269,15 +304,46 @@ def _select_primary_enemy(cache):
 
 
 def _family_ids(cache):
-    """主角家人 id 集 (妻室/前妻/子女)。"""
+    """主角家人 id 集 (妻室/前妻/子女/兄弟姊妹 — v13 加同胞: 手足归家室列传,
+    不入好友列传)。"""
     pid = cache.get("player_id")
     if pid is None:
         return set()
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
     out = set()
-    for key in ("primary_spouse", "spouse", "former_spouses", "child"):
+    for key in ("primary_spouse", "spouse", "former_spouses", "child", "siblings"):
         for x in (rec.get("family") or {}).get(key) or []:
             out.add(int(x))
+    return out
+
+
+def _relation_reasons(facts, cache, cid, types):
+    """结友/结仇缘由: 主角与该角色的关系记忆 → 干净中文句 (v13)。
+    主角自身记忆为准, 对方记忆兜底, 去重。"""
+    pid = cache.get("player_id")
+    out = []
+    seen = set()
+    fi = facts.get("_facts")  # Facts 实例 (渲染记忆句用)
+
+    def add(s):
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+
+    prec = (cache.get("characters") or {}).get(str(pid)) or {}
+    for mem in prec.get("memories") or []:
+        if mem.get("type") not in types:
+            continue
+        parts = mem.get("participants") or {}
+        if any(isinstance(v, int) and v == cid for v in parts.values()):
+            add(F._mem_sentence(fi, pid, mem))
+    crec = (cache.get("characters") or {}).get(str(cid)) or {}
+    for mem in crec.get("memories") or []:
+        if mem.get("type") not in types:
+            continue
+        parts = mem.get("participants") or {}
+        if any(isinstance(v, int) and v == pid for v in parts.values()):
+            add(F._mem_sentence(fi, cid, mem))
     return out
 
 
@@ -379,6 +445,9 @@ def _profile_lines(facts, cid=None):
         lines.append(f"现状：{p['status']}")
     if p.get("death"):
         lines.append(p["death"])
+    # v13: 戏剧性事实高亮 (一日皇帝/短命皇朝等) — 档案末尾
+    if p.get("dramatic_facts"):
+        lines.append("戏剧性事件：" + "；".join(p["dramatic_facts"]))
     return lines
 
 
@@ -421,7 +490,7 @@ def _article_facts(facts, cache, key, section=None):
         tl = _timeline_texts(facts)
         blocks["大事年表"] = "\n".join(tl) if tl else "（无重大事件记录）"
     elif key in ("friend", "enemy"):
-        cid = (_select_friend(cache) if key == "friend"
+        cid = (_pick_friend(cache)[0] if key == "friend"
                else _select_primary_enemy(cache))
         if cid is not None:
             lines, events = _subject_facts(facts, cid)
@@ -432,6 +501,20 @@ def _article_facts(facts, cache, key, section=None):
             tl = _timeline_texts(facts, names=[pname, subj_name])
             if tl:
                 blocks["相关年表"] = "\n".join(tl)
+            # v13: 结友/结仇缘由 (双通道修复后必有记忆; 兜底同朝共事者给说明)
+            if key == "friend":
+                fcid, is_fallback = _pick_friend(cache)
+                if cid == fcid and is_fallback:
+                    blocks["说明"] = ("（传主与主角无结友记忆，本传按同朝共事之谊立传，"
+                                      "以传主生平为主。）")
+                else:
+                    rs = _relation_reasons(facts, cache, cid, _friend_types())
+                    if rs:
+                        blocks["结友缘由"] = "；".join(rs)
+            else:
+                rs = _relation_reasons(facts, cache, cid, _enemy_types())
+                if rs:
+                    blocks["结仇缘由"] = "；".join(rs)
     elif key == "jiashi":
         blocks["人物档案"] = "\n".join(_profile_lines(facts))
         fam_lines = []
@@ -455,8 +538,13 @@ def _article_facts(facts, cache, key, section=None):
         dashi = []
         if realm.get("liege_chain"):
             dashi.append(f"主角所处疆域：{realm['liege_chain']}")
-        for hc in (realm.get("holder_changes") or []):
+        # v13: 天下大势只收相关高位更替 (上位链 + 相关角色曾任), 已剔全球噪声;
+        # 上限 30 行防膨胀
+        for hc in (realm.get("holder_changes") or [])[:30]:
             dashi.append(hc)
+        # v13: 朝廷职司现任 (尚书省六部/御史台/枢密院)
+        if realm.get("ministers"):
+            dashi.append("朝廷职司：" + "、".join(realm["ministers"]))
         blocks["天下大势"] = "\n".join(dashi) if dashi else "（无天下大势记录）"
         tl = _timeline_texts(facts, types=POLITICAL_TYPES)
         # 朝局动态: 政治类记忆时间线 + 高位头衔更替
@@ -470,7 +558,7 @@ def _article_facts(facts, cache, key, section=None):
         # (剔除路人; 截断 60 名防提示词膨胀)
         names = []
         related = set()
-        for _fid in (_select_friend(cache), _select_primary_enemy(cache)):
+        for _fid in (_pick_friend(cache)[0], _select_primary_enemy(cache)):
             if _fid is not None:
                 related.add(_fid)
         for h in cache.get("court_positions") or []:
@@ -487,9 +575,8 @@ def _article_facts(facts, cache, key, section=None):
                 continue
             if any(m["type"] in POLITICAL_TYPES for m in rec.get("memories") or []) \
                     or prof.get("titles_held"):
-                n = prof.get("house") or ""
-                nm = prof["name"]
-                full = f"{n}{nm}" if n and nm and not nm.startswith(n) else nm
+                # v13: prof["name"] 已是统一显示名 (名·姓/姓+名/父名), 不再拼家族前缀
+                full = prof["name"]
                 if full not in names:
                     names.append(full)
         if names:
@@ -520,6 +607,10 @@ def _article_facts(facts, cache, key, section=None):
                     lines = [f"死者：{k['name']}"]
                     if k.get("house"):
                         lines.append(f"门第：{k['house']}")
+                    # v13: 死者官职 (含家族领袖「XX家族乡绅」) — 此前缺失, 模型
+                    # 无从得知被杀者是家族之主
+                    if k.get("office"):
+                        lines.append(f"官职：{k['office']}")
                     if k.get("birth"):
                         lines.append(f"生于{k['birth']}")
                     if k.get("death"):
@@ -1019,7 +1110,7 @@ def build_articles(facts, cache, cfg):
     pid = facts.get("player_id")
     pname = (facts["protagonist"] or {}).get("name") or "主角"
     style = facts.get("bio_style") or "east"
-    friend = _select_friend(cache)
+    friend, _f_fallback = _pick_friend(cache)
     enemy = _select_primary_enemy(cache)
     fname = ""
     ename = ""

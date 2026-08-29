@@ -487,25 +487,46 @@ def _save_lock(path):
         return lock
 
 
-def load_cache(path):
-    if os.path.isfile(path):
+# v13 (性能): 缓存文件 mtime 记忆 — watch 每轮 poll 都要重读全部玩家缓存
+# (4 份 × 60–160MB JSON), 不变化的缓存直接复用, 避免处理速度赶不上游戏推进。
+_CACHE_LOAD_MEMO = {}   # path -> (mtime, cache_dict)
+
+
+def load_cache(path, fresh=False):
+    """读玩家缓存 (v13: mtime 记忆, fresh=True 强制重读 — 提取/写入路径用)。
+    注意: 返回的 dict 可能被调用方修改; 修改路径一律传 fresh=True 取独立副本。"""
+    if not os.path.isfile(path):
+        return new_cache()
+    if not fresh:
         try:
-            with open(path, encoding="utf-8") as fp:
-                cache = json.load(fp)
-            # 兼容旧 schema: 补齐 v4 字段
-            for k, v in EMPTY_CACHE.items():
-                cache.setdefault(k, v)
-            return cache
-        except Exception as e:
-            # 缓存文件损坏 (并发写共享 .tmp 遗留): 改名留证并告警, 不再静默当空缓存用
-            # (空缓存会以 seq=0 参与选路, 把本会话数据误并进旧会话文件夹, 见 2026-08-28 事件)
+            mt = os.path.getmtime(path)
+        except OSError:
+            mt = None
+        hit = _CACHE_LOAD_MEMO.get(path)
+        if hit is not None and hit[0] == mt:
+            return hit[1]
+    try:
+        with open(path, encoding="utf-8") as fp:
+            cache = json.load(fp)
+        # 兼容旧 schema: 补齐 v4 字段
+        for k, v in EMPTY_CACHE.items():
+            cache.setdefault(k, v)
+        if not fresh:
             try:
-                corrupt = f"{path}.corrupt.{time.strftime('%Y%m%d_%H%M%S')}"
-                os.replace(path, corrupt)
-                llm.log(f"[缓存损坏] {path} 解析失败 ({e}) — 已改名 {os.path.basename(corrupt)} "
-                        f"留证, 返回空缓存 (请用 rebuild-cache 重建)")
-            except Exception:
-                llm.log(f"[缓存损坏] {path} 解析失败 ({e}) — 改名失败, 返回空缓存")
+                _CACHE_LOAD_MEMO[path] = (os.path.getmtime(path), cache)
+            except OSError:
+                pass
+        return cache
+    except Exception as e:
+        # 缓存文件损坏 (并发写共享 .tmp 遗留): 改名留证并告警, 不再静默当空缓存用
+        # (空缓存会以 seq=0 参与选路, 把本会话数据误并进旧会话文件夹, 见 2026-08-28 事件)
+        try:
+            corrupt = f"{path}.corrupt.{time.strftime('%Y%m%d_%H%M%S')}"
+            os.replace(path, corrupt)
+            llm.log(f"[缓存损坏] {path} 解析失败 ({e}) — 已改名 {os.path.basename(corrupt)} "
+                    f"留证, 返回空缓存 (请用 rebuild-cache 重建)")
+        except Exception:
+            llm.log(f"[缓存损坏] {path} 解析失败 ({e}) — 改名失败, 返回空缓存")
     return new_cache()
 
 
@@ -561,35 +582,9 @@ def _load_names(names_path):
 
 
 def resolve_full_name(cache, cid, names_path=None, melt=None):
-    """角色 id → 完整中文名 (姓+名)。优先级: 缓存 name_full → 缓存 name_zh+house_name
-    → names.json (name_zh+house_name) → '' (未知, 由调用方决定措辞)。"""
-    if cid is None:
-        return ""
-    key = str(cid)
-    rec = (cache.get("characters") or {}).get(key)
-    if rec:
-        if rec.get("name_full"):
-            return rec["name_full"]
-        nm = rec.get("name_zh")
-        if nm:
-            h = rec.get("house_name") or ""
-            return h + nm if h else nm
-    if names_path:
-        n = _load_names(names_path).get(key)
-        if n:
-            nm = n.get("name_zh")
-            if nm:
-                h = n.get("house_name") or ""
-                return h + nm if h else nm
-    if melt is not None:
-        # 极端兜底: 直接从 melt 取角色对象解码
-        c = all_characters(melt).get(key)
-        if c:
-            nm = name_zh(c)
-            if nm:
-                h = house_name_zh(melt, c.get("dynasty_house"))
-                return h + nm if h else nm
-    return ""
+    """角色 id → 完整中文名 (v13: 统一走 display_name, 名序/父名按游戏规则)。
+    仅剩调用方兼容 (summarize_relations 等), 新代码一律用 display_name。"""
+    return display_name(cache, cid, melt=melt, names_path=names_path)
 
 
 # ---------------------------------------------------------------------------
@@ -629,9 +624,212 @@ def _family_name_order(cache, rec, melt):
 
 
 def name_display(cache, cid, melt=None, names_path=None):
-    """按文化的显示名: 东方姓在前 (赵阿足), 西方名·姓 (巴沙尔·冯·大马士革)。
-    自身文化缺失 (死后 culture 清空/幼年未录) 时依亲属文化推断名序;
-    无从推断回退原 name_full (姓+名)。"""
+    """(v13 统一出口) 按游戏规则的显示名 — 等价于 display_name, 保留为兼容别名。"""
+    return display_name(cache, cid, melt=melt, names_path=names_path)
+
+
+# ---------------------------------------------------------------------------
+# v13: 统一姓名函数 (游戏同规则) — 全项目唯一出口
+# ---------------------------------------------------------------------------
+
+_PATRONYM_RULES_CACHE = None
+
+
+def _patronym_rules_table():
+    """data/patronym_rules.json 惰性加载 (facts 同源文件)。"""
+    global _PATRONYM_RULES_CACHE
+    if _PATRONYM_RULES_CACHE is None:
+        try:
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "data", "patronym_rules.json")
+            with open(p, encoding="utf-8") as fp:
+                _PATRONYM_RULES_CACHE = json.load(fp)
+        except Exception:
+            _PATRONYM_RULES_CACHE = {}
+    return _PATRONYM_RULES_CACHE
+
+
+def _template_of_culture(melt, cul):
+    """文化 id → culture_template (norse/han…); 未知返回 ''。"""
+    if melt is None or cul is None:
+        return ""
+    cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
+    e = cultures.get(str(cul)) or {}
+    return e.get("culture_template") or ""
+
+
+def _culture_template_of(cache, cid, melt, chars=None, memo=None):
+    """角色文化模板 (norse/han…), 供父名与名序推断 (v13)。
+
+    命名文化沿父系继承 (CK3 子女随父文化), 推断优先级 (各步只看「自身 culture」,
+    递归只走父系线; 同胞/母/宗族一律取自身, 防姻亲/继亲文化经深链泄漏):
+      1) 自身 culture (缓存 → 熔件角色);
+      2) 父系线: 父 → 祖父 → 曾祖父 (各自自身 culture);
+      3) 同胞 (各自自身 culture — 同父系, 不经子树);
+      4) 宗族成员 (同 dynasty_house, 父系血亲最可靠兜底 — 先于母系);
+      5) 母 (自身 culture);
+      6) 语言反查。
+    chars: 预构建的全角色索引 (Facts 已持有), memo: 本次推断的缓存 dict。"""
+    if melt is None or cid is None:
+        return ""
+    memo = memo if memo is not None else {}
+    if cid in memo:
+        return memo[cid]
+    if chars is None:
+        chars = all_characters(melt)
+    tpl = _culture_template_impl(cache, cid, melt, chars, memo)
+    memo[cid] = tpl
+    return tpl
+
+
+def _culture_template_impl(cache, cid, melt, chars, memo):
+    def self_tpl(x):
+        """自身 culture (缓存 → 熔件) 的文化模板。"""
+        k = str(x)
+        r = (cache.get("characters") or {}).get(k) or {}
+        t = _template_of_culture(melt, r.get("culture"))
+        if t:
+            return t
+        return _template_of_culture(melt, (chars.get(k) or {}).get("culture"))
+
+    # 1) 自身
+    t = self_tpl(cid)
+    if t:
+        return t
+    key = str(cid)
+    rec = (cache.get("characters") or {}).get(key) or {}
+
+    def fathers_of(x):
+        k = str(x)
+        r = (cache.get("characters") or {}).get(k) or {}
+        f = (r.get("family") or {}).get("father") or []
+        if not f:
+            c = chars.get(k) or {}
+            v = (c.get("family_data") or {}).get("father")
+            if v is not None:
+                f = v if isinstance(v, list) else [v]
+        return [int(y) for y in f]
+
+    def fam_of(x, keys):
+        k = str(x)
+        r = (cache.get("characters") or {}).get(k) or {}
+        out = []
+        for kk in keys:
+            for y in (r.get("family") or {}).get(kk) or []:
+                if isinstance(y, int):
+                    out.append(y)
+        return out
+
+    # 2) 父系线 (父 → 祖父 → 曾祖父, 各自自身 culture)
+    cur = cid
+    for _ in range(3):
+        fs = fathers_of(cur)
+        if not fs:
+            break
+        cur = fs[0]
+        t = self_tpl(cur)
+        if t:
+            return t
+    # 3) 同胞 (各自自身 culture, 不经子树 — 防姻亲/继亲文化泄漏)
+    for sib in fam_of(cid, ("siblings",)):
+        t = self_tpl(sib)
+        if t:
+            return t
+    # 4) 宗族成员 (同 dynasty_house, 父系血亲最可靠兜底 — 先于母系)
+    dh = rec.get("dynasty_house")
+    if dh is not None:
+        hkey = f"__house_{dh}__"
+        if hkey in memo:
+            return memo[hkey] or ""
+        found = ""
+        for _cid2, r2 in (cache.get("characters") or {}).items():
+            if r2.get("dynasty_house") == dh:
+                t = _template_of_culture(melt, r2.get("culture"))
+                if t:
+                    found = t
+                    break
+        memo[hkey] = found
+        return found
+    # 5) 母 (自身 culture)
+    for m in fam_of(cid, ("mother",)):
+        t = self_tpl(m)
+        if t:
+            return t
+    # 6) 语言反查
+    c = chars.get(str(cid)) or {}
+    langs = rec.get("languages") or (c.get("alive_data") or {}).get("languages") or []
+    if langs:
+        for _cid2, _e in ((melt.get("culture_manager") or {}).get("cultures") or {}).items():
+            if not isinstance(_e, dict):
+                continue
+            if _e.get("language") in langs and _e.get("culture_template"):
+                return _e["culture_template"]
+    return ""
+
+
+def _father_name_of(cache, cid, melt, names_path, chars=None):
+    """角色父的给定名 (父名拼接用): 缓存 family.father → 熔件 family_data.father。"""
+    if melt is None:
+        return ""
+    key = str(cid)
+    rec = (cache.get("characters") or {}).get(key) or {}
+    fathers = (rec.get("family") or {}).get("father") or []
+    if not fathers:
+        c = (chars if chars is not None else all_characters(melt)).get(key) or {}
+        v = (c.get("family_data") or {}).get("father")
+        if v is not None:
+            fathers = v if isinstance(v, list) else [v]
+    if not fathers:
+        return ""
+    fid = int(fathers[0])
+    fr = (cache.get("characters") or {}).get(str(fid)) or {}
+    fn = fr.get("name_zh") or ""
+    if not fn and names_path:
+        fn = (_load_names(names_path).get(str(fid)) or {}).get("name_zh") or ""
+    return fn
+
+
+def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None):
+    """父名 (中间名): 父名制文化且父名已知 → 前缀+父名+后缀 (崔佛松/崔佛斯多蒂尔)。
+    文化模板经亲属链推断 (玩家/死者 culture 缺失时经子女等反推)。"""
+    if melt is None:
+        return ""
+    key = str(cid)
+    rec = (cache.get("characters") or {}).get(key) or {}
+    fathers = (rec.get("family") or {}).get("father") or []
+    if not fathers:
+        c = (chars if chars is not None else all_characters(melt)).get(key) or {}
+        v = (c.get("family_data") or {}).get("father")
+        if v is not None:
+            fathers = v if isinstance(v, list) else [v]
+    if not fathers:
+        return ""
+    fid = int(fathers[0])
+    memo = memo if memo is not None else {}
+    tpl = _culture_template_of(cache, cid, melt, chars=chars, memo=memo)
+    if not tpl:
+        tpl = _culture_template_of(cache, fid, melt, chars=chars, memo=memo)
+    rules = _patronym_rules_table().get(tpl or "")
+    if not rules:
+        return ""
+    fname = _father_name_of(cache, cid, melt, names_path, chars=chars)
+    if not fname:
+        return ""
+    c = (chars if chars is not None else all_characters(melt)).get(key) or {}
+    female = bool(c.get("female"))
+    if female:
+        return f"{rules.get('pf_zh') or ''}{fname}{rules.get('sf_zh') or ''}"
+    return f"{rules.get('pm_zh') or ''}{fname}{rules.get('sm_zh') or ''}"
+
+
+def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
+    """(v13 唯一出口) 按游戏规则的显示名, 全项目统一调用:
+    - 父名制文化 (patronym_rules 有模板) → 「名·父名」(富兰克林·崔佛松), 父名替代家族名;
+    - 其它文化按名序: 东方姓在前 (边诚/赵阿足), 西方名·姓 (崔佛·菲利普/巴沙尔·冯·大马士革);
+    - 文化缺失时沿 父系线→同胞→宗族→母→语言 推断 (玩家/死者均覆盖);
+    - 推断失败: 只返回给定名, 绝不输出错序的「姓+名」拼接。
+    chars: 预构建的全角色索引 (Facts 已持有), memo: 跨调用共享推断缓存
+    (同一次 build_facts 内复用, 避免重复全量宗族扫描)。"""
     if cid is None:
         return ""
     key = str(cid)
@@ -643,26 +841,46 @@ def name_display(cache, cid, melt=None, names_path=None):
         if n:
             nm = n.get("name_zh") or ""
             h = h or n.get("house_name") or ""
+    if not nm and chars is not None:
+        # v13: 兜底从熔件角色对象解码 (击杀受害者等不在缓存/names 的角色,
+        # 如 first_name='Zhenya_8D1E_96C5' → 镇雅; 此前漏此兜底输出「一位人物」)
+        c = chars.get(key) or {}
+        nm = name_zh(c)
+        if nm and not h:
+            hid = c.get("dynasty_house")
+            if hid is not None:
+                h = house_name_zh(melt, hid) or ""
     if not nm:
         return rec.get("name_full") or ""
-    fallback = rec.get("name_full") or (h + nm if h else nm)
+    memo = memo if memo is not None else {}
+    # 1) 父名制文化 → 名·父名
+    ptn = _patronym_of(cache, cid, melt, names_path, chars=chars, memo=memo)
+    if ptn:
+        return f"{nm}·{ptn}"
+    # 2) 名序: 自身文化 → 亲属推断 → 文化模板反查 (v13)
     cul = rec.get("culture")
-    if cul is None:
+    order = name_order_of(melt, cul) if cul is not None else None
+    if order is None:
         order = _family_name_order(cache, rec, melt)
-        if order is None:
-            return fallback
-        if order in EASTERN_NAME_ORDERS:
-            return h + nm if h else nm
-        # 亲属文化为西方默认 (order==''): 名·姓
-        return f"{nm}·{h}" if h else nm
-    order = name_order_of(melt, cul)
+    if order is None:
+        tpl = _culture_template_of(cache, cid, melt, chars=chars, memo=memo)
+        if tpl:
+            for _cid2, _e in ((melt.get("culture_manager") or {})
+                              .get("cultures") or {}).items():
+                if isinstance(_e, dict) and _e.get("culture_template") == tpl:
+                    order = _e.get("name_order_convention") or ""
+                    break
     if order in EASTERN_NAME_ORDERS:
         return h + nm if h else nm
     cultures = (melt or {}).get("culture_manager") or {}
-    if str(cul) in (cultures.get("cultures") or {}):
-        # 文化已知且为西方默认 (order==''): 名·姓
+    if cul is not None and str(cul) in (cultures.get("cultures") or {}):
+        # 文化已知且西方默认: 名·姓
         return f"{nm}·{h}" if h else nm
-    return fallback
+    if order is not None and order == "":
+        # 亲属/模板推断为西方默认: 名·姓
+        return f"{nm}·{h}" if h else nm
+    # 3) 无从推断: 只给给定名 (宁缺勿错序)
+    return nm
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +1040,8 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     db = _db(melt)
     lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
     tl = melt.get("traits_lookup") or []
+    # v13: 本快照内共享的姓名推断缓存 (一次 rebuild 数万角色只算一遍)
+    _name_memo = {}
 
     def trait_key(t):
         if isinstance(t, int) and 0 <= t < len(tl):
@@ -1009,12 +1229,15 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
             rec["first_name"] = c.get("first_name")
             rec["name_zh"] = name_zh(c)
             rec["dynasty_house"] = c.get("dynasty_house")
-            # 姓氏 + 姓名合并 (v3/v4)
+            # 姓氏 + 姓名合并 (v3/v4); v13: name_full 按 display_name 正确名序生成
             if rec["dynasty_house"] is not None:
                 h = house_name_zh(melt, rec["dynasty_house"])
                 rec["house_name"] = h
-                if h and rec["name_zh"]:
-                    rec["name_full"] = h + rec["name_zh"]
+            if rec["name_zh"]:
+                # v13: name_full 按 display_name 正确名序生成 (chars/memo 复用本快照索引)
+                rec["name_full"] = display_name(cache, cid, melt=melt, chars=chars,
+                                                memo=_name_memo) \
+                    or (rec.get("house_name", "") + rec["name_zh"])
             rec["birth"] = c.get("birth")
             rec["culture"] = c.get("culture")
             rec["faith"] = c.get("faith")
