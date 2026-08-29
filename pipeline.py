@@ -25,6 +25,7 @@
   python pipeline.py bio [玩家id]        # 手动生成传记 (在世传记或终传)
   python pipeline.py demo-death          # 模拟主角死亡, 演示「死后自动生成」链路
   python pipeline.py rebuild-cache       # 从各战役文件夹熔件重建缓存 (迁移/修复)
+  python pipeline.py index-melts         # 预建全部熔件的记忆归档边车 (回溯加速)
   python pipeline.py migrate             # 迁移 v4: 旧文件夹更名 + 缓存移入 output/<家族>/data/ + 重建
 """
 import json
@@ -238,6 +239,10 @@ def find_cache_path(cfg, player_id):
             p = os.path.join(dp, f"player_{player_id}.json")
             if os.path.isfile(p):
                 cache = cl.load_cache(p)
+                # 空缓存 (损坏文件被 load_cache 改名留证后返回的空缓存) 不参与选路,
+                # 否则会以 seq=0 落选后把新档误并进旧会话文件夹 (2026-08-28 事件)
+                if not cache.get("player_id"):
+                    continue
                 if best is None or _cache_pick_key(p, cache) > _cache_pick_key(best[0], best[1]):
                     best = (p, cache)
     if best:
@@ -261,6 +266,8 @@ def all_caches(cfg):
                 pid = int(m.group(1))
                 path = os.path.join(dp, fn)
                 cache = cl.load_cache(path)
+                if not cache.get("player_id"):
+                    continue  # 损坏缓存 (load_cache 已改名留证) 不参与任何战役选路
                 prev = out.get(pid)
                 if prev is None or _cache_pick_key(path, cache) > _cache_pick_key(prev[0], prev[1]):
                     out[pid] = (path, cache)
@@ -691,7 +698,10 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
     v9: 传入 new_deaths (本轮并入时新发现的死亡角色 id 列表) 时只处理这些角色,
     避免每次合并全量扫描全部已死角色 (随战役增长而膨胀, 是进程追不上游戏的主因之一);
     按死前档案分组, 同一份 melt 只加载一次, 为组内所有角色恢复。
-    返回恢复的角色数。"""
+
+    v12: 优先读记忆归档边车 (melt_<日期>_idx.json, 瘦身 ~20 MB) 回溯, 不再整份
+    json.load 160 MB 旧熔件; 归档缺失时回退全量熔件, 并在回溯后惰性构建持久化
+    归档 (下次直接读归档)。返回恢复的角色数。"""
     sources = cache.get("sources") or []
     # 候选: 已死、记忆为空、且 (提供 new_deaths 时) 属本轮新死亡
     pending = []
@@ -712,12 +722,32 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
         pending.append((cid, mp, ddate, before[-1], rec))
     if not pending:
         return 0
-    # 按死前档分组: 每份 melt 只加载一次
+    # 按死前档分组: 每份 melt (或其归档) 只读一次
     by_melt = {}
     for cid, mp, ddate, src, rec in pending:
         by_melt.setdefault(mp, []).append((cid, ddate, src, rec))
     recovered = 0
+
+    def _recover_items(idx_or_melt, items, via_index):
+        nonlocal recovered
+        for cid, ddate, src, rec in items:
+            try:
+                if via_index:
+                    n = cl.recover_dead_memories_from_index(idx_or_melt, cache, int(cid))
+                else:
+                    n = cl.recover_dead_memories_from(idx_or_melt, cache, int(cid))
+                if n:
+                    llm.log(f"  [回溯] 角色 {cid} ({rec.get('name_zh') or rec.get('name_full') or ''}) "
+                            f"殁于{ddate}, 从{src}档{('归档' if via_index else '')}恢复 {n} 条记忆")
+                    recovered += 1
+            except Exception as e:
+                llm.log(f"  [回溯失败] 角色 {cid}: {e}")
+
     for mp, items in by_melt.items():
+        idx = cl.load_melt_index(mp)
+        if idx is not None:
+            _recover_items(idx, items, via_index=True)
+            continue
         try:
             melt = cl.load_melt(mp)
         except Exception as e:
@@ -734,6 +764,12 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
                     recovered += 1
             except Exception as e:
                 llm.log(f"  [回溯失败] 角色 {cid}: {e}")
+        try:
+            # v12: 惰性构建并持久化归档 — 今后回溯直接读边车索引
+            cl.save_melt_index(mp, melt)
+            llm.log(f"  [归档] {os.path.basename(mp)} 记忆归档已生成")
+        except Exception as e:
+            llm.log(f"  [归档失败] {os.path.basename(mp)}: {e}")
     if recovered:
         llm.log(f"死角色记忆回溯: {recovered} 个角色补全记忆")
     return recovered
@@ -1386,6 +1422,41 @@ def step_demo_death(cfg):
 # 主入口
 # ---------------------------------------------------------------------------
 
+def step_index_melts(cfg):
+    """预建全部熔件的记忆归档边车 (melt_<日期>_idx.json)。
+
+    日常回溯 (死角色记忆补全) 优先读归档, 全量 160 MB 熔件只在归档缺失时加载
+    一次 (惰性构建), 之后直接读 ~20 MB 归档。本命令用于升级后一次性补齐历史
+    熔件的归档, 也可随时重跑补齐新增熔件。"""
+    melts = _iter_melts(cfg)
+    if not melts:
+        llm.log("未找到 melt 文件 (战役文件夹 data/ 或根 data/)")
+        return
+    llm.log(f"预建记忆归档: {len(melts)} 份熔件")
+    built = skipped = failed = 0
+    for _folder, path, date in melts:
+        idx_path = cl.melt_index_path(path)
+        if os.path.isfile(idx_path):
+            skipped += 1
+            continue
+        t0 = time.time()
+        try:
+            melt = cl.load_melt(path)
+        except Exception as e:
+            llm.log(f"  {date}: 加载失败 {e}")
+            failed += 1
+            continue
+        try:
+            cl.save_melt_index(path, melt)
+        except Exception as e:
+            llm.log(f"  {date}: 归档失败 {e}")
+            failed += 1
+            continue
+        built += 1
+        llm.log(f"  {date}: 归档完成 ({time.time() - t0:.0f}s)")
+    llm.log(f"归档完成: 新建 {built} 份, 已有 {skipped} 份, 失败 {failed} 份")
+
+
 def main():
     cfg = llm.load_config()
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
@@ -1416,6 +1487,8 @@ def main():
         step_demo_death(cfg)
     elif cmd == "rebuild-cache":
         step_rebuild_cache(cfg)
+    elif cmd == "index-melts":
+        step_index_melts(cfg)
     elif cmd == "migrate":
         step_migrate(cfg)
     else:
