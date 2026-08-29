@@ -569,12 +569,38 @@ def output_paths(cfg, cache, continue_mode=False, decade=None):
         kind = "传记"
         dkey = cl.date_filekey(cache.get("last_date") or "")
     if decade:
-        # 十年传记独立命名: 日期用数据截止日 (last_date), 与生死无关
-        dkey = cl.date_filekey(cache.get("last_date") or "")
+        # 十年传记独立命名: 日期用数据截止日 (十年末, v11: 而非缓存 last_date —
+        # 满档重跑时 last_date 是 931, 会误导文件名)
+        dkey = cl.date_filekey(_decade_cutoff(cache, decade) or cache.get("last_date") or "")
         fname = f"{pname}_传记_第{decade}个十年_{dkey}.md"
     else:
         fname = f"{pname}_{kind}_{dkey}.md"
     return folder, fname
+
+
+def _decade_cutoff(cache, decade):
+    """第 decade 个十年的数据截止日 (v11): 起始年+decade×10 的年初, 取 min(last_date)。"""
+    srcs = cache.get("sources") or []
+    last = cache.get("last_date")
+    if not srcs:
+        return last
+    try:
+        sy = int(str(srcs[0]).split(".")[0])
+        end = f"{sy + decade * 10}.1.1"
+    except Exception:
+        return last
+    if last and cl.date_key(last) < cl.date_key(end):
+        return last
+    return end
+
+
+def _bio_as_of(cache, decade=None):
+    """传记数据截止日期 (v11): 十年传记 = 十年末; 终传/普通传记 = 死亡日或末档日期。
+    None 表示不截断。"""
+    if not decade:
+        death = cache.get("player_death") or {}
+        return death.get("date") or cache.get("last_date")
+    return _decade_cutoff(cache, decade)
 
 
 def generate_bio(cfg, cache, force=False, decade=None):
@@ -602,7 +628,7 @@ def generate_bio(cfg, cache, force=False, decade=None):
             llm.log(f"已存在, 跳过 (加 --force 重新生成): {out_path}")
             return out_path, None
     md, facts, articles = bio.generate_biography(cache, melt, cfg, out_path=out_path,
-                                                 decade=decade)
+                                                 decade=decade, as_of=_bio_as_of(cache, decade))
     # 持久化文件夹绑定 (generate 可能首次解析出文件夹)
     if cache.get("output_folder") != house:
         cache["output_folder"] = house

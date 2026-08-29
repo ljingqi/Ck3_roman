@@ -71,7 +71,12 @@ SECTION_TITLES = {
     "jiashi":  {"lead": "开篇·结缡与离异", "mid": "纪事·门庭恩怨", "tail": None},
     "chaoju":  {"lead": "开篇·天下大势",   "mid": "纪事·朝局浮沉", "tail": None},
     # v5 新增
-    "assassins": {"lead": "开篇·刀下之魂", "mid": "纪事·诸魂行迹", "tail": None},
+    "assassins": {"lead": "开篇·刀下之魂",
+                  "mid": "纪事·诸魂行迹",
+                  "mid1": "纪事·诸魂行迹·上",
+                  "mid2": "纪事·诸魂行迹·中",
+                  "mid3": "纪事·诸魂行迹·下",
+                  "tail": None},
     "youxia":  {"lead": "开篇·萍踪浪迹",   "mid": "纪事·辗转行迹", "tail": None},
     "qizu":    {"lead": "开篇·帝胄姻亲",   "mid": "纪事·门第荣枯", "tail": None},
     "qunying": {"lead": "开篇·朝堂群英",   "mid": "纪事·要员浮沉", "tail": None},
@@ -111,6 +116,9 @@ SECTION_REQ = {
     "assassins": {
         "lead": "写被主角所杀诸人的群像: 各人身份、与主角的恩怨由、死时情状, 以资料为限, 客观平实。",
         "mid": "依死亡先后为序, 为每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。",
+        "mid1": "依死亡先后为序, 为这一时期 (最早所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。",
+        "mid2": "依死亡先后为序, 为这一时期 (中期所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。",
+        "mid3": "依死亡先后为序, 为这一时期 (暮年所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。",
         "tail": None,
     },
     "youxia": {
@@ -241,15 +249,23 @@ def _select_enemies(cache):
     return set(_enemy_dates(cache))
 
 
+ENEMY_MIN_MEMORIES = 5  # v11: 仇人候选池记忆数门槛 (素材太少写不出列传)
+
+
 def _select_primary_enemy(cache):
-    """主仇人: 与主角结仇/结怨/死敌、且在世的对手中, 取结怨时间最早者
-    (死了就换新的); 全部已死时回退最早结怨者。"""
+    """主仇人 (v11): 与主角结仇/结怨/死敌的对手中, 记忆数 >5 者才入候选池
+    (素材不足的早期路人仇人如卡托内只有 1 条记忆, 列传只能靠臆测充数);
+    池内按原规则 (在世优先、结怨最早); 池空时回退原逻辑。"""
     dates = _enemy_dates(cache)
     if not dates:
         return None
-    alive = {c: d for c, d in dates.items() if not _is_dead(cache, c)}
-    pool = alive or dates  # 全部已死时回退最早结怨者
-    return min(pool, key=lambda c: cl.date_key(pool[c]))
+    rich = {c: d for c, d in dates.items()
+            if len((cache.get("characters") or {}).get(str(c), {}).get("memories") or [])
+            > ENEMY_MIN_MEMORIES}
+    pool = rich or dates  # 池空回退全部
+    alive = {c: d for c, d in pool.items() if not _is_dead(cache, c)}
+    pick = alive or pool
+    return min(pick, key=lambda c: cl.date_key(pick[c]))
 
 
 def _family_ids(cache):
@@ -394,8 +410,9 @@ def _render_block(title, lines):
     return f"{title}\n" + "\n".join(body)
 
 
-def _article_facts(facts, cache, key):
-    """按文章取事实文本块 dict: {块名: 文本}。"""
+def _article_facts(facts, cache, key, section=None):
+    """按文章取事实文本块 dict: {块名: 文本}。
+    v11: 刺客列传按板块取料 — 开篇给压缩名录 (群像总览), 各纪事给对应时段切片。"""
     pid = facts.get("player_id")
     pname = (facts["protagonist"] or {}).get("name") or ""
     blocks = {}
@@ -482,22 +499,38 @@ def _article_facts(facts, cache, key):
         blocks["人物档案"] = "\n".join(_profile_lines(facts))
         killed = facts.get("killed") or []
         if killed:
-            parts = []
-            for k in killed:
-                lines = [f"死者：{k['name']}"]
-                if k.get("house"):
-                    lines.append(f"门第：{k['house']}")
-                if k.get("birth"):
-                    lines.append(f"生于{k['birth']}")
-                if k.get("death"):
-                    lines.append(k["death"])
-                if k.get("traits"):
-                    lines.append(f"为人{k['traits']}")
-                if k.get("events"):
-                    lines.append("生前经历：")
-                    lines.extend("  " + e for e in k["events"])
-                parts.append("\n".join(lines))
-            blocks["刀下诸魂"] = "\n\n".join(parts)
+            sec_key = (section or {}).get("key") or ""
+            if sec_key == "lead":
+                # v11 开篇: 压缩名录 (死者名 + 生卒死因), 供群像总览, 不再整块铺 168 人档案
+                parts = []
+                for k in killed:
+                    nm = k["name"]
+                    db = k.get("death") or ""
+                    if db.startswith(nm + "殁于"):
+                        db = "殁于" + db[len(nm) + 2:]  # 去掉「名+殁于」前缀
+                    parts.append(f"死者：{nm}（{db}）" if db and db != "（死因不详）"
+                                 else f"死者：{nm}")
+                blocks["刀下诸魂"] = "\n".join(parts)
+            else:
+                # 各纪事: 按时段切片给完整档案
+                sl = (section or {}).get("slice")
+                picked = killed[sl[0]:sl[1]] if sl else killed
+                parts = []
+                for k in picked:
+                    lines = [f"死者：{k['name']}"]
+                    if k.get("house"):
+                        lines.append(f"门第：{k['house']}")
+                    if k.get("birth"):
+                        lines.append(f"生于{k['birth']}")
+                    if k.get("death"):
+                        lines.append(k["death"])
+                    if k.get("traits"):
+                        lines.append(f"为人{k['traits']}")
+                    if k.get("events"):
+                        lines.append("生前经历：")
+                        lines.extend("  " + e for e in k["events"])
+                    parts.append("\n".join(lines))
+                blocks["刀下诸魂"] = "\n\n".join(parts)
         else:
             blocks["刀下诸魂"] = "（无刀下诸魂记录）"
     elif key == "youxia":
@@ -574,37 +607,46 @@ def _system_msg(style="east", extra=""):
 def _shared_facts_block(facts):
     """所有调用共享的事实前缀 (v9 输入缓存优化): 传主+人物档案+主角大事年表。
     逐字节一致, 置于每条 user 消息最前, 供 DeepSeek 前缀缓存命中
-    (总纲/各文章/各板块调用全部共享)。"""
+    (总纲/各文章/各板块调用全部共享)。
+    v11: 删【时期】(起止是快照区间, 不是生卒, 对模型无用);
+    卒年自然语言化 (【卒年】931年6月7日，因绊倒坠落而亡——此为终传)。"""
     p = facts["protagonist"]
     name = p.get("name") or "主角"
     house = facts.get("house") or p.get("house") or ""
-    period = facts.get("period") or "?"
     death = facts.get("player_death")
     if death:
         rz = death.get("reason_zh") or death.get("reason") or "身故"
-        life_note = f"【卒年】{death.get('date')}（{rz}）——此为终传"
+        life_note = (f"【卒年】{llm.fmt_cn_date(death.get('date'))}，{rz}"
+                     "——此为终传")
+    elif facts.get("as_of"):
+        life_note = f"【现状】在世（截至{llm.fmt_cn_date(facts['as_of'])}）"
     else:
         life_note = "【现状】在世（截至最后一份存档）"
     profile_txt = _render_block("【人物档案】", _profile_lines(facts)) or "（无档案）"
     timeline_txt = _render_block("【主角大事年表】",
                                  _timeline_texts(facts) or ["（无重大事件记录）"])
-    return (f"【传主】{name}\n【家族】{house}\n【时期】{period}\n{life_note}\n\n"
+    return (f"【传主】{name}\n【家族】{house}\n{life_note}\n\n"
             f"{profile_txt}\n\n{timeline_txt}")
 
 
 def build_intro_messages(facts, cfg, articles=None):
-    """总纲提示词 (共享前缀 + 篇目预告)。"""
+    """总纲提示词 (共享前缀 + 篇目预告)。v11: 输出头改为 生卒; 明确以「太史公曰」作结。"""
     p = facts["protagonist"]
     name = p.get("name") or "主角"
     house = facts.get("house") or p.get("house") or ""
-    period = facts.get("period") or "?"
     style = facts.get("bio_style") or "east"
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
+    birth = p.get("birth") or ""
+    death = facts.get("player_death")
+    if death:
+        span_cn = f"生卒：{birth}–{llm.fmt_cn_date(death.get('date'))}"
+    else:
+        span_cn = f"生于{birth}" if birth else ""
     sys_msg = (
         "你是史官, 为一位乱世人物修传。\n\n"
         f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n\n"
         "撰写传记「总纲」: 概括此人的一生大势, 预告以下各篇文章, "
-        "点明其家族与身份。总纲正文控制在400–600字。"
+        "点明其家族与身份。总纲正文控制在400–600字, 以「太史公曰」作结。"
     )
     shared = _shared_facts_block(facts)
     # 文章预告: 用实际文章标题 (好友/仇人姓名已定; v5 支持任意篇数)
@@ -628,7 +670,7 @@ def build_intro_messages(facts, cfg, articles=None):
         f"本传共{n_articles}篇, 篇目预告:\n{preview}\n\n"
         "输出格式:\n"
         f"# 《{name}传》\n"
-        f"家族：{house}｜人物：{name}｜时期：{period}\n\n"
+        f"家族：{house}｜人物：{name}｜{span_cn}\n\n"
         "总纲正文…（一段至两段）\n\n请据此撰写总纲。"
     )
     return [{"role": "system", "content": sys_msg},
@@ -642,7 +684,7 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     title = article["title"]
     style = facts.get("bio_style") or "east"
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
-    blocks = _article_facts(facts, cache, key)
+    blocks = _article_facts(facts, cache, key, sec)
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
         f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}"
@@ -678,13 +720,14 @@ def build_lead_messages(article, facts, cache, intro, cfg):
             {"role": "user", "content": user_msg}]
 
 
-def build_section_messages(article, section, facts, cache, intro, lead_text, cfg):
-    """中段/尾段提示词。"""
+def build_section_messages(article, section, facts, cache, lead_text, cfg):
+    """中段提示词。v11: 不再注入【总纲】全文 (防止每篇复述总纲导致雷同);
+    承接开篇以正向表述推进新内容; 无尾段 (太史公曰只留总纲)。"""
     key = article["key"]
     title = article["title"]
     style = facts.get("bio_style") or "east"
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
-    blocks = _article_facts(facts, cache, key)
+    blocks = _article_facts(facts, cache, key, section)
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
         f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}"
@@ -699,7 +742,6 @@ def build_section_messages(article, section, facts, cache, intro, lead_text, cfg
         )
     user_msg = (
         f"{_shared_facts_block(facts)}\n\n"
-        f"【总纲】\n{intro}\n\n"
         + subject_note
         + f"相关事实:\n{facts_txt}\n\n"
         f"本篇文章标题已定为《{title}》。\n\n"
@@ -707,9 +749,9 @@ def build_section_messages(article, section, facts, cache, intro, lead_text, cfg
         f"篇幅要求: 板块正文1200–1800字。\n\n"
         f"本文开篇板块《{article['sections'][0]['title']}》内容(以下为开篇全文):\n"
         f"{lead_text}\n\n"
-        f"请撰写后续板块《{section['title']}》, 须与开篇呼应。\n\n"
-        "输出格式: 直接输出正文, 正文使用 Markdown; 以「太史公曰」作结的板块请确保"
-        "评点在文末。"
+        f"承接开篇所立人物与场景，以本篇相关事实为素材推进新事件与新细节，"
+        f"撰写板块《{section['title']}》。\n\n"
+        "输出格式: 直接输出正文, 正文使用 Markdown。"
     )
     return [{"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg}]
@@ -753,7 +795,8 @@ def _strip_markdown_tables(text):
 
 
 def _normalize_section(text, sec_title):
-    """板块正文规范化: 标题统一为 ###, 表格转自然语言, 无标题补 ### 板块名。"""
+    """板块正文规范化: 标题统一为 ###, 表格转自然语言, 无标题补 ### 板块名。
+    v11: 剥离板块内的「太史公曰/史家按」评点段 (只留总纲的评点, 板块均为客观叙事)。"""
     out = []
     saw = False
     for raw in (text or "").split("\n"):
@@ -764,12 +807,27 @@ def _normalize_section(text, sec_title):
         if s.startswith("#"):
             if sec_title in s:
                 saw = True
+            if re.search(r"太史公曰|史家按", s):
+                out.append("")  # 评点标题 (### 太史公曰) 剥离
+                continue
             s = re.sub(r"^(#{1,6})\s+", "### ", s)
             out.append(s)
             continue
+        # 评点段整段剥离: 「太史公曰：…」/「**太史公曰**」/「史家按：…」(西式)
+        stripped = s.lstrip("*# \t")
+        if stripped.startswith("太史公曰") or stripped.startswith("史家按"):
+            out.append("")  # 用空行占位, 保持段距
+            continue
+        # 段中评点截断: 保留「太史公曰/史家按」之前的叙述 (只留总纲的评点)
+        for marker in ("太史公曰", "史家按"):
+            if marker in s:
+                s = s.split(marker, 1)[0].rstrip().rstrip("，")
+                break
         out.append(s)
     body = _strip_markdown_tables("\n".join(out)).strip()
     body = llm.clean_number_spaces(body)
+    # 评点剥离后可能残留孤立空行, 压缩
+    body = re.sub(r"\n{3,}", "\n\n", body)
     if not saw:
         body = f"### {sec_title}\n\n{body}"
     return body
@@ -784,7 +842,8 @@ def _assemble(facts, intro, leads, sections, articles):
     if death:
         span = f"卒于{llm.fmt_cn_date(death.get('date'))}（终传）"
     else:
-        span = f"截至{llm.fmt_cn_date(facts.get('last_date') or '?')}"
+        cutoff = facts.get("as_of") or facts.get("last_date")
+        span = f"截至{llm.fmt_cn_date(cutoff or '?')}"
     parts.append(f"> 家族：{house}｜人物：{p.get('name')}｜{span}")
     parts.append(f"> 存档来源：{' / '.join(facts.get('sources') or [])}（共{len(facts.get('sources') or [])}份快照）")
     parts.append("")
@@ -933,6 +992,27 @@ def _timeline_event_priority(body, pname):
 # 主流程
 # ---------------------------------------------------------------------------
 
+def _assassin_sections(n):
+    """刺客列传板块 (v11): 按击杀数动态拆纪事 — <30 拆 1 个纪事, 30–59 拆 2 个,
+    ≥60 拆 3 个; 每个纪事按死亡先后等分切片 (防提示词过大吃掉模型注意力)。"""
+    if n >= 60:
+        mids = ["mid1", "mid2", "mid3"]
+    elif n >= 30:
+        mids = ["mid1", "mid2"]
+    else:
+        mids = ["mid"]
+    mid_suffix = "本篇正文均为客观叙事，史家评点集中于总纲。"
+    secs = [{"key": "lead", "title": SECTION_TITLES["assassins"]["lead"],
+             "req": SECTION_REQ["assassins"]["lead"]}]
+    chunk = (n + len(mids) - 1) // len(mids)
+    for i, k in enumerate(mids):
+        lo, hi = i * chunk, min((i + 1) * chunk, n)
+        secs.append({"key": k, "title": SECTION_TITLES["assassins"][k],
+                     "req": SECTION_REQ["assassins"][k] + mid_suffix,
+                     "slice": (lo, hi)})
+    return secs
+
+
 def build_articles(facts, cache, cfg):
     """按 cfg.bio_sections 组装文章列表 (标题含主角/好友/仇人姓名)。
     v5: 动态追加 刺客列传/游侠列传/妻族传/群英录 (依数据条件)。"""
@@ -949,17 +1029,17 @@ def build_articles(facts, cache, cfg):
     if enemy is not None:
         ep = facts["characters"].get(str(enemy)) or {}
         ename = ep.get("name") or ""
-    sec_keys = [s for s in ("lead", "mid", "tail") if s in (cfg.get("bio_sections") or ["lead", "mid", "tail"])]
+    sec_keys = [s for s in ("lead", "mid")]  # v11: 尾段 (评曰) 全部删去, 太史公曰只留总纲
     def mk_sections(key):
         titles = SECTION_TITLES.get(key, {})
-        tail_title = STYLE_RULES.get(style, STYLE_RULES["east"])["tail_title"]
-        tail_req = STYLE_RULES.get(style, STYLE_RULES["east"])["tail_req"]
-        defaults = {"lead": "开篇", "mid": "纪事", "tail": tail_title}
+        defaults = {"lead": "开篇", "mid": "纪事"}
+        mid_suffix = "本篇正文均为客观叙事，史家评点集中于总纲。"
         return [{
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
-            "req": SECTION_REQ.get(key, {}).get(sk) or (
-                tail_req if sk == "tail" else "按传记笔法写作, 以资料为限。"),
+            "req": (SECTION_REQ.get(key, {}).get(sk)
+                    or "按传记笔法写作, 以资料为限。")
+                   + (mid_suffix if sk != "lead" else ""),
         } for sk in sec_keys]
     articles = [
         {"key": "benji", "title": f"本纪·{pname}", "subject": None,
@@ -984,13 +1064,14 @@ def build_articles(facts, cache, cfg):
                             "subject": None,
                             "theme": "主角家族所藏重宝的流转历史",
                             "sections": mk_sections("artifacts")})
-    # v5: 刺客列传 (主角杀 >5 人)
+    # v5: 刺客列传 (主角杀 >5 人); v11: 按击杀数动态拆纪事板块
+    # (<30 不拆 1 个纪事; 30–59 拆 2 个; ≥60 拆 3 个; 已剔除 lowborn)
     killed = facts.get("killed") or []
     if len(killed) > 5:
         articles.append({
             "key": "assassins", "title": "刺客列传·刀下诸魂",
             "subject": None, "theme": f"被主角所杀 {len(killed)} 人的合传",
-            "sections": mk_sections("assassins")})
+            "sections": _assassin_sections(len(killed))})
     # v5: 游侠列传 (无地冒险者)
     if facts.get("protagonist", {}).get("landless"):
         articles.append({
@@ -1019,11 +1100,12 @@ def _is_admin(facts):
     return gov in ("行政官制", "administrative_government")
 
 
-def generate_biography(cache, melt, cfg, out_path=None, decade=None):
+def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None):
     """生成传记 Markdown 并写入 out_path。返回 (md_text, facts, articles)。
-    decade: 十年传记序号 (第N个十年), None 表示终传或普通在世传记。"""
+    decade: 十年传记序号 (第N个十年), None 表示终传或普通在世传记。
+    as_of (v11): 数据截止日期 — 十年传记传十年末, 官职/历任/时间线/朝局按此截断。"""
     names_path = os.path.join(cfg.get("data_dir", ""), "names.json")
-    facts = F.build_facts(cache, melt, names_path)
+    facts = F.build_facts(cache, melt, names_path, as_of=as_of)
     articles = build_articles(facts, cache, cfg)
 
     intro_cfg = dict(cfg)
@@ -1056,7 +1138,7 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None):
 
     def _gen_section(article, section):
         try:
-            msg = build_section_messages(article, section, facts, cache, intro,
+            msg = build_section_messages(article, section, facts, cache,
                                          leads[article["key"]], cfg)
             text = llm.call_deepseek(msg, sec_cfg).strip()
             return article["key"], section["key"], _normalize_section(

@@ -73,6 +73,21 @@ DEATH_REASON_ZH = {
     "death_bubonic_plague": "黑死病", "death_physique_bad_2": "体弱不支",
 }
 
+# v11: 游戏 UI 腔/坏文本死因 → 传记雅化 (优先于本地化值, 本地化文案是游戏内
+# 通知腔, 如 blind = 「因绊倒坠落而失去的生命」, 直接进传记会读起来像抄游戏)。
+FLAVOR_DEATH_ZH = {
+    "blind": "因绊倒坠落而亡",
+    "death_fall": "因坠落而亡",
+    "death_wounded_1": "伤重不治",
+    "death_wounded_2": "伤重不治",
+    "death_maimed": "重伤不治",
+    "death_head_ripped_off": "身首异处",
+    "death_apoplexy": "中风而亡",
+    "death_drinking_passive": "酗酒而亡",
+    # 成功且未败露的谋杀: 游戏显示「神秘死亡」, 传记直用太怪
+    "death_mysterious": "死于一场未曾败露的谋杀",
+}
+
 # 记忆类型 → 中文 (模板: {name}=记忆拥有者, {other}=参与者, {title}=头衔)
 MEMORY_TEMPLATES = {
     "became_rivals": "{name}与{other}结仇。",
@@ -161,6 +176,29 @@ POLITICAL_TYPES_KEYS = {
     "battle_won_memory", "battle_lost_memory",
 }
 
+# v11: 刺客列传击杀数超过该阈值时, 剔除 lowborn (无家族且非家人/友/仇) 死者,
+# 压缩提示词体积, 保住模型注意力 (168 人 → 142 人)。
+KILL_LOWBORN_THRESHOLD = 15
+
+
+def _kill_keep_ids(cache, pid):
+    """击杀者名单里必须保留的角色 id 集: 主角家人 (含前妻/妾) + 结友/结仇者。"""
+    keep = set()
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    fam = rec.get("family") or {}
+    for k in ("primary_spouse", "spouse", "former_spouses", "child",
+              "concubine", "former_concubines"):
+        for x in (fam.get(k) or []):
+            if isinstance(x, int):
+                keep.add(x)
+    rel_types = {"became_rivals", "became_grudge", "became_nemesis",
+                 "became_friends", "became_soulmates", "became_blood_brother"}
+    for cid, r in (cache.get("characters") or {}).items():
+        for m in r.get("memories") or []:
+            if m.get("type") in rel_types and pid in (m.get("participants") or {}).values():
+                keep.add(int(cid))
+    return keep
+
 
 # 父名制规则表 (由 experiments/patronym_scan.py 从游戏 name_lists 生成):
 # {文化模板: {pm/pf/sm/sf 键, pm_zh/pf_zh/sm_zh/sf_zh 中文}}
@@ -205,9 +243,12 @@ def _trait_name(table, key):
 
 
 def _death_reason(table, reason):
-    """死因 key → 中文 (本地化值含未解析引用时用兜底表)。"""
+    """死因 key → 中文: v11 先查雅化表 (游戏腔/坏文本), 再本地化, 最后兜底表。"""
     if not reason:
         return "身故"
+    v = FLAVOR_DEATH_ZH.get(reason)
+    if v:
+        return v
     v = L.loc(table, reason)
     if v and "[" not in v and "$" not in v and v != "死于":
         return v
@@ -253,12 +294,15 @@ def render_motto(motto, table):
 # ---------------------------------------------------------------------------
 
 class Facts:
-    """一次 build_facts 的上下文: 缓存 + melt + 名字/头衔/本地化解析。"""
+    """一次 build_facts 的上下文: 缓存 + melt + 名字/头衔/本地化解析。
+    as_of: 传记数据截止日期 (十年传记 = 十年末; 终传/在世 = 最后档期)。
+    非空时 官职/称号/历任/时间线/朝局 均只取该日期之前的事实 (v11)。"""
 
-    def __init__(self, cache, melt, names_path):
+    def __init__(self, cache, melt, names_path, as_of=None):
         self.cache = cache
         self.melt = melt
         self.names_path = names_path
+        self.as_of = as_of
         self._lt = ((melt.get("landed_titles") or {}).get("landed_titles") or {})
         self._tl = melt.get("traits_lookup") or []
         self._chars = cl.all_characters(melt)
@@ -272,6 +316,80 @@ class Facts:
             if k:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
+        # v11: 语言 → 文化模板列表 反查索引 (同一语言多文化共享, 如 language_norse
+        # 同时被 norman/norse 持有; 推断时优先有父名规则的模板)
+        self._lang_to_tpl = {}
+        for _cid, _e in ((melt.get("culture_manager") or {}).get("cultures") or {}).items():
+            if not isinstance(_e, dict):
+                continue
+            _lg = _e.get("language")
+            if _lg:
+                self._lang_to_tpl.setdefault(_lg, []).append(_e.get("culture_template") or "")
+        # v11: 独立性 O(1): 全量封臣 id 集 + 每角色缓存 (历任/官职大量调用)
+        self._vassal_ids = set()
+        for _k, _c in ((melt.get("vassal_contracts") or {}).get("database") or {}).items():
+            if isinstance(_c, dict) and _c.get("vassal") is not None:
+                try:
+                    self._vassal_ids.add(int(_c["vassal"]))
+                except Exception:
+                    pass
+        self._indep_cache = {}
+        self._hold_cache = {}  # (cid, as_of) -> 持有区间 (历任/官职/称号复用)
+        # v11: 头衔 holder 序列预计算 (历任/朝局多次全表扫描用)
+        self._title_seqs = {}
+        for _tid, _t in self._lt.items():
+            if not isinstance(_t, dict):
+                continue
+            _h = _t.get("history") or {}
+            if isinstance(_h, dict) and _h:
+                self._title_seqs[int(_tid)] = sorted(
+                    _h.items(), key=lambda x: cl.date_key(x[0]))
+        # v11: 持有者索引 {cid: {tid: [(gain, loss|None, loss_type), ...]}} —
+        # 一次遍历全部 title history 建好, 历任/官职/称号按角色 O(1) 取。
+        # 同一 (tid) 同 holder 跨多段 (失而复得) 保留多段; 已按 as_of 截断
+        # (事件 > as_of 的丢弃, 开区间自然延伸到 as_of)。
+        self._holder_intervals = {}
+        _ao = cl.date_key(as_of) if as_of else None
+        for _tid, _seq in self._title_seqs.items():
+            cur = None
+            gain = None
+            for _d, _ev in _seq:
+                if _ao is not None and cl.date_key(_d) > _ao:
+                    break
+                _h = _ev.get("holder") if isinstance(_ev, dict) else _ev
+                _typ = _ev.get("type") if isinstance(_ev, dict) else ""
+                if _h is None:
+                    if cur is not None and gain is not None:
+                        self._holder_intervals.setdefault(cur, {}).setdefault(
+                            _tid, []).append((gain, _d, _typ or ""))
+                    cur, gain = None, None
+                    continue
+                _hid = int(_h)
+                if _hid == cur:
+                    if _typ == "destroyed":
+                        if gain is not None:
+                            self._holder_intervals.setdefault(cur, {}).setdefault(
+                                _tid, []).append((gain, _d, "destroyed"))
+                        cur, gain = None, None
+                    continue
+                if cur is not None and gain is not None:
+                    self._holder_intervals.setdefault(cur, {}).setdefault(
+                        _tid, []).append((gain, _d, _typ or ""))
+                cur, gain = _hid, _d
+            if cur is not None and gain is not None:
+                self._holder_intervals.setdefault(cur, {}).setdefault(
+                    _tid, []).append((gain, None, ""))
+        # v11: realm_history 快照持有者索引 {cid: {tid: [快照下标...]}} —
+        # 只补 title history 未覆盖的头衔 (被剪除的王国等)。
+        self._realm_snaps = [h for h in (cache.get("realm_history") or [])
+                             if not as_of or cl.date_key(h.get("date")) <= cl.date_key(as_of)]
+        self._realm_snaps.sort(key=lambda h: cl.date_key(h.get("date")))
+        self._realm_holder_titles = {}  # cid -> {tid: set(下标)}
+        for _i, _h in enumerate(self._realm_snaps):
+            for _tid, _holder in (_h.get("holders") or {}).items():
+                if _holder is not None and int(_tid) not in self._holder_intervals.get(int(_holder), {}):
+                    self._realm_holder_titles.setdefault(int(_holder), {}).setdefault(
+                        int(_tid), set()).add(_i)
         # v8: 全部层级词并集 (通用 + 各政体 + 伊斯兰国名后缀), 用于「名字已含层级词不追加」
         self._rank_words = set(L.GENERIC_TIER_ZH.values()) | {"哈里发国", "苏丹国"}
         for _g in ("celestial", "administrative", "feudal", "clan",
@@ -291,7 +409,12 @@ class Facts:
 
     # ---- 名字 ----
     def name(self, cid):
-        """角色 id → 显示名 (文化名序: 东方姓在前, 西方名·姓); 未知返回 ''。"""
+        """角色 id → 显示名 (v11 父名优先): 父名制文化 → 名·父名
+        (崔佛·富兰克林松, 父名替代家族名); 其余文化按名序 (东方姓在前, 西方名·姓)。"""
+        ptn = self.patronym(cid)
+        if ptn:
+            given = self.name_zh_of(cid)
+            return f"{given}·{ptn}" if given else ptn
         return cl.name_display(self.cache, cid, melt=self.melt,
                                names_path=self.names_path)
 
@@ -386,6 +509,243 @@ class Facts:
             cur = str(liege) if liege is not None else None
         return False
 
+    # ---- v11: 按日期头衔名 / 历任 (首要头衔演进) ----
+
+    _TT_RANK = {"h_": 6, "e_": 5, "k_": 4, "d_": 3, "c_": 2, "b_": 1, "x_": 0}
+
+    def _tier_word_at(self, tid, government, independent=False):
+        """头衔层级词 (v11): 天朝制独立王国用「国」(青徐国), 其余沿用政体层级词
+        (皇朝/路/镇/州府…), 缺失回退通用词。"""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        tier = ""
+        for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
+            if key.startswith(pfx):
+                tier = tv
+                break
+        if not tier:
+            return ""
+        if government in self._CELESTIAL_LIKE_GOVS and tier == "kingdom" and independent:
+            v = L.loc(self.table, "kingdom_celestial_chinese_independent")
+            if v and not v.startswith("$") and not v.startswith("["):
+                return v
+        return L.tier_word(self.table, government, tier)
+
+    def _name_at_date(self, tid, date):
+        """头衔在某日期的名称 (不含层级词): title_history_names 最近一次更名
+        (本地化键 dynn_title_zhou / 直写名 青徐), 无更名史回退基础名。"""
+        t = self._lt.get(str(tid)) or {}
+        tnd = t.get("title_name_data") or {}
+        best = None
+        if date:
+            for h in (tnd.get("title_history_names") or []):
+                try:
+                    if h.get("date") and cl.date_key(str(h["date"])) <= cl.date_key(str(date)):
+                        best = h["name"]
+                except Exception:
+                    continue
+        if best is not None:
+            return L.loc(self.table, str(best)) or str(best)
+        return (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()
+
+    def _title_name_at(self, tid, date, cid=None):
+        """头衔在某日期的完整名 (v11): 按日期名 + 层级词 (独立王国=国)。
+        cid 提供时按该角色当前独立性取词 (历任/朝局用)。"""
+        if tid is None:
+            return ""
+        t = self._lt.get(str(tid)) or {}
+        key = t.get("key") or ""
+        if key.startswith("x_"):  # 营地/家族等特殊头衔: 只给名字
+            return self._name_at_date(tid, date) or L.loc(self.table, key) or key
+        nm = self._name_at_date(tid, date)
+        if not nm:
+            nm = L.loc(self.table, key)
+        if not nm:
+            nm = key
+        gov = self._title_government(tid)
+        independent = self._is_independent(cid) if cid is not None else False
+        word = self._tier_word_at(tid, gov, independent)
+        if word and not any(nm.endswith(w) for w in self._rank_words):
+            return f"{nm}{word}"
+        return nm
+
+    def _name_in_span(self, tid, start, end, cid=None):
+        """头衔在 [start, end] 区间中点的完整名 (v11): 取区间中点日期命名,
+        避开更名当日的 1-2 天过渡名 (鄂路→青徐、青徐→周), 即任期内的稳定名。"""
+        if tid is None:
+            return ""
+        if start and end:
+            try:
+                sy = [int(x) for x in str(start).split(".")[:3]]
+                ey = [int(x) for x in str(end).split(".")[:3]]
+                if len(sy) == 3 and len(ey) == 3:
+                    mid = ".".join(str((a + b) // 2) for a, b in zip(sy, ey))
+                    return self._title_name_at(tid, mid, cid)
+            except Exception:
+                pass
+        return self._title_name_at(tid, start, cid)
+
+    def _hold_intervals(self, cid, as_of=None):
+        """角色持有头衔的时间区间 (v11): {tid: [(gain, loss|None, loss_type), ...]}。
+        title history 精确日期为主 (索引 O(1)); realm_history 快照兜底
+        (title history 被剪除的头衔, 如已毁的王国)。结果按 (cid, as_of) 缓存。"""
+        as_of = as_of or self.as_of
+        cache_key = (cid, as_of)
+        if cache_key in self._hold_cache:
+            return self._hold_cache[cache_key]
+        out = {}
+        base = self._holder_intervals.get(cid) or {}
+        if as_of == self.as_of:
+            out = {tid: list(ivs) for tid, ivs in base.items()}
+        else:
+            # 不同 as_of: 按日期过滤 (开区间折到 as_of)
+            ao = cl.date_key(as_of) if as_of else None
+            for tid, ivs in base.items():
+                kept = []
+                for (g, l, lt) in ivs:
+                    if ao is not None and cl.date_key(g) > ao:
+                        continue
+                    if l and ao is not None and cl.date_key(l) > ao:
+                        kept.append((g, None, lt))
+                    else:
+                        kept.append((g, l, lt))
+                if kept:
+                    out[tid] = kept
+        # realm 快照兜底: 连续持有段 → 一段区间 (丢头衔日 = 下个快照日)
+        ridx = self._realm_holder_titles.get(cid) or {}
+        n_snaps = len(self._realm_snaps)
+        for tid, idxs in ridx.items():
+            if tid in out:
+                continue
+            runs = []
+            cur_run = None
+            prev_i = None
+            for i in sorted(idxs):
+                if cur_run is None:
+                    cur_run = i
+                elif i == prev_i + 1:
+                    pass
+                else:
+                    runs.append((cur_run, prev_i))
+                    cur_run = i
+                prev_i = i
+            if cur_run is not None:
+                runs.append((cur_run, prev_i))
+            for (a, b) in runs:
+                gain = self._realm_snaps[a].get("date")
+                loss = self._realm_snaps[b + 1].get("date") if b + 1 < n_snaps else None
+                out.setdefault(tid, []).append((gain, loss, ""))
+        self._hold_cache[cache_key] = out
+        return out
+
+    def _primary_group(self, held):
+        """按持有集计算「主要头衔组」[(gain_date, tid)] (v11): held = {tid: gain_date}
+        - 州府/县/堡 (c_/b_) 不进组 (如 898-911 的登州伯爵领等);
+        - 有 公国(d_) 及以上或营地(x_) 时: 层级 ≥ 王国只留首要; 公国/营地层取
+          首要 + 全部营地 (同级营地/庄园并写, 游牧营地/淄青公国);
+        - 只有 州府/县 时: 取最高层级单个。"""
+        if not held:
+            return []
+        items = []
+        for tid, gain in held.items():
+            key = (self._lt.get(str(tid)) or {}).get("key") or ""
+            items.append((tid, self._TT_RANK.get(key[:2], 0), gain))
+        majors = [it for it in items if it[1] >= 3 or it[1] == 0]  # d_+ 或营地
+        if not majors:
+            # 仅州府/县/堡: 最高层级最早获得的一个
+            t0 = sorted(items, key=lambda it: (-it[1], cl.date_key(it[2])))[0]
+            return [(t0[2], t0[0])]
+        max_tier = max(r for _t, r, _g in majors)
+        tops = sorted([it for it in majors if it[1] == max_tier],
+                      key=lambda it: cl.date_key(it[2]))
+        if max_tier >= 4:  # k_ 及以上: 只记首要
+            t0 = tops[0]
+            return [(t0[2], t0[0])]
+        camps = [it for it in majors if (self._lt.get(str(it[0])) or {}).get("key", "").startswith("x_")]
+        picked = tops[:1] + [c for c in camps if c != tops[0]]
+        return [(g, t) for t, _r, g in sorted(picked, key=lambda it: cl.date_key(it[2]))]
+
+    def _primary_title_at(self, cid, as_of=None):
+        """角色在 as_of 日期的首要头衔 (tier, tid): 最高层级中最早获得者;
+        无头衔 (仅营地) 返回 (None, tid)。"""
+        held = {}
+        for tid, ivs in self._hold_intervals(cid, as_of).items():
+            if ivs and ivs[-1][1] is None:
+                held[tid] = ivs[-1][0]
+        if not held:
+            return None, None
+        items = [(tid, self._TT_RANK.get((self._lt.get(str(tid)) or {}).get("key", "")[:2], 0), g)
+                 for tid, g in held.items()]
+        max_tier = max(r for _t, r, _g in items)
+        tops = sorted([it for it in items if it[1] == max_tier],
+                      key=lambda it: cl.date_key(it[2]))
+        tid = tops[0][0]
+        tier = self._RANK_TIER.get(max_tier) if max_tier >= 1 else None
+        return tier, tid
+
+    def held_titles(self, cid):
+        """历任 (v11): 只记首要头衔的变化; 层级≤公国时同级营地/庄园并写。
+        依 title history (精确) + realm_history (兜底); 头衔名按日期 + 独立词
+        (独立天朝王国用「国」)。返回 ['867年1月1日任范德林帮之主', ...]"""
+        intervals = self._hold_intervals(cid)
+        events = []
+        loss_types = {}  # (tid, date_key) -> type
+        for tid, ivs in intervals.items():
+            for (g, l, lt) in ivs:
+                events.append((cl.date_key(g), g, tid, 1))
+                if l:
+                    events.append((cl.date_key(l), l, tid, -1))
+                    loss_types[(tid, cl.date_key(l))] = lt
+        events.sort(key=lambda x: x[0])
+        # 按日批量应用: 同日事件整体生效 (毁营地/建营地/得州府同日, 避免中间态)
+        by_day = {}
+        for dk, d, tid, delta in events:
+            by_day.setdefault(dk, []).append((d, tid, delta))
+        held = {}
+        phases = []
+        prev_group = None
+        prev_held = set()
+        for dk in sorted(by_day):
+            batch = by_day[dk]
+            d = batch[0][0]
+            for _dd, tid, delta in batch:
+                if delta == 1:
+                    held[tid] = _dd
+                else:
+                    held.pop(tid, None)
+            group = self._primary_group(held)
+            if group and group != prev_group:
+                phases.append((d, group, set(prev_held) - set(held)))
+                prev_group = group
+            prev_held = set(held)
+        if not phases:
+            return []
+        # 阶段终点: 下一阶段开始日 / 无则 as_of (或末档)
+        span_end = self.as_of or self.cache.get("last_date")
+        out = []
+        prev_ids = []
+        for i, (d, group, lost_now) in enumerate(phases):
+            end = phases[i + 1][0] if i + 1 < len(phases) else span_end
+            ids = [tid for _g, tid in group]
+            names = [n for n in (self._name_in_span(t, d, end, cid) for t in ids) if n]
+            if not names:
+                continue
+            line = f"{self.date(d)}任{'/'.join(names)}之主"
+            # 真正失去 (不在持有集) 且此前在组内的头衔
+            lost_names = []
+            for t in prev_ids:
+                if t in ids or t not in lost_now:
+                    continue
+                lt = loss_types.get((t, cl.date_key(d)))
+                nm = self._title_name_at(t, d, cid)
+                if not nm:
+                    continue
+                lost_names.append(("毁弃" if lt == "destroyed" else "让出") + nm)
+            prev_ids = ids
+            if lost_names:
+                line += "（" + "、".join(lost_names) + "）"
+            out.append(line)
+        return out
+
     def title_by_key(self, key):
         if not key:
             return None
@@ -433,12 +793,14 @@ class Facts:
         return self._RANK_TIER[best_rank], best_tid
 
     def _is_independent(self, cid):
-        """是否独立 (非他人封臣): 无 vassal_contracts 记录即视为独立。"""
-        db = (self.melt.get("vassal_contracts") or {}).get("database") or {}
-        for _k, c in db.items():
-            if isinstance(c, dict) and c.get("vassal") == cid:
-                return False
-        return True
+        """是否独立 (非他人封臣): 预建全量封臣 id 集, O(1) 判定 + 每角色缓存。"""
+        if cid is None:
+            return True
+        v = self._indep_cache.get(cid)
+        if v is None:
+            v = int(cid) not in self._vassal_ids
+            self._indep_cache[cid] = v
+        return v
 
     def _office_word(self, tier, government, independent=False):
         """官职词: (层级, 政体) → 词。天朝/行政/草原行政共用同一套 (刺史/节度使/
@@ -487,13 +849,13 @@ class Facts:
             v = L.loc(self.table, fkey)
             if v and not v.startswith("$") and not v.startswith("["):
                 return v
-        tier, tid = self._primary_title(cid)
-        if tid is None:
-            return ""
+        tier, tid = self._primary_title_at(cid)
+        if tid is None or tier is None:
+            return ""  # 无头衔 / 仅营地 (无官职词)
         rn = self.realm_name(tid)
         if rn:
             return rn
-        name = self.title_base_name(tid)
+        name = self._name_at_date(tid, self.as_of) or self.title_base_name(tid)
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         gov = (rec.get("landed") or {}).get("government") or ""
         if not gov:
@@ -529,7 +891,7 @@ class Facts:
         (王国/帝国/霸权统治者子女都用此模板)。前缀 = 父头衔名+层级词
         (独立天朝制王国=「国」, 如大理国王子; 封臣=「路」, 如青徐路公子;
         伊斯兰: 家族名+苏丹国/哈里发国) + 王子词。"""
-        tier0, _ = self._primary_title(cid)
+        tier0, _ = self._primary_title_at(cid)
         if tier0 is not None:
             return ""  # 自己已有头衔, 不适用
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
@@ -548,14 +910,14 @@ class Facts:
         best = None  # (rank, ptier, parent_cid)
         for pid2 in parents:
             pid2 = int(pid2)
-            t, _tid = self._primary_title(pid2)
+            t, _tid = self._primary_title_at(pid2)
             rank = {"hegemon": 6, "empire": 5, "kingdom": 4}.get(t, 0)
             if rank > 0 and (best is None or rank > best[0]):
                 best = (rank, t, pid2)
         if best is None:
             return ""
         _rank, ptier, pparent = best
-        _t, ptid = self._primary_title(pparent)
+        _t, ptid = self._primary_title_at(pparent)
         prec = (self.cache.get("characters") or {}).get(str(pparent)) or {}
         pgov = (prec.get("landed") or {}).get("government") or ""
         if not pgov:
@@ -567,7 +929,7 @@ class Facts:
         if rn:
             prefix = rn
         else:
-            pbase = self.title_base_name(ptid)
+            pbase = self._name_at_date(ptid, self.as_of) or self.title_base_name(ptid)
             if pgov in self._CELESTIAL_LIKE_GOVS and independent \
                     and ptier in ("kingdom", "empire", "hegemon"):
                 # 独立天朝制: 王国/帝国=国, 皇朝=皇朝 (大理国)
@@ -627,8 +989,13 @@ class Facts:
             events = []
             for e in (r.get("history") or []):
                 txt = _clean_ck3_loc(e.get("change_reason") or "")
-                if txt:
-                    events.append((str(e.get("date") or ""), txt))
+                if not txt:
+                    continue
+                d = str(e.get("date") or "")
+                # v11: as_of 截断 — 十年传记只列该时期前的恩怨事件
+                if self.as_of and d and cl.date_key(d) > cl.date_key(self.as_of):
+                    continue
+                events.append((d, txt))
             if not events:
                 continue
             events.sort(key=lambda x: cl.date_key(x[0]))
@@ -681,6 +1048,10 @@ class Facts:
             lines = [f"宝物：{name}（{rarity}）"]
             entries = []
             for e in reversed(hist):
+                # v11: as_of 截断 — 十年传记只列该时期前的流转
+                if self.as_of and e.get("date") \
+                        and cl.date_key(e.get("date")) > cl.date_key(self.as_of):
+                    continue
                 t = e.get("type") or ""
                 d = self.date(e.get("date")) if e.get("date") else ""
                 actor = self.name_or(e.get("actor"), "") if isinstance(e.get("actor"), int) else ""
@@ -786,17 +1157,49 @@ class Facts:
 
     # ---- 文化 / 信仰 / 特质 / 政体 ----
     def culture_template(self, cid):
-        """角色文化模板名 (norse/han/balhae…): 缓存 culture id → 熔件 culture_manager。"""
+        """角色文化模板名 (norse/han/balhae…): 缓存 culture id → 熔件 culture_manager。
+        v11: 缓存/熔件文化均缺失 (死后清空/存档版本无 culture 字段) 时,
+        依语言反查 (language_norse → norse), 供父名推断与族属显示。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         cul = rec.get("culture")
         if cul is None:
             c = self._chars.get(str(cid)) or {}
             cul = c.get("culture")
-        if cul is None:
-            return None
-        e = ((self.melt.get("culture_manager") or {}).get("cultures") or {}) \
-            .get(str(cul))
-        return (e or {}).get("culture_template") if isinstance(e, dict) else None
+        if cul is not None:
+            e = ((self.melt.get("culture_manager") or {}).get("cultures") or {}) \
+                .get(str(cul))
+            tpl = (e or {}).get("culture_template") if isinstance(e, dict) else None
+            if tpl:
+                return tpl
+        # 语言反查: 角色已知语言 → culture_manager.language → 文化模板
+        # (多文化共享同一语言时, 优先有父名规则的模板, 如 language_norse → norse 而非 norman)
+        for lg in self._languages_of(cid):
+            cands = self._lang_to_tpl.get(lg) or []
+            if not cands:
+                continue
+            for tpl in cands:
+                if tpl in _patronym_rules():
+                    return tpl
+            return cands[0]
+        return None
+
+    def _languages_of(self, cid):
+        """角色语言 id 列表: 缓存捕获 (跨年保留) 优先, 缺失回退最新熔件 alive_data。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        langs = rec.get("languages") or []
+        if not langs:
+            c = self._chars.get(str(cid)) or {}
+            langs = (c.get("alive_data") or {}).get("languages") or []
+        return [str(x) for x in langs]
+
+    def languages(self, cid):
+        """角色语言中文名 (v11): language_norse → language_norse_name → 诺斯语。"""
+        out = []
+        for lg in self._languages_of(cid):
+            v = L.loc(self.table, f"{lg}_name") or L.loc(self.table, lg) or ""
+            if v:
+                out.append(v)
+        return out
 
     def name_zh_of(self, cid):
         """角色名 (名, 不带家族/头衔) — 父名拼接用。"""
@@ -822,7 +1225,7 @@ class Facts:
         """父名 (中间名): 父名制文化且父名已知 → 前缀+父名+后缀
         (诺斯: 崔佛松/崔佛斯多蒂尔; 威尔士: 阿普·X; 爱尔兰: 麦克·X/妮克·X;
         伊比利亚: X斯; 斯拉夫: X奇; 英: X森…)。父未知/非父名文化 → 空。
-        文化缺失时依父文化推断 (父名制以父系为准, 子女文化在熔件常被剪枝)。"""
+        文化缺失时依 父文化 → 语言 推断 (父名制以父系为准, 子女文化在熔件常被剪枝)。"""
         fid = self._father_id(cid)
         if fid is None:
             return ""
@@ -841,21 +1244,12 @@ class Facts:
         return f"{rules.get('pm_zh') or ''}{fname}{rules.get('sm_zh') or ''}"
 
     def culture(self, cid):
-        """角色文化 (v7 缓存优先): 缓存记录最近已知值 (存活期直接捕获, 死后清空
-        也保留), 缺失回退最新熔件角色对象。id → culture_manager → 本地化 → 'X族'。"""
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        cul = rec.get("culture")
-        if cul is None:
-            c = self._chars.get(str(cid)) or {}
-            cul = c.get("culture")
-        template = (self.melt.get("culture_manager") or {}).get("cultures") or {}
-        e = template.get(str(cul)) if cul is not None else None
-        if isinstance(e, str):  # v7: none 条目防护
-            e = None
-        tpl = (e or {}).get("culture_template") or ""
+        """角色文化 (v11): 缓存/熔件 culture id → 语言推断 → 本地化 → 'X人'。"""
+        tpl = self.culture_template(cid) or ""
         name = L.loc(self.table, tpl) or CULTURE_TEMPLATE_ZH.get(tpl) or ""
         if name:
-            return f"{name}族"
+            # v11: 族属用「X人」(诺斯人/汉人), 不再用「X族」; 名已以「人」结尾不再追加
+            return name if name.endswith("人") else f"{name}人"
         return "族属不详"
 
     def faith(self, cid):
@@ -876,7 +1270,10 @@ class Facts:
         return "信仰不详"
 
     def traits(self, cid):
-        """角色当前特质 id 列表 → 中文 (未知特质跳过)。"""
+        """角色当前特质 id 列表 → 中文 (未知特质跳过)。
+        v11: as_of 截断 — 只取 as_of 前已具且未消失的特质 (十年传记不泄漏后期疾病)。"""
+        if self.as_of:
+            return self._traits_at(cid)
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         ids = rec.get("traits") or []
         out = []
@@ -889,10 +1286,31 @@ class Facts:
                 out.append(z)
         return out
 
-    def trait_history_lines(self, cid):
-        """特质履历 (v4): 每条 = 「<特质>（自X日起获得 / 至晚自X日起已具 / 自X日后消失…）」"""
+    def _traits_at(self, cid):
+        """as_of 时点持有的特质: 依 trait_history 区间判定 (from ≤ as_of < to)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
+        ao = cl.date_key(self.as_of)
+        out = []
+        for key in sorted(th):
+            for iv in th[key]:
+                frm = iv.get("from")
+                to = iv.get("to")
+                if frm and cl.date_key(frm) > ao:
+                    continue
+                if to and cl.date_key(to) <= ao:
+                    continue
+                z = _trait_name(self.table, key)
+                if z and z not in out:
+                    out.append(z)
+        return out
+
+    def trait_history_lines(self, cid):
+        """特质履历 (v4): 每条 = 「<特质>（自X日起获得 / 至晚自X日起已具 / 自X日后消失…）」
+        v11: as_of 截断 — 丢弃 as_of 之后才获得的区间。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        th = rec.get("trait_history") or {}
+        ao = cl.date_key(self.as_of) if self.as_of else None
         lines = []
         for key in sorted(th):
             z = _trait_name(self.table, key)
@@ -900,6 +1318,8 @@ class Facts:
                 continue
             spans = []
             for iv in th[key]:
+                if ao is not None and iv.get("from") and cl.date_key(iv.get("from")) > ao:
+                    continue
                 d_from = self.date(iv.get("from")) if iv.get("from") else ""
                 d_to = self.date(iv.get("to")) if iv.get("to") else ""
                 if iv.get("first"):
@@ -921,21 +1341,6 @@ class Facts:
             c = self._chars.get(str(cid)) or {}
             g = (c.get("landed_data") or {}).get("government")
         return L.loc(self.table, g) or GOVERNMENT_ZH.get(g, "官制不详")
-
-    def held_titles(self, cid):
-        """角色历任高位头衔 (v4): 经 realm_history 反查, ['1067年1月1日：宋（大路）之主']"""
-        out = []
-        seen = set()
-        for h in self.cache.get("realm_history") or []:
-            for tid, holder in (h.get("holders") or {}).items():
-                if holder != cid:
-                    continue
-                tname = self.title(tid)
-                if not tname or tname in seen:
-                    continue
-                seen.add(tname)
-                out.append(f"{self.date(h.get('date'))}：任{tname}之主")
-        return out
 
     def motto(self):
         """玩家家族家训 (v7) → 中文。"""
@@ -962,11 +1367,17 @@ class Facts:
 
     def court_positions_lines(self):
         """玩家宫廷/营地官职 (v7): 返回 (最新职位行, 任免变化行)。
-        最新职位每条 = 「职位：人名（自X任）」; 变化行 = 跨快照同职位更替。"""
+        最新职位每条 = 「职位：人名（自X任）」; 变化行 = 跨快照同职位更替。
+        v11: as_of 截断 — 只取 as_of 前最后一个快照的职位。"""
         pid = self.cache.get("player_id")
         if pid is None:
             return [], []
         hist = self.cache.get("court_positions") or []
+        if not hist:
+            return [], []
+        if self.as_of:
+            hist = [h for h in hist
+                    if cl.date_key(h.get("date")) <= cl.date_key(self.as_of)]
         if not hist:
             return [], []
         latest = hist[-1].get("positions") or []
@@ -1191,8 +1602,11 @@ def _death_sentence(f, cid):
     if reason in action_like:
         reason = "被" + reason
     if killer is not None:
+        # v11: 谋杀类死因用「凶手为」(未被败露的谋杀没有行刑者), 其余用「行刑者/凶手为」
+        is_murder = any(w in reason for w in ("谋杀", "毒杀", "暗杀"))
         if killer == f.cache.get("player_id"):
-            kstr = f"，行刑者为{f.name_or(f.cache.get('player_id'))}"
+            kstr = (f"，凶手为{f.name_or(f.cache.get('player_id'))}" if is_murder
+                    else f"，行刑者为{f.name_or(f.cache.get('player_id'))}")
         else:
             kstr = f"，凶手为{f.name_or(killer)}"
     return f"{name}殁于{f.date(d.get('date'))}，{reason}{kstr}。"
@@ -1337,6 +1751,10 @@ def _timeline(f):
         events.append((_d, t, s))
     for _prio, _d, t, s in births.values():
         events.append((_d, t, s))
+    # v11: as_of 截断 (十年传记只到十年末)
+    if f.as_of:
+        ao = cl.date_key(f.as_of)
+        events = [e for e in events if e[0] and cl.date_key(e[0]) <= ao]
     events.sort(key=lambda x: cl.date_key(x[0]))
     seen = set()
     out = []
@@ -1349,6 +1767,102 @@ def _timeline(f):
             "type": t,
             "text": (f"{f.date(d)}，{s}" if d else s),
         })
+    # v11: 同日同型集体事件合并 (见证加冕/出席大婚/被囚/囚禁)
+    out = _merge_same_day_events(out, f)
+    return out
+
+
+# 同日同型可合并事件: type → (提取可变槽的正则, 组合函数)
+_MERGE_SLOT_RES = {
+    "witnessed_a_coronation_memory": (r"^(.+?)见证加冕。$",
+                                      lambda names: "、".join(names) + "见证加冕。"),
+    "grand_wedding_completed_guest": (r"^(.+?)出席大婚。$",
+                                      lambda names: "、".join(names) + "出席大婚。"),
+    "imprisoned": (r"^(.+?)被囚。$",
+                   lambda names: "、".join(names) + "被囚。"),
+    "imprisoned_other": (r"^(.+?)囚禁(.+?)。$",
+                         lambda pairs: pairs[0][0] + "囚禁" + "、".join(p[1] for p in pairs) + "。"),
+}
+_MERGE_CAP = 10  # 合并人名上限, 超过收成「…等N人」
+_MERGE_VERB = {
+    "witnessed_a_coronation_memory": "见证加冕。",
+    "grand_wedding_completed_guest": "出席大婚。",
+    "imprisoned": "被囚。",
+}
+
+
+def _merge_same_day_events(events, f=None):
+    """同日同型事件合并 (v11): 集体事件 (多人同日见证加冕/出席大婚/被囚, 或
+    同一人同日囚禁多人) 拆成多行会浪费模型注意力, 按 (日期, 类型) 合并为一行。
+    仅当句子结构一致且只差一个名字槽时合并 (双槽成婚等事件不受影响)。"""
+    groups = {}
+    order = []
+    for e in events:
+        key = (e.get("date"), e.get("type"))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(e)
+    out = []
+    for key in order:
+        entries = groups[key]
+        d, typ = key
+        spec = _MERGE_SLOT_RES.get(typ)
+        merged = None
+        if spec and len(entries) > 1:
+            pat, comb = spec
+            slots = []
+            ok = True
+            for e in entries:
+                body = e["text"]
+                if d and f and body.startswith(f.date(d) + "，"):
+                    body = body[len(f.date(d)) + 1:]
+                m = re.match(pat, body)
+                if not m:
+                    ok = False
+                    break
+                slots.append(m.groups())
+            if ok:
+                prefix = f"{f.date(d)}，" if d else ""
+                if typ == "imprisoned_other":
+                    # 同一主人 (槽0) 囚禁多人: 只合并主人相同的
+                    owners = {s[0] for s in slots}
+                    if len(owners) == 1:
+                        if len(slots) > _MERGE_CAP:
+                            merged = (prefix + slots[0][0] + "囚禁"
+                                      + "、".join(s[1] for s in slots[:_MERGE_CAP])
+                                      + f"等{len(slots)}人。")
+                        else:
+                            merged = prefix + comb(slots)
+                else:
+                    names = [s[0] for s in slots]
+                    if len(names) > _MERGE_CAP:
+                        merged = (prefix + "、".join(names[:_MERGE_CAP])
+                                  + f"等{len(names)}人" + _MERGE_VERB[typ])
+                    else:
+                        merged = prefix + comb(names)
+        if merged:
+            out.append({"date": d, "type": typ, "text": merged})
+        else:
+            out.extend(entries)
+    return out
+
+
+def _asof_ids(f, ids):
+    """v11: 按 as_of 过滤家族成员 id 列表 — 出生晚于 as_of 的未出生者不列
+    (十年传记不出现 893 年才出生的马乌戈热塔)。as_of 为空时原样返回。"""
+    if not f.as_of or not ids:
+        return ids or []
+    ao = cl.date_key(f.as_of)
+    out = []
+    for x in ids:
+        if not isinstance(x, int):
+            continue
+        rec = (f.cache.get("characters") or {}).get(str(x)) or {}
+        b = rec.get("birth")
+        if b and cl.date_key(b) > ao:
+            continue
+        out.append(x)
     return out
 
 
@@ -1370,7 +1884,11 @@ def _protagonist(f):
         "traits": "、".join(f.traits(pid)) or "（特质不详）",
         "government": f.government(pid),
     }
-    # v9: 主角官职名
+    # v11: 角色语言 (语言：诺斯语、阿拉伯语)
+    langs = f.languages(pid)
+    if langs:
+        p["languages"] = "、".join(langs)
+    # v9: 主角官职名 (v11: 按 as_of 截断日期取)
     poff = f.official_title(pid)
     if poff:
         p["office"] = poff
@@ -1388,52 +1906,65 @@ def _protagonist(f):
     cpl, _cpch = f.court_positions_lines()
     if cpl:
         p["court_positions"] = "、".join(cpl)
+    # v11: as_of 早于末档时, 直辖/封臣/营规等明细是「后期快照」数据, 不进入提示词
+    # (只做头衔维度; 明细维度如要按时期需另行逐年快照, 成本高暂不做)
+    skip_detail = bool(f.as_of) and cl.date_key(f.as_of) < cl.date_key(
+        cache.get("last_date") or f.as_of or "9999.9.9")
     ld = rec.get("landed") or {}
     gov = ld.get("government")
-    if gov == "landless_adventurer_government":
+    # v11: 无地/有地分支按 as_of 首要头衔判定 (十年传记穿越时, 缓存 landed 是末档数据)
+    ptier, ptid = f._primary_title_at(pid)
+    pkey = (f._lt.get(str(ptid)) or {}).get("key") if ptid is not None else ""
+    if (ptid is not None and pkey.startswith("x_")) or gov == "landless_adventurer_government":
         # ---- 无地冒险者: 营地 ----
-        camp_tid = (ld.get("domain") or [None])[0]
         p["landless"] = True
-        p["camp_name"] = f.title(camp_tid) if camp_tid else "冒险者营地"
-        laws = ld.get("laws") or []
-        if laws:
-            names = []
-            for law in laws:
-                v = L.loc(f.table, law) or law
-                if v and v != law:
-                    names.append(v)
-            if names:
-                p["camp_laws"] = "、".join(names)
-        if ld.get("strength") is not None:
-            p["camp_strength"] = str(ld.get("strength"))
-        prov = f.character_location_province(pid)
-        county_tid = f.county_at_province(prov)
-        if county_tid is None and camp_tid:
-            # 兜底: 营地头衔 capital 视为所在郡
-            t = (f.melt.get("landed_titles") or {}).get("landed_titles") or {}
-            cap = (t.get(str(camp_tid)) or {}).get("capital")
-            county_tid = cap
-        chain = f.liege_chain(county_tid) if county_tid else []
-        if county_tid and chain:
-            cname = f.title(county_tid)
-            p["camp_county"] = cname
-            holder = chain[0][1]
-            if holder is not None:
-                p["camp_county_holder"] = f.name_or(holder)
-            mids = chain[1:-1]
-            if mids:
-                parts = []
-                for tid, hid in mids:
-                    tn = f.title(tid)
-                    hn = f.name_or(hid, "") if hid is not None else ""
-                    parts.append(f"{tn}（{hn}）" if hn else tn)
-                p["camp_liege_chain"] = "、".join(parts)
-            top_tid, top_holder = chain[-1]
-            p["camp_top_liege"] = f"{f.title(top_tid)}（{f.name_or(top_holder)}）" \
-                if top_holder is not None else f.title(top_tid)
+        camp_tid = ptid if (ptid is not None and pkey.startswith("x_")) \
+            else (ld.get("domain") or [None])[0]
+        if camp_tid is not None:
+            p["camp_name"] = f._title_name_at(camp_tid, f.as_of) or "冒险者营地"
+        else:
+            p["camp_name"] = "冒险者营地"
+        # 营地细节仅当缓存 landed 确为营地 (非 as_of 穿越) 时渲染
+        if gov == "landless_adventurer_government" and not skip_detail:
+            laws = ld.get("laws") or []
+            if laws:
+                names = []
+                for law in laws:
+                    v = L.loc(f.table, law) or law
+                    if v and v != law:
+                        names.append(v)
+                if names:
+                    p["camp_laws"] = "、".join(names)
+            if ld.get("strength") is not None:
+                p["camp_strength"] = str(ld.get("strength"))
+            prov = f.character_location_province(pid)
+            county_tid = f.county_at_province(prov)
+            if county_tid is None and camp_tid:
+                # 兜底: 营地头衔 capital 视为所在郡
+                t = (f.melt.get("landed_titles") or {}).get("landed_titles") or {}
+                cap = (t.get(str(camp_tid)) or {}).get("capital")
+                county_tid = cap
+            chain = f.liege_chain(county_tid) if county_tid else []
+            if county_tid and chain:
+                cname = f.title(county_tid)
+                p["camp_county"] = cname
+                holder = chain[0][1]
+                if holder is not None:
+                    p["camp_county_holder"] = f.name_or(holder)
+                mids = chain[1:-1]
+                if mids:
+                    parts = []
+                    for tid, hid in mids:
+                        tn = f.title(tid)
+                        hn = f.name_or(hid, "") if hid is not None else ""
+                        parts.append(f"{tn}（{hn}）" if hn else tn)
+                    p["camp_liege_chain"] = "、".join(parts)
+                top_tid, top_holder = chain[-1]
+                p["camp_top_liege"] = f"{f.title(top_tid)}（{f.name_or(top_holder)}）" \
+                    if top_holder is not None else f.title(top_tid)
     else:
         # ---- 有地领主 ----
-        if ld:
+        if ld and not skip_detail:
             p["ruler_since"] = f.date(ld.get("became_ruler_date"))
             dom = []
             for tid in (ld.get("domain") or []):
@@ -1458,7 +1989,9 @@ def _protagonist(f):
         age = None
         try:
             by = int((rec.get("birth") or "0.0.0").split(".")[0])
-            cy = int((melt.get("date") or "0.0.0").split(".")[0])
+            # v11: 十年传记按 as_of 计龄, 不按末档 (防「年87岁」泄漏到 892 年)
+            cy_src = (f.as_of or melt.get("date") or "0.0.0")
+            cy = int(str(cy_src).split(".")[0])
             age = cy - by
         except Exception:
             pass
@@ -1483,24 +2016,26 @@ def _protagonist(f):
                 bits.append(f"{label}{v}")
         if bits:
             p["status"] = "，".join(bits) + "。"
-    # 死亡 (终传时)
+    # 死亡 (终传时; v11: as_of 早于死期视为在世, 十年传记不泄漏「殁于…」)
     pd = cache.get("player_death")
+    if pd and f.as_of and cl.date_key(f.as_of) < cl.date_key(pd.get("date") or "9999.9.9"):
+        pd = None
     if pd:
         p["death"] = (
             f"殁于{f.date(pd.get('date'))}，"
             f"{_death_reason(f.table, pd.get('reason'))}"
             + (f"，凶手为{f.name_or(pd.get('killer'))}" if pd.get("killer") else "。")
         )
-    # 家庭
+    # 家庭 (v11: as_of 截断 — 出生晚于 as_of 的未出生者不列)
     fam = rec.get("family") or {}
     spouse_ids = list(dict.fromkeys(
-        (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])))
+        _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
     p["spouses"] = "、".join(f.name_or(s) for s in spouse_ids if f.name(s))
-    p["former_spouses"] = "、".join(f.name_or(s) for s in (fam.get("former_spouses") or []) if f.name(s))
+    p["former_spouses"] = "、".join(f.name_or(s) for s in _asof_ids(f, fam.get("former_spouses") or []) if f.name(s))
     # v8: 妾 (正向 concubine + 反向 concubinist, 已在缓存合并去重)
-    p["concubines"] = "、".join(f.name_or(s) for s in (fam.get("concubine") or []) if f.name(s))
-    p["former_concubines"] = "、".join(f.name_or(s) for s in (fam.get("former_concubines") or []) if f.name(s))
-    p["children"] = "、".join(f.name_or(c) for c in (fam.get("child") or []) if f.name(c))
+    p["concubines"] = "、".join(f.name_or(s) for s in _asof_ids(f, fam.get("concubine") or []) if f.name(s))
+    p["former_concubines"] = "、".join(f.name_or(s) for s in _asof_ids(f, fam.get("former_concubines") or []) if f.name(s))
+    p["children"] = "、".join(f.name_or(c) for c in _asof_ids(f, fam.get("child") or []) if f.name(c))
     p["father"] = "、".join(f.name_or(x) for x in (fam.get("father") or []) if f.name(x))
     p["mother"] = "、".join(f.name_or(x) for x in (fam.get("mother") or []) if f.name(x))
     p["siblings"] = "、".join(f.name_or(x) for x in (fam.get("siblings") or []) if f.name(x))
@@ -1513,7 +2048,7 @@ def _protagonist(f):
         rfname = f.name_or(rf)
         if rfname:
             p["real_father"] = rfname
-    # 主角历任高位头衔
+    # 主角历任 (v11: 主要头衔演进)
     ht = f.held_titles(pid)
     if ht:
         p["titles_held"] = "；".join(ht)
@@ -1535,6 +2070,10 @@ def _character_profiles(f):
             "faith": f.faith(cid),
             "traits": "、".join(f.traits(cid)),
         }
+        # v11: 角色语言
+        langs = f.languages(cid)
+        if langs:
+            prof["languages"] = "、".join(langs)
         # v9: 官职名 (首要头衔+官职词) / 王子称号 (无头衔的王国/帝国/霸权子女)
         off = f.official_title(cid)
         if off:
@@ -1561,10 +2100,10 @@ def _character_profiles(f):
                 break
         fam = rec.get("family") or {}
         spouse_ids = list(dict.fromkeys(
-            (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])))
+            _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
         prof["spouses"] = "、".join(f.name_or(s) for s in spouse_ids if f.name(s))
-        prof["concubines"] = "、".join(f.name_or(s) for s in (fam.get("concubine") or []) if f.name(s))
-        prof["children"] = "、".join(f.name_or(c) for c in (fam.get("child") or []) if f.name(c))
+        prof["concubines"] = "、".join(f.name_or(s) for s in _asof_ids(f, fam.get("concubine") or []) if f.name(s))
+        prof["children"] = "、".join(f.name_or(c) for c in _asof_ids(f, fam.get("child") or []) if f.name(c))
         prof["father"] = "、".join(f.name_or(x) for x in (fam.get("father") or []) if f.name(x))
         prof["mother"] = "、".join(f.name_or(x) for x in (fam.get("mother") or []) if f.name(x))
         prof["siblings"] = "、".join(f.name_or(x) for x in (fam.get("siblings") or []) if f.name(x))
@@ -1580,10 +2119,15 @@ def _character_profiles(f):
         if ht:
             prof["titles_held"] = "；".join(ht)
         mems = []
-        for mem in rec.get("memories") or []:
+        for mem in prof.get("memories") or []:
             s = _mem_sentence(f, cid, mem)
-            if s:
-                mems.append(f"{f.date(mem.get('creation_date'))}，{s}")
+            if not s:
+                continue
+            # v11: as_of 截断 — 十年传记只列该时期前的事件
+            if f.as_of and mem.get("creation_date") \
+                    and cl.date_key(mem.get("creation_date")) > cl.date_key(f.as_of):
+                continue
+            mems.append(f"{f.date(mem.get('creation_date'))}，{s}")
         mems.sort()
         prof["events"] = mems
         ds = _death_sentence(f, cid)
@@ -1596,9 +2140,11 @@ def _character_profiles(f):
 def _realm_facts(f):
     """朝局数据 (v4): 玩家上位链 + 帝国/王国级头衔持有者变化。"""
     out = {}
-    # 玩家上位链 (最后快照)
+    # 玩家上位链 (最后快照)。v11: as_of 早于末档 (十年传记) 时, 当前熔件的上位链
+    # 是末档状态 (周皇朝), 与十年前不符且无法按时期重建 → 省略, 避免「隶属周皇朝」误写。
     pid = f.cache.get("player_id")
-    if pid is not None:
+    if pid is not None and not (f.as_of and cl.date_key(f.as_of) < cl.date_key(
+            f.cache.get("last_date") or f.as_of or "9999.9.9")):
         prov = f.character_location_province(pid)
         county_tid = f.county_at_province(prov)
         chain = f.liege_chain(county_tid) if county_tid else []
@@ -1608,27 +2154,72 @@ def _realm_facts(f):
                 hn = f.name_or(hid, "") if hid is not None else ""
                 parts.append(f"{f.title(tid)}（{hn}）" if hn else f.title(tid))
             out["liege_chain"] = " → ".join(parts)
-    # 高位头衔持有者变化 (h_/e_ 帝国级 + 王国级相关)
-    changes = []
-    holder_seq = {}
-    for h in f.cache.get("realm_history") or []:
+    # 高位头衔持有者变化 (h_/e_/k_): title history 精确日期 + realm_history 兜底,
+    # 头衔名按任期 (v11: 唐皇朝 → 周皇朝 更名可见, 882 的「周皇朝」错标即由此根除)。
+    if f.as_of:
+        rh = [h for h in f.cache.get("realm_history") or []
+              if cl.date_key(h.get("date")) <= cl.date_key(f.as_of)]
+    else:
+        rh = f.cache.get("realm_history") or []
+    seq_map = {}  # tid -> [(date, holder), ...] (realm 快照 + title history 精确, 合并不去重)
+    for h in rh:
         for tid, holder in (h.get("holders") or {}).items():
-            t = (f.melt.get("landed_titles") or {}).get("landed_titles") or {}
-            key = (t.get(str(tid)) or {}).get("key") or ""
-            if not (key.startswith(("h_", "e_", "k_"))):
+            t = f._lt.get(str(tid)) or {}
+            key = t.get("key") or ""
+            if not key.startswith(("h_", "e_", "k_")):
                 continue
-            holder_seq.setdefault(tid, []).append((h.get("date"), holder))
-    for tid, seq in holder_seq.items():
-        prev = None
-        bits = []
+            if holder is None:
+                continue
+            seq_map.setdefault(tid, []).append((h.get("date"), holder))
+    # title history 精确持有者事件 (补快照粗日期; 只取首档之后, 避免 25 年汉晋隋唐古史)
+    min_dk = min((cl.date_key(h.get("date")) for h in rh), default=None)
+    for tid, t in f._lt.items():
+        if not isinstance(t, dict):
+            continue
+        key = t.get("key") or ""
+        if not key.startswith(("h_", "e_", "k_")):
+            continue
+        hist = t.get("history") or {}
+        if not isinstance(hist, dict):
+            continue
+        for d, ev in sorted(hist.items(), key=lambda x: cl.date_key(x[0])):
+            if f.as_of and cl.date_key(d) > cl.date_key(f.as_of):
+                break
+            if min_dk is not None and cl.date_key(d) < min_dk:
+                continue
+            holder = ev.get("holder") if isinstance(ev, dict) else ev
+            if holder is not None:
+                seq_map.setdefault(int(tid), []).append((d, holder))
+    span_end = f.as_of or f.cache.get("last_date")
+    changes = []
+    for tid, seq in seq_map.items():
+        seq.sort(key=lambda x: cl.date_key(x[0]))
+        # 去重: 同日同持有者只留一条 (title history 与快照同日重复)
+        dedup = []
+        seen_k = set()
         for d, holder in seq:
+            k = (cl.date_key(d), holder)
+            if k in seen_k:
+                continue
+            seen_k.add(k)
+            dedup.append((d, holder))
+        prev = None
+        prev_nm = None
+        bits = []
+        for i, (d, holder) in enumerate(dedup):
             if holder == prev:
                 continue
             hn = f.name_or(holder, "") if holder is not None else "无"
-            bits.append(f"{f.date(d)}：{hn}")
+            end = dedup[i + 1][0] if i + 1 < len(dedup) else span_end
+            nm = f._name_in_span(tid, d, end, cid=holder)
+            if nm and nm != prev_nm:
+                bits.append(f"{nm}：{f.date(d)}：{hn}")
+                prev_nm = nm
+            else:
+                bits.append(f"{f.date(d)}：{hn}")
             prev = holder
         if len(bits) > 1:
-            changes.append(f"{f.title(tid)}：{'，'.join(bits)}")
+            changes.append("，".join(bits))
     if changes:
         out["holder_changes"] = changes
     return out
@@ -1709,6 +2300,16 @@ def _killed_by_player(f):
         entry["events"].sort()
         out.append(entry)
     out.sort(key=lambda e: cl.date_key(e["death_date"]))
+    # v11: 击杀人数多时剔除 lowborn (无家族、非家人/友/仇), 保模型注意力;
+    # as_of 截断 — 十年传记只收该时期前已死的死者 (892 年不出现 142 人刺客列传);
+    # 死亡日期未知 (9999.9.9) 的死者视为不晚于 as_of, 保留。
+    if f.as_of:
+        ao = cl.date_key(f.as_of)
+        out = [e for e in out
+               if e["death_date"] == "9999.9.9" or cl.date_key(e["death_date"]) <= ao]
+    if len(out) > KILL_LOWBORN_THRESHOLD:
+        keep = _kill_keep_ids(cache, pid)
+        out = [e for e in out if e["house"] or e["id"] in keep]
     return out
 
 
@@ -1762,6 +2363,10 @@ def _wandering_trail(f):
         return []
     out = []
     hist = cache.get("player_locations") or []
+    # v11: as_of 截断 — 十年传记只列该时期前的行踪
+    if f.as_of:
+        hist = [loc for loc in hist
+                if not loc.get("date") or cl.date_key(loc.get("date")) <= cl.date_key(f.as_of)]
     for i, loc in enumerate(hist):
         prov = loc.get("province")
         county = f.county_at_province(prov)
@@ -1841,16 +2446,20 @@ def _genealogy(f):
     return lines
 
 
-def build_facts(cache, melt, names_path=None):
-    """渲染干净事实集。melt 为 dict (已加载)。"""
-    f = Facts(cache, melt, names_path)
+def build_facts(cache, melt, names_path=None, as_of=None):
+    """渲染干净事实集。melt 为 dict (已加载)。
+    as_of (v11): 传记数据截止日期; 十年传记传十年末, 官职/历任/时间线/朝局按此截断。"""
+    f = Facts(cache, melt, names_path, as_of=as_of)
     period = ""
     sources = cache.get("sources") or []
     if sources:
         period = f"{sources[0]} – {sources[-1]}"
     cpl, cpch = f.court_positions_lines()
     # v8: 死因中文化 (总纲【卒年】不再泄漏英文 key, 干净事实铁律)
+    # v11: as_of 早于死期 (十年传记) 时视为在世, 不泄漏死亡信息
     pd = cache.get("player_death")
+    if pd and as_of and cl.date_key(as_of) < cl.date_key(pd.get("date") or "9999.9.9"):
+        pd = None
     if pd:
         pd = dict(pd)
         pd["reason_zh"] = _death_reason(f.table, pd.get("reason"))
@@ -1866,6 +2475,7 @@ def build_facts(cache, melt, names_path=None):
         "realm": _realm_facts(f),
         "player_death": pd,
         "last_date": cache.get("last_date"),
+        "as_of": as_of,
         # v5 新增
         "bio_style": f.bio_style(),
         "killed": _killed_by_player(f),
