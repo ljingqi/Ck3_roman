@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import threading
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -392,7 +393,8 @@ def rebuild_folder(output_dir, folder):
            .replace("__FOLDER__", html.escape(folder))
            .replace("__DATA__", json.dumps(groups, ensure_ascii=False)))
     path = os.path.join(base, "index.html")
-    tmp = path + ".tmp"
+    # 唯一临时名 (主线程与后台传记线程可能并发重建同一阅读页, 共享 .tmp 会互相截断)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(out)
     os.replace(tmp, path)

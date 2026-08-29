@@ -27,8 +27,11 @@ import copy
 import json
 import os
 import re
+import threading
+import time
 
 import localization
+import llm
 
 # ---------------------------------------------------------------------------
 # 名称解码
@@ -469,6 +472,21 @@ def cache_path_for(cache_dir, player_id):
     return os.path.join(cache_dir, f"player_{player_id}.json")
 
 
+# 同路径缓存写互斥锁 (主线程并入 与 后台传记线程回写 可能并发写同一缓存文件,
+# 共享固定 .tmp 会互相截断 → 缓存损坏 + WinError 32, 见 2026-08-28 23:30 事件)
+_SAVE_LOCKS = {}
+_SAVE_LOCKS_GUARD = threading.Lock()
+
+
+def _save_lock(path):
+    with _SAVE_LOCKS_GUARD:
+        lock = _SAVE_LOCKS.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _SAVE_LOCKS[path] = lock
+        return lock
+
+
 def load_cache(path):
     if os.path.isfile(path):
         try:
@@ -478,17 +496,26 @@ def load_cache(path):
             for k, v in EMPTY_CACHE.items():
                 cache.setdefault(k, v)
             return cache
-        except Exception:
-            pass
+        except Exception as e:
+            # 缓存文件损坏 (并发写共享 .tmp 遗留): 改名留证并告警, 不再静默当空缓存用
+            # (空缓存会以 seq=0 参与选路, 把本会话数据误并进旧会话文件夹, 见 2026-08-28 事件)
+            try:
+                corrupt = f"{path}.corrupt.{time.strftime('%Y%m%d_%H%M%S')}"
+                os.replace(path, corrupt)
+                llm.log(f"[缓存损坏] {path} 解析失败 ({e}) — 已改名 {os.path.basename(corrupt)} "
+                        f"留证, 返回空缓存 (请用 rebuild-cache 重建)")
+            except Exception:
+                llm.log(f"[缓存损坏] {path} 解析失败 ({e}) — 改名失败, 返回空缓存")
     return new_cache()
 
 
 def save_cache(cache, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fp:
-        json.dump(cache, fp, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)  # 原子替换, 防并发读写撕裂
+    with _save_lock(path):
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fp:
+            json.dump(cache, fp, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)  # 原子替换, 防并发读写撕裂
 
 
 def char_record(cache, cid):
@@ -1135,6 +1162,112 @@ def recover_dead_memories_from(melt, cache, cid, chars=None):
         key = (b["id"], b.get("creation_date"))
         if key not in seen:
             b["first_seen"] = melt.get("date") or "?"
+            rec["memories"].append(b)
+            seen.add(key)
+            added += 1
+    return added
+
+
+# ---------------------------------------------------------------------------
+# 记忆归档 (v12: 边车索引, 回溯不再整份加载旧熔件)
+# ---------------------------------------------------------------------------
+# 死角色记忆回溯需要「死前最近一份存档」里该角色的记忆。旧实现每次回溯都要
+# json.load 一份 160 MB 全量熔件 (实测 13 份 ≈ 87s, 占每年合并的大头)。
+# 归档 = 每份熔件的瘦身边车 melt_<日期>_idx.json, 只含回溯需要的:
+#   - chars: {cid: [记忆ID...]} (alive_data.memories, 死者回退 dead_data.memories)
+#   - db:    {记忆ID: 精简条目} (仅 memory_brief 用到的字段)
+# 全量熔件仍是权威源 (extract_snapshot/传记/rebuild-cache 继续用), 归档只在
+# 回溯缺失时惰性构建一次并持久化, 之后回溯直接读归档 (0.1s 级)。
+
+
+def melt_index_path(melt_path):
+    """全量熔件 → 记忆归档边车路径: melt_913_01_01.json → melt_913_01_01_idx.json。
+    命名含 _idx, 不会被 _iter_melts / melt_file_in 等按 melt_<日期>(_p<id>)?.json
+    匹配的代码误当成全量熔件。"""
+    p = str(melt_path)
+    return p[:-5] + "_idx.json" if p.lower().endswith(".json") else p + "_idx.json"
+
+
+def build_melt_index(melt):
+    """从全量熔件构建记忆归档 dict (不入库)。"""
+    out = {"date": melt.get("date"), "chars": {}, "db": {}}
+    chars = out["chars"]
+    db = out["db"]
+    for cid, c in all_characters(melt).items():
+        if not isinstance(c, dict):
+            continue
+        ids = mem_ids_of(c)
+        if ids:
+            chars[cid] = [str(x) for x in ids]
+    for mid, e in _db(melt).items():
+        if not isinstance(e, dict):
+            continue
+        vars_out = []
+        for f in (e.get("variables") or {}).get("data") or []:
+            d = f.get("data") or {}
+            vars_out.append([f.get("flag"), d.get("type"), d.get("identity")])
+        db[mid] = {
+            "type": e.get("type"),
+            "participants": e.get("participants"),
+            "creation_date": e.get("creation_date"),
+            "end_date": e.get("end_date"),
+            "vars": vars_out,
+        }
+    return out
+
+
+def save_melt_index(melt_path, melt):
+    """构建并持久化记忆归档边车 (原子写), 返回边车路径。"""
+    path = melt_index_path(melt_path)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fp:
+        json.dump(build_melt_index(melt), fp, ensure_ascii=False)
+    os.replace(tmp, path)
+    return path
+
+
+def load_melt_index(melt_path):
+    """读取记忆归档边车; 不存在/损坏返回 None。"""
+    try:
+        with open(melt_index_path(melt_path), encoding="utf-8") as fp:
+            return json.load(fp)
+    except Exception:
+        return None
+
+
+def _brief_from_index(mid, e):
+    """归档条目 → memory_brief 同构精简条目 (vars 用 [flag,type,identity] 三元组)。"""
+    return {
+        "id": mid,
+        "type": e.get("type"),
+        "participants": e.get("participants"),
+        "creation_date": e.get("creation_date"),
+        "end_date": e.get("end_date"),
+        "vars": [{"flag": v[0], "type": v[1], "identity": v[2]}
+                 for v in (e.get("vars") or []) if isinstance(v, (list, tuple))],
+    }
+
+
+def recover_dead_memories_from_index(index, cache, cid):
+    """从记忆归档恢复角色 cid 的记忆 (与 recover_dead_memories_from 等价,
+    数据来自边车索引而非全量熔件)。返回恢复条数。"""
+    rec = cache["characters"].get(str(cid))
+    if rec is None:
+        return 0
+    ids = (index.get("chars") or {}).get(str(cid))
+    if not ids:
+        return 0
+    db = index.get("db") or {}
+    seen = {(m.get("id"), m.get("creation_date")) for m in rec["memories"]}
+    added = 0
+    for mid in ids:
+        e = db.get(str(mid))
+        if not e:
+            continue
+        b = _brief_from_index(mid, e)
+        key = (b["id"], b.get("creation_date"))
+        if key not in seen:
+            b["first_seen"] = index.get("date") or "?"
             rec["memories"].append(b)
             seen.add(key)
             added += 1
