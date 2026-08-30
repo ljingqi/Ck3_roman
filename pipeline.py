@@ -300,14 +300,21 @@ def sanitize_folder_name(name):
 
 
 def determine_folder(name, output_dir):
-    """重名文件夹加数字: 哈布斯堡 → 哈布斯堡2 → 哈布斯堡3... (仿 D:\\Journal)。"""
+    """重名文件夹加数字: 哈布斯堡 → 哈布斯堡2 → 哈布斯堡3... (仿 D:\\Journal)。
+    v14: 语义改为「已有编号最大值 + 1」— 磁盘上 菲利普/菲利普3 并存时新会话建 菲利普4,
+    不再找最小空号 (旧逻辑在 菲利普3 已存在时新建 菲利普2, 编号倒退破坏
+    find_latest_session_folder/_cache_pick_key 的「编号大=最新」判据, 见 修复方案_菲利普2.md 问题1)。
+    不带编号的 base 目录视为 1 (菲利普 存在 → 新会话 菲利普2)。"""
     base = sanitize_folder_name(name)
-    if os.path.exists(os.path.join(output_dir, base)):
-        i = 2
-        while os.path.exists(os.path.join(output_dir, f"{base}{i}")):
-            i += 1
-        return f"{base}{i}"
-    return base
+    max_seq = 0
+    if os.path.isdir(output_dir):
+        if os.path.isdir(os.path.join(output_dir, base)):
+            max_seq = 1  # 无编号的 base 目录 = 1
+        for fn in os.listdir(output_dir):
+            m = re.match(re.escape(base) + r"(\d+)$", fn)
+            if m:
+                max_seq = max(max_seq, int(m.group(1)))
+    return f"{base}{max_seq + 1}" if max_seq else base
 
 
 def find_latest_session_folder(name, output_dir):
@@ -357,12 +364,25 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
         if latest:
             return latest
         return determine_folder(name, out)
-    # watch 模式: 一律新建 (运行内同玩家沿用本次运行的文件夹)
+    # watch 模式: 运行内同玩家沿用本次运行的文件夹; 换玩家(父死子继/新局)时——
+    # v14: 先查同 playthrough_id 的既有缓存, 有则沿用其 output_folder (父死子继共享文件夹,
+    # 修复方案_菲利普2.md 问题2: 旧逻辑 player_key 一变就 determine_folder 新建 菲利普4,
+    # 且后台终传线程又建 菲利普5, 缓存绑定被污染); 无同战役缓存才新建编号文件夹。
     name = session_folder_name(cache)
     key = cache.get("player_id")
     if _WATCH_SESSION["active"]:
         if _WATCH_SESSION["folder"] is not None and _WATCH_SESSION["player_key"] == key:
             return _WATCH_SESSION["folder"]
+        if key != _WATCH_SESSION["player_key"] and _WATCH_SESSION["player_key"] is not None:
+            pt = cache.get("playthrough_id")
+            if pt:
+                for _pid, (_path, other) in all_caches(cfg).items():
+                    if other.get("playthrough_id") == pt and other.get("output_folder") \
+                            and os.path.isdir(os.path.join(out, other["output_folder"])):
+                        _WATCH_SESSION["folder"] = other["output_folder"]
+                        _WATCH_SESSION["player_key"] = key
+                        llm.log(f"  续用同战役文件夹: [{other['output_folder']}] (父死子继)")
+                        return other["output_folder"]
         folder = determine_folder(name, out)
         _WATCH_SESSION["folder"] = folder
         _WATCH_SESSION["player_key"] = key
@@ -613,14 +633,17 @@ def _bio_as_of(cache, decade=None):
     return _decade_cutoff(cache, decade)
 
 
-def generate_bio(cfg, cache, force=False, decade=None):
+def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     """为一名玩家生成传记 (终传 / 在世传记 / 第decade个十年传记), 刷新家族 index.html。
-    返回 (输出路径, facts) 或 None。"""
+    返回 (输出路径, facts) 或 None。
+    v14: continue_mode — 后台传记线程传 True, 输出文件夹一律按缓存绑定/同战役解析,
+    永不新建文件夹 (修复方案_菲利普2.md 问题2: 旧逻辑 watch 运行期间死者终传
+    被 resolve 到新文件夹 菲利普5, 缓存绑定被污染)。"""
     melt = load_latest_melt(cfg, cache)
     if melt is None:
         llm.log(f"玩家 {cache.get('player_id')} 无可用 melt, 跳过生成")
         return None
-    house, fname = output_paths(cfg, cache, decade=decade)
+    house, fname = output_paths(cfg, cache, continue_mode=continue_mode, decade=decade)
     out_dir = os.path.join(cfg.get("output_dir", ""), house)
     out_path = os.path.join(out_dir, fname)
     if not force:
@@ -639,8 +662,12 @@ def generate_bio(cfg, cache, force=False, decade=None):
             return out_path, None
     md, facts, articles = bio.generate_biography(cache, melt, cfg, out_path=out_path,
                                                  decade=decade, as_of=_bio_as_of(cache, decade))
-    # 持久化文件夹绑定 (generate 可能首次解析出文件夹)
-    if cache.get("output_folder") != house:
+    # 持久化文件夹绑定 (v14: 只绑定、不覆盖 — output_folder 已存在且目录存在时
+    # 不再改写, 修复方案_菲利普2.md 问题2: 旧逻辑把 38696 的绑定从 菲利普2
+    # 覆盖成 菲利普5, 但缓存文件与熔件都在 菲利普2, 导致后续按错误绑定找文件夹)
+    cur_bind = cache.get("output_folder")
+    cur_ok = cur_bind and os.path.isdir(os.path.join(cfg.get("output_dir", ""), cur_bind))
+    if not cur_ok and cache.get("output_folder") != house:
         cache["output_folder"] = house
         path = find_cache_path(cfg, cache.get("player_id"))
         if path:
@@ -1019,7 +1046,7 @@ def _bio_worker_loop(cfg):
                 death = cache.get("player_death")
                 if not death or cache.get("bio_generated"):
                     continue
-                out = generate_bio(cfg, cache)
+                out = generate_bio(cfg, cache, continue_mode=True)  # v14: 后台线程按绑定解析
                 if out:
                     out_path, _ = out
                     cur = cl.load_cache(path, fresh=True)  # v13: 写入路径独立副本
@@ -1032,7 +1059,7 @@ def _bio_worker_loop(cfg):
                 if (decade in (cache.get("bio_decades") or [])
                         or decade in _generated_decades_on_disk(cfg, cache)):
                     continue  # 磁盘上已有该十年文件 (或缓存标记), 不再生成
-                out = generate_bio(cfg, cache, decade=decade)
+                out = generate_bio(cfg, cache, decade=decade, continue_mode=True)  # v14
                 if out:
                     out_path, _ = out
                     cur = cl.load_cache(path, fresh=True)

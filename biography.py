@@ -86,39 +86,41 @@ SECTION_TITLES = {
 }
 
 # 板块要求 (按文章, 首段/中段/尾段) — 全部数据驱动, 无战役硬编码
+# v14: 各篇补「本篇须写出的核心场景/转折」戏剧引导 (修复方案_菲利普2.md 问题4 修复4,
+# 正向表述, 仿 D:\Journal 的 SECTION_DEFS)。
 SECTION_REQ = {
     "benji": {
         "lead": "从家世出身写起: 生于何年、家族渊源、族属信仰、性情特质, 立起人物一生基调。",
-        "mid": "按时间次序叙述一生大事: 执掌领地或经营营地、受任官职、让土、结仇、家变、再娶等, 以年表资料为限。",
+        "mid": "按时间次序叙述一生大事: 执掌领地或经营营地、受任官职、让土、结仇、家变、再娶等, 以年表资料为限。本篇写出主角的登位与失土时刻、战争与囚狱转折, 把每个关键日期写成戏剧场景。",
         "tail": None,
     },
     "friend": {
         "lead": "写传主与主角的交游渊源: 二人如何相识、同处何朝何地, 传主的家世与出身。",
-        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。",
+        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散。",
         "tail": None,
     },
     "enemy": {
         "lead": "写仇家身世与结仇之由: 传主何许人也, 与主角因何成仇。",
-        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。",
+        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发。",
         "tail": None,
     },
     "jiashi": {
         "lead": "写主角婚配始末: 结缡、离异、前妻之死、再娶, 立起门庭画卷; 妻族门第 (妻之父兄等显贵亲眷) 若有资料一并铺陈。",
-        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。",
+        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境。",
         "tail": None,
     },
     "chaoju": {
         "lead": "写天下大势: 以最高领主或皇帝及其更替为纲, 铺陈本期朝局格局与主角所处疆域, 以资料为限。",
-        "mid": "写朝局浮沉: 依朝局动态与要员名录, 叙述登位、失土、囚狱、结仇、战争等朝局大事, 以资料为限。",
+        "mid": "写朝局浮沉: 依朝局动态与要员名录, 叙述登位、失土、囚狱、结仇、战争等朝局大事, 以资料为限。本篇写出帝位或最高领主的每次更替, 主角在朝局中的升沉。",
         "tail": None,
     },
     # v5 新增
     "assassins": {
         "lead": "写被主角所杀诸人的群像: 各人身份、与主角的恩怨由、死时情状, 以资料为限, 客观平实。",
-        "mid": "依死亡先后为序, 为每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。",
-        "mid1": "依死亡先后为序, 为这一时期 (最早所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。",
-        "mid2": "依死亡先后为序, 为这一时期 (中期所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。",
-        "mid3": "依死亡先后为序, 为这一时期 (暮年所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。",
+        "mid": "依死亡先后为序, 为每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。本篇写出死者生前的家世亲缘与婚恋际遇, 再写其死时情状。",
+        "mid1": "依死亡先后为序, 为这一时期 (最早所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。本篇写出死者生前的家世亲缘与婚恋际遇, 再写其死时情状。",
+        "mid2": "依死亡先后为序, 为这一时期 (中期所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。本篇写出死者生前的家世亲缘与婚恋际遇, 再写其死时情状。",
+        "mid3": "依死亡先后为序, 为这一时期 (暮年所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。本篇写出死者生前的家世亲缘与婚恋际遇, 再写其死时情状。",
         "tail": None,
     },
     "youxia": {
@@ -139,7 +141,7 @@ SECTION_REQ = {
     # v9 新增
     "feuds": {
         "lead": "写与主角家族关系不和的各家族: 结怨之由、恩怨始末、当前关系档位 (世仇/敌对/争吵), 以资料为限。",
-        "mid": "依事件史叙述各家族的恩怨始末: 联姻、囚禁、处决、宣战、反目等, 以资料为限。",
+        "mid": "依事件史叙述各家族的恩怨始末: 联姻、囚禁、处决、宣战、反目等, 以资料为限。本篇把每段恩怨的起点 (劫掠/囚禁/处决的日期与由头) 写到收束, 让恩怨链条完整可见。",
         "tail": None,
     },
     "artifacts": {
@@ -479,6 +481,72 @@ def _render_block(title, lines):
     return f"{title}\n" + "\n".join(body)
 
 
+# v14: 刺客列传新口径 (用户定稿) — 死者名带官职 (「唐皇帝李漼」),
+# 只传 亲缘 (父/母/妻/妾) + 婚恋记忆 (成婚/相恋/分手/丧偶), 其余生前经历
+# (登位/战争/科考等) 从略 — 研究_戏剧模块化.md 7.3 实测: 46 死者 324 条记忆
+# 婚恋类仅 30 条 (9%), 裁掉 294 条与「刀下之魂」叙事无关的杂事。
+_MARRIAGE_TYPES = {
+    "married", "grand_wedding_completed_guest", "broke_up_lovers",
+    "became_lovers", "had_sex", "spouse_died", "divorced",
+}
+
+
+def _assassin_kill_lines(facts, cache, k):
+    """一名死者的新口径档案行: 官职名 + 死句 + 亲缘 + 婚恋记忆。
+    返回 ['死者：唐皇帝李漼（殁于878年4月9日，被处决，行刑者为崔佛·菲利普。）', …]。"""
+    lines = []
+    nm = k["name"]
+    off = k.get("office") or ""
+    disp = f"{off}{nm}" if off else nm
+    db = k.get("death") or "（死因不详）"
+    if db.startswith(nm + "殁于"):
+        db = "殁于" + db[len(nm) + 2:]
+    lines.append(f"死者：{disp}（{db}）")
+    # 亲缘: 父/母/妻/妾 (从缓存 family 取)
+    fam = ((cache.get("characters") or {}).get(str(k.get("id"))) or {}).get("family") or {}
+    bits = []
+    seen_bits = set()
+    for x in (fam.get("father") or []):
+        bits.append(f"父{_name_or(facts, cache, x)}")
+    for x in (fam.get("mother") or []):
+        bits.append(f"母{_name_or(facts, cache, x)}")
+    for key, label in (("primary_spouse", "妻"), ("spouse", "妻"),
+                       ("former_spouses", "前妻"), ("concubine", "妾")):
+        for x in (fam.get(key) or []):
+            b = f"{label}{_name_or(facts, cache, x)}"
+            if b not in seen_bits:
+                seen_bits.add(b)
+                bits.append(b)
+    if bits:
+        lines.append("亲缘：" + "、".join(bits))
+    # 婚恋记忆: 只收婚恋类 (过滤 k["events"], 其文本带日期前缀)
+    mar = [e for e in (k.get("events") or [])
+           if any(m in e for m in ("成婚", "相恋", "私情", "分手", "丧偶", "离婚"))]
+    if mar:
+        lines.append("婚恋：")
+        lines.extend("  " + e for e in mar)
+    return lines
+
+
+def _name_or(facts, cache, cid):
+    """角色名 (档案有则用, 否则从缓存原始名取, 不再回退「角色N」)。
+    亲缘未必在相关集 (死者父母/配偶多为路人), 直接查缓存 characters。"""
+    try:
+        p = (facts.get("characters") or {}).get(str(cid)) or {}
+        if p.get("name"):
+            return p["name"]
+    except Exception:
+        pass
+    try:
+        r = ((cache.get("characters") or {}).get(str(cid)) or {})
+        nm = r.get("name_zh") or r.get("name_full") or ""
+        if nm:
+            return nm
+    except Exception:
+        pass
+    return f"角色{cid}"
+
+
 def _article_facts(facts, cache, key, section=None):
     """按文章取事实文本块 dict: {块名: 文本}。
     v11: 刺客列传按板块取料 — 开篇给压缩名录 (群像总览), 各纪事给对应时段切片。"""
@@ -592,35 +660,19 @@ def _article_facts(facts, cache, key, section=None):
                 parts = []
                 for k in killed:
                     nm = k["name"]
+                    off = k.get("office") or ""
+                    disp = f"{off}{nm}" if off else nm
                     db = k.get("death") or ""
                     if db.startswith(nm + "殁于"):
                         db = "殁于" + db[len(nm) + 2:]  # 去掉「名+殁于」前缀
-                    parts.append(f"死者：{nm}（{db}）" if db and db != "（死因不详）"
-                                 else f"死者：{nm}")
+                    parts.append(f"死者：{disp}（{db}）" if db and db != "（死因不详）"
+                                 else f"死者：{disp}")
                 blocks["刀下诸魂"] = "\n".join(parts)
             else:
-                # 各纪事: 按时段切片给完整档案
+                # 各纪事: 按时段切片给完整档案 (v14 新口径: 官职名+亲缘+婚恋)
                 sl = (section or {}).get("slice")
                 picked = killed[sl[0]:sl[1]] if sl else killed
-                parts = []
-                for k in picked:
-                    lines = [f"死者：{k['name']}"]
-                    if k.get("house"):
-                        lines.append(f"门第：{k['house']}")
-                    # v13: 死者官职 (含家族领袖「XX家族乡绅」) — 此前缺失, 模型
-                    # 无从得知被杀者是家族之主
-                    if k.get("office"):
-                        lines.append(f"官职：{k['office']}")
-                    if k.get("birth"):
-                        lines.append(f"生于{k['birth']}")
-                    if k.get("death"):
-                        lines.append(k["death"])
-                    if k.get("traits"):
-                        lines.append(f"为人{k['traits']}")
-                    if k.get("events"):
-                        lines.append("生前经历：")
-                        lines.extend("  " + e for e in k["events"])
-                    parts.append("\n".join(lines))
+                parts = ["\n".join(_assassin_kill_lines(facts, cache, k)) for k in picked]
                 blocks["刀下诸魂"] = "\n\n".join(parts)
         else:
             blocks["刀下诸魂"] = "（无刀下诸魂记录）"
@@ -695,10 +747,25 @@ def _system_msg(style="east", extra=""):
             f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}")
 
 
+def _decade_theme_note(facts):
+    """戏剧主题预告 (v14): 数据驱动 Top10 (并列第10名全保留, facts.py
+    decade_module_top)。十年传记 (有 as_of) 称「本十年」, 终传/在世称「一生」。
+    正向表述指引各篇围绕主题取材。无主题时返回空串。"""
+    dm = facts.get("decade_modules") or []
+    if not dm:
+        return ""
+    names = "、".join(m for m, _s in dm)
+    label = "本十年" if facts.get("as_of") else "一生"
+    return (f"{label}戏剧主题: {names}。"
+            "各篇正文围绕这些主题取材，主题相关的事件写出戏剧张力，"
+            "资料不足的内容简写或略去。\n\n")
+
+
 def _shared_facts_block(facts):
-    """所有调用共享的事实前缀 (v9 输入缓存优化): 传主+人物档案+主角大事年表。
-    逐字节一致, 置于每条 user 消息最前, 供 DeepSeek 前缀缓存命中
-    (总纲/各文章/各板块调用全部共享)。
+    """所有调用共享的事实前缀 (v9 输入缓存优化 + v14 瘦身):
+    只留【传主】+【人物档案】+ 主角级事件摘要 (修复方案_菲利普2.md 问题4 修复2:
+    全量年表改为按文章取, 不再逐字节重复注入 16 次; 共享前缀仍逐字节一致
+    置于每条 user 消息最前, 供 DeepSeek 前缀缓存命中)。
     v11: 删【时期】(起止是快照区间, 不是生卒, 对模型无用);
     卒年自然语言化 (【卒年】931年6月7日，因绊倒坠落而亡——此为终传)。"""
     p = facts["protagonist"]
@@ -714,10 +781,14 @@ def _shared_facts_block(facts):
     else:
         life_note = "【现状】在世（截至最后一份存档）"
     profile_txt = _render_block("【人物档案】", _profile_lines(facts)) or "（无档案）"
-    timeline_txt = _render_block("【主角大事年表】",
-                                 _timeline_texts(facts) or ["（无重大事件记录）"])
+    # v14: 主角级事件摘要 (仅主角名在文本中的事件, 数量小: 十年 50 条 / 1.3K 字符)
+    pname = p.get("name") or ""
+    own = [e["text"] for e in facts.get("timeline") or []
+           if pname and pname in e["text"]]
+    own_txt = _render_block("【主角大事摘要】", own) if own else ""
     return (f"【传主】{name}\n【家族】{house}\n{life_note}\n\n"
-            f"{profile_txt}\n\n{timeline_txt}")
+            f"{profile_txt}"
+            + (f"\n\n{own_txt}" if own_txt else ""))
 
 
 def build_intro_messages(facts, cfg, articles=None):
@@ -758,6 +829,7 @@ def build_intro_messages(facts, cfg, articles=None):
         n_articles = 5
     user_msg = (
         f"{shared}\n\n"
+        f"{_decade_theme_note(facts)}"
         f"本传共{n_articles}篇, 篇目预告:\n{preview}\n\n"
         "输出格式:\n"
         f"# 《{name}传》\n"
@@ -797,6 +869,7 @@ def build_lead_messages(article, facts, cache, intro, cfg):
         )
     user_msg = (
         f"{_shared_facts_block(facts)}\n\n"
+        f"{_decade_theme_note(facts)}"
         f"【总纲】\n{intro}\n\n"
         + custom_note
         + subject_note
@@ -833,6 +906,7 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
         )
     user_msg = (
         f"{_shared_facts_block(facts)}\n\n"
+        f"{_decade_theme_note(facts)}"
         + subject_note
         + f"相关事实:\n{facts_txt}\n\n"
         f"本篇文章标题已定为《{title}》。\n\n"
@@ -885,11 +959,19 @@ def _strip_markdown_tables(text):
     return "\n".join(out)
 
 
-def _normalize_section(text, sec_title):
+def _normalize_section(text, sec_title, article_title=""):
     """板块正文规范化: 标题统一为 ###, 表格转自然语言, 无标题补 ### 板块名。
-    v11: 剥离板块内的「太史公曰/史家按」评点段 (只留总纲的评点, 板块均为客观叙事)。"""
+    v11: 剥离板块内的「太史公曰/史家按」评点段 (只留总纲的评点, 板块均为客观叙事)。
+    v14: 正则剔除模型误输出的重复标题 (不动提示词):
+      - 板块标题短版重复: 「### 家世与交游」与板块标题「开篇·家世与交游」去前缀后同名 → 剔;
+      - 文章标题混入: 「### 列传·赫罗德加尔·戈迪」与文章标题同名 → 剔;
+      - 同一标题出现多次 → 只留第一个。"""
     out = []
     saw = False
+    seen_titles = set()
+    # 板块标题的短版 (去掉 开篇·/纪事·/评曰· 前缀), 模型常误输出短版重复
+    short = re.sub(r"^(开篇|纪事|评曰)[··]?", "", sec_title).strip()
+    art_plain = re.sub(r"^《|》$", "", article_title or "")
     for raw in (text or "").split("\n"):
         s = raw.strip()
         if not s:
@@ -902,6 +984,13 @@ def _normalize_section(text, sec_title):
                 out.append("")  # 评点标题 (### 太史公曰) 剥离
                 continue
             s = re.sub(r"^(#{1,6})\s+", "### ", s)
+            head = s.lstrip("# ").strip()
+            # v14: 重复标题剔除 (短版/文章标题/重复出现)
+            if head == short or (art_plain and head == art_plain) \
+                    or head in seen_titles:
+                out.append("")
+                continue
+            seen_titles.add(head)
             out.append(s)
             continue
         # 评点段整段剥离: 「太史公曰：…」/「**太史公曰**」/「史家按：…」(西式)
@@ -1212,7 +1301,8 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None)
         try:
             msg = build_lead_messages(article, facts, cache, intro, cfg)
             text = llm.call_deepseek(msg, sec_cfg).strip()
-            body = _normalize_section(text, article["sections"][0]["title"])
+            body = _normalize_section(text, article["sections"][0]["title"],
+                                      article["title"])
             body = re.sub(r"(?<!\n)\n(?!\n)", "\n\n", body)
             return article["key"], body
         except Exception as e:
@@ -1233,7 +1323,7 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None)
                                          leads[article["key"]], cfg)
             text = llm.call_deepseek(msg, sec_cfg).strip()
             return article["key"], section["key"], _normalize_section(
-                text, section["title"])
+                text, section["title"], article["title"])
         except Exception as e:
             llm.log(f"板块《{section['title']}》生成失败: {e}")
             return (article["key"], section["key"],
