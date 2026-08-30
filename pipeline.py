@@ -434,16 +434,49 @@ def save_session_cache(cfg, cache, continue_mode=False):
     return path
 
 
+def _cache_mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _date_scalar(s):
+    """'869.2.22' → 排序标量 (年*372+月*31+日, 便于算时间线差距)。"""
+    y, m, d = cl.date_key(s)
+    return y * 372 + m * 31 + d
+
+
 def active_cache(cfg):
-    """当前战役缓存: 取「最新存档(mtime)」所属战役的缓存; 逐级回退, 最后才用日期兜底。
-    a) 最新档日期已并入某缓存 → 该缓存战役; b) 信封人物名匹配缓存;
-    c) 熔化最新档一次按 playthrough_id 找同战役缓存; d) 回退最后日期最新。"""
+    """当前战役缓存: 取「最新存档(mtime)」所属战役的缓存; 逐级回退。
+    a) 信封人物名匹配缓存 (最新档属当前游戏, 名称带称号也能命中, 首选);
+    b) 最新档日期已并入某缓存 → 该缓存战役 — 多战役同日期时选「时间线最贴近
+       最新档」者 (last_date ≥ 最新档且差距最小, 次按缓存文件 mtime), 不再取
+       last_date 最大 — 后者会把锚点漂到跑得最久的旧战役 (2026-08-30 事件:
+       continue 误判 菲利普3/菲利普2, 导致汤利第3个十年传记漏生成);
+    c) 熔化最新档一次按 playthrough_id 找同战役缓存 (覆盖「新玩家无缓存」);
+    d) 回退: 全部缓存中 last_date 最新者。"""
     caches = all_caches(cfg)
     if not caches:
         return None, None
 
     def best(ids):
         return max(ids, key=lambda p: cl.date_key(caches[p][1].get("last_date") or ""))
+
+    def campaign_pick(ids, newest_date):
+        """从候选缓存中选「当前战役」: 无 last_date 者垫底;
+        last_date ≥ 最新档者优先, 与最新档差距最小者优先, 同差取缓存 mtime 新者。"""
+        ad = _date_scalar(newest_date or "")
+        def key(p):
+            path, c = caches[p]
+            mt = _cache_mtime(path)
+            ld = c.get("last_date")
+            if not ld:
+                return (-2, 0, mt)  # 空/异常缓存垫底
+            v = _date_scalar(ld)
+            behind = 1 if v < ad else 0  # 落后于最新档 → 次优先
+            return (-behind, -abs(ad - v), mt)
+        return max(ids, key=key)
 
     try:
         saves = scan_saves(cfg.get("save_dir", ""))
@@ -452,14 +485,15 @@ def active_cache(cfg):
     if saves:
         newest = max(saves, key=lambda s: s["mtime"])
         hit = []
-        # a) 该档日期已并入某缓存 → 该缓存所属战役 (零成本, 最可靠)
-        hit = [p for p, (_pp, c) in caches.items()
-               if newest["date"] in (c.get("sources") or [])]
-        if not hit:
-            # b) 信封人物名 → 匹配缓存 (与 _catchup 预过滤同一规范化)
-            nm = player_char_name(newest["player"])
+        # a) 信封人物名 → 匹配缓存 (与 _catchup 预过滤同一规范化)
+        nm = player_char_name(newest["player"])
+        if nm:
             hit = [p for p, (_pp, c) in caches.items()
-                   if nm and player_char_name(c.get("player_name")) == nm]
+                   if player_char_name(c.get("player_name")) == nm]
+        if not hit:
+            # b) 该档日期已并入某缓存 → 该缓存所属战役 (零成本); 平局按时间线贴近度
+            hit = [p for p, (_pp, c) in caches.items()
+                   if newest["date"] in (c.get("sources") or [])]
         if not hit:
             # c) 熔化最新档一次 → 按 playthrough_id 找同战役缓存 (覆盖「新玩家无缓存」)
             try:
@@ -476,7 +510,7 @@ def active_cache(cfg):
             except Exception:
                 hit = []
         if hit:
-            pid = best(hit)
+            pid = campaign_pick(hit, newest["date"])
             pt = caches[pid][1].get("playthrough_id")
             if pt:  # 同战役内取最新缓存 (继位后锚定新统治者)
                 pid = best([p for p, (_pp, c) in caches.items()
@@ -1144,6 +1178,11 @@ def step_watch(cfg, continue_mode=False):
     llm.log("监控存档中 (只处理本程序启动后保存的新存档)...")
     llm.log(f"基准时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(baseline))} "
             f"— 更早的老存档一律不读、不记录")
+    # v15: continue 会话锚点 — 启动时解析一次 (active_cache 已修多战役同日期歧义),
+    # 监控循环内只在有新档并入时跟随该档玩家 (继位/换局), 不再每轮全局重算,
+    # 防锚点漂移到旧战役 (2026-08-30 事件: continue 误判菲利普3/菲利普2,
+    # 漏生成 汤利 第3个十年传记)。
+    continue_anchor = None
     if continue_mode:
         pid, cache = active_cache(cfg)
         if cache:
@@ -1154,14 +1193,13 @@ def step_watch(cfg, continue_mode=False):
                 llm.log(f"补录并入 {n} 个新档")
             else:
                 llm.log("补录完成: 当前战役无新档")
+            continue_anchor = cache
         else:
             llm.log("续传模式: 暂无缓存, 等同 watch (首个新存档建立战役)")
     # 启动时检查: continue 用当前战役缓存; watch 无战役不检查 (首个新档建立战役后再查)
-    if continue_mode:
-        _pid0, anchor0 = active_cache(cfg)
-        if anchor0:
-            _auto_bio(cfg, _campaign_caches(cfg, anchor0))
-            _auto_decade_bios(cfg, _campaign_caches(cfg, anchor0))
+    if continue_anchor:
+        _auto_bio(cfg, _campaign_caches(cfg, continue_anchor))
+        _auto_decade_bios(cfg, _campaign_caches(cfg, continue_anchor))
     # 监控循环 (v9: 只读最新存档 + 会话级去重 + 等写入稳定; v10: 检查限定当前战役)
     interval = cfg.get("poll_interval_seconds", 60)
     last_mtime = None      # 上次已处理文件的 mtime (同一文件不重复处理)
@@ -1208,11 +1246,16 @@ def step_watch(cfg, continue_mode=False):
             else:
                 llm.log("无新存档")
             # 后台传记检查只查当前战役:
-            # continue = 活动战役 (active_cache); watch = 新档建立的战役 (watch_anchor),
-            # 旧战役的缓存一律不扫 (对齐 D:\\Journal 会话语义)
+            # continue = 启动时定死的锚点 (有新档并入时跟随该档玩家, 防继位漏检);
+            # watch = 新档建立的战役 (watch_anchor); 旧战役的缓存一律不扫
+            # (对齐 D:\\Journal 会话语义; v15: 不再每轮 active_cache 全局重算)
             anchor = None
             if continue_mode:
-                _pid, anchor = active_cache(cfg)
+                if processed_player:
+                    p = find_cache_path(cfg, processed_player)
+                    if p:
+                        continue_anchor = cl.load_cache(p)
+                anchor = continue_anchor
             elif processed_player:
                 p = find_cache_path(cfg, processed_player)
                 if p:
