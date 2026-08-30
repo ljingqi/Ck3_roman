@@ -219,16 +219,20 @@ def _relation_dates(cache, types):
     return out
 
 
-def _select_friend(cache):
+def _select_friend(cache, as_of=None):
     """好友: 与主角结友/灵魂伴侣/血盟者中, 在世优先 + 结友最早;
     排除家人 (妻妾/子女/兄弟姊妹 — 手足之情归家室列传)。
-    全部已死时回退最早结友者; 无真好友返回 None (由 _pick_friend 走同朝共事者代打)。"""
+    全部已死时回退最早结友者; 无真好友返回 None (由 _pick_friend 走同朝共事者代打)。
+    as_of (v16): 十年传记只认该日期前结下的友谊, 防止把后期好友写进早期十年。"""
     pid = cache.get("player_id")
     if pid is None:
         return None
     fam = _family_ids(cache)
     dates = {c: d for c, d in _relation_dates(cache, _friend_types()).items()
              if c not in fam}
+    if as_of:
+        dates = {c: d for c, d in dates.items()
+                 if cl.date_key(d) <= cl.date_key(as_of)}
     if not dates:
         return None
     alive = {c: d for c, d in dates.items() if not _is_dead(cache, c)}
@@ -268,9 +272,9 @@ def _select_fallback_friend(cache):
     return best
 
 
-def _pick_friend(cache):
+def _pick_friend(cache, as_of=None):
     """好友选择 (v13): 真好友 → 无则同朝共事者代打。返回 (cid, is_fallback)。"""
-    f = _select_friend(cache)
+    f = _select_friend(cache, as_of=as_of)
     if f is not None:
         return f, False
     return _select_fallback_friend(cache), True
@@ -289,11 +293,16 @@ def _select_enemies(cache):
 ENEMY_MIN_MEMORIES = 5  # v11: 仇人候选池记忆数门槛 (素材太少写不出列传)
 
 
-def _select_primary_enemy(cache):
+def _select_primary_enemy(cache, as_of=None):
     """主仇人 (v11): 与主角结仇/结怨/死敌的对手中, 记忆数 >5 者才入候选池
     (素材不足的早期路人仇人如卡托内只有 1 条记忆, 列传只能靠臆测充数);
-    池内按原规则 (在世优先、结怨最早); 池空时回退原逻辑。"""
+    池内按原规则 (在世优先、结怨最早); 池空时回退原逻辑。
+    as_of (v16): 十年传记只认该日期前结下的仇怨 (878.1.1 的十年不写
+    878.8.16 才结仇的阿纳斯塔西娅)。"""
     dates = _enemy_dates(cache)
+    if as_of:
+        dates = {c: d for c, d in dates.items()
+                 if cl.date_key(d) <= cl.date_key(as_of)}
     if not dates:
         return None
     rich = {c: d for c, d in dates.items()
@@ -365,102 +374,124 @@ def _house_text(facts, p=None):
 
 
 def _profile_lines(facts, cid=None):
-    """主角或某角色的档案 → 中文行列表。cid=None 时用主角。"""
+    """主角或某角色的档案 → 自然语言行列表 (v15: 字段表格改散文, 程序直出不改写)。
+    首行为名号句: 官职+姓名 + 家族分家/族属/信仰/出生/家训;
+    后续每类事实一句, 缺失字段整句省略。cid=None 时用主角。"""
     if cid is None:
         p = facts["protagonist"]
     else:
         p = (facts["characters"].get(str(cid)) or {})
     lines = []
-    if p.get("patronym"):
-        # 父名制文化: 名·父名 (富兰克林·崔佛松); 父名替代家族名
-        lines.append(f"姓名：{p.get('name_zh') or p.get('name')}·{p['patronym']}")
-    elif p.get("name"):
-        lines.append(f"姓名：{p['name']}")
+    name = p.get("name") or p.get("name_zh") or ""
+    # ---- 名号句 (官职前置: 瑞典国王崔佛·菲利普; 无官职直接用姓名) ----
+    head = name
     if p.get("office"):
-        lines.append(f"官职：{p['office']}")
-    if p.get("prince"):
-        lines.append(f"称号：{p['prince']}")
-    if p.get("house"):
-        lines.append(f"家族：{_house_text(None, p)}")
-    # v7: 家族家训
-    if p.get("motto"):
-        lines.append(f"家训：{p['motto']}")
-    if p.get("birth"):
-        lines.append(f"生于{p['birth']}")
+        head = f"{p['office']}{name}"
+    elif p.get("prince"):
+        head = f"{p['prince']}{name}"
+    bits = []
+    h = _house_text(None, p)
+    # 家族/宗族: 分家存在或家族名不在显示名中才单列 (西方名·姓已含家族, 不重复)
+    if h and (p.get("house_branch") or h not in name):
+        bits.append(h)
     if p.get("culture"):
-        lines.append(f"族属：{p['culture']}")
-    if p.get("faith"):
-        lines.append(f"信仰：{p['faith']}")
+        bits.append(p["culture"])
+    if p.get("faith") and not str(p["faith"]).endswith("不详"):
+        bits.append(f"信{p['faith']}")
+    if p.get("birth"):
+        bits.append(f"生于{p['birth']}")
+    if p.get("motto"):
+        bits.append(f"家训「{p['motto']}」")
+    lines.append(f"{head}，{'，'.join(bits)}。" if bits else f"{head}。")
+    # ---- 性情句 ----
     if p.get("traits"):
-        lines.append(f"为人{p['traits']}")
+        lines.append(f"为人{p['traits']}。")
     if p.get("trait_history"):
-        lines.append(f"特质履历：{p['trait_history']}")
-    if p.get("government"):
-        lines.append(f"政体：{p['government']}")
-    # v7: 主角宫廷/营地官职 (最新一年) 与该角色在主角处所任官职
-    if p.get("court_positions"):
-        lines.append(f"宫廷官职：{p['court_positions']}")
-    if p.get("court_position"):
-        lines.append(f"在主角处任{p['court_position']}")
-    # 无地冒险者: 营地
+        lines.append(f"特质履历：{p['trait_history']}。")
+    # ---- 营/政体句 ----
     if p.get("landless"):
+        camp_bits = []
         if p.get("camp_name"):
-            lines.append(f"营地：{p['camp_name']}")
-        if p.get("camp_county"):
-            bits = [f"现驻{p['camp_county']}"]
-            if p.get("camp_county_holder"):
-                bits.append(f"{p['camp_county_holder']}执掌")
-            if p.get("camp_liege_chain"):
-                bits.append(f"其上为{p['camp_liege_chain']}")
-            if p.get("camp_top_liege"):
-                bits.append(f"最高领主为{p['camp_top_liege']}")
-            lines.append("，".join(bits) + "。")
+            camp_bits.append(f"营{p['camp_name']}")
         if p.get("camp_laws"):
-            lines.append(f"营规：{p['camp_laws']}")
+            camp_bits.append(f"营规{p['camp_laws']}")
         if p.get("camp_strength"):
-            lines.append(f"营力{p['camp_strength']}")
-    # 有地领主
-    if p.get("ruler_since"):
-        lines.append(f"{p['ruler_since']}起执掌一方")
-    if p.get("domain"):
-        cap = f"；治所{p['capital']}" if p.get("capital") else ""
-        lines.append(f"直辖{p.get('domain_count', '')}地：{p['domain']}{cap}")
-    if p.get("vassal_count") is not None:
-        lines.append(f"封臣{p['vassal_count']}人")
-    if p.get("council"):
-        lines.append(p["council"])
+            camp_bits.append(f"营力{p['camp_strength']}")
+        if p.get("camp_county"):
+            loc = [f"现驻{p['camp_county']}"]
+            if p.get("camp_county_holder"):
+                loc.append(f"{p['camp_county_holder']}执掌")
+            if p.get("camp_liege_chain"):
+                loc.append(f"其上为{p['camp_liege_chain']}")
+            if p.get("camp_top_liege"):
+                loc.append(f"最高领主为{p['camp_top_liege']}")
+            camp_bits.append("，".join(loc))
+        if camp_bits:
+            lines.append("，".join(camp_bits) + "。")
+        elif p.get("government"):
+            lines.append(f"以{p['government']}之身行事。")
+    else:
+        gov = ""
+        if p.get("government"):
+            gov = f"政体{p['government']}"
+        if p.get("ruler_since"):
+            gov = (gov + "，" if gov else "") + f"{p['ruler_since']}起执掌一方"
+        if p.get("domain"):
+            cap = f"，治所{p['capital']}" if p.get("capital") else ""
+            gov = (gov + "，" if gov else "") + f"直辖{p.get('domain_count', '')}地：{p['domain']}{cap}"
+        if p.get("vassal_count") is not None:
+            gov = (gov + "，" if gov else "") + f"封臣{p['vassal_count']}人"
+        if p.get("council"):
+            gov = (gov + "，" if gov else "") + p["council"]
+        if gov:
+            lines.append(gov + "。")
+    # ---- 官职句 ----
+    if p.get("court_positions"):
+        lines.append(f"宫廷官职：{p['court_positions']}。")
+    if p.get("court_position"):
+        lines.append(f"在主角处任{p['court_position']}。")
+    # ---- 家庭句 ----
+    fam_bits = []
     if p.get("spouses"):
-        lines.append(f"妻室：{p['spouses']}")
+        fam_bits.append(f"妻室{p['spouses']}")
     if p.get("former_spouses"):
-        lines.append(f"前妻：{p['former_spouses']}")
-    # v8: 妾 (正向 concubine + 反向 concubinist 合并)
+        fam_bits.append(f"前妻{p['former_spouses']}")
     if p.get("concubines"):
-        lines.append(f"妾：{p['concubines']}")
+        fam_bits.append(f"妾{p['concubines']}")
     if p.get("former_concubines"):
-        lines.append(f"前妾：{p['former_concubines']}")
+        fam_bits.append(f"前妾{p['former_concubines']}")
     if p.get("children"):
-        lines.append(f"子女：{p['children']}")
+        fam_bits.append(f"子女{p['children']}")
+    if fam_bits:
+        lines.append("，".join(fam_bits) + "。")
+    # ---- 家世句 ----
+    kin_bits = []
     if p.get("father"):
-        lines.append(f"父：{p['father']}")
+        kin_bits.append(f"父{p['father']}")
     if p.get("mother"):
-        lines.append(f"母：{p['mother']}")
-    # v5: 真正父亲 (私生子场景, 与法理父不同才写)
+        kin_bits.append(f"母{p['mother']}")
     if p.get("real_father") and p.get("real_father") != p.get("father"):
-        lines.append(f"实父：{p['real_father']}")
-    # v5: 自定义角色 (无谱系) — 用通用事实覆盖父母描写
+        kin_bits.append(f"实父{p['real_father']}")
     if p.get("custom_start"):
-        lines.append("先世：无考（出身自定，史无可考，无父母谱系）")
+        kin_bits.append("先世无考（出身自定，史无可考，无父母谱系）")
     if p.get("siblings"):
-        lines.append(f"兄弟姊妹：{p['siblings']}")
+        kin_bits.append(f"兄弟姊妹{p['siblings']}")
+    if kin_bits:
+        lines.append("，".join(kin_bits) + "。")
+    # ---- 任历句 ----
     if p.get("titles_held"):
-        lines.append(f"历任：{p['titles_held']}")
+        lines.append(f"历任{p['titles_held']}。")
+    # ---- 现状句 (status 以「年X岁」开头时并入「现」字成散文句) ----
     if p.get("status"):
-        lines.append(f"现状：{p['status']}")
+        st = p["status"]
+        lines.append(("现" + st) if st.startswith("年") else f"现状：{st}")
+    # ---- 死亡句 ----
     if p.get("death"):
         lines.append(p["death"])
-    # v13: 戏剧性事实高亮 (一日皇帝/短命皇朝等) — 档案末尾
+    # ---- 戏剧性事件句 ----
     if p.get("dramatic_facts"):
-        lines.append("戏剧性事件：" + "；".join(p["dramatic_facts"]))
+        lines.append("戏剧性事件：" + "；".join(
+            str(x).rstrip("。") for x in p["dramatic_facts"]) + "。")
     return lines
 
 
@@ -580,8 +611,8 @@ def _article_facts(facts, cache, key, section=None):
         tl = _timeline_texts(facts)
         blocks["大事年表"] = "\n".join(tl) if tl else "（无重大事件记录）"
     elif key in ("friend", "enemy"):
-        cid = (_pick_friend(cache)[0] if key == "friend"
-               else _select_primary_enemy(cache))
+        cid = (_pick_friend(cache, as_of=facts.get("as_of"))[0] if key == "friend"
+               else _select_primary_enemy(cache, as_of=facts.get("as_of")))
         if cid is not None:
             lines, events = _subject_facts(facts, cid)
             subj_name = (facts["characters"].get(str(cid)) or {}).get("name") or ""
@@ -593,18 +624,37 @@ def _article_facts(facts, cache, key, section=None):
                 blocks["相关年表"] = "\n".join(tl)
             # v13: 结友/结仇缘由 (双通道修复后必有记忆; 兜底同朝共事者给说明)
             if key == "friend":
-                fcid, is_fallback = _pick_friend(cache)
+                fcid, is_fallback = _pick_friend(cache, as_of=facts.get("as_of"))
                 if cid == fcid and is_fallback:
                     blocks["说明"] = ("（传主与主角无结友记忆，本传按同朝共事之谊立传，"
                                       "以传主生平为主。）")
                 else:
                     rs = _relation_reasons(facts, cache, cid, _friend_types())
-                    if rs:
-                        blocks["结友缘由"] = "；".join(rs)
+                    # v16: 游戏自带关系原因优先 (friend/soulmate/blood_brother)
+                    gi = facts.get("_facts")
+                    gr = []
+                    if gi:
+                        gr = gi.relation_reasons(
+                            cid, ("friend", "best_friend", "soulmate",
+                                  "blood_brother"))
+                    all_r = gr + [x for x in rs if x not in gr]
+                    if all_r:
+                        blocks["结友缘由"] = "；".join(all_r)
             else:
                 rs = _relation_reasons(facts, cache, cid, _enemy_types())
-                if rs:
-                    blocks["结仇缘由"] = "；".join(rs)
+                # v16: 仇恨根源 — 游戏原因 (rival/grudge/nemesis) 优先,
+                # 程序直算因由 (亲属被谋杀/配偶私通/托卵) 补足死者/通用原因缺失
+                gi = facts.get("_facts")
+                causes = []
+                if gi:
+                    causes.extend(gi.relation_reasons(
+                        cid, ("rival", "grudge", "nemesis")))
+                    rd = _enemy_dates(cache).get(cid)
+                    if rd:
+                        causes.extend(F.relation_cause_lines(gi, cid, rd))
+                all_r = causes + [x for x in rs if x not in causes]
+                if all_r:
+                    blocks["结仇缘由"] = "；".join(all_r)
     elif key == "jiashi":
         blocks["人物档案"] = "\n".join(_profile_lines(facts))
         fam_lines = []
@@ -614,7 +664,7 @@ def _article_facts(facts, cache, key, section=None):
             if not p or not p.get("name"):
                 continue
             fam_names.append(p["name"])
-            fam_lines.append("· ".join(x for x in _profile_lines(facts, cid)))
+            fam_lines.append("\n".join(_profile_lines(facts, cid)))
             ev = p.get("events") or []
             if ev:
                 fam_lines.append("  " + "\n  ".join(ev))
@@ -715,9 +765,11 @@ def _article_facts(facts, cache, key, section=None):
                 if e.get("reasons"):
                     lines.append("门第：" + "、".join(e["reasons"]))
                 prof = facts["characters"].get(str(e["id"])) or {}
-                for x in _profile_lines(facts, e["id"]):
-                    if not x.startswith("姓名") and not x.startswith("家族"):
-                        lines.append(x)
+                # v15: 档案为自然语言, 首行为名号句 (含姓名/家族) — 跳过, 其余全收
+                for i, x in enumerate(_profile_lines(facts, e["id"])):
+                    if i == 0:
+                        continue
+                    lines.append(x)
                 ev = prof.get("events") or []
                 if ev:
                     lines.append("经历：")
@@ -804,14 +856,23 @@ def _shared_facts_block(facts):
     else:
         life_note = "【现状】在世（截至最后一份存档）"
     profile_txt = _render_block("【人物档案】", _profile_lines(facts)) or "（无档案）"
+    # v15: 十年/一生概览 (程序直算统计: 结怨9次、谋杀5次…, 给模型数据锚点)
+    stats_txt = ""
+    ds = facts.get("decade_stats") or []
+    if ds:
+        label = "本十年" if facts.get("as_of") else "一生"
+        stats_txt = f"【概览】{label}{'、'.join(ds)}。\n\n"
     # v14: 主角级事件摘要 (仅主角名在文本中的事件, 数量小: 十年 50 条 / 1.3K 字符)
     pname = p.get("name") or ""
     own = [e["text"] for e in facts.get("timeline") or []
            if pname and pname in e["text"]]
     own_txt = _render_block("【主角大事摘要】", own) if own else ""
-    return (f"【传主】{name}\n【家族】{house}\n{life_note}\n\n"
-            f"{profile_txt}"
-            + (f"\n\n{own_txt}" if own_txt else ""))
+    out = [f"【传主】{name}\n【家族】{house}\n{life_note}\n\n", profile_txt]
+    if stats_txt:
+        out.append("\n\n" + stats_txt)
+    if own_txt:
+        out.append("\n\n" + own_txt)
+    return "".join(out)
 
 
 def build_intro_messages(facts, cfg, articles=None):
@@ -1223,8 +1284,10 @@ def build_articles(facts, cache, cfg):
     pid = facts.get("player_id")
     pname = (facts["protagonist"] or {}).get("name") or "主角"
     style = facts.get("bio_style") or "east"
-    friend, _f_fallback = _pick_friend(cache)
-    enemy = _select_primary_enemy(cache)
+    friend, friend_fallback = _pick_friend(cache, as_of=facts.get("as_of"))
+    if friend is not None and friend_fallback:
+        friend = None  # v16: 无真好友时列传删去 — 同朝共事者代打只是复述主角故事
+    enemy = _select_primary_enemy(cache, as_of=facts.get("as_of"))
     fname = ""
     ename = ""
     if friend is not None:
@@ -1248,15 +1311,21 @@ def build_articles(facts, cache, cfg):
     articles = [
         {"key": "benji", "title": f"本纪·{pname}", "subject": None,
          "theme": "人物生平", "sections": mk_sections("benji")},
-        {"key": "friend", "title": f"列传·{fname or '好友'}", "subject": fname,
-         "theme": "好友传记（最亲近同僚的一生）", "sections": mk_sections("friend")},
-        {"key": "enemy", "title": f"列传·{ename or '仇人'}", "subject": ename,
-         "theme": "仇人传记（一生劲敌）", "sections": mk_sections("enemy")},
+    ]
+    if friend is not None:
+        articles.append({"key": "friend", "title": f"列传·{fname or '好友'}",
+                         "subject": fname, "theme": "好友传记（最亲近同僚的一生）",
+                         "sections": mk_sections("friend")})
+    if enemy is not None:
+        articles.append({"key": "enemy", "title": f"列传·{ename or '仇人'}",
+                         "subject": ename, "theme": "仇人传记（一生劲敌）",
+                         "sections": mk_sections("enemy")})
+    articles.extend([
         {"key": "jiashi", "title": "家室列传", "subject": None,
          "theme": "妻室子女的门庭画卷", "sections": mk_sections("jiashi")},
         {"key": "chaoju", "title": "朝局风云录", "subject": None,
          "theme": "朝局官制沉浮", "sections": mk_sections("chaoju")},
-    ]
+    ])
     # v9: 家族恩怨录 / 宝物志 — 插在中间 (家室列传之后, 朝局风云录之前)
     if facts.get("house_feuds"):
         articles.insert(4, {"key": "feuds", "title": "家族恩怨录",

@@ -37,10 +37,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 
 _TAG_RE = re.compile(r"#[A-Za-z0-9_\-+]+")     # #V / #bold / #low ... 开标签
-_CLOSE_RE = re.compile(r"#!")
+_CLOSE_RE = re.compile(r"#!")                  # 关标签
 _ICON_RE = re.compile(r"@[A-Za-z0-9_]+!")
 _DYN_RE = re.compile(r"\[[^\]]*\]")            # [concept|E] / [GetX|V0]
 _REF_RE = re.compile(r"\$([A-Za-z0-9_]+)\$")
+
+# v16: 关系原因模板保留的角色名标签 (rival_murderer 等 reason 键) —
+# 其余动态引用照旧剥除, 这 10 类标签供 facts.relation_reasons 替换名字。
+_KEEP_DYN_RE = re.compile(
+    r"\[(?:TARGET_CHARACTER_2|TARGET_CHARACTER|CHARACTER)\."
+    r"(?:GetShortUIName(?:\|U)?|GetShortUINamePossessive(?:NoTooltip)?|"
+    r"GetShortUINameNoTooltip|GetHerHisYour)\]")
 
 
 def strip_ck3_format(text):
@@ -75,6 +82,30 @@ def clean_loc_value(raw, table):
     if "$" in v:
         v = resolve_refs(v, table)
     return v.strip()
+
+
+def relation_template(raw):
+    """关系原因原文 → 模板 (v16): 去格式码, 但**保留角色名标签**
+    ([CHARACTER.GetShortUIName] / [TARGET_CHARACTER.GetShortUIName] /
+    [TARGET_CHARACTER.GetShortUINamePossessive] / [X.GetHerHisYour] 等),
+    供 facts.relation_reasons 按 owner/target 替换名字。"""
+    if not isinstance(raw, str):
+        return ""
+    out = _TAG_RE.sub("", raw)
+    out = _CLOSE_RE.sub("", out)
+    out = _ICON_RE.sub("", out)
+    kept = []
+
+    def _keep(m):
+        kept.append(m.group(0))
+        return f"\x01{len(kept) - 1}\x02"
+
+    out = _KEEP_DYN_RE.sub(_keep, out)
+    out = _DYN_RE.sub("", out)
+    for i, t in enumerate(kept):
+        out = out.replace(f"\x01{i}\x02", t)
+    out = out.replace("\\n", " ").replace('\\"', '"').strip()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +243,10 @@ def _localization_path(cfg):
 
 
 def build_localization_table(cfg, lang="simp_chinese", fallback_lang="english"):
-    """合并 游戏 + 启用 Mod 的本地化 → {key: 中文}。Mod 覆盖游戏, 后加载覆盖先加载。"""
+    """合并 游戏 + 启用 Mod 的本地化 → {key: 中文}。Mod 覆盖游戏, 后加载覆盖先加载。
+    v16: 附带收集 关系原因模板 (含角色名标签的键) → relation_templates。"""
     table = {}
+    raw_templates = {}
     roots = []
     g = game_dir(cfg)
     if g:
@@ -233,15 +266,22 @@ def build_localization_table(cfg, lang="simp_chinese", fallback_lang="english"):
                         continue
                     for k, v in parse_yml(os.path.join(dp, fn)).items():
                         table[k] = v
-    return table
+                        if ("GetShortUIName" in v or "GetHerHisYour" in v) \
+                                and "[" in v:
+                            tpl = relation_template(v)
+                            if tpl:
+                                raw_templates[k] = tpl
+    return table, raw_templates
 
 
-def save_localization_table(cfg, table, path=None):
+def save_localization_table(cfg, table, raw_templates=None, path=None):
     path = path or _localization_path(cfg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fp:
-        json.dump({"schema": 1, "lang": "simp_chinese", "keys": len(table),
-                   "table": table}, fp, ensure_ascii=False)
+        json.dump({"schema": 2, "lang": "simp_chinese", "keys": len(table),
+                   "table": table,
+                   "relation_templates": raw_templates or {}},
+                  fp, ensure_ascii=False)
     return path
 
 
@@ -252,12 +292,12 @@ def load_localization_table(cfg, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1:
+            if data.get("schema") in (1, 2):
                 return data.get("table") or {}
         except Exception:
             pass
-    table = build_localization_table(cfg)
-    save_localization_table(cfg, table, path)
+    table, raw_templates = build_localization_table(cfg)
+    save_localization_table(cfg, table, raw_templates, path)
     return table
 
 
@@ -483,6 +523,7 @@ def tier_word(table, government, tier):
 _TABLE = None
 _PROVINCE_MAP = None
 _DYN_TABLE = None
+_REL_TPL = None
 
 
 def table(cfg=None):
@@ -491,6 +532,22 @@ def table(cfg=None):
     if _TABLE is None:
         _TABLE = load_localization_table(cfg or llm.load_config())
     return _TABLE
+
+
+def relation_templates(cfg=None):
+    """关系原因模板单例 (v16): {reason键: 含角色名标签的原始模板}。
+    缺失 (旧版 localization.json) 时返回 {} — 游戏原因功能自动降级。"""
+    global _REL_TPL
+    if _REL_TPL is None:
+        _REL_TPL = {}
+        try:
+            path = _localization_path(cfg or llm.load_config())
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            _REL_TPL = data.get("relation_templates") or {}
+        except Exception:
+            pass
+    return _REL_TPL
 
 
 def province_map(cfg=None):
@@ -532,9 +589,10 @@ def main():
     cfg = llm.load_config()
     cmd = sys.argv[1] if len(sys.argv) > 1 else "check"
     if cmd == "build":
-        table = build_localization_table(cfg)
-        p = save_localization_table(cfg, table)
-        print(f"本地化表已重建: {p} ({len(table)} 键)")
+        table, raw_templates = build_localization_table(cfg)
+        p = save_localization_table(cfg, table, raw_templates)
+        print(f"本地化表已重建: {p} ({len(table)} 键, "
+              f"关系原因模板 {len(raw_templates)} 条)")
     elif cmd == "province":
         m = build_province_map(cfg)
         p = save_province_map(cfg, m)
