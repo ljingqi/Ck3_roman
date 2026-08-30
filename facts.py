@@ -138,11 +138,11 @@ MEMORY_TEMPLATES = {
     "hostage_created_home_court": "{name}交出人质。",
     "picked_serenity_aspect_memory": "{name}皈依安详之道。",
     "picked_creation_aspect_memory": "{name}皈依创世之道。",
-    "ward_education_completed": "{name}完成教化。",
+    "ward_education_completed": "{name}学业有成。",
     "childhood_education_guardian": "{name}受业于{other}。",
     "childhood_education_no_guardian": "{name}独自求学。",
     "completed_rites_of_passage": "{name}完成成人礼。",
-    "completed_adult_education": "{name}完成成人学业。",
+    "completed_adult_education": "{name}完成深造。",
     "became_acclaimed": "{name}获拥戴。",
     "witnessed_a_coronation_memory": "{name}见证加冕。",
     "grand_wedding_completed_guest": "{name}出席大婚。",
@@ -1113,7 +1113,8 @@ class Facts:
                 continue
             nm = self.name_or(holder)
             off = self._minister_office(int(tid))
-            base = self.title_base_name(int(tid)) or key
+            # v14: 职司名取不到时用「某职司」, 不直出 e_minister_ key
+            base = self.title_base_name(int(tid)) or "某职司"
             out.append(f"{base}：{nm}（{off}）" if off and off != base
                        else f"{base}：{nm}")
         return out
@@ -1153,7 +1154,9 @@ class Facts:
                 span = _daynum(loss) - _daynum(gain)
                 if span < 0 or span > self.DRAMATIC_TENURE_DAYS:
                     continue
-                tname = self._title_name_at(tid, gain, pid) or key
+                tname = self._title_name_at(tid, gain, pid)
+                if not tname:
+                    continue  # v14: 头衔名取不到时不直出 key
                 verb = "被毁" if ltype == "destroyed" else "失去"
                 out.append(f"{self.date(gain)}承袭{tname}，"
                            f"{self.date(loss)}{verb}，在位仅{span}日")
@@ -1308,9 +1311,23 @@ class Facts:
             if not events:
                 continue
             events.sort(key=lambda x: cl.date_key(x[0]))
+            # v14: 家族名取不到时回退宗族名, 再不济「某家族」— 不泄露家族 id
+            _hname = cl.house_name_zh(self.melt, other[0]) or ""
+            if not _hname:
+                _did = cl.dynasty_id_of(self.melt, other[0])
+                if _did is not None:
+                    _hname = cl.dynasty_name_zh(self.melt, _did) or ""
+            # v14: 关系档位本地化缺失时用自然词, 不直出 key
+            _lvl = L.loc(self.table, lvl) or {
+                "default_house_relation_level_feud": "世仇",
+                "default_house_relation_level_rivalry": "敌对",
+                "default_house_relation_level_quarrel": "争吵",
+            }.get(lvl, "")
+            if not _lvl:
+                continue
             out.append({
-                "house": cl.house_name_zh(self.melt, other[0]) or f"家族{other[0]}",
-                "level": L.loc(self.table, lvl) or lvl,
+                "house": _hname or "某家族",
+                "level": _lvl,
                 "events": [f"{self.date(d)}，{t}" for d, t in events],
             })
         out.sort(key=lambda x: len(x["events"]), reverse=True)
@@ -1363,7 +1380,7 @@ class Facts:
                     break
             if not cross:
                 continue
-            name = a.get("name") or f"宝物{aid}"
+            name = a.get("name") or "一件宝物"  # v14: 无名宝物不泄露 id
             rarity = rarity_zh.get(a.get("rarity")) or a.get("rarity") or ""
             lines = [f"宝物：{name}（{rarity}）"]
             entries = []
@@ -1390,8 +1407,7 @@ class Facts:
                     entries.append(f"{d}，克定所得")
                 elif t == "created_before_history":
                     entries.append("年代久远，创制无考")
-                else:
-                    entries.append(f"{d}，{t}")
+                # v14: 未知流转类型不直出 key (元注释泄露), 略去
             if entries:
                 lines.append("流转：" + "；".join(entries))
             out.append("\n".join(lines))
