@@ -128,10 +128,14 @@ def _render_nested_list(rows):
 
 
 def md_to_html(text):
-    """整篇 Markdown → HTML 片段 (不含 <html> 外壳)。"""
+    """整篇 Markdown → (HTML 片段, 章节清单)。
+    章节清单: [{level, text, id}] — 供左侧章节栏用 markdown 标题跳转 (v14)。"""
     lines = text.split("\n")
     out = []
+    toc = []
+    toc_seen = set()
     i, n = 0, len(lines)
+    hd_count = 0
     while i < n:
         ln = lines[i]
         s = ln.strip()
@@ -145,8 +149,24 @@ def md_to_html(text):
         m = re.match(r"^(#{1,6})\s+(.*)$", ln)
         if m:
             level = len(m.group(1))
+            htext = m.group(2).strip()
             cls = ' class="masthead"' if level == 1 else ""
-            out.append(f"<h{level}{cls}>{_inline(m.group(2))}</h{level}>")
+            # v14: 标题锚点 id (章节栏跳转用)
+            hd_count += 1
+            hd_id = f"hd-{hd_count}"
+            out.append(f'<h{level} id="{hd_id}"{cls}>{_inline(htext)}</h{level}>')
+            # 仅收录 1-3 级标题进章节栏; h1 为传名 (一篇只一个, 作目录根)
+            if level <= 3:
+                # v14: 正则去重 — 同一标题语义只留第一个 (旧文件可能带模型
+                # 误输出的短版重复/文章标题重复, 程序侧兜底, 不动提示词)。
+                # 归一化: 去数字序号/书名号/已知板块前缀 (开篇·纪事·列传·本纪·…),
+                # 短版重复 (开篇·家世与交游 vs 家世与交游) 与 文章标题混入 归同键。
+                key = re.sub(r"^[0-9、]+", "", htext)
+                key = re.sub(r"[《》]", "", key)
+                key = re.sub(r"^(?:开篇|纪事|评曰|列传|本纪|家室|朝局|家族|刺客|游侠|妻族|群英|恩怨|宝物)[··]", "", key)
+                if key not in toc_seen:
+                    toc_seen.add(key)
+                    toc.append({"level": level, "text": htext, "id": hd_id})
             i += 1
             continue
         if _is_table_row(ln):
@@ -185,7 +205,7 @@ def md_to_html(text):
             i += 1
             continue
         out.append(f"<p>{_inline(' '.join(para))}</p>")
-    return "\n".join(out)
+    return "\n".join(out), toc
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +235,19 @@ body{font-family:"Songti SC","Noto Serif CJK SC","Source Han Serif SC","SimSun",
 #char-box{display:flex;align-items:center;gap:8px;padding:4px 0}
 #char-box label{font-size:14px;color:#cbbf9f}
 #char-sel{font:inherit;font-size:14px;padding:5px 8px;border:1px solid #8f7d55;border-radius:5px;background:#3a3121;color:var(--bar-ink);cursor:pointer;max-width:200px}
+/* v14: 左侧章节栏 — markdown 标题 (1-3 级) 直接跳转章节 */
+#wrap{display:flex;align-items:flex-start;gap:0;max-width:1280px;margin:0 auto}
+#toc{position:sticky;top:64px;flex:0 0 220px;max-height:calc(100vh - 88px);overflow-y:auto;margin:28px 0 8px;padding:14px 12px;background:var(--bar);color:var(--bar-ink);border-radius:2px;box-shadow:0 6px 22px rgba(60,45,20,.18);font-size:13px}
+#toc .toc-root{font-weight:700;letter-spacing:1px;font-size:14px;color:var(--gold);margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #4a3f2b}
+#toc a{display:block;color:#cbbf9f;text-decoration:none;line-height:1.7;padding:3px 6px;border-radius:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#toc a:hover{background:#3a3121;color:#fff}
+#toc a.lv2{padding-left:16px;font-weight:700;color:#e6d9b8}
+#toc a.lv3{padding-left:30px;font-size:12px;color:#a8987a}
+#toc a.hl{background:var(--gold);color:#211a0c}
+#toc .empty{color:#6f6247;padding:6px;text-align:center}
+#main{flex:1 1 auto;min-width:0}
 #stage{max-width:880px;margin:28px auto 8px;padding:0 14px}
+@media (max-width:860px){#wrap{display:block}#toc{position:static;flex:none;max-height:180px;margin:14px 12px 0}}
 .paper{background:var(--paper);border:1px solid var(--paper-edge);box-shadow:0 6px 22px rgba(60,45,20,.18);padding:38px 46px 46px;border-radius:2px}
 #meta-line{max-width:880px;margin:10px auto 60px;padding:0 14px;text-align:center;color:#6f6247;font-size:13px}
 .empty{color:#8a7a55;text-align:center;padding:60px 0}
@@ -247,8 +279,13 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
     <select id="char-sel"></select>
   </div>
 </div>
-<div id="stage"></div>
-<div id="meta-line"></div>
+<div id="wrap">
+  <nav id="toc"></nav>
+  <div id="main">
+    <div id="stage"></div>
+    <div id="meta-line"></div>
+  </div>
+</div>
 <script>
 const DATA = __DATA__;
 let ci = 0, ai = 0;
@@ -257,7 +294,8 @@ function show(nci, nai){
   const ch = DATA[ci];
   const stage = document.getElementById('stage');
   const meta = document.getElementById('meta-line');
-  if(!ch){ stage.innerHTML = '<div class="empty">（无传记）</div>'; meta.textContent = ''; return; }
+  const tocEl = document.getElementById('toc');
+  if(!ch){ stage.innerHTML = '<div class="empty">（无传记）</div>'; meta.textContent = ''; tocEl.innerHTML = '<div class="empty">（无章节）</div>'; return; }
   const tabs = document.getElementById('tabs');
   tabs.innerHTML = '';
   ch.items.forEach((it, i) => {
@@ -270,6 +308,24 @@ function show(nci, nai){
   const a = ch.items[ai];
   stage.innerHTML = a ? '<div class="paper">' + a.html + '</div>' : '<div class="empty">（无传记）</div>';
   meta.textContent = a ? ch.name + ' ｜ ' + (a.meta || '') : ch.name;
+  // v14: 左侧章节栏 — 由 markdown 标题生成, 点击滚动到对应锚点
+  tocEl.innerHTML = '';
+  const toc = (a && a.toc) || [];
+  if(!toc.length){ tocEl.innerHTML = '<div class="empty">（无章节）</div>'; return; }
+  toc.forEach(t => {
+    const link = document.createElement('a');
+    link.href = '#' + t.id;
+    link.textContent = t.text;
+    link.className = 'lv' + Math.min(t.level, 3);
+    link.onclick = (ev) => {
+      ev.preventDefault();
+      const el = document.getElementById(t.id);
+      if(el){ el.scrollIntoView({behavior:'smooth', block:'start'}); }
+      tocEl.querySelectorAll('a').forEach(x => x.classList.remove('hl'));
+      link.classList.add('hl');
+    };
+    tocEl.appendChild(link);
+  });
 }
 const sel = document.getElementById('char-sel');
 DATA.forEach((ch, i) => {
@@ -370,11 +426,13 @@ def rebuild_folder(output_dir, folder):
         except OSError:
             continue
         label, meta = _article_label(fn, text, folder)
+        html_str, toc = md_to_html(text)
         entries.append({
             "person": _person_of(fn, folder, text),
             "label": label,
             "meta": meta,
-            "html": md_to_html(text),
+            "html": html_str,
+            "toc": toc,
         })
     if not entries:
         return None
@@ -386,7 +444,8 @@ def rebuild_folder(output_dir, folder):
             by_name[e["person"]] = len(groups)
             groups.append({"name": e["person"], "items": []})
         groups[by_name[e["person"]]]["items"].append(
-            {"label": e["label"], "meta": e["meta"], "html": e["html"]})
+            {"label": e["label"], "meta": e["meta"], "html": e["html"],
+             "toc": e["toc"]})
     title = f"{folder} · 家传阅读页"
     out = (TEMPLATE
            .replace("__TITLE__", html.escape(title))
