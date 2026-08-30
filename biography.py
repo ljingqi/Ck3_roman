@@ -540,8 +540,9 @@ def _assassin_kill_lines(facts, cache, k):
 
 
 def _name_or(facts, cache, cid):
-    """角色名 (档案有则用, 否则从缓存原始名取, 不再回退「角色N」)。
-    亲缘未必在相关集 (死者父母/配偶多为路人), 直接查缓存 characters。"""
+    """角色名 (档案有则用, 否则从缓存原始名取; v14: 仍缺时经 Facts 熔件兜底 —
+    死者父母/配偶多为路人, 未必入缓存, 但熔件全量角色都有名 (玄景),
+    不再回退「角色N」泄露 id)。"""
     try:
         p = (facts.get("characters") or {}).get(str(cid)) or {}
         if p.get("name"):
@@ -555,7 +556,17 @@ def _name_or(facts, cache, cid):
             return nm
     except Exception:
         pass
-    return f"角色{cid}"
+    # v14: 熔件兜底 (Facts.name → display_name 全链: 缓存 → names → 熔件角色解码)
+    try:
+        fi = facts.get("_facts")
+        if fi is not None:
+            nm = fi.name(cid)
+            if nm:
+                return nm
+    except Exception:
+        pass
+    # v14: 全链 (档案/缓存/熔件) 均取不到时, 用自然占位, 不泄露 id
+    return "（名讳不详）"
 
 
 def _article_facts(facts, cache, key, section=None):
