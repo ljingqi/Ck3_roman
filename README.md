@@ -126,6 +126,25 @@ CK3 自动存档 (.ck3)  —(watch/continue 只处理启动后写入的新存档
   （拜占庭帝国无上位霸权 → 显示「拜占庭帝国」而非「大督军」）。
 - **死因中文化**：总纲【卒年】不再泄漏英文死因 key（黑死病而非 death_bubonic_plague）。
 
+## v14 能力（AUH 东亚人名正常化 / 宗族-家族分层）
+
+- **东亚人名分层显示**：按游戏规则——东方名序（`dynasty_always_first`/`japanese`）的姓取
+  **宗族（dynasty）名**（中国李金、日本藤原/源、韩国崔金，`$DYNASTY$$NAME$` 模板）；
+  西方仍取**家族（house）名**（`$NAME$·$HOUSE$`）。此前项目把家族名当姓用，日式分家
+  （北家/一条）与中韩本贯式家族（交州金/庆州崔）被误作姓（北家道长/庆州崔文王），
+  现已正常化为 藤原道长/崔文王，家族名降为风味补充。
+- **宗族/家族定义表**：`data/dynasties.json` 解析 游戏+启用 Mod 的
+  `common/dynasties/*.txt`（宗族 key→dynn 名，如 japanese_fujiwara→藤原）与
+  `common/dynasty_houses/*.txt`（家族 key→dynn 名，如 house_fujiwara_kajuji→勧修寺）；
+  `python localization.py dynasties` 重建；存档只存 key，显示名靠此表回查。
+- **旧缓存自愈**：`extract_snapshot` 对缺失 `dynasty_name` 的旧缓存按家族 id 记忆化补解析；
+  渲染期 `display_name` 另有惰性解析兜底（同 house 记忆化），旧战役不重建缓存也正确。
+- **风味双字段**：档案给出 宗族（藤原氏）与 家族/分家（北家/庆州崔，与宗族不同时列出），
+  自然语言渲染「家族：藤原氏（北家）」；`build_names.py` 的 names.json 增 `dynasty_name`。
+- **死者官职地名兜底**：title history 被存档剪除时（b_lantian 无 history），官职地名
+  （蓝田县令）回退到死者 `dead_data.domain` 死时辖地解析，不再退化成「县令…史料不详」。
+- 穆斯林动态国名（图伦苏丹国）同步改按宗族名（与游戏一致）。
+
 ## 环境准备
 
 1. **Python 依赖**：`python -m pip install -r requirements.txt`（requests）。
@@ -139,9 +158,10 @@ CK3 自动存档 (.ck3)  —(watch/continue 只处理启动后写入的新存档
 ## 用法
 
 ```bat
-python build_names.py              :: 重建全档人名表 data/names.json（含姓氏，本地化）
+python build_names.py              :: 重建全档人名表 data/names.json（含姓氏/宗族名，本地化）
 python localization.py build       :: 重建本地化表 data/localization.json（首次自动）
 python localization.py province    :: 重建省份映射 data/province_map.json（首次自动）
+python localization.py dynasties   :: 重建宗族/家族定义表 data/dynasties.json（首次自动）
 python pipeline.py watch [秒]      :: 新档监控：新战役新建文件夹（重名 → 哈布斯堡2）
 python pipeline.py continue [秒]   :: 旧档续传：自动沿用最新文件夹，补录当前战役后监控
 python pipeline.py scan            :: 单次：只补录当前战役（同战役）的新档

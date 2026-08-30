@@ -231,6 +231,21 @@ def house_display(h):
     return h
 
 
+def _dynasty_display(dn, hn):
+    """角色宗族显示名 (v14): 宗族名优先 (东方名序的姓 — 藤原/崔/金),
+    缺失回退家族名; 单字加「氏」(边氏)。"""
+    return house_display(dn or hn)
+
+
+def _house_branch(dn, hn):
+    """角色家族(分家)显示名 (v14 风味): 家族名与宗族名不同时给出
+    (北家/庆州崔/交州金 — 游戏只显示宗族姓, 分家作风味补充),
+    相同 (创始家=宗族同名) 时返回 ''。"""
+    if not dn or not hn or dn == hn:
+        return ""
+    return house_display(hn)
+
+
 def _trait_name(table, key):
     """特质 key → 中文: trait_<key> → <key> → 兜底表; 未知返回 '' (跳过, 不外泄 key)。"""
     if not key:
@@ -895,7 +910,9 @@ class Facts:
     def _last_title_place(self, cid, fkey=""):
         """角色官职的地名 (dead_data.flavor 只有官职词无地名 — v13 补全用)。
         取值顺序: ① 与官职层级精确匹配的头衔 (关白=帝国级→日本; 国司=郡级→出云);
-        ② 最高层级头衔; ③ 最近一次持有的头衔。返回 '建宁'/'颍州'/'出云' 等; 无则 ''。"""
+        ② 最高层级头衔; ③ 最近一次持有的头衔; ④ v14: 死者 dead_data.domain 的
+        头衔名 (title history 被存档剪除时, dead_data 仍带死时辖地 — 蓝田县令)。
+        返回 '建宁'/'颍州'/'出云' 等; 无则 ''。"""
         tier_want = None
         for pfx, rk in (("hegemon_", 6), ("emperor_", 5), ("king_", 4),
                         ("duke_", 3), ("count_", 2), ("baron_", 1)):
@@ -926,7 +943,38 @@ class Facts:
                     best_late = (dk, nm)
         if best_tier_nm:
             return best_tier_nm
-        return best_late[1] if best_late else ""
+        if best_late_nm:
+            return best_late_nm
+        # v14: title history 缺失 (存档剪除) 时, 死者的 dead_data.domain 仍带
+        # 死时辖地 — 用作官职地名兜底 (贾瑾: b_lantian → 蓝田县令)。
+        c = self._chars.get(str(cid)) or {}
+        dd = c.get("dead_data") or {}
+        ddom = dd.get("domain") or []
+        if ddom:
+            died = dd.get("date")
+            for tid in ddom:
+                t = self._lt.get(str(tid)) or {}
+                key = t.get("key") or ""
+                if not key or key.startswith(("x_", "e_minister_")):
+                    continue
+                rank = self._TT_RANK.get(key[:2], 0)
+                if tier_want is not None and rank == tier_want:
+                    nm = self._name_at_date(tid, died)
+                    if nm:
+                        return nm
+            # 无层级精确匹配: 取最高层级辖地
+            b_t, b_nm = -1, ""
+            for tid in ddom:
+                t = self._lt.get(str(tid)) or {}
+                key = t.get("key") or ""
+                if not key or key.startswith(("x_", "e_minister_")):
+                    continue
+                rank = self._TT_RANK.get(key[:2], 0)
+                nm = self._name_at_date(tid, died)
+                if nm and rank > b_t:
+                    b_t, b_nm = rank, nm
+            return b_nm
+        return ""
 
     def official_title(self, cid):
         """角色官职名: 「头衔名+官职词」(交州刺史/淄青节度使/青徐路观察使)。
@@ -1400,13 +1448,19 @@ class Facts:
         return isinstance(t, dict) and t.get("holder") == cid
 
     def dynasty_name(self, cid):
-        """角色家族名 (穆斯林国名用): 缓存 house_name → 熔件 dynasty_house 解析。"""
+        """角色宗族名 (穆斯林国名用, v14: 游戏用宗族名 — 图伦苏丹国=图伦):
+        缓存 dynasty_name → house_name → 熔件 dynasty_house 解析。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        if rec.get("dynasty_name"):
+            return rec["dynasty_name"]
         if rec.get("house_name"):
             return rec["house_name"]
         c = self._chars.get(str(cid)) or {}
         hid = c.get("dynasty_house")
         if isinstance(hid, int):
+            did = cl.dynasty_id_of(self.melt, hid)
+            if did is not None:
+                return cl.dynasty_name_zh(self.melt, did) or ""
             return cl.house_name_zh(self.melt, hid)
         return ""
 
@@ -1621,9 +1675,12 @@ class Facts:
         nm = rec.get("name_zh") or ""
         if not nm:
             full = self.name_or(cid, "")
-            h = rec.get("house_name")
-            if h and full.startswith(h):
-                nm = full[len(h):]
+            # v14: 东方名序的姓是宗族名, 先按宗族名剥前缀 (藤原道真 → 道真),
+            # 再按家族名 (旧行为, 兼容旧缓存)
+            for h in (rec.get("dynasty_name"), rec.get("house_name")):
+                if h and full.startswith(h):
+                    nm = full[len(h):]
+                    break
             else:
                 nm = full
         return f"{off}{nm}" if nm else off
@@ -2249,7 +2306,11 @@ def _protagonist(f):
     p = {
         "name": f.name_or(pid),
         "name_zh": rec.get("name_zh") or "",
-        "house": house_display(cache.get("house_name")),
+        # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充, 与宗族不同时给出)
+        "house": _dynasty_display(rec.get("dynasty_name") or cache.get("dynasty_name"),
+                                  rec.get("house_name") or cache.get("house_name")),
+        "house_branch": _house_branch(rec.get("dynasty_name") or cache.get("dynasty_name"),
+                                      rec.get("house_name") or cache.get("house_name")),
         "birth": f.date(rec.get("birth")),
         "culture": f.culture(pid),
         "faith": f.faith(pid),
@@ -2497,7 +2558,11 @@ def _character_profiles(f):
         prof = {
             "name": name,
             "name_zh": rec.get("name_zh") or "",
-            "house": house_display(rec.get("house_name")),
+            # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充)
+            "house": _dynasty_display(rec.get("dynasty_name"),
+                                      rec.get("house_name")),
+            "house_branch": _house_branch(rec.get("dynasty_name"),
+                                          rec.get("house_name")),
             "birth": f.date(rec.get("birth")),
             "culture": f.culture(cid),
             "faith": f.faith(cid),
@@ -2785,7 +2850,10 @@ def _killed_by_player(f):
             "birth": f.date(prof.get("birth")),
             "death": ds or "（死因不详）",
             "death_date": (prof.get("death") or {}).get("date") or "9999.9.9",
-            "house": house_display(prof.get("house_name")),
+            "house": _dynasty_display(prof.get("dynasty_name"),
+                                      prof.get("house_name")),
+            "house_branch": _house_branch(prof.get("dynasty_name"),
+                                          prof.get("house_name")),
             # v13: 死者官职 (含家族领袖的「XX家族乡绅」, 此前刺客列传无官职信息)
             "office": f.official_title(cid),
             "culture": f.culture(cid),
@@ -2965,7 +3033,11 @@ def build_facts(cache, melt, names_path=None, as_of=None):
         pd = dict(pd)
         pd["reason_zh"] = _death_reason(f.table, pd.get("reason"))
     facts = {
-        "house": house_display(cache.get("house_name")),
+        # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充)
+        "house": _dynasty_display(cache.get("dynasty_name"),
+                                  cache.get("house_name")),
+        "house_branch": _house_branch(cache.get("dynasty_name"),
+                                      cache.get("house_name")),
         "player_name": cache.get("player_name"),
         "player_id": cache.get("player_id"),
         "period": period,
@@ -3014,7 +3086,11 @@ def facts_to_text(facts, keys=None):
     """把事实集拼成给模型的纯文本 (调试/日志用)。"""
     lines = []
     p = facts["protagonist"]
-    lines.append(f"主角：{p.get('name')}（{p.get('house')}）")
+    # v14: 家族名 + 分家 (自然语言, 无等号): 藤原氏（北家）
+    fam = p.get("house") or ""
+    if fam and p.get("house_branch"):
+        fam = f"{fam}（{p['house_branch']}）"
+    lines.append(f"主角：{p.get('name')}（{fam}）")
     for k in ("birth", "culture", "faith", "traits", "government"):
         if p.get(k):
             lines.append(f"{k}：{p[k]}")
