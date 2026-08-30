@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""构建全量角色名本地化映射表 → data/names.json (v2, 含姓氏)
+"""构建全量角色名本地化映射表 → data/names.json (v2, 含姓氏; v14 含宗族名)
 
 结构: {"schema": 2, "source": "<档期>", "names": {
-        "<角色id>": {"first_name": "...", "name_zh": "...", "house_name": "..."}}}
+        "<角色id>": {"first_name": "...", "name_zh": "...", "house_name": "...",
+                     "dynasty_name": "..."}}}
 用途: 传记/其它输出查名兜底 (缓存只收录主角相关人物, 此表覆盖全档; house_name
-      供姓名合并: 边 + 诚 → 边诚)。
+      供姓名合并: 边 + 诚 → 边诚; dynasty_name 为东方名序的姓: 藤原 + 道真)。
 
 用法:
   python build_names.py [melt路径]   # 缺省取日期最新的一份 melt (战役文件夹优先)
@@ -62,10 +63,18 @@ def main():
         if not nm:
             continue
         h = cl.house_name_zh(melt, c.get("dynasty_house"))
+        # v14: 宗族名 (东方名序的姓): 家族 → 宗族 → 解析
+        dn = ""
+        hid = c.get("dynasty_house")
+        if hid is not None:
+            did = cl.dynasty_id_of(melt, hid)
+            if did is not None:
+                dn = cl.dynasty_name_zh(melt, did) or ""
         names[cid] = {
             "first_name": fn,
             "name_zh": nm,
             "house_name": h,
+            "dynasty_name": dn,
         }
     out = {
         "schema": 2,
@@ -79,8 +88,8 @@ def main():
     for cid in ("11368", "10692", "13386", "39250", "10818", "10798", "9455", "11990"):
         n = names.get(cid)
         if n:
-            print(f"  {cid}: {n.get('house_name')}{n.get('name_zh')} "
-                  f"(house={n.get('house_name')}, name={n.get('name_zh')})")
+            print(f"  {cid}: 家族{n.get('house_name')} 宗族{n.get('dynasty_name')} "
+                  f"名{n.get('name_zh')} → {n.get('dynasty_name')}{n.get('name_zh')}")
     return 0
 
 

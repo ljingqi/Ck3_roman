@@ -353,6 +353,17 @@ def _relation_reasons(facts, cache, cid, types):
 # 事实块渲染 (只输出干净中文)
 # ---------------------------------------------------------------------------
 
+def _house_text(facts, p=None):
+    """家族文本 (v14 自然语言): 宗族名 + 分家 (藤原氏（北家）);
+    无分家时只给宗族名 (菲利普 / 边氏)。facts 缺失时回退 p。"""
+    p = p or {}
+    h = (facts or {}).get("house") or p.get("house") or ""
+    b = (facts or {}).get("house_branch") or p.get("house_branch") or ""
+    if h and b:
+        return f"{h}（{b}）"
+    return h
+
+
 def _profile_lines(facts, cid=None):
     """主角或某角色的档案 → 中文行列表。cid=None 时用主角。"""
     if cid is None:
@@ -370,7 +381,7 @@ def _profile_lines(facts, cid=None):
     if p.get("prince"):
         lines.append(f"称号：{p['prince']}")
     if p.get("house"):
-        lines.append(f"家族：{p['house']}")
+        lines.append(f"家族：{_house_text(None, p)}")
     # v7: 家族家训
     if p.get("motto"):
         lines.append(f"家训：{p['motto']}")
@@ -770,7 +781,8 @@ def _shared_facts_block(facts):
     卒年自然语言化 (【卒年】931年6月7日，因绊倒坠落而亡——此为终传)。"""
     p = facts["protagonist"]
     name = p.get("name") or "主角"
-    house = facts.get("house") or p.get("house") or ""
+    # v14: 家族文本含分家 (藤原氏（北家）)
+    house = _house_text(facts)
     death = facts.get("player_death")
     if death:
         rz = death.get("reason_zh") or death.get("reason") or "身故"
@@ -795,7 +807,7 @@ def build_intro_messages(facts, cfg, articles=None):
     """总纲提示词 (共享前缀 + 篇目预告)。v11: 输出头改为 生卒; 明确以「太史公曰」作结。"""
     p = facts["protagonist"]
     name = p.get("name") or "主角"
-    house = facts.get("house") or p.get("house") or ""
+    house = _house_text(facts)
     style = facts.get("bio_style") or "east"
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
     birth = p.get("birth") or ""
@@ -1016,7 +1028,8 @@ def _normalize_section(text, sec_title, article_title=""):
 def _assemble(facts, intro, leads, sections, articles):
     parts = [f"# 《{facts['protagonist']['name']}传》"]
     p = facts["protagonist"]
-    house = facts.get("house") or p.get("house") or ""
+    # v14: 家族文本含分家 (藤原氏（北家）)
+    house = _house_text(facts)
     death = facts.get("player_death")
     span = ""
     if death:

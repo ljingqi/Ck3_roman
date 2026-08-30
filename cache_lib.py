@@ -207,13 +207,51 @@ def _dynn_lookup(table, name):
 _DYNN_INDEX = None
 
 
+# ---------------------------------------------------------------------------
+# 宗族/家族定义表解析 (v14: AUH 东亚人名 — 存档只有 key, 显示名查游戏定义文件)
+# ---------------------------------------------------------------------------
+
+def _dynasty_name_of_dynn(nm, table):
+    """dynn_X (dynn_Fujiwara / dynn_Li_674E) → 中文 (本地化表 → 码点兜底)。
+    与 house_name_zh 取值链一致: 表值优先于键内码点 (游戏造键笔误兼容)。"""
+    if not nm:
+        return ""
+    for cand in (nm, nm[len("dynn_"):] if nm.startswith("dynn_") else nm):
+        v = localization.loc(table, cand)
+        if v and v != cand:
+            return v
+    dec = zh(decode_codepoints(nm))
+    if dec and any("\u3400" <= ch <= "\u9fff" for ch in dec):
+        return dec
+    return ""
+
+
+def dynasty_name_of_key(key):
+    """宗族 key (japanese_fujiwara / korean_choe_gyeongju) → 中文宗族名 (藤原 / 崔)。
+    key → 游戏定义表 name=dynn_X → 本地化; 未知返回 ''。"""
+    if not key:
+        return ""
+    nm = (localization.dynasty_table().get("dynasties") or {}).get(str(key)) or ""
+    return _dynasty_name_of_dynn(nm, localization.table())
+
+
+def house_name_of_key(key):
+    """家族 key (house_fujiwara_kajuji) → 中文家族名 (勧修寺)。
+    key → 游戏定义表 name=dynn_X → 本地化; 未知返回 ''。"""
+    if not key:
+        return ""
+    nm = (localization.dynasty_table().get("houses") or {}).get(str(key)) or ""
+    return _dynasty_name_of_dynn(nm, localization.table())
+
+
 def house_name_zh(melt, house_id):
-    """宗族 id → 姓氏中文。取值链 (实测):
-      1) dynasty_house[<id>].localized_name  (存档自带, 如 冯·大马士革)
-      2) 本地化表 (name / dynn_ 键, 与其他文化一致 — 简体中文显示为准, 如
+    """家族 id → 姓氏中文。取值链 (实测):
+      1) dynasty_house[<id>].localized_name  (存档自带, 如 冯·大马士革 / 北家 / 庆州崔)
+      2) 游戏家族定义表 (house key → dynn_Y → 本地化, v14: house_fujiwara_kajuji → 勧修寺)
+      3) 本地化表 (name / dynn_ 键, 与其他文化一致 — 简体中文显示为准, 如
          dynn_Dou_9B26 → 斗; 表值优先于键内码点, 键码点 9B26=鬦 是游戏造键笔误)
-      3) .name 的码点兜底 (dynn_Bian_908A → 边, 表缺键时的最后手段)
-      4) .key 字段 (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
+      4) .name 的码点兜底 (dynn_Bian_908A → 边, 表缺键时的最后手段)
+      5) .key 字段 (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
       全部失败返回 ''。"""
     if house_id is None:
         return ""
@@ -224,20 +262,25 @@ def house_name_zh(melt, house_id):
         loc_name = e.get("localized_name") or ""
         if loc_name and any("\u3400" <= ch <= "\u9fff" for ch in loc_name):
             return zh(loc_name)
-        # 2) 本地化表 (与其他文化同名取值链: 表优先)
+        # 2) 游戏家族定义表 (house key → dynn_Y → 本地化, v14)
+        hkey = e.get("key")
+        if isinstance(hkey, str):
+            v = house_name_of_key(hkey)
+            if v:
+                return v
+        # 3) 本地化表 (与其他文化同名取值链: 表优先)
         name = e.get("name") or ""
         t = localization.table()
         for cand in (name, name[len("dynn_"):] if name.startswith("dynn_") else name):
             v = localization.loc(t, cand)
             if v and v != cand:
                 return v
-        # 3) name 字段码点兜底 (dynn_ 前缀码点解码; 表缺键时用)
+        # 4) name 字段码点兜底 (dynn_ 前缀码点解码; 表缺键时用)
         if name.startswith("dynn_"):
             dec = zh(decode_codepoints(name[len("dynn_"):]))
             if dec and any("\u3400" <= ch <= "\u9fff" for ch in dec):
                 return dec
-        # 4) house key (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
-        hkey = e.get("key")
+        # 5) house key (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
         if isinstance(hkey, str) and hkey.startswith("house_"):
             v = _dynn_lookup(t, hkey[len("house_"):])
             if v:
@@ -261,8 +304,11 @@ def dynasty_id_of(melt, house_id):
 def dynasty_name_zh(melt, dynasty_id):
     """宗族 id → 宗族名中文。取值链 (实测):
       1) dynasties[<id>].localized_name    (Mod 档自带, 如 冯·大马士革 / 崔佛)
-      2) .key 字符串 → 本地化表 (dynn_<key> / <key>)
-      3) 创始家族兜底: 同宗族内 found_date 最早的 house 取名 (边 / 奥尔西尼…)
+      2) 游戏宗族定义表 (key → dynn_X → 本地化, v14: japanese_fujiwara → 藤原;
+         存档只存 key, 显示名在 common/dynasties/*.txt)
+      3) .name 字段 → 本地化表 (dynn_Lithokristes → 利索克里斯蒂斯)
+      4) .key 字符串 → 本地化表 (dynn_<key> / <key>, v8.2)
+      5) 创始家族兜底: 同宗族内 found_date 最早的 house 取名 (边 / 奥尔西尼…)
       全部失败返回 '' (由调用方回退家族名)。"""
     if dynasty_id is None:
         return ""
@@ -273,15 +319,26 @@ def dynasty_name_zh(melt, dynasty_id):
         ln = e.get("localized_name") or ""
         if ln and any("\u3400" <= ch <= "\u9fff" for ch in ln):
             return zh(ln)
-        # 2) key 字符串 → 本地化表变体
+        t = localization.table()
+        # 2) 游戏宗族定义表 (v14: key → dynn_X → 本地化)
         key = e.get("key")
         if isinstance(key, str):
-            t = localization.table()
+            v = dynasty_name_of_key(key)
+            if v:
+                return v
+        # 3) name 字段 (dynn_X) → 本地化表 / 码点兜底
+        name = e.get("name") or ""
+        if isinstance(name, str):
+            v = _dynasty_name_of_dynn(name, t)
+            if v:
+                return v
+        # 4) key 字符串 → 本地化表变体
+        if isinstance(key, str):
             for cand in ("dynn_" + key, key):
                 v = localization.loc(t, cand)
                 if v and v != cand:
                     return v
-        # 3) 创始家族兜底: 同宗族内 found_date 最早的 house
+        # 5) 创始家族兜底: 同宗族内 found_date 最早的 house
         dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
         best = None
         for hid, h in dh.items():
@@ -546,7 +603,8 @@ def char_record(cache, cid):
             "id": cid,
             "first_name": None,
             "name_zh": None,
-            "house_name": None,     # 姓氏 (边)
+            "house_name": None,     # 家族名 (边 / 北家), v14: 西方名序的姓
+            "dynasty_name": None,   # 宗族名 (边 / 藤原), v14: 东方名序的姓
             "name_full": None,      # 姓+名 (边诚)
             "birth": None,
             "death": None,
@@ -825,7 +883,10 @@ def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None):
 def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
     """(v13 唯一出口) 按游戏规则的显示名, 全项目统一调用:
     - 父名制文化 (patronym_rules 有模板) → 「名·父名」(富兰克林·崔佛松), 父名替代家族名;
-    - 其它文化按名序: 东方姓在前 (边诚/赵阿足), 西方名·姓 (崔佛·菲利普/巴沙尔·冯·大马士革);
+    - 其它文化按名序: 东方姓在前 (藤原道真/边诚/赵阿足), 西方名·姓 (崔佛·菲利普/巴沙尔·冯·大马士革);
+    - v14: 东方名序 (dynasty_always_first/japanese) 的姓取**宗族名** (游戏 $DYNASTY$ 模板:
+      中国李金/日本藤原/韩国崔, 家族名如 北家/庆州崔/交州金 只作分家不显示);
+      西方仍用**家族名** ($HOUSE$ 模板);
     - 文化缺失时沿 父系线→同胞→宗族→母→语言 推断 (玩家/死者均覆盖);
     - 推断失败: 只返回给定名, 绝不输出错序的「姓+名」拼接。
     chars: 预构建的全角色索引 (Facts 已持有), memo: 跨调用共享推断缓存
@@ -836,11 +897,13 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
     rec = (cache.get("characters") or {}).get(key) or {}
     nm = rec.get("name_zh") or ""
     h = rec.get("house_name") or ""
+    dn = rec.get("dynasty_name") or ""
     if not nm and names_path:
         n = _load_names(names_path).get(key)
         if n:
             nm = n.get("name_zh") or ""
             h = h or n.get("house_name") or ""
+            dn = dn or n.get("dynasty_name") or ""
     if not nm and chars is not None:
         # v13: 兜底从熔件角色对象解码 (击杀受害者等不在缓存/names 的角色,
         # 如 first_name='Zhenya_8D1E_96C5' → 镇雅; 此前漏此兜底输出「一位人物」)
@@ -871,7 +934,21 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
                     order = _e.get("name_order_convention") or ""
                     break
     if order in EASTERN_NAME_ORDERS:
-        return h + nm if h else nm
+        # v14: 东方名序姓 = 宗族名 (游戏 $DYNASTY$ 模板: 藤原/崔/金);
+        # 缓存/names 缺失时 (旧缓存) 按家族 id 惰性从熔件解析, 同 house 记忆化。
+        if not dn and melt is not None:
+            hid = rec.get("dynasty_house")
+            if hid is not None:
+                mkey = f"__dyn_name_{hid}__"
+                dn = memo.get(mkey) if memo else ""
+                if not dn:
+                    did = dynasty_id_of(melt, hid)
+                    dn = dynasty_name_zh(melt, did) if did is not None else ""
+                    if memo is not None:
+                        memo[mkey] = dn
+        # 宗族名缺失 (解析失败/无宗族) 回退家族名 (旧行为)
+        surname = dn or h
+        return surname + nm if surname else nm
     cultures = (melt or {}).get("culture_manager") or {}
     if cul is not None and str(cul) in (cultures.get("cultures") or {}):
         # 文化已知且西方默认: 名·姓
@@ -1042,6 +1119,8 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     tl = melt.get("traits_lookup") or []
     # v13: 本快照内共享的姓名推断缓存 (一次 rebuild 数万角色只算一遍)
     _name_memo = {}
+    # v14: 宗族名解析记忆化 (house_id → 宗族名; 旧缓存自愈用)
+    _dyn_memo = {}
 
     def trait_key(t):
         if isinstance(t, int) and 0 <= t < len(tl):
@@ -1229,10 +1308,15 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
             rec["first_name"] = c.get("first_name")
             rec["name_zh"] = name_zh(c)
             rec["dynasty_house"] = c.get("dynasty_house")
-            # 姓氏 + 姓名合并 (v3/v4); v13: name_full 按 display_name 正确名序生成
+            # 家族名 + 宗族名 (v3/v4; v14: 东方名序的姓取宗族名, 游戏 $DYNASTY$ 模板);
+            # v13: name_full 按 display_name 正确名序生成
             if rec["dynasty_house"] is not None:
                 h = house_name_zh(melt, rec["dynasty_house"])
                 rec["house_name"] = h
+                # v14: 宗族名: 家族 → 宗族 → 解析 (存档只存 key, 显示名查游戏定义表)
+                _did = dynasty_id_of(melt, rec["dynasty_house"])
+                if _did is not None:
+                    rec["dynasty_name"] = dynasty_name_zh(melt, _did) or None
             if rec["name_zh"]:
                 # v13: name_full 按 display_name 正确名序生成 (chars/memo 复用本快照索引)
                 rec["name_full"] = display_name(cache, cid, melt=melt, chars=chars,
@@ -1241,6 +1325,14 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
             rec["birth"] = c.get("birth")
             rec["culture"] = c.get("culture")
             rec["faith"] = c.get("faith")
+        # v14: 旧缓存自愈 — dynasty_name 缺失 (v14 前缓存) 时按当前 dynasty_house
+        # 补解析 (东方名序的姓); 按 house 记忆化, 同宗族数千人只解析一次。
+        if rec.get("dynasty_name") is None and rec.get("dynasty_house") is not None:
+            _hid = rec["dynasty_house"]
+            if _hid not in _dyn_memo:
+                _did = dynasty_id_of(melt, _hid)
+                _dyn_memo[_hid] = dynasty_name_zh(melt, _did) if _did is not None else ""
+            rec["dynasty_name"] = _dyn_memo[_hid] or None
         # 文化/信仰 (v7): 熔件有值即更新 (覆盖文化改信); 缺失时保留最近已知值。
         # 角色死后游戏清空 culture/faith (实测死档约半数被清, 含前代玩家),
         # 缓存里存活期直接读到的 id 即为最直接的来源, facts 层缓存优先读取。

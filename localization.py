@@ -19,6 +19,7 @@
 用法:
   python localization.py build        # 重建本地化表
   python localization.py province     # 重建省份映射
+  python localization.py dynasties    # 重建宗族/家族定义表 (v14)
   python localization.py check        # 抽查关键键 (Daria/岭西/层级词/桂州)
 """
 import json
@@ -354,6 +355,82 @@ def load_province_map(cfg, force=False):
 
 
 # ---------------------------------------------------------------------------
+# 宗族/家族定义表 (v14: AUH 东亚人名 — 宗族名/家族名分层)
+# ---------------------------------------------------------------------------
+# 存档只存宗族/家族的 key (japanese_fujiwara / house_fujiwara_kajuji),
+# 显示名 (藤原 / 勧修寺) 需回查游戏定义文件:
+#   common/dynasties/*.txt       : key = { name = "dynn_X" }  (宗族)
+#   common/dynasty_houses/*.txt  : key = { name = "dynn_Y" }  (家族/分家)
+
+def _dynasties_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "dynasties.json")
+
+
+def _parse_dynasty_defs(path, out):
+    """解析一份 dynasties/dynasty_houses txt: key = { name = "dynn_X" } → out[key]。
+    忽略嵌套花括号块 (脚本块不在这些文件里), 只取顶层 key。"""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as fp:
+            txt = fp.read()
+    except Exception:
+        return
+    for m in re.finditer(r"^([A-Za-z][A-Za-z0-9_]*)\s*=\s*\{([^{}]*)\}", txt, re.M):
+        key, body = m.group(1), m.group(2)
+        nm = re.search(r'name\s*=\s*["\']?(dynn_[A-Za-z0-9_]+)', body)
+        if nm:
+            out[key] = nm.group(1)
+
+
+def build_dynasty_table(cfg):
+    """游戏 + Mod 的 common/dynasties 与 common/dynasty_houses →
+    {"dynasties": {key: dynn名}, "houses": {house_key: dynn名}}。Mod 覆盖游戏。"""
+    out = {"dynasties": {}, "houses": {}}
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        for folder, bucket in (("dynasties", "dynasties"),
+                               ("dynasty_houses", "houses")):
+            d = os.path.join(root, "common", folder)
+            if not os.path.isdir(d):
+                continue
+            for dp, _dn, fns in os.walk(d):
+                for fn in sorted(fns):
+                    if fn.endswith(".txt"):
+                        _parse_dynasty_defs(os.path.join(dp, fn), out[bucket])
+    return out
+
+
+def save_dynasty_table(cfg, table, path=None):
+    path = path or _dynasties_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump({"schema": 1, "dynasties": table.get("dynasties") or {},
+                   "houses": table.get("houses") or {}}, fp, ensure_ascii=False)
+    return path
+
+
+def load_dynasty_table(cfg, force=False):
+    """载入宗族/家族定义表; 缺失或强制时重建。
+    返回 {"dynasties": {key: dynn名}, "houses": {house_key: dynn名}}。"""
+    path = _dynasties_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1:
+                return {"dynasties": data.get("dynasties") or {},
+                        "houses": data.get("houses") or {}}
+        except Exception:
+            pass
+    table = build_dynasty_table(cfg)
+    save_dynasty_table(cfg, table, path)
+    return table
+
+
+# ---------------------------------------------------------------------------
 # 政体层级词 (动态)
 # ---------------------------------------------------------------------------
 
@@ -405,6 +482,7 @@ def tier_word(table, government, tier):
 
 _TABLE = None
 _PROVINCE_MAP = None
+_DYN_TABLE = None
 
 
 def table(cfg=None):
@@ -421,6 +499,15 @@ def province_map(cfg=None):
     if _PROVINCE_MAP is None:
         _PROVINCE_MAP = load_province_map(cfg or llm.load_config())
     return _PROVINCE_MAP
+
+
+def dynasty_table(cfg=None):
+    """宗族/家族定义表单例 (v14): {"dynasties": {key: dynn名},
+    "houses": {house_key: dynn名}}; 首次调用时载入/重建。"""
+    global _DYN_TABLE
+    if _DYN_TABLE is None:
+        _DYN_TABLE = load_dynasty_table(cfg or llm.load_config())
+    return _DYN_TABLE
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +539,11 @@ def main():
         m = build_province_map(cfg)
         p = save_province_map(cfg, m)
         print(f"省份映射已重建: {p} ({len(m)} 条)")
+    elif cmd == "dynasties":
+        t = build_dynasty_table(cfg)
+        p = save_dynasty_table(cfg, t)
+        print(f"宗族/家族定义表已重建: {p} "
+              f"(宗族 {len(t['dynasties'])} 条, 家族 {len(t['houses'])} 条)")
     elif cmd == "check":
         g = game_dir(cfg)
         mods = enabled_mod_dirs(cfg)
