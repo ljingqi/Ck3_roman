@@ -147,6 +147,8 @@ MEMORY_TEMPLATES = {
     "witnessed_a_coronation_memory": "{name}见证加冕。",
     "grand_wedding_completed_guest": "{name}出席大婚。",
     "ignored_assault_memory": "{name}受辱未报。",
+    # v15: 成功谋杀 (主角视角, 神秘死亡味由受害者死亡记录句负责)
+    "successful_murder": "{name}谋杀{other}。",
 }
 
 # 参与者槽位: 记忆类型 → participants 键 (缺失时取第一个 int 参与者)
@@ -162,6 +164,7 @@ PARTICIPANT_SLOTS = {
     "released_from_prison_memory": "imprisoner", "lost_title_memory": "new_holder",
     "child_born": "child", "first_born": "child",
     "childhood_education_guardian": "guardian",
+    "successful_murder": "victim",
 }
 
 # 记忆类型 → 取 vars 中的 landed_title (头衔 id)
@@ -347,6 +350,9 @@ class Facts:
             if k:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
+        # v16: 游戏关系原因 (opinions.active_opinions 索引, 惰性构建)
+        self._opinion_index = None
+        self._rel_reason_cache = {}
         # v11: 语言 → 文化模板列表 反查索引 (同一语言多文化共享, 如 language_norse
         # 同时被 norman/norse 持有; 推断时优先有父名规则的模板)
         self._lang_to_tpl = {}
@@ -387,26 +393,32 @@ class Facts:
             for _d, _ev in _seq:
                 if _ao is not None and cl.date_key(_d) > _ao:
                     break
-                _h = _ev.get("holder") if isinstance(_ev, dict) else _ev
-                _typ = _ev.get("type") if isinstance(_ev, dict) else ""
-                if _h is None:
+                # v15: 同日多事件 (destroyed+created 同日期等, 重复键被合并为列表)
+                entries = _ev if isinstance(_ev, list) else [_ev]
+                for _e in entries:
+                    _h = _e.get("holder") if isinstance(_e, dict) else _e
+                    _typ = _e.get("type") if isinstance(_e, dict) else ""
+                    if _h is None:
+                        if cur is not None and gain is not None:
+                            self._holder_intervals.setdefault(cur, {}).setdefault(
+                                _tid, []).append((gain, _d, _typ or ""))
+                        cur, gain = None, None
+                        continue
+                    try:
+                        _hid = int(_h)
+                    except (TypeError, ValueError):
+                        continue
+                    if _hid == cur:
+                        if _typ == "destroyed":
+                            if gain is not None:
+                                self._holder_intervals.setdefault(cur, {}).setdefault(
+                                    _tid, []).append((gain, _d, "destroyed"))
+                            cur, gain = None, None
+                        continue
                     if cur is not None and gain is not None:
                         self._holder_intervals.setdefault(cur, {}).setdefault(
                             _tid, []).append((gain, _d, _typ or ""))
-                    cur, gain = None, None
-                    continue
-                _hid = int(_h)
-                if _hid == cur:
-                    if _typ == "destroyed":
-                        if gain is not None:
-                            self._holder_intervals.setdefault(cur, {}).setdefault(
-                                _tid, []).append((gain, _d, "destroyed"))
-                        cur, gain = None, None
-                    continue
-                if cur is not None and gain is not None:
-                    self._holder_intervals.setdefault(cur, {}).setdefault(
-                        _tid, []).append((gain, _d, _typ or ""))
-                cur, gain = _hid, _d
+                    cur, gain = _hid, _d
             if cur is not None and gain is not None:
                 self._holder_intervals.setdefault(cur, {}).setdefault(
                     _tid, []).append((gain, None, ""))
@@ -981,7 +993,11 @@ class Facts:
         已死角色优先读存档 dead_data.flavor (游戏算好的键, 最准)。
         v13: flavor 只有官职词 (节度使/国司/关白) 无地名 — 用最后持有头衔的地名补全
         (颍州刺史/建宁节度使/出云国司), 与在世角色渲染一致。
-        伊斯兰统治者特殊: 家族名+苏丹国/哈里发国 (复用 realm_name)。"""
+        伊斯兰统治者特殊: 家族名+苏丹国/哈里发国 (复用 realm_name)。
+        v15: 宗教领袖 (教宗) 优先 — 称谓直达, 不走「X国国王主教」神权词。"""
+        rhw = self.religious_head_word(cid)
+        if rhw:
+            return rhw
         c = self._chars.get(str(cid)) or {}
         fkey = (c.get("dead_data") or {}).get("flavor")
         if fkey:
@@ -1036,7 +1052,10 @@ class Facts:
     # 按事件日期查两端角色头衔: 主角侧「瑞典国王崔佛」, 对方侧「粤王范承宗」。
     def _feud_role_title(self, cid, date):
         """事件中某角色的「头衔名+名」: 按事件日期查首要头衔 (国号随年份:
-        903 是粤、更早是桂), 无头衔/查不到时回退纯名。"""
+        903 是粤、更早是桂), 无头衔/查不到时回退纯名; v15: 教宗直称「教宗」。"""
+        rhw = self.religious_head_word(cid)
+        if rhw:
+            return rhw + self.name_or(cid)
         tier, tid = self._primary_title_at(cid, as_of=date)
         name = self.name_or(cid)
         if tid is None or tier is None:
@@ -1122,27 +1141,14 @@ class Facts:
     # v13: 戏剧性事实 — 短命帝国/皇朝在位 (≤30 日即失去/被毁)
     DRAMATIC_TENURE_DAYS = 30
 
-    # v14: 戏剧性事件扩展 (修复方案_菲利普2.md 问题4 修复3) — 除短命皇朝外,
-    # 主角级「人生转折点」: 登位/失土/被囚/获释/结仇/结怨/死敌/囚禁他人/战争/
-    # 丧子/加冕。从已截断的时间线取主角名在文本中的事件, 按类型白名单抽取,
-    # 上限 12 条防膨胀。渲染为【戏剧性事件】独立块 (档案末尾)。
-    DRAMATIC_TIMELINE_TYPES = {
-        "ascended_throne_memory", "lost_title_memory", "imprisoned",
-        "released_from_prison_memory", "became_rivals", "became_grudge",
-        "became_nemesis", "imprisoned_other", "offensive_war", "war_won",
-        "war_lost", "child_premature", "child_stillborn",
-        "witnessed_a_coronation_memory",
-    }
-    DRAMATIC_TIMELINE_MAX = 12
-
     def dramatic_facts(self, pid):
-        """高亮戏剧性事件 (v14): ① 短命皇朝 (h_/e_ 头衔 ≤30 日在位即失/被毁);
-        ② 主角级人生转折点 (登位/失土/被囚/结仇/囚禁/战争/丧子等, 按时间线
-        主角级事件抽取, 上限 12 条)。返回 ['935年11月4日承袭周皇朝…', …]。"""
+        """高亮戏剧性事件 (v15): 短命皇朝 (h_/e_ 头衔 ≤30 日在位即失/被毁)。
+        (v14 的主角级时间线转折点已并入【主角大事摘要】, 不再逐条重复;
+        大奸大恶关系链由 _villain_chains 程序直算, 在 build_facts 并入。)
+        返回 ['935年11月4日承袭周皇朝…', …]。"""
         out = []
         if pid is None:
             return out
-        # ① 短命皇朝 (原 v13 逻辑)
         intervals = self._hold_intervals(pid)
         for tid, ivs in intervals.items():
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
@@ -1160,17 +1166,6 @@ class Facts:
                 verb = "被毁" if ltype == "destroyed" else "失去"
                 out.append(f"{self.date(gain)}承袭{tname}，"
                            f"{self.date(loss)}{verb}，在位仅{span}日")
-        # ② 主角级人生转折点 (从截断时间线取, 主角名在文本中)
-        if len(out) < self.DRAMATIC_TIMELINE_MAX:
-            pname = self.name_or(pid)
-            for e in _timeline(self):
-                if e.get("type") not in self.DRAMATIC_TIMELINE_TYPES:
-                    continue
-                if pname and pname not in e.get("text", ""):
-                    continue
-                out.append(e["text"])
-                if len(out) >= self.DRAMATIC_TIMELINE_MAX:
-                    break
         return out
 
     def _prince_word(self, ptier, government, independent, female):
@@ -1463,6 +1458,136 @@ class Facts:
         t = self._lt.get(str(rh)) or {}
         return isinstance(t, dict) and t.get("holder") == cid
 
+    def religious_head_word(self, cid):
+        """宗教领袖称谓 (v15): 角色为其信仰的宗教领袖 (持有 faith.religious_head
+        头衔, 如教宗国/教皇座) 时返回称谓 — 教宗; 否则 ''。
+        修复「教宗国国王主教戈德弗鲁瓦」式错位: 教宗本人应称「教宗」,
+        而非神权领主的通用官职词「国王主教」(该词只适用非领袖的神权君主)。
+        只对持有宗教领袖头衔者生效, 不影响普通神权领主。"""
+        fid = self._faith_id(cid)
+        if fid is None:
+            return ""
+        faiths = (self.melt.get("religion") or {}).get("faiths") or {}
+        fe = faiths.get(str(fid))
+        if not isinstance(fe, dict):
+            return ""
+        rh = fe.get("religious_head")
+        if not isinstance(rh, int) or rh == self._NO_RELIGIOUS_HEAD:
+            return ""
+        t = self._lt.get(str(rh)) or {}
+        # 任职区间 (title history, 已按 as_of 截断 — 死者/前教宗亦算);
+        # 当前持有者只在无 as_of 缺口时兜底 (十年传记不把后期继任教宗泄漏进早期)
+        held_rh = rh in (self._hold_intervals(cid) or {})
+        melt_date = (self.melt.get("date") or "")
+        no_gap = not (self.as_of and cl.date_key(self.as_of) < cl.date_key(melt_date))
+        if not held_rh and not (no_gap and isinstance(t, dict) and t.get("holder") == cid):
+            return ""
+        # 只处理教皇座类头衔 (k_papal_state / d_papacy); 其余宗教领袖
+        # (哈里发等) 走既有 realm_name 动态国名路径, 不套用「教宗」。
+        tkey = t.get("key") or ""
+        if "papal" not in tkey and "papacy" not in tkey:
+            return ""
+        v = L.loc(self.table, "religiousheadname_pope")
+        if v and not v.startswith("$") and not v.startswith("["):
+            return v
+        return ""
+
+    # ---- v16: 游戏自带的关系原因 (opinions.active_opinions) ----
+    # 游戏为每对角色记录 scripted_relations.reason (如 rival_murderer =
+    # 「X杀害了Y的亲近之人」), 本地化 542/542 全命中 — 直接读游戏数据,
+    # 不再让模型自行揣度「为何结仇/结友」。
+    _REL_REASON_KINDS = {
+        "rival": ("became_rivals",), "grudge": ("became_grudge",),
+        "nemesis": ("became_nemesis",),
+        "friend": ("became_friends",), "best_friend": ("became_friends", "became_soulmates"),
+        "soulmate": ("became_soulmates",), "blood_brother": ("became_blood_brother",),
+        "lover": ("became_lovers", "had_sex"),
+    }
+
+    def _player_opinion_index(self):
+        """opinions.active_opinions 惰性索引: {(owner, target): scripted_relations}。
+        只收与主角有关的对, 一次扫描 (7 万对, <0.1s)。"""
+        if self._opinion_index is not None:
+            return self._opinion_index
+        pid = self.cache.get("player_id")
+        idx = {}
+        if pid is not None:
+            for o in (self.melt.get("opinions") or {}).get("active_opinions") or []:
+                if not isinstance(o, dict):
+                    continue
+                ow, tg = o.get("owner"), o.get("target")
+                if ow == pid or tg == pid:
+                    sr = o.get("scripted_relations")
+                    if isinstance(sr, dict):
+                        idx[(ow, tg)] = sr
+        self._opinion_index = idx
+        return idx
+
+    def _rel_mem_date(self, cid, mem_types):
+        """主角↔cid 间某类关系的最早记忆日期 (≤ as_of), 用于游戏原因的时间门 —
+        十年传记不把 as_of 之后才形成的关系泄漏进早期。"""
+        cache = self.cache
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return None
+        chars = cache.get("characters") or {}
+        best = None
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        for cid0, rec in ((pid, chars.get(str(pid)) or {}),
+                          (cid, chars.get(str(cid)) or {})):
+            for m in rec.get("memories") or []:
+                if m.get("type") not in mem_types:
+                    continue
+                parts = m.get("participants") or {}
+                if not any(isinstance(v, int) and v in (pid, cid) and v != cid0
+                           for v in parts.values()):
+                    continue
+                d = m.get("creation_date")
+                if not d:
+                    continue
+                if ao is not None and cl.date_key(d) > ao:
+                    continue
+                if best is None or cl.date_key(d) < cl.date_key(best):
+                    best = d
+        return best
+
+    def relation_reasons(self, cid, kinds):
+        """游戏自带的关系原因句 (v16): 主角↔cid 的 scripted_relations.reason
+        → 本地化中文句 (角色名占位符已替换)。kinds: 关系类型集
+        (rival/grudge/nemesis/friend/soulmate/...)。返回去重后的 [句]。
+        时间门: 仅当该类型关系有 ≤ as_of 的记忆时才渲染 (防十年泄漏)。"""
+        if cid == self.cache.get("player_id"):
+            return []
+        idx = self._player_opinion_index()
+        pid = self.cache.get("player_id")
+        out = []
+        seen = set()
+        for pair in ((cid, pid), (pid, cid)):
+            sr = idx.get(pair)
+            if not isinstance(sr, dict):
+                continue
+            for kind, v in sr.items():
+                if kind not in kinds or not isinstance(v, dict):
+                    continue
+                reason = v.get("reason")
+                if not reason:
+                    continue
+                mtypes = self._REL_REASON_KINDS.get(kind)
+                if mtypes and not self._rel_mem_date(cid, mtypes):
+                    continue  # 该关系在 as_of 前不存在 → 不渲染
+                tpl = L.relation_templates().get(reason)
+                if not tpl:
+                    continue  # 旧版本地化表无模板 (名字槽已剥): 由程序因由/记忆句兜底
+                extra = v.get("involved_character")
+                if not isinstance(extra, int):
+                    extra = None
+                s = _sub_relation_loc(self, tpl, pair[0], pair[1], extra)
+                s = s.strip("。") + "。" if s else ""
+                if s and s not in seen:
+                    seen.add(s)
+                    out.append(s)
+        return out
+
     def dynasty_name(self, cid):
         """角色宗族名 (穆斯林国名用, v14: 游戏用宗族名 — 图伦苏丹国=图伦):
         缓存 dynasty_name → house_name → 熔件 dynasty_house 解析。"""
@@ -1639,8 +1764,9 @@ class Facts:
         return out
 
     def trait_history_lines(self, cid):
-        """特质履历 (v4): 每条 = 「<特质>（自X日起获得 / 至晚自X日起已具 / 自X日后消失…）」
-        v11: as_of 截断 — 丢弃 as_of 之后才获得的区间。"""
+        """特质履历 (v4): 每条 = 「<特质>（自X年起获得 / 至晚自X年起已具 / 自X年后消失…）」
+        v11: as_of 截断 — 丢弃 as_of 之后才获得的区间。
+        日期只保留年 (快照差分日期全是 1月1日, 日内粒度无意义)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
         ao = cl.date_key(self.as_of) if self.as_of else None
@@ -1653,8 +1779,8 @@ class Facts:
             for iv in th[key]:
                 if ao is not None and iv.get("from") and cl.date_key(iv.get("from")) > ao:
                     continue
-                d_from = self.date(iv.get("from")) if iv.get("from") else ""
-                d_to = self.date(iv.get("to")) if iv.get("to") else ""
+                d_from = self._year_only(iv.get("from"))
+                d_to = self._year_only(iv.get("to"))
                 if iv.get("first"):
                     spans.append(f"至晚自{d_from}起已具")
                 elif iv.get("from") and not iv.get("to"):
@@ -1666,6 +1792,14 @@ class Facts:
             if spans:
                 lines.append(f"{z}（{'；'.join(spans)}）")
         return lines
+
+    @staticmethod
+    def _year_only(d):
+        """快照日期年化: '871.1.1' → '871年'。"""
+        if not d:
+            return ""
+        s = str(d)
+        return s.split(".")[0] + "年"
 
     def government(self, cid):
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
@@ -2055,16 +2189,26 @@ def _related_ids(f):
         add(cfam.get("child"), 2)
         add(cfam.get("primary_spouse"), 2)
         add(cfam.get("spouse"), 2)
+    # v15: 主角情人 (became_lovers/had_sex 参与者, 含已分手) — 情人的婚配/生育/亲属亡故
+    # 进时间线 (阿尔东萨与国王成婚、诞女、长女被谋杀后亡故等, 大奸大恶戏剧的上下文)。
+    for m in prec.get("memories") or []:
+        if m.get("type") in ("became_lovers", "had_sex"):
+            for v in (m.get("participants") or {}).values():
+                if isinstance(v, int) and v != pid:
+                    out.setdefault(v, 2)
     return out
 
 
 # v14: death 记录 (类型 "death", 由 _death_sentence 渲染) 的模块标注 —
 # 按死者与主角的关系: 仇人→仇雠消亡, 友人→丧友之恸, 配偶→丧偶之痛, 其余→丧亲之恸。
 def _death_module(f, dead_cid):
-    """death 时间线事件归属的戏剧性模块 (按死者关系)。"""
+    """death 时间线事件归属的戏剧性模块 (按死者关系; v15: 主角所杀者→谋害人命)。"""
     pid = f.cache.get("player_id")
     if pid is None:
         return "丧亲之恸"
+    d = ((f.cache.get("characters") or {}).get(str(dead_cid)) or {}).get("death") or {}
+    if d.get("killer") == pid:
+        return "谋害人命"
     rel = (f.cache.get("characters") or {}).get(str(pid)) or {}
     fam = rel.get("family") or {}
     if dead_cid in (fam.get("primary_spouse") or []) + (fam.get("spouse") or []):
@@ -2128,6 +2272,18 @@ def _timeline(f):
                             deaths[dead] = (prio, mem.get("creation_date"),
                                             mtype, s)
                 continue
+            # v15: 主角的成功谋杀记忆 — 按死者 id 去重 (受害者死亡记录优先,
+            # 谋杀记忆兜底; 只收主角所谋, 路人谋杀不渲染)
+            if mtype == "successful_murder" and cid == pid:
+                dead = parts.get("victim")
+                if isinstance(dead, int):
+                    s = _mem_sentence(f, cid, mem)
+                    if s:
+                        old = deaths.get(dead)
+                        if old is None or 2 > old[0]:
+                            deaths[dead] = (2, mem.get("creation_date"),
+                                            "successful_murder", s)
+                continue
             # 出生类记忆: 同一出生按 (日期, 出生键) 去重 (玩家/家人视角优先)
             if mtype in ("child_born", "first_born", "child_premature",
                          "child_stillborn", "twins_born"):
@@ -2166,6 +2322,17 @@ def _timeline(f):
         ao = cl.date_key(f.as_of)
         events = [e for e in events if e[0] and cl.date_key(e[0]) <= ao]
     events.sort(key=lambda x: cl.date_key(x[0]))
+    # v15: 十年/一生概览统计 (聚合前原始事件, 程序直算 — 供【概览】块;
+    # 只统计主角名在文本中的事件, 家人/路人的添丁结怨不入概览)
+    pname0 = f.name_or(pid)
+    stats = {}
+    for _d, t, s, mod in events:
+        if pname0 and pname0 not in s:
+            continue
+        label = _DEATH_STAT_LABEL.get(mod) if t == "death" else _STATS_LABEL.get(t)
+        if label:
+            stats[label] = stats.get(label, 0) + 1
+    f._timeline_stats = stats
     seen = set()
     out = []
     for d, t, s, mod in events:
@@ -2181,6 +2348,8 @@ def _timeline(f):
         })
     # v11: 同日同型集体事件合并 (见证加冕/出席大婚/被囚/囚禁)
     out = _merge_same_day_events(out, f)
+    # v15: 同月同型流水事件聚合 (结怨/结仇/助战…), 聚合后再限量
+    out = _merge_same_month_events(out, f)
     # v14: 年表限量 (修复方案_菲利普2.md 问题4 修复1) — 级别3已从源头剔除,
     # 剩余级别1(主角)/级别2(直系); 超限时级别2截断, 级别1(主角名在文本中)全保留。
     cap = 80 if f.as_of else 150   # 十年传记(有 as_of) ≤80, 终传/在世 ≤150
@@ -2293,6 +2462,168 @@ def _merge_same_day_events(events, f=None):
     return out
 
 
+# v15: 概览统计标签 (记忆类型 → 中文标签; death 记录按模块另表)。
+# 只统计有戏剧意义的类型, 供【概览】块程序直算「本十年结怨9次、谋杀5次…」。
+_STATS_LABEL = {
+    "became_rivals": "结仇", "became_grudge": "结怨", "became_nemesis": "结为死敌",
+    "child_born": "添丁", "first_born": "添丁", "twins_born": "添丁",
+    "child_premature": "幼殇", "child_stillborn": "夭折",
+    "successful_murder": "谋杀",
+    "had_sex": "私通", "became_lovers": "私通",
+    "relative_died": "丧亲", "spouse_died": "丧偶", "friend_died": "丧友",
+    "rival_died": "仇雠消亡",
+    "married": "成婚", "broke_up_lovers": "分手",
+    "imprisoned": "被囚", "imprisoned_other": "囚禁他人",
+    "offensive_war": "开战", "defensive_war": "应战",
+    "war_won": "获胜", "war_lost": "战败",
+    "battle_won_memory": "胜仗", "battle_lost_memory": "败仗",
+}
+_DEATH_STAT_LABEL = {
+    "谋害人命": "谋杀", "丧亲之恸": "丧亲", "丧偶之痛": "丧偶",
+    "丧友之恸": "丧友", "仇雠消亡": "仇雠消亡",
+}
+
+# v15: 同月同型流水事件聚合 — 只合并单槽可变、结构一致的流水 (结怨/结仇/助战等)。
+# style: duo = 「A与B结怨。」双槽; solo = 「A助盟友作战。」单槽。
+_AGG_SPEC = {
+    "became_grudge":    {"pat": r"^(.+?)与(.+?)结怨。$",     "verb": "结怨",     "style": "duo"},
+    "became_rivals":    {"pat": r"^(.+?)与(.+?)结仇。$",     "verb": "结仇",     "style": "duo"},
+    "became_nemesis":   {"pat": r"^(.+?)与(.+?)结为死敌。$", "verb": "结为死敌", "style": "duo"},
+    "became_friends":   {"pat": r"^(.+?)与(.+?)结为好友。$", "verb": "结为好友", "style": "duo"},
+    "joined_allys_war": {"pat": r"^(.+?)助盟友作战。$",      "verb": "助盟友作战", "style": "solo"},
+}
+
+# v15: 「私情+相恋」成对合并 (同月同对象的 had_sex 与 became_lovers)
+_PAIR_MERGE = {
+    "had_sex":        r"^(.+?)与(.+?)有私情。$",
+    "became_lovers":  r"^(.+?)与(.+?)相恋。$",
+}
+
+
+def _agg_line(ym, names, verb, tail):
+    """聚合行: '870年4月，莱昂、昂盖朗、诺贝特三人先后与麦克·汤利结怨。'
+    名字 ≤3 全列加人数词 (二人/三人), >3 收前三加「等N人」。"""
+    if not names:
+        return None
+    y, _, m = ym.partition(".")
+    cnt = ""
+    if len(names) == 2:
+        cnt = "二人"
+    elif len(names) == 3:
+        cnt = "三人"
+    elif len(names) > 3:
+        cnt = f"等{len(names)}人"
+        names = names[:3]
+    joined = "、".join(names) + cnt
+    return f"{y}年{int(m)}月，{joined}{tail}{verb}。"
+
+
+def _merge_same_month_events(events, f=None):
+    """同月同型事件聚合 (v15): 「870年4月，莱昂、昂盖朗、诺贝特三人先后与
+    麦克·汤利结怨。」— 把同一年月内结构一致、只差一个名字槽的流水事件并成一行,
+    省词元并防模型逐条数日期; 关键事件 (婚/丧/子/仇/战) 保留精确日期不聚合。"""
+    groups = {}
+    order = []
+    for e in events:
+        d = e.get("date") or ""
+        ym = ".".join(str(d).split(".")[:2]) if d else ""   # YYYY.MM
+        if not ym:
+            continue
+        key = (e.get("type"), ym)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(e)
+    out = []
+    for key in order:
+        entries = groups[key]
+        typ, ym = key
+        spec = _AGG_SPEC.get(typ)
+        if spec and len(entries) >= 2:
+            pat = spec["pat"]
+            slots = []
+            ok = True
+            for e in entries:
+                body = e["text"]
+                d0 = e.get("date")
+                if d0 and f:
+                    prefix = f"{f.date(d0)}，"
+                    if body.startswith(prefix):
+                        body = body[len(prefix):]
+                m = re.match(pat, body)
+                if not m:
+                    ok = False
+                    break
+                slots.append(m.groups())
+            if ok:
+                merged = None
+                if spec["style"] == "solo":
+                    merged = _agg_line(ym, [s[0] for s in slots],
+                                       spec["verb"], "")
+                else:
+                    s0 = [s[0] for s in slots]
+                    s1 = [s[1] for s in slots]
+                    if len(set(s1)) == 1:
+                        merged = _agg_line(ym, s0, spec["verb"], "先后与" + s1[0])
+                    elif len(set(s0)) == 1:
+                        merged = _agg_line(ym, s1, spec["verb"], "先后与" + s0[0])
+                if merged:
+                    out.append({"date": ym, "type": typ, "text": merged,
+                                "module": entries[0].get("module", "")})
+                    continue
+        out.extend(entries)
+    return _merge_affair_pairs(out, f)
+
+
+def _merge_affair_pairs(events, f=None):
+    """「私情+相恋」成对合并 (v15): 同一月内同一对的 had_sex 与 became_lovers
+    并成一行: '869年1月，麦克·汤利与吉塞勒·加洛林私通相恋。' (成对事件
+    拆两行浪费模型注意力, 且两行日期只差一天)。"""
+    slots = {}   # (ym, 对象对) -> {type: (去日期前缀正文, 完整原文)}
+    for e in events:
+        typ = e.get("type")
+        pat = _PAIR_MERGE.get(typ)
+        if not pat:
+            continue
+        d = e.get("date") or ""
+        ym = ".".join(str(d).split(".")[:2]) if d else ""
+        full = e["text"]
+        body = full
+        if d and f:
+            prefix = f"{f.date(d)}，"
+            if body.startswith(prefix):
+                body = body[len(prefix):]
+        m = re.match(pat, body)
+        if not m:
+            continue
+        key = (ym, frozenset((m.group(1), m.group(2))))
+        slots.setdefault(key, {})[typ] = (body, full)
+    drop = set()
+    merged = []   # (ym, text)
+    for (ym, _pair), got in slots.items():
+        hx = got.get("had_sex")
+        lv = got.get("became_lovers")
+        if not hx or not lv:
+            continue
+        hx_body, hx_full = hx
+        lv_body, lv_full = lv
+        m = re.match(r"^(.+?)与(.+?)有私情。$", hx_body)
+        if not m:
+            continue
+        y, _, mm = ym.partition(".")
+        merged.append((ym, f"{y}年{int(mm)}月，{m.group(1)}与{m.group(2)}私通相恋。"))
+        drop.add(hx_full)
+        drop.add(lv_full)
+    if not merged:
+        return events
+    out = [e for e in events if e["text"] not in drop]
+    for ym, text in merged:
+        out.append({"date": ym, "type": "became_lovers", "text": text,
+                    "module": "情变私通"})
+    out.sort(key=lambda e: cl.date_key(e.get("date") or ""))
+    return out
+
+
 def _asof_ids(f, ids):
     """v11: 按 as_of 过滤家族成员 id 列表 — 出生晚于 as_of 的未出生者不列
     (十年传记不出现 893 年才出生的马乌戈热塔)。as_of 为空时原样返回。"""
@@ -2363,7 +2694,7 @@ def _protagonist(f):
     gov = ld.get("government")
     # v11: 无地/有地分支按 as_of 首要头衔判定 (十年传记穿越时, 缓存 landed 是末档数据)
     ptier, ptid = f._primary_title_at(pid)
-    pkey = (f._lt.get(str(ptid)) or {}).get("key") if ptid is not None else ""
+    pkey = ((f._lt.get(str(ptid)) or {}).get("key") or "") if ptid is not None else ""
     if (ptid is not None and pkey.startswith("x_")) or gov == "landless_adventurer_government":
         # ---- 无地冒险者: 营地 ----
         p["landless"] = True
@@ -2732,7 +3063,15 @@ def _realm_facts(f):
                 except Exception:
                     pass
             holder = ev.get("holder") if isinstance(ev, dict) else ev
-            if holder is not None:
+            if isinstance(holder, list):
+                # v15: 同日多事件 (destroyed+created 等, 重复键合并成列表)
+                for _h2 in holder:
+                    if isinstance(_h2, dict):
+                        if _h2.get("holder") is not None:
+                            seq.append((d, _h2["holder"]))
+                    elif _h2 is not None:
+                        seq.append((d, _h2))
+            elif holder is not None:
                 seq.append((d, holder))
         if seq:
             hist_map[int(tid)] = seq
@@ -2803,6 +3142,421 @@ def _realm_facts(f):
     if min_off:
         out["ministers"] = min_off
     return out
+
+
+# v15: 大奸大恶专题模块 — 由 _villain_chains 程序直算 (非记忆类型映射)。
+# 模块名同时参与十年戏剧主题抽取 (build_facts 并入 decade_modules)。
+VILLAIN_MODULES = ("谋害人命", "托卵承嗣", "奸夫谋夫", "共谋暗杀", "血亲之刃", "血脉登基")
+
+# 阴谋参与者角色类型 → 中文 (熔件 schemes agent_slots; 本地化缺失时兜底)
+_AGENT_ZH = {
+    "agent_assassin": "刺客", "agent_lookout": "眼线", "agent_lookout_speed": "眼线",
+    "agent_infiltrator": "内应", "agent_thug": "打手", "agent_muscle": "打手",
+    "agent_footpad": "暴徒", "agent_thief": "窃贼", "agent_outcast": "亡命徒",
+    "agent_sycophant": "谄媚者", "agent_intermediary": "中间人", "agent_amanuensis": "文书",
+    "agent_bureaucrat": "僚属", "agent_diplomat": "说客", "agent_scout": "探子",
+    "agent_alibi": "伪证者", "agent_poet": "文士", "agent_musician": "乐师",
+    "agent_herald": "传令官", "agent_gabbler": "饶舌者", "agent_socialite": "交际花",
+    "agent_political_socialite": "政界名流", "agent_shill": "托儿", "agent_courtesan": "名妓",
+    "agent_eunuch": "阉人", "agent_bodyguard": "护卫", "agent_decoy": "诱饵",
+    "agent_supplier": "供货人", "agent_cleric": "神职人员", "agent_cleric_success": "神职人员",
+    "agent_theologian": "神学家", "agent_planner": "谋士", "agent_bailiff": "执达吏",
+    "agent_scribe": "书吏", "agent_draughtsman": "画师", "agent_proponent": "拥趸",
+}
+
+
+def _sub_relation_loc(f, s, owner, target, extra=None):
+    """关系原因本地化串 → 干净中文句 (替换 CK3 角色/代词占位符)。
+    [CHARACTER.*]=记录拥有者, [TARGET_CHARACTER.*]=对方, [TARGET_CHARACTER_2.*]=
+    第三人 (involved_character, 如地牢主人); |U 是英文大写变体, 中文忽略;
+    Possessive 中文无词形变化, 用原名; 未知标签 (省份/物品) 清空。"""
+    oname = f.name_or(owner)
+    tname = f.name_or(target)
+    xname = f.name_or(extra) if isinstance(extra, int) else ""
+    subs = (
+        ("[CHARACTER.GetShortUIName|U]", oname),
+        ("[CHARACTER.GetShortUIName]", oname),
+        ("[TARGET_CHARACTER.GetShortUIName|U]", tname),
+        ("[TARGET_CHARACTER.GetShortUIName]", tname),
+        ("[TARGET_CHARACTER.GetShortUINameNoTooltip]", tname),
+        ("[TARGET_CHARACTER_2.GetShortUINamePossessive]", xname or tname),
+        ("[TARGET_CHARACTER.GetShortUINamePossessiveNoTooltip]", tname),
+        ("[TARGET_CHARACTER.GetShortUINamePossessive]", tname),
+        ("[CHARACTER.GetHerHisYour]", "其"),
+        ("[TARGET_CHARACTER.GetHerHisYour]", "其"),
+        ("[PROVINCE.GetName]", "当地"),
+        ("[PROVINCE.Custom('TerrainTypeProvince')]", ""),
+        ("[TARGET_CHARACTER.Custom('child_favorite_toy')]", "玩具"),
+    )
+    for a, b in subs:
+        s = s.replace(a, b)
+    s = re.sub(r"\[[^\]]*\]", "", s)
+    s = s.replace("  ", " ").strip()
+    return s
+
+
+def _player_murder_map(f):
+    """主角谋杀集: {victim_id: 谋杀日期} — successful_murder 记忆 ∪ 死亡记录
+    killer==主角 (供 _villain_chains / relation_cause_lines 共用)。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return {}
+    chars = cache.get("characters") or {}
+    prec = chars.get(str(pid)) or {}
+    murders = {}
+    for m in prec.get("memories") or []:
+        if m.get("type") == "successful_murder":
+            v = (m.get("participants") or {}).get("victim")
+            if isinstance(v, int) and v != pid:
+                d = m.get("creation_date")
+                if d:
+                    murders.setdefault(v, d)
+    for cid, rec in chars.items():
+        if int(cid) == pid:
+            continue
+        d = (rec.get("death") or {}).get("date")
+        if d and (rec.get("death") or {}).get("killer") == pid:
+            murders.setdefault(int(cid), d)
+    return murders
+
+
+def relation_cause_lines(f, cid, rel_date):
+    """关系缘由 (v16, 程序直算): 主角与某角色结仇/结怨的**因由** —
+    不满足于「X年X月结仇」, 直算仇恨根源:
+    ① 其亲属 (父/母/配偶/子女/兄弟姊妹) 中被主角谋杀者 (死期早于结怨);
+    ② 其配偶与主角私通 (夺妻/夺夫之恨);
+    ③ 其抚养的子女实为主角血脉 (托卵承嗣)。
+    返回 ['其父巴西尔·马其顿已于878年8月1日被麦克·汤利谋杀', …]。
+    友缘 (何时结友) 由 biography 侧 _relation_reasons 的结友记忆句承担。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None or cid == pid or not rel_date:
+        return []
+    rd = cl.date_key(rel_date)
+    chars = cache.get("characters") or {}
+    cfam = (chars.get(str(cid)) or {}).get("family") or {}
+    murders = _player_murder_map(f)
+    pname = f.name_or(pid)
+    c_female = bool((f._chars.get(str(cid)) or {}).get("female"))
+    out = []
+    # ① 亲属被主角谋杀 (死期早于结怨)
+    rel_keys = (("father", "其父"), ("mother", "其母"),
+                ("primary_spouse", "其妻"), ("spouse", "其妻"),
+                ("former_spouses", "其前妻"), ("child", "其子"),
+                ("siblings", "其兄弟姊妹"))
+    for key, label in rel_keys:
+        for rid in cfam.get(key) or []:
+            if not isinstance(rid, int):
+                continue
+            md = murders.get(rid)
+            if not md or cl.date_key(md) >= rd:
+                continue
+            rname = f.name_or(rid)
+            if not rname:
+                continue
+            if key == "child":
+                label = "其女" if (f._chars.get(str(rid)) or {}).get("female") else "其子"
+            elif key in ("primary_spouse", "spouse"):
+                label = "其夫" if c_female else "其妻"
+            out.append(f"{label}{rname}已于{f.date(md)}被{pname}谋杀")
+            break
+    # ② 其配偶与主角私通 (私情/相恋早于结怨)
+    lovers = set()
+    prec = chars.get(str(pid)) or {}
+    for m in prec.get("memories") or []:
+        if m.get("type") in ("became_lovers", "had_sex"):
+            for v in (m.get("participants") or {}).values():
+                if isinstance(v, int) and v != pid:
+                    d = m.get("creation_date")
+                    if d and cl.date_key(d) < rd:
+                        lovers.add(v)
+    spouse_label = "其夫" if c_female else "其妻"
+    found_spouse = False
+    for key in ("primary_spouse", "spouse", "former_spouses"):
+        if found_spouse:
+            break
+        for sid in cfam.get(key) or []:
+            if sid in lovers:
+                sname = f.name_or(sid)
+                if sname:
+                    out.append(f"{spouse_label}{sname}与{pname}私通")
+                    found_spouse = True
+                break
+    # ③ 其抚养的子女实为主角血脉 (托卵承嗣, 出生早于结怨)
+    for cid2 in cfam.get("child") or []:
+        if not isinstance(cid2, int):
+            continue
+        fam2 = (chars.get(str(cid2)) or {}).get("family") or {}
+        rf = (fam2.get("real_father") or [None])[0]
+        if rf != pid:
+            continue
+        c2name = f.name_or(cid2)
+        b = (chars.get(str(cid2)) or {}).get("birth")
+        if c2name and b and cl.date_key(b) < rd:
+            sex = "女" if (f._chars.get(str(cid2)) or {}).get("female") else "子"
+            out.append(f"其抚养之{c2name}实为{pname}之{sex}")
+            break
+    return out
+
+
+def _villain_chains(f):
+    """大奸大恶关系链 (v15, 程序直算): [(模块名, 自然语言句)]。
+    数据源: 缓存 family/death/memories + 熔件 titles/heir/schemes。
+    - 奸夫谋夫: 主角谋杀了某人, 而该人之配偶是主角情人 (遗孀/鳏夫改嫁情形一并写出);
+    - 托卵承嗣: 法理父 ≠ 实父 — 法理父抚养了主角之子/女 (或主角抚养他人之子/女);
+    - 共谋暗杀: 熔件 active schemes 中 type=murder 且 owner=主角 → agent_slots 参与者;
+    - 血亲之刃: 主角谋杀了自己的血亲 (父/母/子女/兄弟姊妹);
+    - 血脉登基: 高位头衔 (k_/e_/h_) 第一继承人实为主角之子/女 (私生),
+      且同母手足中有被主角谋杀者时一并点出。
+    所有条目按 as_of 截断 (十年传记只写该时期内的戏剧)。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return []
+    chars = cache.get("characters") or {}
+    prec = chars.get(str(pid)) or {}
+    pname = f.name_or(pid)
+    ao = cl.date_key(f.as_of) if f.as_of else None
+
+    def in_span(d):
+        return ao is None or (d and cl.date_key(d) <= ao)
+
+    def is_female(cid):
+        return bool((f._chars.get(str(cid)) or {}).get("female"))
+
+    # ---- 主角情人集: cid -> 私情/相恋的最早日期 ----
+    lovers = {}
+    for m in prec.get("memories") or []:
+        if m.get("type") in ("became_lovers", "had_sex"):
+            for v in (m.get("participants") or {}).values():
+                if isinstance(v, int) and v != pid:
+                    d = m.get("creation_date") or ""
+                    if v not in lovers or (d and (not lovers[v] or d < lovers[v])):
+                        lovers[v] = d
+    # ---- 主角谋杀集: victim -> 谋杀日期 (记忆 ∪ 死亡记录) ----
+    murders = {}
+    for m in prec.get("memories") or []:
+        if m.get("type") == "successful_murder":
+            v = (m.get("participants") or {}).get("victim")
+            if isinstance(v, int) and v != pid:
+                d = m.get("creation_date")
+                if d:
+                    murders.setdefault(v, d)
+    for cid, rec in chars.items():
+        if int(cid) == pid:
+            continue
+        d = (rec.get("death") or {}).get("date")
+        if d and (rec.get("death") or {}).get("killer") == pid:
+            murders.setdefault(int(cid), d)
+
+    chains = []
+    pfam = prec.get("family") or {}
+
+    # ---- 奸夫谋夫 (谋杀情人配偶 / 配偶改嫁) ----
+    for victim, vdate in sorted(murders.items(),
+                                key=lambda kv: cl.date_key(kv[1])):
+        if not in_span(vdate):
+            continue
+        vfam = (chars.get(str(victim)) or {}).get("family") or {}
+        vname = f.name_or(victim)
+        if not vname:
+            continue
+        for sid in list(dict.fromkeys(
+                (vfam.get("primary_spouse") or []) + (vfam.get("spouse") or []))):
+            if sid == pid or sid not in lovers:
+                continue
+            lname = f.name_or(sid)
+            if not lname:
+                continue
+            # 遗孀/鳏夫是否已与主角成婚 (从双方记忆找成婚日期)
+            mdate = ""
+            for m in prec.get("memories") or []:
+                if m.get("type") == "married" and \
+                        (m.get("participants") or {}).get("spouse") == sid:
+                    mdate = m.get("creation_date") or ""
+                    break
+            if not mdate:
+                for m in (chars.get(str(sid)) or {}).get("memories") or []:
+                    if m.get("type") == "married" and \
+                            (m.get("participants") or {}).get("spouse") == pid:
+                        mdate = m.get("creation_date") or ""
+                        break
+            sname = "其妻" if not is_female(victim) else "其夫"
+            off = f.official_title(victim)
+            disp = f"{off}{vname}" if off else vname
+            remarry = f"，并于{f.date(mdate)}嫁于{pname}" \
+                if mdate and in_span(mdate) else ""
+            chains.append(("奸夫谋夫",
+                f"{f.date(vdate)}，{disp}被{pname}谋杀——"
+                f"{sname}{lname}正是{pname}的情人{remarry}。"))
+
+    # ---- 托卵承嗣 (法理父 ≠ 实父, 且涉及主角) — 按 (法理父, 实父, 性别) 合并 ----
+    cuckoo = {}   # (lf, rf, sex, 方向) -> [child 名]
+    for cid, rec in chars.items():
+        fam = rec.get("family") or {}
+        rf = (fam.get("real_father") or [None])[0]
+        lf = (fam.get("father") or [None])[0]
+        if rf is None or lf is None or rf == lf:
+            continue
+        if not in_span(rec.get("birth")):
+            continue
+        if rf != pid and lf != pid:
+            continue
+        cname = f.name_or(int(cid))
+        if not cname:
+            continue
+        sex = "女" if is_female(int(cid)) else "子"
+        key = (lf, rf, sex)
+        cuckoo.setdefault(key, []).append(cname)
+    for (lf, rf, sex), names in cuckoo.items():
+        lfname = f.name_or(lf)
+        rfname = f.name_or(rf)
+        if not names or not lfname or not rfname:
+            continue
+        joined = "、".join(names)
+        if rf == pid:
+            chains.append(("托卵承嗣",
+                f"{lfname}抚养的{joined}，实为{pname}之{sex}。"))
+        else:
+            chains.append(("托卵承嗣",
+                f"{pname}抚养的{joined}，实为{rfname}之{sex}。"))
+
+    # ---- 共谋暗杀 (熔件 active schemes: 主角主导的谋杀密谋) ----
+    schemes = ((f.melt.get("schemes") or {}).get("active") or {})
+    for _scid, sc in schemes.items():
+        if not isinstance(sc, dict) or sc.get("type") != "murder":
+            continue
+        owner = sc.get("owner")
+        tgt = sc.get("target")
+        if isinstance(tgt, dict):
+            tgt = tgt.get("target")
+        sdate = sc.get("date") or ""
+        if sdate and not in_span(sdate):
+            continue
+        agents = []
+        for slot in (sc.get("agent_slots") or []):
+            if not isinstance(slot, dict):
+                continue
+            c = slot.get("character")
+            # 4294967295 (0xFFFFFFFF) 是 CK3 空槽占位符, 非真实角色
+            if isinstance(c, int) and 0 < c < 4294967295 and c != pid and c != owner:
+                an = f.name_or(c)
+                if an:
+                    t = L.loc(f.table, slot.get("type") or "") or \
+                        _AGENT_ZH.get(slot.get("type") or "") or "同谋"
+                    agents.append((an, t))
+        if owner == pid and isinstance(tgt, int) and tgt != pid:
+            tname = f.name_or(tgt)
+            if not tname:
+                continue
+            if agents:
+                shown = []
+                for an, at in agents[:3]:
+                    shown.append(f"{an}（{at}）")
+                tail = f"等{len(agents)}人" if len(agents) > 3 else ""
+                chains.append(("共谋暗杀",
+                    f"密谋刺杀{tname}者以{pname}为首，"
+                    f"参与者{'、'.join(shown)}{tail}。"))
+            else:
+                chains.append(("共谋暗杀",
+                    f"{pname}正密谋刺杀{tname}。"))
+        elif isinstance(tgt, int) and tgt == pid and isinstance(owner, int) and owner != pid:
+            oname = f.name_or(owner)
+            if oname:
+                chains.append(("共谋暗杀",
+                    f"{oname}正密谋刺杀{pname}。"))
+
+    # ---- 血亲之刃 (谋杀自己的血亲) ----
+    for victim, vdate in murders.items():
+        if not in_span(vdate):
+            continue
+        rel = ""
+        if victim in (pfam.get("child") or []):
+            rel = f"自己的{'女' if is_female(victim) else '子'}"
+        elif victim in (pfam.get("father") or []):
+            rel = "自己的父亲"
+        elif victim in (pfam.get("mother") or []):
+            rel = "自己的母亲"
+        elif victim in (pfam.get("primary_spouse") or []) + (pfam.get("spouse") or []):
+            rel = "自己的妻室"
+        elif victim in (pfam.get("siblings") or []):
+            rel = "自己的兄弟姊妹"
+        if rel:
+            vname = f.name_or(victim)
+            if vname:
+                chains.append(("血亲之刃",
+                    f"{pname}谋杀了{rel}{vname}。"))
+
+    # ---- 血脉登基 (高位头衔第一继承人是主角私生子女; 同母手足中被谋杀者点出) ----
+    melt_date = (f.melt.get("date") or "")
+    as_of_gap = bool(f.as_of) and cl.date_key(f.as_of) < cl.date_key(melt_date)
+    for tid, t in f._lt.items():
+        if not isinstance(t, dict):
+            continue
+        key = t.get("key") or ""
+        if not key.startswith(("k_", "e_", "h_")):
+            continue
+        heir0 = (t.get("heir") or [None])[0]
+        if not isinstance(heir0, int):
+            continue
+        hrec = chars.get(str(heir0)) or {}
+        hfam = hrec.get("family") or {}
+        rf = (hfam.get("real_father") or [None])[0]
+        mother = (hfam.get("mother") or [None])[0]
+        if not (rf == pid or (mother in lovers)):
+            continue
+        if not in_span(hrec.get("birth")):
+            continue
+        if as_of_gap:
+            # 十年传记且熔件晚于 as_of: 要求 as_of 时点持有者与当前持有者一致,
+            # 防止把后期继承变更泄漏进早期十年。
+            hist = t.get("history") or {}
+            holder_now = t.get("holder")
+            holder_at = None
+            aok = cl.date_key(f.as_of)
+            for hd in sorted(hist, key=cl.date_key):
+                if cl.date_key(hd) <= aok:
+                    holder_at = hist[hd]
+            if holder_at != holder_now:
+                continue
+        hname = f.name_or(heir0)
+        if not hname:
+            continue
+        # 出生日期限定, 防同名歧义 (三女同名时以出生日区分)
+        qual = f"（{f.date(hrec.get('birth'))}生）" if hrec.get("birth") else ""
+        # 同母手足中有被主角谋杀者 → 加注 (血脉登基的戏剧钩子, 附长幼词+出生日期
+        # 消歧 — 三女同名时以出生日唯一区分)
+        dead_sib = ""
+        for s in (hfam.get("siblings") or []):
+            srec = chars.get(str(s)) or {}
+            if (srec.get("death") or {}).get("killer") == pid:
+                sname = f.name_or(s)
+                sdate = (srec.get("death") or {}).get("date")
+                if sname:
+                    sb = srec.get("birth")
+                    older = True
+                    if sb and hrec.get("birth"):
+                        older = cl.date_key(sb) < cl.date_key(hrec.get("birth"))
+                    sfemale = is_female(s)
+                    sw = "长姐" if (older and sfemale) else \
+                          "长兄" if older else ("妹" if sfemale else "弟")
+                    sq = f"（{f.date(sb)}生）" if sb else ""
+                    dead_sib = (f"；其同母{sw}{sname}{sq}已于{f.date(sdate)}"
+                                f"被{pname}谋杀")
+                break
+        sex = "女" if is_female(heir0) else "子"
+        tname = f.title(tid)
+        if rf == pid:
+            mname = f.name_or(mother) if mother in lovers else ""
+            who = (f"{pname}与{mname}之{sex}" if mname
+                   else f"{pname}之{sex}")
+        else:
+            who = f"{pname}情人之{sex}"
+        chains.append(("血脉登基",
+            f"{hname}{qual}为{tname}第一继承人，实为{who}{dead_sib}。"))
+
+    return chains
 
 
 def _killed_by_player(f):
@@ -3084,6 +3838,25 @@ def build_facts(cache, melt, names_path=None, as_of=None):
     # v14: 十年戏剧主题 (Top10, 并列第10名全保留) — 模块切片与总纲预告用
     facts["decade_modules"] = decade_module_top(facts.get("timeline") or [],
                                                 facts.get("protagonist") or {})
+    # v15: 大奸大恶关系链 (程序直算) — 句并入主角【戏剧性事件】(共享前缀
+    # 每请求可见), 模块名计入十年戏剧主题; 概览统计一并打包。
+    vc = _villain_chains(f)
+    facts["villain_chains"] = vc
+    if vc:
+        dfa = facts["protagonist"].setdefault("dramatic_facts", [])
+        for _m, s in vc:
+            if s not in dfa:
+                dfa.append(s)
+        dm = facts.get("decade_modules") or []
+        for _m, _s in vc:
+            if not any(x[0] == _m for x in dm):
+                dm.append((_m, 3))
+        facts["decade_modules"] = dm
+    stats = getattr(f, "_timeline_stats", None) or {}
+    if stats:
+        # 取计数前 6 的标签, 按计数降序; 供【概览】块渲染「本十年结怨9次…」
+        top = sorted(stats.items(), key=lambda kv: -kv[1])[:6]
+        facts["decade_stats"] = [f"{k}{v}次" for k, v in top]
     # 妻族传 (仅限公主头衔/中华皇帝之女·姐妹)
     pid = cache.get("player_id")
     if pid is not None:

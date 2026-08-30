@@ -381,9 +381,20 @@ def _sanitize_none(o):
     return o
 
 
+def _merge_dup_pairs(pairs):
+    """json object_pairs_hook: 把 Clausewitz/rakaly 渲染的重复键合并为列表
+    (agent_slots / family_data.spouse / temporary_opinion / variables.item 等),
+    否则 json.load 只留最后一个, 丢失数据 (v15: 阴谋参与者即因此全部丢失)。
+    单次出现的键 (含值为列表者) 原样返回; 重复键返回按出现顺序的列表。"""
+    d = {}
+    for k, v in pairs:
+        d.setdefault(k, []).append(v)
+    return {k: (v[0] if len(v) == 1 else v) for k, v in d.items()}
+
+
 def load_melt(path):
     with open(path, encoding="utf-8") as fp:
-        data = json.load(fp)
+        data = json.load(fp, object_pairs_hook=_merge_dup_pairs)
     return _sanitize_none(data)
 
 
