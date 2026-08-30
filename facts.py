@@ -75,17 +75,53 @@ DEATH_REASON_ZH = {
 
 # v11: 游戏 UI 腔/坏文本死因 → 传记雅化 (优先于本地化值, 本地化文案是游戏内
 # 通知腔, 如 blind = 「因绊倒坠落而失去的生命」, 直接进传记会读起来像抄游戏)。
+# v16: 病弱/疾病类死因的本地化是 [GetTrait(...)] 模板 (查不出中文), 原样进
+# 传记会退化成千篇一律的「身故」, 一并雅化为自然短句。
 FLAVOR_DEATH_ZH = {
     "blind": "因绊倒坠落而亡",
     "death_fall": "因坠落而亡",
     "death_wounded_1": "伤重不治",
     "death_wounded_2": "伤重不治",
+    "death_wounded_3": "伤重不治",
     "death_maimed": "重伤不治",
     "death_head_ripped_off": "身首异处",
     "death_apoplexy": "中风而亡",
     "death_drinking_passive": "酗酒而亡",
-    # 成功且未败露的谋杀: 游戏显示「神秘死亡」, 传记直用太怪
-    "death_mysterious": "死于一场未曾败露的谋杀",
+    # 成功而未败露的谋杀: 游戏显示「神秘死亡」; v16 起点破为谋杀, 用
+    # 「被…秘密谋杀」与明面上败露的「被…谋杀」区分 (施事由 _death_clause 嵌入)
+    "death_mysterious": "被秘密谋杀",
+    # 病弱/疾病 (本地化为模板或缺失, 原会退化成「身故」)
+    "death_depressed": "忧郁而亡",
+    "death_ill": "染疾而亡",
+    "death_consumption": "染肺痨而亡",
+    "death_smallpox": "染天花而亡",
+    "death_measles": "染麻疹而亡",
+    "death_cancer": "染恶疾而亡",
+    "death_sickly": "体弱而亡",
+    "death_typhus": "染斑疹伤寒而亡",
+    "death_pneumonic": "染肺疾而亡",
+    "death_incapable": "瘫痪而亡",
+    "death_lunatic": "疯癫而亡",
+    "death_leper": "染麻风而亡",
+    "death_dysentery": "染痢疾而亡",
+    "death_camp_fever": "染疫而亡",
+    "death_choked": "窒息而亡",
+    "death_great_pox": "染花柳而亡",
+    "death_malnourishment": "饥馁而亡",
+    "death_starved": "饿死",
+    "death_weak": "衰竭而亡",
+    "death_gout_ridden": "痛风而亡",
+    "death_bubonic_plague": "染黑死病而亡",
+    "death_dungeon_passive": "囚毙",
+    "death_physique_bad_1": "体弱不支",
+    "death_physique_bad_2": "体弱不支",
+    "death_physique_bad_3": "体弱不支",
+    # 游戏 UI 长句 → 自然短句
+    "death_broken_bones": "摔折筋骨而亡",
+    "death_stress": "忧惧而亡",
+    "death_punishment": "处决",
+    "death_eradicated": "连同全族被处决",
+    "death_hunted_by_wild_beast": "为野兽所噬而亡",
 }
 
 # 记忆类型 → 中文 (模板: {name}=记忆拥有者, {other}=参与者, {title}=头衔)
@@ -282,6 +318,85 @@ def _death_reason(table, reason):
     return DEATH_REASON_ZH.get(reason, "身故")
 
 
+# v16: 动作型死因 → 施事句式 (原始 reason key → 动词)。有凶手/行刑者/对手
+# 记录时, 把施事者直接嵌进句内 (被XXX谋杀 / 被XXX处决 / 与XXX决斗而亡),
+# 不再另起「凶手为…」尾巴 — 更短, 也更像自然语言; 战场/意外/病亡的击杀者
+# 不是「凶手」, 一律不点名。谋杀分两档: death_murder 是败露的谋杀 (被XXX
+# 谋杀), death_mysterious 是未败露的谋杀 (被XXX秘密谋杀)。
+_DEATH_KILLER_VERB = {  # 凶手: 被{凶手}{动词}
+    "death_murder": "谋杀",
+    "death_murder_known": "谋杀",
+    "death_mysterious": "秘密谋杀",
+    "death_assassination": "暗杀",
+    "death_poison": "毒杀",
+    "death_plotting": "谋害",
+    "death_court_intrigue": "谋害",
+    "death_strangled_with_own_intestines": "绞杀",
+    "death_smothered_by_downy_robe": "闷杀",
+    "death_skull_cracked_open": "打死",
+    "death_beaten": "打死",
+    "death_cloven_in_half": "劈杀",
+    "death_heart_ripped_out": "剖心",
+    "death_chopped_to_pieces": "砍成碎块",
+    "death_viciously_dismembered": "碎尸",
+    "death_ripped_apart_limb_by_limb": "分尸",
+    "death_decapitated": "斩首",
+    "death_ritually_hung": "缢杀",
+    "death_sacrificed_to_gods": "献祭",
+    "death_sacrificed_to_ancestor": "献祭",
+    "death_burned": "烧死",
+    "death_burned_by_mob": "烧死",
+}
+_DEATH_EXECUTOR_VERB = {  # 行刑者: 被{行刑者}{动词}
+    "death_execution": "处决",
+    "death_punishment": "处决",
+    "death_hostage_execution": "处决",
+    "death_execution_blood_eagle": "处决",
+    "death_crucified": "钉上十字架",
+    "death_crucified_by_mob": "钉上十字架",
+    "death_burned_witch": "烧死在火刑柱上",
+}
+_DEATH_OPPONENT_VERB = {  # 对手: 与{对手}{动词}而亡
+    "death_duel": "决斗",
+    "death_fight": "斗殴",
+    "death_fight_killer": "斗殴",
+    "death_contest_duel_accident": "决斗",
+    "death_contest_wrestling_accident": "角力",
+}
+_DEATH_AGENT_TAIL = {  # 死因自带惨状/情状, 施事者用「凶手/行刑者为…」点出
+    "death_head_ripped_off": "凶手",   # 身首异处，凶手为XXX
+    "death_eradicated": "行刑者",      # 连同全族被处决，行刑者为XXX
+}
+
+
+def _death_clause(table, reason_key, killer, name_of):
+    """死因 → 自然中文短句 (含施事者嵌入)。
+
+    reason_key: 原始死因 key; killer: 凶手/行刑者/对手角色 id 或 None;
+    name_of: 角色 id → 名字。返回「被XXX谋杀」「被XXX秘密谋杀」「与XXX决斗而亡」
+    「身首异处，凶手为XXX」或纯死因短句 (无施事或非动作型死因)。"""
+    reason = _death_reason(table, reason_key)
+    kname = name_of(killer) if killer is not None else ""
+    if killer is not None and kname:
+        verb = _DEATH_KILLER_VERB.get(reason_key)
+        if verb:
+            return f"被{kname}{verb}"
+        verb = _DEATH_EXECUTOR_VERB.get(reason_key)
+        if verb:
+            return f"被{kname}{verb}"
+        verb = _DEATH_OPPONENT_VERB.get(reason_key)
+        if verb:
+            return f"与{kname}{verb}而亡"
+        role = _DEATH_AGENT_TAIL.get(reason_key)
+        if role:
+            return f"{reason}，{role}为{kname}"
+        return reason  # 战场/意外/病亡的击杀者不是「凶手」, 不点名
+    # 无施事: 裸动作死因补「被」字 (被处决/被谋杀/被毒杀)
+    if reason in ("处决", "谋杀", "毒杀"):
+        reason = "被" + reason
+    return reason
+
+
 def render_motto(motto, table):
     """家训 → 中文 (v7)。存档 dynasty_house.motto 两种形态:
     1) 字符串: 已渲染中文原样输出; 本地化键查表 (dynn_harrani_motto → 认识自己本质的人...)。
@@ -325,6 +440,13 @@ def render_motto(motto, table):
 _STATE_SUFFIX_RE = re.compile(
     r"(帝国|王国|汗国|大公国|公国|侯国|伯国|苏丹国|哈里发国|酋长国|"
     r"教宗国|属邦|皇朝|王朝|行台|天朝|国|邦|朝)$")
+
+# v16: 王子词覆盖 — 本地化表把封建王国之女写成「郡主」(唐制亲王之女的东亚
+# 封号), 西式王国/帝国之女在传记里一律写「公主」; 天朝制的 皇女/郡主/公女
+# 属刻意东亚风味, 不在覆盖之列 (见 _prince_word)。
+_PRINCE_WORD_OVERRIDE = {
+    "princess_kingdom_feudal_chinese": "公主",
+}
 
 
 class Facts:
@@ -1185,8 +1307,12 @@ class Facts:
             v = L.loc(self.table, key)
             if v and not v.startswith("$") and not v.startswith("["):
                 return v
-        v = L.loc(self.table, "princess_kingdom_feudal_chinese" if female
-                  else "prince_kingdom_feudal_chinese")
+        key = ("princess_kingdom_feudal_chinese" if female
+               else "prince_kingdom_feudal_chinese")
+        # v16: 本地化表的封建王国之女是「郡主」(唐制亲王之女的东亚封号),
+        # 西式王国/帝国之女在传记里一律写「公主」; 天朝制的 皇女/郡主/公女
+        # 属刻意东亚风味, 不在覆盖之列
+        v = _PRINCE_WORD_OVERRIDE.get(key) or L.loc(self.table, key)
         if v and not v.startswith("$") and not v.startswith("["):
             return v
         return "公主" if female else "王子"
@@ -2072,28 +2198,16 @@ _FEUD_ROLE_RE = re.compile(
 
 
 def _death_sentence(f, cid):
-    """角色死亡 → 干净中文句。"""
+    """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。"""
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     d = rec.get("death") or {}
     if not d:
         return None
     name = f.name_or(cid)
-    reason = _death_reason(f.table, d.get("reason"))
-    killer = d.get("killer")
-    kstr = ""
-    # 动作型死因加「被」字 (被处决/被谋杀/被毒杀/被刑罚/被决斗...)
-    action_like = {"处决", "谋杀", "毒杀", "刑罚", "决斗", "蛇噬", "斗殴"}
-    if reason in action_like:
-        reason = "被" + reason
-    if killer is not None:
-        # v11: 谋杀类死因用「凶手为」(未被败露的谋杀没有行刑者), 其余用「行刑者/凶手为」
-        is_murder = any(w in reason for w in ("谋杀", "毒杀", "暗杀"))
-        if killer == f.cache.get("player_id"):
-            kstr = (f"，凶手为{f.name_or(f.cache.get('player_id'))}" if is_murder
-                    else f"，行刑者为{f.name_or(f.cache.get('player_id'))}")
-        else:
-            kstr = f"，凶手为{f.name_or(killer)}"
-    return f"{name}殁于{f.date(d.get('date'))}，{reason}{kstr}。"
+    # 施事者名字缺失时用「某人」 (比默认「一位人物」更像自然语言)
+    clause = _death_clause(f.table, d.get("reason"), d.get("killer"),
+                           lambda k: f.name_or(k, "某人"))
+    return f"{name}殁于{f.date(d.get('date'))}，{clause}。"
 
 
 # v14: 30 个戏剧性模块 — 十年小传按主题切片的事实组织 (研究_戏剧模块化.md)。
@@ -2279,6 +2393,12 @@ def _timeline(f):
                 if isinstance(dead, int):
                     s = _mem_sentence(f, cid, mem)
                     if s:
+                        # v16: 死者出生年限定 — 区分同名/近名角色 (830年生的
+                        # 里瓦朗 vs 869年生的里瓦尔, 一字之差模型易混)
+                        drec = (cache.get("characters") or {}).get(str(dead)) or {}
+                        by = str(drec.get("birth") or "").split(".")[0] or ""
+                        if by:
+                            s = s.rstrip("。") + f"（{by}年生）。"
                         old = deaths.get(dead)
                         if old is None or 2 > old[0]:
                             deaths[dead] = (2, mem.get("creation_date"),
@@ -2803,8 +2923,8 @@ def _protagonist(f):
     if pd:
         p["death"] = (
             f"殁于{f.date(pd.get('date'))}，"
-            f"{_death_reason(f.table, pd.get('reason'))}"
-            + (f"，凶手为{f.name_or(pd.get('killer'))}" if pd.get("killer") else "。")
+            f"{_death_clause(f.table, pd.get('reason'), pd.get('killer'),
+                             lambda k: f.name_or(k, '某人'))}。"
         )
     # 家庭 (v11: as_of 截断 — 出生晚于 as_of 的未出生者不列)
     fam = rec.get("family") or {}
@@ -3387,12 +3507,31 @@ def _villain_chains(f):
             disp = f"{off}{vname}" if off else vname
             remarry = f"，并于{f.date(mdate)}嫁于{pname}" \
                 if mdate and in_span(mdate) else ""
+            # v16: 受害者家人也先遭毒手 → 补注 (父子同刃: 萨洛蒙之子
+            # 里瓦朗 830年生, 871年已被杀 — 共享前缀给全篇正确亲缘,
+            # 防模型把「X·马布·萨洛蒙」读成萨洛蒙长辈)
+            kin_note = ""
+            for kid in (vfam.get("child") or []):
+                if not isinstance(kid, int) or kid not in murders:
+                    continue
+                kd = murders[kid]
+                if cl.date_key(kd) >= cl.date_key(vdate):
+                    continue
+                kname = f.name_or(kid)
+                krec = chars.get(str(kid)) or {}
+                kby = str(krec.get("birth") or "").split(".")[0] or ""
+                if kname:
+                    ksex = "女" if is_female(kid) else "子"
+                    kin_note = (f"；其{ksex}{kname}"
+                                + (f"（{kby}年生）" if kby else "")
+                                + f"已于{f.date(kd)}被{pname}谋杀")
+                break
             chains.append(("奸夫谋夫",
                 f"{f.date(vdate)}，{disp}被{pname}谋杀——"
-                f"{sname}{lname}正是{pname}的情人{remarry}。"))
+                f"{sname}{lname}正是{pname}的情人{remarry}{kin_note}。"))
 
     # ---- 托卵承嗣 (法理父 ≠ 实父, 且涉及主角) — 按 (法理父, 实父, 性别) 合并 ----
-    cuckoo = {}   # (lf, rf, sex, 方向) -> [child 名]
+    cuckoo = {}   # (lf, rf, sex, 方向) -> [(child 名, 出生年)]
     for cid, rec in chars.items():
         fam = rec.get("family") or {}
         rf = (fam.get("real_father") or [None])[0]
@@ -3408,12 +3547,16 @@ def _villain_chains(f):
             continue
         sex = "女" if is_female(int(cid)) else "子"
         key = (lf, rf, sex)
-        cuckoo.setdefault(key, []).append(cname)
-    for (lf, rf, sex), names in cuckoo.items():
+        by = str(rec.get("birth") or "").split(".")[0] or ""
+        cuckoo.setdefault(key, []).append((cname, by))
+    for (lf, rf, sex), items in cuckoo.items():
         lfname = f.name_or(lf)
         rfname = f.name_or(rf)
-        if not names or not lfname or not rfname:
+        if not items or not lfname or not rfname:
             continue
+        # 出生年限定 (v16): 区分同名/近名角色 — 里瓦朗(830年生, 萨洛蒙亲生子)
+        # 与 里瓦尔(869年生, 私生子) 一字之差, 加年份后模型不再混淆
+        names = [f"{n}（{y}年生）" if y else n for n, y in items]
         joined = "、".join(names)
         if rf == pid:
             chains.append(("托卵承嗣",
@@ -3610,10 +3753,10 @@ def _killed_by_player(f):
             mc = f._chars.get(str(cid)) or {}
             mdd = (mc or {}).get("dead_data") or {}
             if mdd and mdd.get("date"):
-                reason = _death_reason(f.table, mdd.get("reason"))
-                if reason in ("处决", "谋杀", "毒杀", "刑罚", "决斗", "蛇噬", "斗殴"):
-                    reason = "被" + reason
-                ds = f"{f.name_or(cid)}殁于{f.date(mdd.get('date'))}，{reason}。"
+                clause = _death_clause(f.table, mdd.get("reason"),
+                                       mdd.get("killer"),
+                                       lambda k: f.name_or(k, "某人"))
+                ds = f"{f.name_or(cid)}殁于{f.date(mdd.get('date'))}，{clause}。"
         entry = {
             "id": cid,
             "name": f.name_or(cid),
@@ -3801,7 +3944,9 @@ def build_facts(cache, melt, names_path=None, as_of=None):
         pd = None
     if pd:
         pd = dict(pd)
-        pd["reason_zh"] = _death_reason(f.table, pd.get("reason"))
+        pd["reason_zh"] = _death_clause(f.table, pd.get("reason"),
+                                        pd.get("killer"),
+                                        lambda k: f.name_or(k, "某人"))
     facts = {
         # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充)
         "house": _dynasty_display(cache.get("dynasty_name"),

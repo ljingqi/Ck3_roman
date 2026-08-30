@@ -534,8 +534,10 @@ _MARRIAGE_TYPES = {
 
 
 def _assassin_kill_lines(facts, cache, k):
-    """一名死者的新口径档案行: 官职名 + 死句 + 亲缘 + 婚恋记忆。
-    返回 ['死者：唐皇帝李漼（殁于878年4月9日，被处决，行刑者为崔佛·菲利普。）', …]。"""
+    """一名死者的新口径档案行: 官职名 + 生卒 + 死句 + 亲缘 + 婚恋记忆。
+    返回 ['死者：唐皇帝李漼（殁于878年4月9日，被崔佛·菲利普处决。）', …]。
+    v16: 死者行带出生日期 — 防止同名/近名角色被误认 (里瓦朗 vs 里瓦尔:
+    生于830年的萨洛蒙亲生子不可能被当成869年私通所出之子)。"""
     lines = []
     nm = k["name"]
     off = k.get("office") or ""
@@ -543,7 +545,9 @@ def _assassin_kill_lines(facts, cache, k):
     db = k.get("death") or "（死因不详）"
     if db.startswith(nm + "殁于"):
         db = "殁于" + db[len(nm) + 2:]
-    lines.append(f"死者：{disp}（{db}）")
+    bd = k.get("birth") or ""
+    head = f"（生于{bd}，" if bd else "（"
+    lines.append(f"死者：{disp}{head}{db}）")
     # 亲缘: 父/母/妻/妾 (从缓存 family 取)
     fam = ((cache.get("characters") or {}).get(str(k.get("id"))) or {}).get("family") or {}
     bits = []
