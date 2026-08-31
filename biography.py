@@ -623,7 +623,10 @@ def _article_facts(facts, cache, key, section=None):
             # 传主档案置顶: 本篇文章以传主为唯一叙述中心
             blocks["传主档案"] = "\n".join(lines)
             blocks["传主行迹"] = "\n".join(events) if events else "（无行迹记录）"
-            tl = _timeline_texts(facts, names=[pname, subj_name])
+            # v17: 相关年表只按传主名过滤 (传主自己的记忆 + 传主↔主角的交集事件),
+            # 不再整份复述主角年表 — 主角大事件已由共享前缀【主角大事摘要】承载
+            # (修复方案_汤利五问题.md 决策 4)。
+            tl = _timeline_texts(facts, names=[subj_name])
             if tl:
                 blocks["相关年表"] = "\n".join(tl)
             # v13: 结友/结仇缘由 (双通道修复后必有记忆; 兜底同朝共事者给说明)
@@ -833,7 +836,7 @@ def _decade_theme_note(facts):
     if not dm:
         return ""
     names = "、".join(m for m, _s in dm)
-    label = "本十年" if facts.get("as_of") else "一生"
+    label = "本十年" if facts.get("decade") else "一生"
     return (f"{label}戏剧主题: {names}。"
             "各篇正文围绕这些主题取材，主题相关的事件写出戏剧张力，"
             "资料不足的内容简写或略去。\n\n")
@@ -864,12 +867,13 @@ def _shared_facts_block(facts):
     stats_txt = ""
     ds = facts.get("decade_stats") or []
     if ds:
-        label = "本十年" if facts.get("as_of") else "一生"
+        label = "本十年" if facts.get("decade") else "一生"
         stats_txt = f"【概览】{label}{'、'.join(ds)}。\n\n"
-    # v14: 主角级事件摘要 (仅主角名在文本中的事件, 数量小: 十年 50 条 / 1.3K 字符)
+    # v17: 主角大事摘要改为按年聚合 (facts._year_summary, 一年一行, 同型事件并人名;
+    # 修复方案_汤利五问题.md 问题4 — 十年传记 89 行 → 约 10 行)。
+    # 十年传记的 timeline 已按本十年窗口截断, 摘要随之只含本十年。
     pname = p.get("name") or ""
-    own = [e["text"] for e in facts.get("timeline") or []
-           if pname and pname in e["text"]]
+    own = F._year_summary(facts.get("timeline") or [], pname)
     own_txt = _render_block("【主角大事摘要】", own) if own else ""
     out = [f"【传主】{name}\n【家族】{house}\n{life_note}\n\n", profile_txt]
     if stats_txt:
@@ -1382,7 +1386,7 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None)
     decade: 十年传记序号 (第N个十年), None 表示终传或普通在世传记。
     as_of (v11): 数据截止日期 — 十年传记传十年末, 官职/历任/时间线/朝局按此截断。"""
     names_path = os.path.join(cfg.get("data_dir", ""), "names.json")
-    facts = F.build_facts(cache, melt, names_path, as_of=as_of)
+    facts = F.build_facts(cache, melt, names_path, as_of=as_of, decade=decade)
     articles = build_articles(facts, cache, cfg)
 
     intro_cfg = dict(cfg)

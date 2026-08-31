@@ -452,13 +452,16 @@ _PRINCE_WORD_OVERRIDE = {
 class Facts:
     """一次 build_facts 的上下文: 缓存 + melt + 名字/头衔/本地化解析。
     as_of: 传记数据截止日期 (十年传记 = 十年末; 终传/在世 = 最后档期)。
-    非空时 官职/称号/历任/时间线/朝局 均只取该日期之前的事实 (v11)。"""
+    非空时 官职/称号/历任/时间线/朝局 均只取该日期之前的事实 (v11)。
+    decade (v17): 十年传记序号 (1,2,3…), 非空时时间线/概览/摘要/刺客列传
+    只收本十年 (as_of−10年, as_of] 的事件 (修复方案_汤利五问题.md 决策 1/2)。"""
 
-    def __init__(self, cache, melt, names_path, as_of=None):
+    def __init__(self, cache, melt, names_path, as_of=None, decade=None):
         self.cache = cache
         self.melt = melt
         self.names_path = names_path
         self.as_of = as_of
+        self.decade = decade
         self._lt = ((melt.get("landed_titles") or {}).get("landed_titles") or {})
         self._tl = melt.get("traits_lookup") or []
         self._chars = cl.all_characters(melt)
@@ -472,6 +475,7 @@ class Facts:
             if k:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
+        self._regnal_cache = {}  # v17: 世系编号 (cid, tid, date) -> 序号
         # v16: 游戏关系原因 (opinions.active_opinions 索引, 惰性构建)
         self._opinion_index = None
         self._rel_reason_cache = {}
@@ -595,6 +599,112 @@ class Facts:
     def name_or(self, cid, fallback="一位人物"):
         n = self.name(cid)
         return n or fallback
+
+    # ---- v17: 世系编号 (II/III 二世标记) ----
+    # 游戏不把编号存进存档, 显示时按「首要头衔 title history 中同名前任数 + 1」
+    # 动态计算 (修复方案_汤利五问题.md 问题7, 实测: c_braila 860 年 Ciprian →
+    # 893 年 Ciprian 即「奇普里安II」; k_ruthenia 881 年父子两代 Ruslan →
+    # 子为「鲁斯兰·克里维奇二世」)。I 不显示。
+
+    def regnal_number(self, cid, tid, date=None):
+        """角色 cid 在头衔 tid 上的世系序号: 1 + (登位前同名前任数)。
+        同名按熔件 raw first_name 比对 (中文 mod 名同码点串一致)。
+        返回 ≥1 的整数。"""
+        key = (cid, tid, date)
+        v = self._regnal_cache.get(key)
+        if v is not None:
+            return v
+        fn = (self._chars.get(str(cid)) or {}).get("first_name") or ""
+        n = 1
+        if fn and tid is not None:
+            hist = (self._lt.get(str(tid)) or {}).get("history") or {}
+            if isinstance(hist, dict) and hist:
+                acc = None
+                for d in sorted(hist, key=cl.date_key):
+                    h = hist[d]
+                    hid = h.get("holder") if isinstance(h, dict) else h
+                    if hid == cid:
+                        acc = d
+                        break
+                limit = None
+                if acc:
+                    limit = cl.date_key(acc)
+                elif date:
+                    limit = cl.date_key(date)
+                elif self.as_of:
+                    limit = cl.date_key(self.as_of)
+                if limit is not None:
+                    for d, h in hist.items():
+                        hid = h.get("holder") if isinstance(h, dict) else h
+                        if hid == cid or not isinstance(hid, int):
+                            continue
+                        if cl.date_key(d) >= limit:
+                            continue
+                        if fn == ((self._chars.get(str(hid)) or {}).get("first_name") or ""):
+                            n += 1
+        self._regnal_cache[key] = n
+        return n
+
+    def _last_high_title_before(self, cid, date=None):
+        """cid 在 date (含) 前最后持有的最高层级头衔 (v17)。
+        头衔在当日已易手 (死日同日继位) 时, `_primary_title_at` 取不到,
+        世系编号回退到最近一段高位持有。无则返回 None。"""
+        ao = cl.date_key(date) if date else \
+            (cl.date_key(self.as_of) if self.as_of else None)
+        best_tid, best_rank, best_gain = None, -1, None
+        for tid, ivs in self._hold_intervals(cid, date).items():
+            key = (self._lt.get(str(tid)) or {}).get("key") or ""
+            rank = self._TT_RANK.get(key[:2], 0)
+            for (g, _l, _lt) in ivs:
+                if not g:
+                    continue
+                gk = cl.date_key(g)
+                if ao is not None and gk > ao:
+                    continue
+                if rank > best_rank or \
+                        (rank == best_rank and best_gain is not None and gk > best_gain):
+                    best_tid, best_rank, best_gain = tid, rank, gk
+        return best_tid
+
+    def nickname(self, cid):
+        """角色昵称 (v17): 熔件 nickname_text 直接就是中文昵称 (勇敢者/铁腕…),
+        无则 ''。"""
+        c = self._chars.get(str(cid)) or {}
+        return (c.get("nickname_text") or "").strip()
+
+    def _insert_nickname(self, nm, nick):
+        """把昵称插到「名」后 (v17, 游戏中文模板 CHARACTER_*_NICKNAMED):
+        西式 名·家名/父名 → 名“昵称”·家名 (鲁斯兰“铁腕”·克里维奇);
+        东方 姓+名 无分隔 / 单段名 → 名“昵称” 追加末尾 (藤原道长“XX”)。"""
+        if "·" in nm:
+            head, sep, tail = nm.partition("·")
+            return f"{head}“{nick}”{sep}{tail}"
+        return f"{nm}“{nick}”"
+
+    def name_with_regnal(self, cid, date=None):
+        """显示名 + 昵称 + 世系编号 (v17): 名“昵称”·家名 + 编号末尾
+        (鲁斯兰“铁腕”·克里维奇二世)。昵称按文化名序插在名后 (游戏中文模板);
+        编号按该日期 (缺省 as_of) 首要头衔的同名前任数, ≥2 追加中文「N世」
+        (十起不带世: 路易十一)。"""
+        nm = self.name_or(cid)
+        if not nm:
+            return nm
+        nick = self.nickname(cid)
+        if nick:
+            nm = self._insert_nickname(nm, nick)
+        try:
+            _tier, tid = self._primary_title_at(cid, as_of=date)
+        except Exception:
+            return nm
+        if tid is None:
+            # v17: 死日头衔同日易手时回退到最后持有的高位头衔
+            tid = self._last_high_title_before(cid, date)
+        if tid is None:
+            return nm
+        n = self.regnal_number(cid, tid, date)
+        if n >= 2:
+            return nm + _ordinal_zh(n)
+        return nm
 
     # ---- 头衔 ----
     def _title_government(self, tid):
@@ -945,6 +1055,16 @@ class Facts:
                   2: "county", 1: "barony"}
     _CELESTIAL_LIKE_GOVS = {"celestial_government", "meritocratic_government",
                             "steppe_admin_government", "administrative_government"}
+    # v17: 日式律令制政体 (japan_administrative_government) 官职词 — 按游戏本地化键
+    # (修复方案_汤利五问题.md 问题2: e_japan 日本帝国之主是关白, 非皇帝; 天皇另座)。
+    _JAPAN_OFFICE_KEYS = {
+        "empire":  "emperor_administrative_male_japanese",   # 关白
+        "kingdom": "king_administrative_male_japanese",      # 帅
+        "duchy":   "duke_administrative_male_japanese",      # 国司
+        "county":  "count_administrative_male_japanese",     # 国司
+        "barony":  "baron_administrative_male_japanese",     # 郡司
+    }
+    _TENNO_TITLE_KEYS = {"k_chrysanthemum_throne"}  # 天皇座持有人 → 天皇
 
     def title_base_name(self, tid):
         """头衔基础名 (不含层级词/官职词): custom → name → 本地化 → key。"""
@@ -987,7 +1107,7 @@ class Facts:
             self._indep_cache[cid] = v
         return v
 
-    def _office_word(self, tier, government, independent=False, female=False):
+    def _office_word(self, tier, government, independent=False, female=False, tid=None):
         """官职词: (层级, 政体) → 词。天朝/行政/草原行政共用同一套 (刺史/节度使/
         观察使/宣抚使…), 与文化无关 (实测: 诺斯伯爵在中国亦为刺史)。
         独立天朝制统治者用独立词 (皇帝/王/节度使), 不用封臣官职词。
@@ -996,8 +1116,20 @@ class Facts:
           kingdom=king_male_chinese(王)/king_female_chinese(女王),
           duchy=duke_male_chinese_independent(节度使), county=count_independent_male_feudal_chinese(将军)。
         旧逻辑查 king_celestial_male_chinese_independent — 游戏本地化表中不存在,
-        回退到通用 king「国王」→ 渲染成「粤国王」, 与游戏「桂王/粤王」口径不符 (修复方案_菲利普2.md 问题3)。"""
+        回退到通用 king「国王」→ 渲染成「粤国王」, 与游戏「桂王/粤王」口径不符 (修复方案_菲利普2.md 问题3)。
+        v17: 日式律令制政体 (japan_administrative_government) 单独分支 — 查游戏键
+        帝国=关白/王国=帅/郡县=国司/堡=郡司 (修复方案_汤利五问题.md 问题2);
+        tid 传入时, 天皇座 (k_chrysanthemum_throne) 持有人直称「天皇」。"""
         gov = government or ""
+        if gov == "japan_administrative_government":
+            key = self._JAPAN_OFFICE_KEYS.get(tier)
+            if tid is not None and \
+                    (self._lt.get(str(tid)) or {}).get("key") in self._TENNO_TITLE_KEYS:
+                key = "king_tenno_male_japanese"
+            if key:
+                v = L.loc(self.table, key)
+                if v and not v.startswith("$") and not v.startswith("["):
+                    return v
         if gov in self._CELESTIAL_LIKE_GOVS:
             if independent:
                 if tier == "hegemon":
@@ -1065,7 +1197,9 @@ class Facts:
             for (gain, _loss, _lt) in ivs:
                 if not gain:
                     continue
-                nm = self._name_at_date(tid, gain)
+                # v17: 地名取「当前/as_of 时点」国号, 非上任日 (修复方案_汤利五问题.md
+                # 问题6 — 王言 886 年上任时国号关内, 游戏角色窗显示当前国号秦)。
+                nm = self._name_at_date(tid, self.as_of) or self.title_base_name(tid)
                 if not nm:
                     continue
                 if tier_want is not None and rank == tier_want:
@@ -1154,7 +1288,8 @@ class Facts:
         if not gov:
             gov = (c.get("landed_data") or {}).get("government") or ""
         word = self._office_word(tier, gov, independent=self._is_independent(cid),
-                                 female=bool((self._chars.get(str(cid)) or {}).get("female")))
+                                 female=bool((self._chars.get(str(cid)) or {}).get("female")),
+                                 tid=tid)
         return f"{name}{word}" if word else name
 
     # v13: 朝廷职司 (e_minister_*) → 官职词 (游戏本地化键, 六部+御史台+枢密院)
@@ -1174,12 +1309,13 @@ class Facts:
     # 按事件日期查两端角色头衔: 主角侧「瑞典国王崔佛」, 对方侧「粤王范承宗」。
     def _feud_role_title(self, cid, date):
         """事件中某角色的「头衔名+名」: 按事件日期查首要头衔 (国号随年份:
-        903 是粤、更早是桂), 无头衔/查不到时回退纯名; v15: 教宗直称「教宗」。"""
+        903 是粤、更早是桂), 无头衔/查不到时回退纯名; v15: 教宗直称「教宗」;
+        v17: 名带世系编号 (同名前任 ≥1 时, 奇普里安II)。"""
         rhw = self.religious_head_word(cid)
         if rhw:
             return rhw + self.name_or(cid)
         tier, tid = self._primary_title_at(cid, as_of=date)
-        name = self.name_or(cid)
+        name = self.name_with_regnal(cid, date)
         if tid is None or tier is None:
             return name
         tname = self._name_at_date(tid, date) or self.title_base_name(tid)
@@ -1188,7 +1324,8 @@ class Facts:
         # 政体从头衔侧取 (角色 landed 在死者/时点会被清空, 头衔政体更稳)
         gov = self._title_government(tid)
         word = self._office_word(tier, gov, independent=self._is_independent(cid),
-                                 female=bool((self._chars.get(str(cid)) or {}).get("female")))
+                                 female=bool((self._chars.get(str(cid)) or {}).get("female")),
+                                 tid=tid)
         return f"{tname}{word}{name}" if word else f"{tname}{name}"
 
     def _rerender_feud_event(self, raw, date):
@@ -2144,7 +2281,7 @@ def _mem_sentence(f, owner_id, mem):
     tpl = MEMORY_TEMPLATES.get(mem.get("type"))
     if not tpl:
         return None
-    owner = f.name_or(owner_id)
+    owner = f.name_with_regnal(owner_id, date=mem.get("creation_date"))
     parts = mem.get("participants") or {}
     slot = PARTICIPANT_SLOTS.get(mem.get("type"))
     other_id = None
@@ -2155,7 +2292,8 @@ def _mem_sentence(f, owner_id, mem):
             if isinstance(v, int):
                 other_id = v
                 break
-    other = f.name_or(other_id, "") if other_id is not None else ""
+    other = (f.name_with_regnal(other_id, date=mem.get("creation_date"))
+             if other_id is not None else "")
     title = ""
     if mem.get("type") in TITLE_VAR_TYPES:
         for v in mem.get("vars") or []:
@@ -2174,11 +2312,17 @@ def _clean_ck3_loc(s):
     """剥离 CK3 本地化格式标签: \\x15ONCLICK:... \\x15TOOLTIP:... \\x15L \\x15high ...\\x15!
     (家族关系事件文本用, 产出干净中文)。中文后无词边界, 直接用字符级匹配。
     v13: 部分文本「称号，名字」(国王，张格本) 是 mod 翻译瑕疵 — 删去称号与
-    名字间的逗号 (国王张格本), 防模型模仿出「囚X一」式怪句。"""
+    名字间的逗号 (国王张格本), 防模型模仿出「囚X一」式怪句。
+    v17: 修复方案_汤利五问题.md 问题1 — `[A-Z]+` 不匹配 LANDED_TITLE 的下划线
+    (`TOOLTIP:LANDED_TITLE,13449` 残留), 且 `L; 名称` 链接标记剥不掉:
+    `[A-Z]`→`[A-Z_]+`, 头衔链接块整体剥离, `L` 后允许 `;`。"""
     s = str(s or "").replace("\x15", "")
-    s = re.sub(r"ONCLICK:[A-Z]+,\d+\s*", "", s)
-    s = re.sub(r"TOOLTIP:[A-Z]+,\d+\s*", "", s)
-    s = re.sub(r"L(?=\s)", "", s)   # L 链接标记 (文本为中文, 孤立 L 只可能是标签)
+    # v17: 头衔链接块 (ONCLICK:TITLE,id TOOLTIP:LANDED_TITLE,id L; 名称) 整体剥离
+    s = re.sub(r"ONCLICK:TITLE,\d+\s*TOOLTIP:[A-Z_]+,\d+\s*L[; ]?", "", s)
+    s = re.sub(r"ONCLICK:[A-Z_]+,\d+\s*", "", s)
+    s = re.sub(r"TOOLTIP:[A-Z_]+,\d+\s*", "", s)
+    s = re.sub(r"L(?=[;\s])", "", s)   # v17: L 链接标记 (后随 ; 或空格)
+    s = re.sub(r"; ", "", s)           # v17: L; 残留的分号分隔 (仅链接位产生)
     s = re.sub(r"high\s*", "", s)
     s = s.replace("!", "").replace("  ", " ").strip()
     s = re.sub(r"(?<=[\u4e00-\u9fff]) (?=[\u4e00-\u9fff])", "", s)
@@ -2203,7 +2347,7 @@ def _death_sentence(f, cid):
     d = rec.get("death") or {}
     if not d:
         return None
-    name = f.name_or(cid)
+    name = f.name_with_regnal(cid, date=d.get("date"))
     # 施事者名字缺失时用「某人」 (比默认「一位人物」更像自然语言)
     clause = _death_clause(f.table, d.get("reason"), d.get("killer"),
                            lambda k: f.name_or(k, "某人"))
@@ -2342,6 +2486,95 @@ def _death_module(f, dead_cid):
     return "丧亲之恸"
 
 
+def _ordinal_zh(n):
+    """世系编号中文 (v17): 二世…九世带「世」, 十起不带 (路易十一/路易十四)。
+    n ≥ 2 才调用。"""
+    digits = "零一二三四五六七八九"
+    if n < 10:
+        return digits[n] + "世"
+    if n < 20:
+        return "十" + (digits[n - 10] if n > 10 else "")
+    if n < 100:
+        t, r = divmod(n, 10)
+        return digits[t] + "十" + (digits[r] if r else "")
+    return str(n)
+
+
+def _decade_lower_bound(f):
+    """十年传记窗口下界 (v17): as_of 年 − 10 的年初, 不早于缓存起始年。
+    返回 'YYYY.1.1' 或 None。"""
+    if not f.as_of:
+        return None
+    try:
+        y = int(str(f.as_of).split(".")[0])
+    except Exception:
+        return None
+    start = None
+    srcs = f.cache.get("sources") or []
+    if srcs:
+        try:
+            start = int(str(srcs[0]).split(".")[0])
+        except Exception:
+            start = None
+    lo = max(y - 10, start or (y - 10))
+    return f"{lo}.1.1"
+
+
+def _year_summary(timeline, pname):
+    """【主角大事摘要】按年聚合 (v17, 修复方案_汤利五问题.md 问题4):
+    一年一行 — 同型事件 (谋杀/添丁) 合并人名 (≤3 全列 + 等N人),
+    其余关键事件 (结怨/结仇/结友/私通/成婚/登位/亡故/囚禁…) 去月日保留动词原句;
+    出生年括注一律不写。timeline 已按 as_of/十年窗口截断。
+    返回 [str] (每行 'NNNN年，…。')。"""
+    by_year = {}
+    for e in timeline or []:
+        txt = e.get("text") or ""
+        if pname and pname not in txt:
+            continue
+        d = str(e.get("date") or "")
+        y = d.split(".")[0]
+        if not y.isdigit():
+            continue
+        by_year.setdefault(int(y), []).append(e)
+    if not by_year:
+        return []
+    lines = []
+    for y in sorted(by_year):
+        kills, births, rest = [], [], []
+        for e in by_year[y]:
+            body = e["text"]
+            b = re.sub(r"^\d+年\d+月\d+日，?", "", body)
+            b = re.sub(r"^\d+年\d+月，?", "", b)
+            typ = e.get("type") or ""
+            m = re.match(r"^麦克·汤利谋杀(.+?)(?:（\d+年生）)?。$", b)
+            if typ == "successful_murder" or m:
+                kills.append(m.group(1) if m else b.rstrip("。"))
+                continue
+            if typ in ("child_born", "first_born", "twins_born"):
+                m = re.match(r"^麦克·汤利(?:得长子|添子|得孪生子)(.+)。$", b)
+                births.append(m.group(1) if m else b.rstrip("。"))
+                continue
+            rest.append(b)
+        parts = []
+
+        def _names(items, verb):
+            if not items:
+                return None
+            if len(items) <= 3:
+                return verb + "、".join(items)
+            return verb + "、".join(items[:3]) + f"等{len(items)}人"
+
+        for items, verb in ((kills, "谋杀"), (births, "添子")):
+            s = _names(items, verb)
+            if s:
+                parts.append(s)
+        # 其余事件: 去句末句号, 由行末统一收句 (防「。；」连接)
+        parts.extend(r.rstrip("。") for r in rest)
+        body = "；".join(parts)
+        lines.append(f"{y}年，{body}。")
+    return lines
+
+
 def _timeline(f):
     """主角相关时间线: 只收 宗族/父母妻儿/孙辈儿媳婿 相关事件 (口径见 _related_ids),
     按人按事去重, 按日期排序。
@@ -2441,10 +2674,18 @@ def _timeline(f):
     if f.as_of:
         ao = cl.date_key(f.as_of)
         events = [e for e in events if e[0] and cl.date_key(e[0]) <= ao]
+    # v17: 十年窗口 — 十年传记只收本十年 (as_of−10年, as_of], 摘要/本纪年表/
+    # 概览统计/戏剧主题/朝局动态等一切以 timeline 为源的数据随之只含本十年
+    # (修复方案_汤利五问题.md 决策 1/2; 戏剧性事件 villain_chains 自管 in_span 保持全期)。
+    if f.decade and f.as_of:
+        lo = _decade_lower_bound(f)
+        if lo:
+            lok = cl.date_key(lo)
+            events = [e for e in events if e[0] and cl.date_key(e[0]) >= lok]
     events.sort(key=lambda x: cl.date_key(x[0]))
     # v15: 十年/一生概览统计 (聚合前原始事件, 程序直算 — 供【概览】块;
     # 只统计主角名在文本中的事件, 家人/路人的添丁结怨不入概览)
-    pname0 = f.name_or(pid)
+    pname0 = f.name_with_regnal(pid)  # v17: 与时间线文本同口径 (主角也可能带世系编号)
     stats = {}
     for _d, t, s, mod in events:
         if pname0 and pname0 not in s:
@@ -2771,7 +3012,7 @@ def _protagonist(f):
     pobj = (melt.get("living") or {}).get(str(pid)) or {}
     ad = pobj.get("alive_data") or {}
     p = {
-        "name": f.name_or(pid),
+        "name": f.name_with_regnal(pid),  # v17: 主角名带世系编号 (与时间线文本同口径)
         "name_zh": rec.get("name_zh") or "",
         # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充, 与宗族不同时给出)
         "house": _dynasty_display(rec.get("dynasty_name") or cache.get("dynasty_name"),
@@ -3021,7 +3262,7 @@ def _character_profiles(f):
         rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
         if not rec:
             continue
-        name = f.name_or(cid)
+        name = f.name_with_regnal(cid)  # v17: 档案名带世系编号 (与时间线文本同口径)
         prof = {
             "name": name,
             "name_zh": rec.get("name_zh") or "",
@@ -3508,7 +3749,7 @@ def _villain_chains(f):
             remarry = f"，并于{f.date(mdate)}嫁于{pname}" \
                 if mdate and in_span(mdate) else ""
             # v16: 受害者家人也先遭毒手 → 补注 (父子同刃: 萨洛蒙之子
-            # 里瓦朗 830年生, 871年已被杀 — 共享前缀给全篇正确亲缘,
+            # 里瓦朗 871年已被杀 — 共享前缀给全篇正确亲缘,
             # 防模型把「X·马布·萨洛蒙」读成萨洛蒙长辈)
             kin_note = ""
             for kid in (vfam.get("child") or []):
@@ -3518,12 +3759,9 @@ def _villain_chains(f):
                 if cl.date_key(kd) >= cl.date_key(vdate):
                     continue
                 kname = f.name_or(kid)
-                krec = chars.get(str(kid)) or {}
-                kby = str(krec.get("birth") or "").split(".")[0] or ""
                 if kname:
                     ksex = "女" if is_female(kid) else "子"
                     kin_note = (f"；其{ksex}{kname}"
-                                + (f"（{kby}年生）" if kby else "")
                                 + f"已于{f.date(kd)}被{pname}谋杀")
                 break
             chains.append(("奸夫谋夫",
@@ -3531,7 +3769,7 @@ def _villain_chains(f):
                 f"{sname}{lname}正是{pname}的情人{remarry}{kin_note}。"))
 
     # ---- 托卵承嗣 (法理父 ≠ 实父, 且涉及主角) — 按 (法理父, 实父, 性别) 合并 ----
-    cuckoo = {}   # (lf, rf, sex, 方向) -> [(child 名, 出生年)]
+    cuckoo = {}   # (lf, rf, sex, 方向) -> [child 名]
     for cid, rec in chars.items():
         fam = rec.get("family") or {}
         rf = (fam.get("real_father") or [None])[0]
@@ -3547,17 +3785,15 @@ def _villain_chains(f):
             continue
         sex = "女" if is_female(int(cid)) else "子"
         key = (lf, rf, sex)
-        by = str(rec.get("birth") or "").split(".")[0] or ""
-        cuckoo.setdefault(key, []).append((cname, by))
+        cuckoo.setdefault(key, []).append(cname)
     for (lf, rf, sex), items in cuckoo.items():
         lfname = f.name_or(lf)
         rfname = f.name_or(rf)
         if not items or not lfname or not rfname:
             continue
-        # 出生年限定 (v16): 区分同名/近名角色 — 里瓦朗(830年生, 萨洛蒙亲生子)
-        # 与 里瓦尔(869年生, 私生子) 一字之差, 加年份后模型不再混淆
-        names = [f"{n}（{y}年生）" if y else n for n, y in items]
-        joined = "、".join(names)
+        # v17: 戏剧性事件链不再带出生年括注 (修复方案_汤利五问题.md 问题3 —
+        # 亲缘标签已消歧, 出生年吸引注意力; 消歧留在刺客列传死者行/时间线谋杀行)
+        joined = "、".join(items)
         if rf == pid:
             chains.append(("托卵承嗣",
                 f"{lfname}抚养的{joined}，实为{pname}之{sex}。"))
@@ -3666,10 +3902,9 @@ def _villain_chains(f):
         hname = f.name_or(heir0)
         if not hname:
             continue
-        # 出生日期限定, 防同名歧义 (三女同名时以出生日区分)
-        qual = f"（{f.date(hrec.get('birth'))}生）" if hrec.get("birth") else ""
-        # 同母手足中有被主角谋杀者 → 加注 (血脉登基的戏剧钩子, 附长幼词+出生日期
-        # 消歧 — 三女同名时以出生日唯一区分)
+        # v17: 戏剧性事件链不再带出生日期括注 (修复方案_汤利五问题.md 问题3 —
+        # 亲缘标签已消歧, 出生年吸引注意力; 消歧留在刺客列传死者行/时间线谋杀行)
+        # 同母手足中被主角谋杀者 → 加注 (血脉登基的戏剧钩子, 附长幼词)
         dead_sib = ""
         for s in (hfam.get("siblings") or []):
             srec = chars.get(str(s)) or {}
@@ -3684,8 +3919,7 @@ def _villain_chains(f):
                     sfemale = is_female(s)
                     sw = "长姐" if (older and sfemale) else \
                           "长兄" if older else ("妹" if sfemale else "弟")
-                    sq = f"（{f.date(sb)}生）" if sb else ""
-                    dead_sib = (f"；其同母{sw}{sname}{sq}已于{f.date(sdate)}"
+                    dead_sib = (f"；其同母{sw}{sname}已于{f.date(sdate)}"
                                 f"被{pname}谋杀")
                 break
         sex = "女" if is_female(heir0) else "子"
@@ -3697,7 +3931,7 @@ def _villain_chains(f):
         else:
             who = f"{pname}情人之{sex}"
         chains.append(("血脉登基",
-            f"{hname}{qual}为{tname}第一继承人，实为{who}{dead_sib}。"))
+            f"{hname}为{tname}第一继承人，实为{who}{dead_sib}。"))
 
     return chains
 
@@ -3759,7 +3993,8 @@ def _killed_by_player(f):
                 ds = f"{f.name_or(cid)}殁于{f.date(mdd.get('date'))}，{clause}。"
         entry = {
             "id": cid,
-            "name": f.name_or(cid),
+            # v17: 死者名带世系编号 (以死期首要头衔计算, 鲁斯兰·克里维奇二世)
+            "name": f.name_with_regnal(cid, date=(prof.get("death") or {}).get("date")),
             "birth": f.date(prof.get("birth")),
             "death": ds or "（死因不详）",
             "death_date": (prof.get("death") or {}).get("date") or "9999.9.9",
@@ -3785,10 +4020,19 @@ def _killed_by_player(f):
     # v11: 击杀人数多时剔除 lowborn (无家族、非家人/友/仇), 保模型注意力;
     # as_of 截断 — 十年传记只收该时期前已死的死者 (892 年不出现 142 人刺客列传);
     # 死亡日期未知 (9999.9.9) 的死者视为不晚于 as_of, 保留。
+    # v17: 十年窗口 — 十年传记只收本十年死者 (补下界, 修复方案_汤利五问题.md 问题5:
+    # 第 2 个十年不再出现 871 年就死掉的旧死者)。
     if f.as_of:
         ao = cl.date_key(f.as_of)
         out = [e for e in out
                if e["death_date"] == "9999.9.9" or cl.date_key(e["death_date"]) <= ao]
+        if f.decade:
+            lo = _decade_lower_bound(f)
+            if lo:
+                lok = cl.date_key(lo)
+                out = [e for e in out
+                       if e["death_date"] == "9999.9.9"
+                       or cl.date_key(e["death_date"]) >= lok]
     if len(out) > KILL_LOWBORN_THRESHOLD:
         keep = _kill_keep_ids(cache, pid)
         out = [e for e in out if e["house"] or e["id"] in keep]
@@ -3928,10 +4172,12 @@ def _genealogy(f):
     return lines
 
 
-def build_facts(cache, melt, names_path=None, as_of=None):
+def build_facts(cache, melt, names_path=None, as_of=None, decade=None):
     """渲染干净事实集。melt 为 dict (已加载)。
-    as_of (v11): 传记数据截止日期; 十年传记传十年末, 官职/历任/时间线/朝局按此截断。"""
-    f = Facts(cache, melt, names_path, as_of=as_of)
+    as_of (v11): 传记数据截止日期; 十年传记传十年末, 官职/历任/时间线/朝局按此截断。
+    decade (v17): 十年传记序号 — 时间线/概览/摘要/刺客列传只收本十年
+    (as_of−10年, as_of]; 终传/在世传 None 收全期。"""
+    f = Facts(cache, melt, names_path, as_of=as_of, decade=decade)
     period = ""
     sources = cache.get("sources") or []
     if sources:
@@ -3964,6 +4210,7 @@ def build_facts(cache, melt, names_path=None, as_of=None):
         "player_death": pd,
         "last_date": cache.get("last_date"),
         "as_of": as_of,
+        "decade": decade,
         # v5 新增
         "bio_style": f.bio_style(),
         "killed": _killed_by_player(f),
