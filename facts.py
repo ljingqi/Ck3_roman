@@ -673,25 +673,30 @@ class Facts:
         return (c.get("nickname_text") or "").strip()
 
     def _insert_nickname(self, nm, nick):
-        """把昵称插到「名」后 (v17, 游戏中文模板 CHARACTER_*_NICKNAMED):
-        西式 名·家名/父名 → 名“昵称”·家名 (鲁斯兰“铁腕”·克里维奇);
-        东方 姓+名 无分隔 / 单段名 → 名“昵称” 追加末尾 (藤原道长“XX”)。"""
+        """把昵称并入显示名 (v18, 用户决策 2026-08-31):
+        西方名序 (名·家名/父名) 绰号前置、去引号 — 中文史传惯例
+        (秃头查理·加洛林 / 青年路易·加洛林 / 征服者威廉·诺曼底);
+        东方名序 (姓+名 无分隔) 与单段名维持 v17 原设定 (大和惟条“秃头”)。
+        有绰号即不再使用世系编号 (编号让位于绰号)。"""
         if "·" in nm:
-            head, sep, tail = nm.partition("·")
-            return f"{head}“{nick}”{sep}{tail}"
+            return f"{nick}{nm}"
         return f"{nm}“{nick}”"
 
     def name_with_regnal(self, cid, date=None):
-        """显示名 + 昵称 + 世系编号 (v17): 名“昵称”·家名 + 编号末尾
-        (鲁斯兰“铁腕”·克里维奇二世)。昵称按文化名序插在名后 (游戏中文模板);
-        编号按该日期 (缺省 as_of) 首要头衔的同名前任数, ≥2 追加中文「N世」
-        (十起不带世: 路易十一)。"""
+        """显示名 + 昵称 + 世系编号 (v18): 有绰号 → 绰号形式 (西方 绰号名·家名,
+        东方 姓+名“绰号”), 不追加世系编号 — 编号让位于绰号 (秃头查理/青年路易);
+        无绰号 → 仅西方名序 (名·家名) 标编号, 紧跟名 (史书惯例: 路易十四/查理二世,
+        鲁斯兰二世·克里维奇, 不给姓冠编号); 东方人名 (姓+名 无分隔) 与单段名无编号;
+        十起不带世 (路易十一)。"""
         nm = self.name_or(cid)
         if not nm:
             return nm
         nick = self.nickname(cid)
         if nick:
-            nm = self._insert_nickname(nm, nick)
+            return self._insert_nickname(nm, nick)
+        if "·" not in nm:
+            # v18: 东方人名 (姓+名 无分隔) 与单段名没有世系编号
+            return nm
         try:
             _tier, tid = self._primary_title_at(cid, as_of=date)
         except Exception:
@@ -703,7 +708,9 @@ class Facts:
             return nm
         n = self.regnal_number(cid, tid, date)
         if n >= 2:
-            return nm + _ordinal_zh(n)
+            # v18: 编号紧跟名, 家名/父名在后 — 不给姓冠编号 (史书惯例)
+            head, sep, tail = nm.partition("·")
+            return f"{head}{_ordinal_zh(n)}{sep}{tail}"
         return nm
 
     # ---- 头衔 ----

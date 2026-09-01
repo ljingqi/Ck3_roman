@@ -673,10 +673,11 @@ def name_order_of(melt, culture_id):
     return e.get("name_order_convention") or ""
 
 
-def _family_name_order(cache, rec, melt):
+def _family_name_order(cache, rec, melt, chars=None):
     """角色自身文化缺失 (死后清空/幼年未录) 时, 依亲属文化推断名序:
     父 → 母 → 同胞 → 子女 → 配偶 (子承父/母文化, 同胞同源; 配偶跨族婚姻参考价值最低, 放最后)。
-    返回 name_order_convention 字符串 ('' = 西方默认); 亲属文化全部缺失时返回 None。"""
+    返回 name_order_convention 字符串 ('' = 西方默认); 亲属文化全部缺失时返回 None。
+    v19: 亲属不在玩家缓存时兼查熔件全量角色 (chars — display_name 已持有全角色索引)。"""
     if melt is None:
         return None
     cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
@@ -686,6 +687,8 @@ def _family_name_order(cache, rec, melt):
         for x in (fam.get(key) or []):
             r = (cache.get("characters") or {}).get(str(x)) or {}
             cul = r.get("culture")
+            if (cul is None or str(cul) not in cultures) and chars is not None:
+                cul = (chars.get(str(x)) or {}).get("culture")
             if cul is None or str(cul) not in cultures:
                 continue
             return cultures[str(cul)].get("name_order_convention") or ""
@@ -817,6 +820,26 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
                 if t:
                     found = t
                     break
+        if not found and chars is not None:
+            # v19: 缓存扫不到时扩展到全量熔件同宗族成员 (惰性建 house→成员索引,
+            # 索引放共享 memo 内, 一次 build_facts 只建一遍; 田村子这类
+            # 「有宗族、自身/亲属文化全被游戏清空」的角色因此可推回名序)。
+            idx_key = "__house_idx__"
+            hindex = memo.get(idx_key)
+            if hindex is None:
+                hindex = {}
+                for _cid2, r2 in chars.items():
+                    if not isinstance(r2, dict):
+                        continue
+                    h = r2.get("dynasty_house")
+                    if h is not None:
+                        hindex.setdefault(h, []).append(_cid2)
+                memo[idx_key] = hindex
+            for _cid2 in hindex.get(dh, ()):
+                t = _template_of_culture(melt, (chars.get(_cid2) or {}).get("culture"))
+                if t:
+                    found = t
+                    break
         memo[hkey] = found
         return found
     # 5) 母 (自身 culture)
@@ -935,7 +958,7 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
     cul = rec.get("culture")
     order = name_order_of(melt, cul) if cul is not None else None
     if order is None:
-        order = _family_name_order(cache, rec, melt)
+        order = _family_name_order(cache, rec, melt, chars=chars)
     if order is None:
         tpl = _culture_template_of(cache, cid, melt, chars=chars, memo=memo)
         if tpl:
