@@ -691,6 +691,25 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     if melt is None:
         llm.log(f"玩家 {cache.get('player_id')} 无可用 melt, 跳过生成")
         return None
+    as_of = _bio_as_of(cache, decade)
+    # v20: 十年传记按时代取绰号 — 绰号存于各年熔件 nickname_text, 最新档只是
+    # 当前值; 重跑十年1 (as_of=878) 若不覆盖会被 888 档的「屠狼者」漂移。
+    nickname_override = None
+    if decade and as_of:
+        last = cache.get("last_date")
+        if last and cl.date_key(as_of) < cl.date_key(last):
+            try:
+                p_era = melt_path_for_cache(cfg, cache, as_of)
+                if os.path.isfile(p_era):
+                    era = cl.load_melt(p_era)
+                    pid = cache.get("player_id")
+                    nick = ((era.get("living") or {}).get(str(pid)) or {}).get(
+                        "nickname_text")
+                    if nick:
+                        nickname_override = {pid: str(nick).strip()}
+                        llm.log(f"  按时代取绰号 ({as_of}): {nick}")
+            except Exception as e:
+                llm.log(f"  按时代取绰号失败: {e}")
     house, fname = output_paths(cfg, cache, continue_mode=continue_mode, decade=decade)
     out_dir = os.path.join(cfg.get("output_dir", ""), house)
     out_path = os.path.join(out_dir, fname)
@@ -709,7 +728,8 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
             llm.log(f"已存在, 跳过 (加 --force 重新生成): {out_path}")
             return out_path, None
     md, facts, articles = bio.generate_biography(cache, melt, cfg, out_path=out_path,
-                                                 decade=decade, as_of=_bio_as_of(cache, decade))
+                                                 decade=decade, as_of=as_of,
+                                                 nickname_override=nickname_override)
     # 持久化文件夹绑定 (v14: 只绑定、不覆盖 — output_folder 已存在且目录存在时
     # 不再改写, 修复方案_菲利普2.md 问题2: 旧逻辑把 38696 的绑定从 菲利普2
     # 覆盖成 菲利普5, 但缓存文件与熔件都在 菲利普2, 导致后续按错误绑定找文件夹)

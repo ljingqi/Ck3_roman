@@ -342,7 +342,7 @@ show(0, 0);
 
 
 def _parse_header(text):
-    """从 md 头部注释解析 人物/出生/篇目/十年 (v8)。"""
+    """从 md 头部注释解析 人物/人物ID/出生/篇目/十年 (v8, v20)。"""
     out = {}
     for ln in (text or "").split("\n"):
         if not ln.strip().startswith("<!--"):
@@ -350,21 +350,40 @@ def _parse_header(text):
         m = re.search(r"人物:\s*([^|]+)", ln)
         p = re.search(r"篇目:\s*([^|]+)", ln)
         d = re.search(r"十年:\s*(\d+)", ln)
+        i = re.search(r"人物ID:\s*(\d+)", ln)
+        b = re.search(r"出生:\s*(\d+)年", ln)
+        t = re.search(r"战役ID:\s*([^|]+)", ln)
         if m:
             out["person"] = m.group(1).strip()
         if p:
             out["piece"] = p.group(1).strip()
         if d:
             out["decade"] = int(d.group(1))
+        if i:
+            out["person_id"] = i.group(1)
+        if b:
+            out["birth_year"] = int(b.group(1))
+        if t:
+            out["playthrough_id"] = t.group(1).strip()
         break
     return out
 
 
-def _person_of(fn, folder, text):
-    """角色名: 优先头部注释 人物; 回退文件名去 家族前缀 (菲利普崔佛 → 崔佛)。"""
-    h = _parse_header(text)
-    if h.get("person"):
-        return h["person"]
+_FILENAME_PERSON_RE = re.compile(r"^(.*?)\((\d+)\)$")
+_EPITHET_SUFFIX_RE = re.compile(r'[“"][^”"]*[”"]\s*$')
+
+
+def _strip_epithet(name):
+    """去显示名里的绰号后缀 (东方名序 名“绰号” → 名; 无则原样)。"""
+    if not name:
+        return name
+    s = _EPITHET_SUFFIX_RE.sub("", name).strip()
+    return s or name
+
+
+def _filename_base_person(fn, folder):
+    """文件名回退角色名: 去 家族前缀 与 (生年) 后缀。返回 (基名, 生年|None)。
+    文件名来自缓存纯名 (name_full/name_zh), 不带绰号, 是稳定的身份线索。"""
     base = fn
     for sep in ("_终传_", "_传记_"):
         if sep in fn:
@@ -372,7 +391,33 @@ def _person_of(fn, folder, text):
             break
     if folder and base.startswith(folder):
         base = base[len(folder):]
-    return base or fn
+    m = _FILENAME_PERSON_RE.match(base)
+    if m:
+        return m.group(1).strip(), int(m.group(2))
+    return base.strip(), None
+
+
+def _person_identity(fn, folder, text):
+    """(分组键, 显示名) — v20 稳定身份:
+    - A2: 头部注释有 人物ID (游戏角色 id) → 键 ('id', pid), 最精确;
+    - A1: 否则 键 ('name', 去绰号名, 生年) — 生年取头部 出生 或文件名 (849),
+      去绰号优先用文件名基名 (缓存纯名), 无则剥头部 名“绰号” 后缀。
+    同角色因绰号随时代变化 (嗜血者→屠狼者) 也归并到同一键。"""
+    h = _parse_header(text)
+    person = h.get("person") or ""
+    if h.get("person_id"):
+        # A2: 人物ID 唯一, 同战役复用同 id 也同页; 战役ID 参与键防跨战役同 id 误并
+        return (("id", h["person_id"], h.get("playthrough_id")),
+                _strip_epithet(person) or person)
+    fbase, fyear = _filename_base_person(fn, folder)
+    year = h.get("birth_year")
+    if year is None:
+        year = fyear
+    if person and fbase and fbase in person:
+        base = fbase  # 文件名基名是头部名 (带绰号) 的子串 → 取纯名
+    else:
+        base = _strip_epithet(person) or person or fbase
+    return ("name", base, year), base
 
 
 def _article_label(fn, text, folder=None):
@@ -427,8 +472,10 @@ def rebuild_folder(output_dir, folder):
             continue
         label, meta = _article_label(fn, text, folder)
         html_str, toc = md_to_html(text)
+        pkey, disp = _person_identity(fn, folder, text)
         entries.append({
-            "person": _person_of(fn, folder, text),
+            "person": disp,
+            "person_key": pkey,
             "label": label,
             "meta": meta,
             "html": html_str,
@@ -436,16 +483,32 @@ def rebuild_folder(output_dir, folder):
         })
     if not entries:
         return None
-    # 按角色分组 (保持首次出现顺序)
+    # 按角色分组 (v20: 稳定身份键 — 人物ID 优先, 否则 去绰号名+生年;
+    # 绰号随时代变化 (嗜血者→屠狼者) 不再拆页)
     groups = []
-    by_name = {}
+    by_key = {}
     for e in entries:
-        if e["person"] not in by_name:
-            by_name[e["person"]] = len(groups)
-            groups.append({"name": e["person"], "items": []})
-        groups[by_name[e["person"]]]["items"].append(
+        if e["person_key"] not in by_key:
+            by_key[e["person_key"]] = len(groups)
+            groups.append({"name": e["person"], "person_key": e["person_key"],
+                           "items": []})
+        groups[by_key[e["person_key"]]]["items"].append(
             {"label": e["label"], "meta": e["meta"], "html": e["html"],
              "toc": e["toc"]})
+    # 同名不同生年 (祖孙同名) 显示名追加 (生年) 消歧, 与文件名口径一致
+    same_name = {}
+    for g in groups:
+        same_name.setdefault(g["name"], []).append(g)
+    for name, gl in same_name.items():
+        if len(gl) > 1:
+            for g in gl:
+                k = g.get("person_key")
+                by = k[2] if k and k[0] == "name" else None
+                if by:
+                    g["name"] = f"{g['name']}({by})"
+    # person_key 仅分组内部使用, 不进 __DATA__
+    for g in groups:
+        g.pop("person_key", None)
     title = f"{folder} · 家传阅读页"
     out = (TEMPLATE
            .replace("__TITLE__", html.escape(title))

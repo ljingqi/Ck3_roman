@@ -456,12 +456,16 @@ class Facts:
     decade (v17): 十年传记序号 (1,2,3…), 非空时时间线/概览/摘要/刺客列传
     只收本十年 (as_of−10年, as_of] 的事件 (修复方案_汤利五问题.md 决策 1/2)。"""
 
-    def __init__(self, cache, melt, names_path, as_of=None, decade=None):
+    def __init__(self, cache, melt, names_path, as_of=None, decade=None,
+                 nickname_override=None):
         self.cache = cache
         self.melt = melt
         self.names_path = names_path
         self.as_of = as_of
         self.decade = decade
+        # v20: 按时代绰号覆盖 {cid: 绰号} — 十年传记重跑时绰号取该十年末熔件,
+        # 不随最新档漂移 (878 时代「嗜血者」不会被 888 档的「屠狼者」覆盖)
+        self._nick_override = dict(nickname_override or {})
         self._lt = ((melt.get("landed_titles") or {}).get("landed_titles") or {})
         self._tl = melt.get("traits_lookup") or []
         self._chars = cl.all_characters(melt)
@@ -668,7 +672,10 @@ class Facts:
 
     def nickname(self, cid):
         """角色昵称 (v17): 熔件 nickname_text 直接就是中文昵称 (勇敢者/铁腕…),
-        无则 ''。"""
+        无则 ''。v20: 按时代覆盖优先 (十年传记重跑时绰号取自该十年末熔件)。"""
+        ov = self._nick_override or {}
+        if cid in ov:
+            return ov[cid] or ""
         c = self._chars.get(str(cid)) or {}
         return (c.get("nickname_text") or "").strip()
 
@@ -687,7 +694,14 @@ class Facts:
         东方 姓+名“绰号”), 不追加世系编号 — 编号让位于绰号 (秃头查理/青年路易);
         无绰号 → 仅西方名序 (名·家名) 标编号, 紧跟名 (史书惯例: 路易十四/查理二世,
         鲁斯兰二世·克里维奇, 不给姓冠编号); 东方人名 (姓+名 无分隔) 与单段名无编号;
-        十起不带世 (路易十一)。"""
+        十起不带世 (路易十一)。
+        v20: 天皇座非统治者子女先走「名+亲王/内亲王」(利永亲王), 不拼宗族姓。"""
+        tn = self._tenno_prince_name(cid, date)
+        if tn:
+            nick = self.nickname(cid)
+            if nick:
+                return f"{tn}“{nick}”"
+            return tn
         nm = self.name_or(cid)
         if not nm:
             return nm
@@ -1032,6 +1046,12 @@ class Facts:
             if not names:
                 continue
             line = f"{self.date(d)}任{'/'.join(names)}之主"
+            # v20 (B3): 无地营地头衔 (x_, 冒险者营地/教团) 显式标注 —
+            # 防模型把「东邪之主」等营地头衔当成有领地的普通头衔
+            if ids and all(
+                    (self._lt.get(str(t)) or {}).get("key", "").startswith("x_")
+                    for t in ids):
+                line += "（无地冒险者营地）"
             # 真正失去 (不在持有集) 且此前在组内的头衔
             lost_names = []
             for t in prev_ids:
@@ -1461,14 +1481,8 @@ class Facts:
             return v
         return "公主" if female else "王子"
 
-    def prince_title(self, cid):
-        """王子/公主称号: 角色无头衔, 且父/母首要头衔层级 ∈ {王国,帝国,霸权}
-        (王国/帝国/霸权统治者子女都用此模板)。前缀 = 父头衔名+层级词
-        (独立天朝制王国=「国」, 如大理国王子; 封臣=「路」, 如青徐路公子;
-        伊斯兰: 家族名+苏丹国/哈里发国) + 王子词。"""
-        tier0, _ = self._primary_title_at(cid)
-        if tier0 is not None:
-            return ""  # 自己已有头衔, 不适用
+    def _parents_of_cid(self, cid):
+        """角色父母 id 列表 (缓存 family → 熔件 family_data 兜底)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         parents = []
         for k in ("father", "mother"):
@@ -1480,6 +1494,64 @@ class Facts:
                 v = fd.get(k)
                 if v is not None:
                     parents.extend(v if isinstance(v, list) else [v])
+        return [int(x) for x in parents if isinstance(x, int) or str(x).isdigit()]
+
+    def _tenno_prince_word(self, cid, date=None):
+        """天皇座 (k_chrysanthemum_throne) 非统治者子女的称号词 → '亲王'/'内亲王';
+        不适用返回 ''。v20: 现实/中文史传口径 — 天皇后代称「惟仁亲王/井上内亲王」,
+        名在前、称号在后, 无「高御座」前缀 (高御座是御座名, 游戏模组虚构的家族式前缀)。"""
+        try:
+            tier0, _ = self._primary_title_at(cid, as_of=date)
+            if tier0 is not None:
+                return ""  # 自己已有头衔, 不适用
+        except Exception:
+            return ""
+        for pid2 in self._parents_of_cid(cid):
+            try:
+                _t, ptid = self._primary_title_at(pid2, as_of=date)
+            except Exception:
+                continue
+            if ptid is None:
+                continue
+            if (self._lt.get(str(ptid)) or {}).get("key") not in self._TENNO_TITLE_KEYS:
+                continue
+            c = self._chars.get(str(cid)) or {}
+            female = bool(c.get("female"))
+            key = ("princess_tenno_female_japanese" if female
+                   else "prince_tenno_male_japanese")
+            w = L.loc(self.table, key)
+            if not w or w.startswith("$") or w.startswith("["):
+                return ""
+            return w
+        return ""
+
+    def _tenno_prince_name(self, cid, date=None):
+        """天皇座子女的完整名 '利永亲王'/'馨子内亲王' (名+称号, 不带宗族姓);
+        无给定名/不适用返回 ''。"""
+        word = self._tenno_prince_word(cid, date)
+        if not word:
+            return ""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        given = rec.get("name_zh") or ""
+        if not given:
+            c = self._chars.get(str(cid)) or {}
+            given = cl.name_zh(c) or ""
+        if not given:
+            return ""
+        return given + word
+
+    def prince_title(self, cid):
+        """王子/公主称号: 角色无头衔, 且父/母首要头衔层级 ∈ {王国,帝国,霸权}
+        (王国/帝国/霸权统治者子女都用此模板)。前缀 = 父头衔名+层级词
+        (独立天朝制王国=「国」, 如大理国王子; 封臣=「路」, 如青徐路公子;
+        伊斯兰: 家族名+苏丹国/哈里发国) + 王子词。
+        v20: 天皇座子女的称号已并入显示名 (name_with_regnal), 此处返回 '' 防重复。"""
+        if self._tenno_prince_word(cid):
+            return ""
+        tier0, _ = self._primary_title_at(cid)
+        if tier0 is not None:
+            return ""  # 自己已有头衔, 不适用
+        parents = self._parents_of_cid(cid)
         if not parents:
             return ""
         best = None  # (rank, ptier, parent_cid)
@@ -2278,6 +2350,27 @@ class Facts:
         loc = (c.get("alive_data") or {}).get("location") or {}
         return loc.get("location") if isinstance(loc, dict) else loc
 
+    def player_station_at(self, date):
+        """主角在 date (含) 前最后已知驻地伯爵领名 (v20, B1/B3):
+        依 cache.player_locations 位置史 (只记变化点); 无 ≤date 记录时用最早
+        一条; 无位置史/映射失败返回 ''。"""
+        hist = self.cache.get("player_locations") or []
+        if not hist:
+            return ""
+        dk = cl.date_key(date) if date else None
+        prov = None
+        for loc in hist:
+            if not loc.get("date"):
+                continue
+            if dk is None or cl.date_key(loc["date"]) <= dk:
+                prov = loc.get("province")
+        if prov is None:
+            prov = (hist[0] or {}).get("province")
+        county = self.county_at_province(prov)
+        if county is None:
+            return ""
+        return self.title(county) or ""
+
 
 # ---------------------------------------------------------------------------
 # 事实渲染
@@ -2349,7 +2442,9 @@ _FEUD_ROLE_RE = re.compile(
 
 
 def _death_sentence(f, cid):
-    """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。"""
+    """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
+    v20 (B1): 凶手为主角时附「时主角驻X」— 击杀无案发地点数据, 依主角位置史
+    标注其当时驻地, 防模型把冒险者时期/游走期的击杀全部安到定居后的桂州。"""
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     d = rec.get("death") or {}
     if not d:
@@ -2358,7 +2453,13 @@ def _death_sentence(f, cid):
     # 施事者名字缺失时用「某人」 (比默认「一位人物」更像自然语言)
     clause = _death_clause(f.table, d.get("reason"), d.get("killer"),
                            lambda k: f.name_or(k, "某人"))
-    return f"{name}殁于{f.date(d.get('date'))}，{clause}。"
+    s = f"{name}殁于{f.date(d.get('date'))}，{clause}。"
+    pid = f.cache.get("player_id")
+    if pid is not None and d.get("killer") == pid:
+        st = f.player_station_at(d.get("date"))
+        if st:
+            s = s.rstrip("。") + f"（时主角驻{st}）。"
+    return s
 
 
 # v14: 30 个戏剧性模块 — 十年小传按主题切片的事实组织 (研究_戏剧模块化.md)。
@@ -2639,6 +2740,11 @@ def _timeline(f):
                         by = str(drec.get("birth") or "").split(".")[0] or ""
                         if by:
                             s = s.rstrip("。") + f"（{by}年生）。"
+                        # v20 (B1): 依谋杀发生日附主角当时驻地 — 击杀无案发地点,
+                        # 防模型把游走期击杀锚定到定居后的治所
+                        st = f.player_station_at(mem.get("creation_date"))
+                        if st:
+                            s = s.rstrip("。") + f"（时主角驻{st}）。"
                         old = deaths.get(dead)
                         if old is None or 2 > old[0]:
                             deaths[dead] = (2, mem.get("creation_date"),
@@ -3998,6 +4104,11 @@ def _killed_by_player(f):
                                        mdd.get("killer"),
                                        lambda k: f.name_or(k, "某人"))
                 ds = f"{f.name_or(cid)}殁于{f.date(mdd.get('date'))}，{clause}。"
+                # v20 (B1): 熔件反查兜底同样附主角当时驻地
+                if mdd.get("killer") == pid:
+                    st = f.player_station_at(mdd.get("date"))
+                    if st:
+                        ds = ds.rstrip("。") + f"（时主角驻{st}）。"
         entry = {
             "id": cid,
             # v17: 死者名带世系编号 (以死期首要头衔计算, 鲁斯兰·克里维奇二世)
@@ -4005,6 +4116,8 @@ def _killed_by_player(f):
             "birth": f.date(prof.get("birth")),
             "death": ds or "（死因不详）",
             "death_date": (prof.get("death") or {}).get("date") or "9999.9.9",
+            # v20 (B1): 主角当时所驻伯爵领 (依死亡日期反查位置史; 无则 '')
+            "killer_where": f.player_station_at((prof.get("death") or {}).get("date")),
             "house": _dynasty_display(prof.get("dynasty_name"),
                                       prof.get("house_name")),
             "house_branch": _house_branch(prof.get("dynasty_name"),
@@ -4122,6 +4235,63 @@ def _wandering_trail(f):
     return out
 
 
+def _cn_date_key(s):
+    """'867年1月1日任…' 行首中文日期 → date_key; 解析失败返回 None。"""
+    m = re.match(r"^(\d+)年(\d+)月(\d+)日", s or "")
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def _protagonist_stations(f):
+    """主角身份/驻地变化年表 (v20, B3): 头衔阶段 (无地营地显式标注) + 逐年驻地,
+    按日期合并排序。十年传记按 as_of 截断。返回干净中文行列表, 上限 40 行。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return []
+    items = []  # (date_key, 行文本)
+    # 1) 头衔/身份阶段 (held_titles 已带 无地冒险者营地 标注; 本身按 as_of 截断)
+    try:
+        for ln in f.held_titles(pid):
+            dk = _cn_date_key(ln)
+            if dk is not None:
+                items.append((dk, ln))
+    except Exception:
+        pass
+    # 2) 驻地轨迹 (player_locations → 伯爵领名; 按 as_of 截断)
+    hist = cache.get("player_locations") or []
+    if f.as_of:
+        aok = cl.date_key(f.as_of)
+        hist = [loc for loc in hist
+                if not loc.get("date") or cl.date_key(loc.get("date")) <= aok]
+    seen = set()
+    for loc in hist:
+        if not loc.get("date"):
+            continue
+        county = f.county_at_province(loc.get("province"))
+        if county is None:
+            continue
+        cname = f.title(county)
+        if not cname:
+            continue
+        key = (loc.get("date"), cname)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append((cl.date_key(loc["date"]), f"{f.date(loc['date'])}驻{cname}"))
+    items.sort(key=lambda x: x[0])
+    # 按行文本去重 (同日 头衔阶段+驻地 两行都保留, 只去掉完全重复的行)
+    out = []
+    seen_line = set()
+    for dk, ln in items:
+        if ln in seen_line:
+            continue
+        seen_line.add(ln)
+        out.append(ln)
+    return out[:40]
+
+
 def _court_luminaries(f):
     """群英录 (v5): 行政制玩家时, 朝中要员 (主角相关的有政治类记忆或历任高位头衔者)。
     剔除路人 (只收主角/家人/结友结怨者), 截断 60 名防提示词膨胀。
@@ -4179,12 +4349,15 @@ def _genealogy(f):
     return lines
 
 
-def build_facts(cache, melt, names_path=None, as_of=None, decade=None):
+def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
+                nickname_override=None):
     """渲染干净事实集。melt 为 dict (已加载)。
     as_of (v11): 传记数据截止日期; 十年传记传十年末, 官职/历任/时间线/朝局按此截断。
     decade (v17): 十年传记序号 — 时间线/概览/摘要/刺客列传只收本十年
-    (as_of−10年, as_of]; 终传/在世传 None 收全期。"""
-    f = Facts(cache, melt, names_path, as_of=as_of, decade=decade)
+    (as_of−10年, as_of]; 终传/在世传 None 收全期。
+    nickname_override (v20): {cid: 绰号} 按时代绰号覆盖 (十年传记重跑用)。"""
+    f = Facts(cache, melt, names_path, as_of=as_of, decade=decade,
+              nickname_override=nickname_override)
     period = ""
     sources = cache.get("sources") or []
     if sources:
@@ -4222,6 +4395,8 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None):
         "bio_style": f.bio_style(),
         "killed": _killed_by_player(f),
         "wandering": _wandering_trail(f),
+        # v20 (B3): 主角身份/驻地变化年表 (共享前缀【主角处境】数据源)
+        "protagonist_stations": _protagonist_stations(f),
         "luminaries": _court_luminaries(f),
         "genealogy": _genealogy(f),
         # v7 新增: 宫廷/营地官职 + 家族家训
