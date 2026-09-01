@@ -531,6 +531,13 @@ _MARRIAGE_TYPES = {
     "married", "grand_wedding_completed_guest", "broke_up_lovers",
     "became_lovers", "had_sex", "spouse_died", "divorced",
 }
+# v20 (B1): 死句中由 _death_sentence 嵌入的「（时主角驻X）」标注 — 档案行里
+# 改用独立行「某某于某年某月某日死于（主角当时驻X）」呈现, 故先从死句剥离。
+_STATION_RE = re.compile(r"（时主角驻[^）]*）")
+
+
+def _strip_station(s):
+    return _STATION_RE.sub("", s or "")
 
 
 def _assassin_kill_lines(facts, cache, k):
@@ -545,9 +552,19 @@ def _assassin_kill_lines(facts, cache, k):
     db = k.get("death") or "（死因不详）"
     if db.startswith(nm + "殁于"):
         db = "殁于" + db[len(nm) + 2:]
+    db = _strip_station(db)  # v20: 驻地标注改独立行呈现
     bd = k.get("birth") or ""
     head = f"（生于{bd}，" if bd else "（"
     lines.append(f"死者：{disp}{head}{db}）")
+    # v20 (B1): 主角当时所驻伯爵领 — 击杀无案发地点, 依位置史直出
+    # 「某某于某年某月某日死于（主角当时驻X）」
+    st = (k.get("killer_where") or "").strip()
+    if st:
+        dd = k.get("death_date") or ""
+        if dd and dd != "9999.9.9":
+            lines.append(f"{nm}于{llm.fmt_cn_date(dd)}死于（主角当时驻{st}）。")
+        else:
+            lines.append(f"{nm}死于（主角当时驻{st}）。")
     # 亲缘: 父/母/妻/妾 (从缓存 family 取)
     fam = ((cache.get("characters") or {}).get(str(k.get("id"))) or {}).get("family") or {}
     bits = []
@@ -666,7 +683,13 @@ def _article_facts(facts, cache, key, section=None):
         blocks["人物档案"] = "\n".join(_profile_lines(facts))
         fam_lines = []
         fam_names = []
-        for cid in sorted(_family_ids(cache)):
+        # v20: 家室列传按 as_of 过滤家人 — 十年传记用新缓存重跑时,
+        # 出生晚于十年末的子女不写入 (与人物档案子女行 _asof_ids 同口径)
+        fam_ids = _family_ids(cache)
+        fi = facts.get("_facts")
+        if fi is not None:
+            fam_ids = set(F._asof_ids(fi, sorted(fam_ids)))
+        for cid in sorted(fam_ids):
             p = facts["characters"].get(str(cid))
             if not p or not p.get("name"):
                 continue
@@ -744,6 +767,7 @@ def _article_facts(facts, cache, key, section=None):
                     db = k.get("death") or ""
                     if db.startswith(nm + "殁于"):
                         db = "殁于" + db[len(nm) + 2:]  # 去掉「名+殁于」前缀
+                    db = _strip_station(db)  # v20: 开篇压缩名录不带驻地标注
                     parts.append(f"死者：{disp}（{db}）" if db and db != "（死因不详）"
                                  else f"死者：{disp}")
                 blocks["刀下诸魂"] = "\n".join(parts)
@@ -863,6 +887,12 @@ def _shared_facts_block(facts):
     else:
         life_note = "【现状】在世（截至最后一份存档）"
     profile_txt = _render_block("【人物档案】", _profile_lines(facts)) or "（无档案）"
+    # v20 (B3): 主角身份/驻地变化年表 — 无地冒险者→定居 的轨迹直给模型,
+    # 本纪/刺客列传/朝局共用 (共享前缀), 防击杀地点被锚定到定居后的治所
+    stations_txt = ""
+    stations = facts.get("protagonist_stations") or []
+    if stations:
+        stations_txt = _render_block("【主角处境】", stations)
     # v15: 十年/一生概览 (程序直算统计: 结怨9次、谋杀5次…, 给模型数据锚点)
     stats_txt = ""
     ds = facts.get("decade_stats") or []
@@ -876,6 +906,8 @@ def _shared_facts_block(facts):
     own = F._year_summary(facts.get("timeline") or [], pname)
     own_txt = _render_block("【主角大事摘要】", own) if own else ""
     out = [f"【传主】{name}\n【家族】{house}\n{life_note}\n\n", profile_txt]
+    if stations_txt:
+        out.append("\n\n" + stations_txt)
     if stats_txt:
         out.append("\n\n" + stats_txt)
     if own_txt:
@@ -1118,7 +1150,13 @@ def _assemble(facts, intro, leads, sections, articles):
         cutoff = facts.get("as_of") or facts.get("last_date")
         span = f"截至{llm.fmt_cn_date(cutoff or '?')}"
     parts.append(f"> 家族：{house}｜人物：{p.get('name')}｜{span}")
-    parts.append(f"> 存档来源：{' / '.join(facts.get('sources') or [])}（共{len(facts.get('sources') or [])}份快照）")
+    # v20: 十年传记的存档来源按 as_of 截断 — 用新缓存重跑旧十年时,
+    # 不列出十年末之后的快照 (「截至878年」不出现 879–888 的档)
+    srcs = list(facts.get("sources") or [])
+    if facts.get("as_of"):
+        aok = cl.date_key(facts["as_of"])
+        srcs = [s for s in srcs if cl.date_key(s) <= aok]
+    parts.append(f"> 存档来源：{' / '.join(srcs)}（共{len(srcs)}份快照）")
     parts.append("")
     parts.append(intro.strip())
     for i, a in enumerate(articles, 1):
@@ -1381,12 +1419,15 @@ def _is_admin(facts):
     return gov in ("行政官制", "administrative_government")
 
 
-def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None):
+def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
+                       nickname_override=None):
     """生成传记 Markdown 并写入 out_path。返回 (md_text, facts, articles)。
     decade: 十年传记序号 (第N个十年), None 表示终传或普通在世传记。
-    as_of (v11): 数据截止日期 — 十年传记传十年末, 官职/历任/时间线/朝局按此截断。"""
+    as_of (v11): 数据截止日期 — 十年传记传十年末, 官职/历任/时间线/朝局按此截断。
+    nickname_override (v20): {cid: 绰号} — 十年传记按时代取绰号, 防重跑漂移。"""
     names_path = os.path.join(cfg.get("data_dir", ""), "names.json")
-    facts = F.build_facts(cache, melt, names_path, as_of=as_of, decade=decade)
+    facts = F.build_facts(cache, melt, names_path, as_of=as_of, decade=decade,
+                          nickname_override=nickname_override)
     articles = build_articles(facts, cache, cfg)
 
     intro_cfg = dict(cfg)
@@ -1451,7 +1492,11 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None)
     else:
         piece = "传记"
     header = (f"<!-- 数据来源: CK3 年度存档快照 | 家族: {facts.get('house', '')} | "
-              f"人物: {person} | 出生: {birth} | 篇目: {piece}"
+              f"人物: {person} | 人物ID: {facts.get('player_id')}"
+              + (f" | 战役ID: {cache.get('playthrough_id')}"
+                 if cache.get("playthrough_id") else "")
+              + (f" | 出生: {birth}" if birth else "")
+              + f" | 篇目: {piece}"
               + (f" | 十年: {decade}" if decade else "")
               + f" | 生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} -->\n\n")
     if out_path:
