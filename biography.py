@@ -575,32 +575,32 @@ def _assassin_kill_lines(facts, cache, k):
 
 
 def _name_or(facts, cache, cid):
-    """角色名 (档案有则用, 否则从缓存原始名取; v14: 仍缺时经 Facts 熔件兜底 —
-    死者父母/配偶多为路人, 未必入缓存, 但熔件全量角色都有名 (玄景),
-    不再回退「角色N」泄露 id)。"""
+    """角色名 (v19: 档案有则用; 否则走 Facts 统一显示名链 name_with_regnal —
+    与档案名同源, 自动带宗族姓/名·姓/绰号/世系, 内部已含 缓存→names→熔件
+    全套兜底; 缓存 name_zh 只是纯名 (不含姓), 只作 _facts 缺失时的保守兜底,
+    否则有宗族的亲属 (父膺廉→金膺廉/妻师娘→周师娘) 会被纯名短路丢姓)。"""
     try:
         p = (facts.get("characters") or {}).get(str(cid)) or {}
         if p.get("name"):
             return p["name"]
     except Exception:
         pass
-    try:
-        r = ((cache.get("characters") or {}).get(str(cid)) or {})
-        nm = r.get("name_zh") or r.get("name_full") or ""
-        if nm:
-            return nm
-    except Exception:
-        pass
-    # v14: 熔件兜底 (Facts.name → display_name 全链: 缓存 → names → 熔件角色解码)
+    # v19: 统一显示名链 (带姓) — 提到缓存纯名之前
     try:
         fi = facts.get("_facts")
         if fi is not None:
-            nm = fi.name(cid)
+            nm = fi.name_with_regnal(cid)
             if nm:
                 return nm
     except Exception:
         pass
-    # v14: 全链 (档案/缓存/熔件) 均取不到时, 用自然占位, 不泄露 id
+    try:
+        r = ((cache.get("characters") or {}).get(str(cid)) or {})
+        nm = r.get("name_full") or r.get("name_zh") or ""
+        if nm:
+            return nm
+    except Exception:
+        pass
     return "（名讳不详）"
 
 

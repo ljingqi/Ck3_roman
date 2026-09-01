@@ -225,13 +225,12 @@ def _cache_pick_key(path, cache):
     return (1, seq, dkey, mt)
 
 
-def find_cache_path(cfg, player_id):
+def find_cache_path(cfg, player_id, playthrough_id=None):
     """查找玩家缓存现有路径 (output 树 + 旧 cache/); 无则返回 None。
-    同玩家存在多个会话副本 (菲利普 / 菲利普2 ...) 时, 取当前/最新会话的一份
-    (_cache_pick_key, 对齐 D:\\Journal _latest_session_folder_by_tag):
-    优先当前 watch 会话文件夹, 其次会话文件夹编号大者 (菲利普2 > 菲利普),
-    再兜底 last_date 最新 — 避免 os.walk 顺序不确定导致新会话加载到陈旧基底,
-    或把旧会话数据误当基底缝合进新会话。"""
+    v18: 可传 playthrough_id — 玩家 id 跨战役复用 (867 自定义角色恒为
+    38701) 时按战役过滤, 只找同战役的缓存; 未传时保持旧行为 (取最新会话)。
+    同玩家同战役多会话副本 (菲利普 / 菲利普3) 取最新会话 (_cache_pick_key,
+    对齐 D:\\Journal _latest_session_folder_by_tag)。"""
     base = cfg.get("output_dir", "")
     best = None
     if os.path.isdir(base):
@@ -243,17 +242,27 @@ def find_cache_path(cfg, player_id):
                 # 否则会以 seq=0 落选后把新档误并进旧会话文件夹 (2026-08-28 事件)
                 if not cache.get("player_id"):
                     continue
+                if playthrough_id is not None \
+                        and cache.get("playthrough_id") != playthrough_id:
+                    continue  # 跨战役同 id 缓存一律排除
                 if best is None or _cache_pick_key(p, cache) > _cache_pick_key(best[0], best[1]):
                     best = (p, cache)
     if best:
         return best[0]
     legacy = os.path.join(cfg.get("cache_dir", ""), f"player_{player_id}.json")
-    return legacy if os.path.isfile(legacy) else None
+    if os.path.isfile(legacy):
+        cache = cl.load_cache(legacy)
+        if cache.get("player_id") and (playthrough_id is None
+                or cache.get("playthrough_id") == playthrough_id):
+            return legacy
+    return None
 
 
 def all_caches(cfg):
-    """{player_id: (path, cache)} 全部玩家缓存 (扫描 output 树 + 旧 cache/)。
-    同玩家多会话副本 (菲利普/菲利普2 ...) 只保留当前/最新会话者。"""
+    """{(player_id, playthrough_id): (path, cache)} 全部玩家缓存。
+    v18: 玩家 id 跨战役复用 (867 自定义角色恒为 38701) — 键改为
+    (player_id, playthrough_id), 同 id 不同战役的缓存互不覆盖;
+    同战役多会话文件夹 (菲利普 / 菲利普3) 仍只保留最新会话者。"""
     out = {}
     for root in (cfg.get("output_dir", ""), cfg.get("cache_dir", "")):
         if not root or not os.path.isdir(root):
@@ -268,15 +277,18 @@ def all_caches(cfg):
                 cache = cl.load_cache(path)
                 if not cache.get("player_id"):
                     continue  # 损坏缓存 (load_cache 已改名留证) 不参与任何战役选路
-                prev = out.get(pid)
-                if prev is None or _cache_pick_key(path, cache) > _cache_pick_key(prev[0], prev[1]):
-                    out[pid] = (path, cache)
+                key = (cache.get("player_id") or pid,
+                       cache.get("playthrough_id"))
+                prev = out.get(key)
+                if prev is None or _cache_pick_key(path, cache) > \
+                        _cache_pick_key(prev[0], prev[1]):
+                    out[key] = (path, cache)
     return out
 
 
-def cache_path_for(cfg, player_id):
+def cache_path_for(cfg, player_id, playthrough_id=None):
     """(兼容旧调用) 玩家缓存路径; 不存在返回 None。"""
-    return find_cache_path(cfg, player_id)
+    return find_cache_path(cfg, player_id, playthrough_id)
 
 
 def folder_display(name):
@@ -355,7 +367,7 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
             return cur
         pt = cache.get("playthrough_id")
         if pt:
-            for _pid, (_path, other) in all_caches(cfg).items():
+            for _key, (_path, other) in all_caches(cfg).items():
                 if other.get("playthrough_id") == pt and other.get("output_folder") \
                         and os.path.isdir(os.path.join(out, other["output_folder"])):
                     return other["output_folder"]
@@ -376,7 +388,7 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
         if key != _WATCH_SESSION["player_key"] and _WATCH_SESSION["player_key"] is not None:
             pt = cache.get("playthrough_id")
             if pt:
-                for _pid, (_path, other) in all_caches(cfg).items():
+                for _key, (_path, other) in all_caches(cfg).items():
                     if other.get("playthrough_id") == pt and other.get("output_folder") \
                             and os.path.isdir(os.path.join(out, other["output_folder"])):
                         _WATCH_SESSION["folder"] = other["output_folder"]
@@ -394,7 +406,7 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
         return cur
     pt = cache.get("playthrough_id")
     if pt:
-        for _pid, (_path, other) in all_caches(cfg).items():
+        for _key, (_path, other) in all_caches(cfg).items():
             if other.get("playthrough_id") == pt and other.get("output_folder") \
                     and os.path.isdir(os.path.join(out, other["output_folder"])):
                 return other["output_folder"]
@@ -456,19 +468,19 @@ def active_cache(cfg):
        continue 误判 菲利普3/菲利普2, 导致汤利第3个十年传记漏生成);
     c) 熔化最新档一次按 playthrough_id 找同战役缓存 (覆盖「新玩家无缓存」);
     d) 回退: 全部缓存中 last_date 最新者。"""
-    caches = all_caches(cfg)
+    caches = all_caches(cfg)  # {(pid, playthrough_id): (path, cache)}
     if not caches:
         return None, None
 
-    def best(ids):
-        return max(ids, key=lambda p: cl.date_key(caches[p][1].get("last_date") or ""))
+    def best(keys):
+        return max(keys, key=lambda k: cl.date_key(caches[k][1].get("last_date") or ""))
 
-    def campaign_pick(ids, newest_date):
+    def campaign_pick(keys, newest_date):
         """从候选缓存中选「当前战役」: 无 last_date 者垫底;
         last_date ≥ 最新档者优先, 与最新档差距最小者优先, 同差取缓存 mtime 新者。"""
         ad = _date_scalar(newest_date or "")
-        def key(p):
-            path, c = caches[p]
+        def key(k):
+            path, c = caches[k]
             mt = _cache_mtime(path)
             ld = c.get("last_date")
             if not ld:
@@ -476,7 +488,7 @@ def active_cache(cfg):
             v = _date_scalar(ld)
             behind = 1 if v < ad else 0  # 落后于最新档 → 次优先
             return (-behind, -abs(ad - v), mt)
-        return max(ids, key=key)
+        return max(keys, key=key)
 
     try:
         saves = scan_saves(cfg.get("save_dir", ""))
@@ -488,11 +500,11 @@ def active_cache(cfg):
         # a) 信封人物名 → 匹配缓存 (与 _catchup 预过滤同一规范化)
         nm = player_char_name(newest["player"])
         if nm:
-            hit = [p for p, (_pp, c) in caches.items()
+            hit = [k for k, (_pp, c) in caches.items()
                    if player_char_name(c.get("player_name")) == nm]
         if not hit:
             # b) 该档日期已并入某缓存 → 该缓存所属战役 (零成本); 平局按时间线贴近度
-            hit = [p for p, (_pp, c) in caches.items()
+            hit = [k for k, (_pp, c) in caches.items()
                    if newest["date"] in (c.get("sources") or [])]
         if not hit:
             # c) 熔化最新档一次 → 按 playthrough_id 找同战役缓存 (覆盖「新玩家无缓存」)
@@ -505,20 +517,20 @@ def active_cache(cfg):
                 except OSError:
                     pass
                 if pt:
-                    hit = [p for p, (_pp, c) in caches.items()
+                    hit = [k for k, (_pp, c) in caches.items()
                            if c.get("playthrough_id") == pt]
             except Exception:
                 hit = []
         if hit:
-            pid = campaign_pick(hit, newest["date"])
-            pt = caches[pid][1].get("playthrough_id")
+            key = campaign_pick(hit, newest["date"])
+            pt = caches[key][1].get("playthrough_id")
             if pt:  # 同战役内取最新缓存 (继位后锚定新统治者)
-                pid = best([p for p, (_pp, c) in caches.items()
+                key = best([k for k, (_pp, c) in caches.items()
                             if c.get("playthrough_id") == pt])
-            return pid, caches[pid][1]
+            return key[0], caches[key][1]
     # d) 全部失败: 回退原逻辑 (最后日期最新)
-    pid = best(list(caches))
-    return pid, caches[pid][1]
+    key = best(list(caches))
+    return key[0], caches[key][1]
 
 
 def same_campaign(cache, melt, player_id):
@@ -549,7 +561,7 @@ def _catchup(cfg, cache, continue_mode=False):
     my_name = player_char_name(cache.get("player_name"))
     save_dir = cfg.get("save_dir", "")
     # 缓存文件写入时刻 = 上次运行已处理完这些存档的分界; 晚于它的存档才是「新档」
-    cache_path = find_cache_path(cfg, pid)
+    cache_path = find_cache_path(cfg, pid, cache.get("playthrough_id"))
     cache_mtime = os.path.getmtime(cache_path) if cache_path else 0.0
     processed = 0
     for s in scan_saves(save_dir):
@@ -590,7 +602,9 @@ def _catchup(cfg, cache, continue_mode=False):
                 continue
             if player_id != pid:
                 llm.log(f"  [继位] {s['date']}: 同战役玩家变为 {player_id}, 新建缓存")
-                cache = cl.load_cache(find_cache_path(cfg, player_id) or "", fresh=True)
+                cache = cl.load_cache(
+                    find_cache_path(cfg, player_id, melt.get("playthrough_id")) or "",
+                    fresh=True)
             new_deaths = []
             if cl.extract_snapshot(cache, melt, s["date"], _new_deaths=new_deaths):
                 _recover_dead_memories(cfg, cache, new_deaths)
@@ -703,7 +717,7 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     cur_ok = cur_bind and os.path.isdir(os.path.join(cfg.get("output_dir", ""), cur_bind))
     if not cur_ok and cache.get("output_folder") != house:
         cache["output_folder"] = house
-        path = find_cache_path(cfg, cache.get("player_id"))
+        path = find_cache_path(cfg, cache.get("player_id"), cache.get("playthrough_id"))
         if path:
             cl.save_cache(cache, path)
     try:
@@ -722,7 +736,7 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
 
 def _process_save(cfg, save, continue_mode=False):
     """熔化并并入一份存档 (watch 用): 熔到临时 → 定玩家/战役文件夹 → 归位。
-    返回处理的玩家 id 或 None。并入阶段异常会清理临时熔件后重新抛出,
+    返回 (玩家 id, playthrough_id) 或 None。并入阶段异常会清理临时熔件后重新抛出,
     由调用方记失败并在下一轮重试 (v7)。"""
     date = save["date"]
     tmp = temp_melt_path(cfg, date)
@@ -742,8 +756,17 @@ def _process_save(cfg, save, continue_mode=False):
         if player_id is None:
             llm.log(f"  {date}: 存档中无玩家角色, 跳过")
             return None
-        path0 = find_cache_path(cfg, player_id)
+        melt_pt = melt.get("playthrough_id")
+        # v18: 按战役过滤找缓存 — 玩家 id 跨战役复用 (867 自定义角色恒为 38701),
+        # 不加战役过滤会加载到旧战役缓存 (汤利→沙逊事件)。
+        path0 = find_cache_path(cfg, player_id, melt_pt)
         cache = cl.load_cache(path0 or "", fresh=True)  # v13: 提取路径独立副本
+        # v18: 兜底闸门 — 战役仍不一致 (无 playthrough 的旧缓存等边角) 时
+        # 从空缓存重建, 旧战役的记忆/头衔历史绝不进入新战役。
+        if cache.get("player_id") is not None and not same_campaign(cache, melt, player_id):
+            llm.log(f"  {date}: 缓存战役与存档战役不一致 (玩家id复用/新局), "
+                    f"从空缓存重建")
+            cache = cl.new_cache()
         # 去重: continue 沿用旧会话 — 该玩家战役已记录过此日期 (轮转副本/同日期重存)
         # → 丢弃临时熔件跳过; watch 每次运行 = 新存档期 (对齐 D:\Journal): 一律新建
         # 编号文件夹并入, 不做跨会话去重, 单次运行内重复由 step_watch 的 mtime/日期兜住。
@@ -779,7 +802,7 @@ def _process_save(cfg, save, continue_mode=False):
         llm.log(f"  并入 {date}: 玩家 {cache.get('player_name')} (id={cache.get('player_id')}), "
                 f"相关人物 {len(cache['characters'])}")
         _cross_check_deaths(cfg, melt, player_id)
-        return player_id
+        return player_id, melt_pt
     except Exception:
         try:
             os.remove(tmp)
@@ -875,46 +898,51 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
 def _cross_check_deaths(cfg, melt, current_player):
     """检查本档 dead_unprunable 中, 是否存在「既有缓存且身份一致」的前代玩家死亡。
     **身份校验**: 名字一致 (防跨战役 id 撞号) + 死亡日期晚于其最后存活档。
-    v7: 预计算 {pid: (path, cache)} 一次, 避免为每个死亡角色 os.walk 整个 output 树。"""
-    caches = all_caches(cfg)
+    v7: 预计算 {pid: (path, cache)} 一次, 避免为每个死亡角色 os.walk 整个 output 树。
+    v18: 玩家 id 跨战役复用 (867 自定义角色恒为 38701) — 同 id 可能有多份缓存,
+    同战役缓存优先, 其余需身份校验通过才采用。"""
+    caches = all_caches(cfg)  # {(pid, pt): (path, cache)}
+    melt_pt = melt.get("playthrough_id")
     for cid, c in (melt.get("dead_unprunable") or {}).items():
         if not isinstance(c, dict):  # v9: none 条目防护 (坏/写入中存档)
             continue
         cid = int(cid)
         if cid == current_player:
             continue
-        hit = caches.get(cid)
-        if not hit:
+        hits = [v for k, v in caches.items() if k[0] == cid]
+        if not hits:
             continue
-        path, prev = hit
-        dd = c.get("dead_data") or {}
-        if not dd.get("date"):
-            continue
-        if prev.get("player_death") is not None:
-            continue
-        # 身份校验: 名字一致
-        rec = (prev.get("characters") or {}).get(str(cid)) or {}
-        cached_name = rec.get("name_zh") or rec.get("name_full") or ""
-        dead_name = cl.name_zh(c)
-        if cached_name and dead_name and cl.zh(cached_name) != cl.zh(dead_name):
-            continue  # id 撞号, 非同一人
-        # 死亡日期必须晚于其最后存活档
-        if cl.date_key(dd.get("date")) <= cl.date_key(prev.get("last_date") or "0.0.0"):
-            continue
-        prev["player_death"] = {
-            "date": dd.get("date"),
-            "reason": dd.get("reason"),
-            "killer": dd.get("killer"),
-            "kills": dd.get("kills") or [],  # v8: 刺客列传数据源之一
-        }
-        cl.save_cache(prev, path)
-        llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 殁于 {dd.get('date')}, "
-                f"原因 {dd.get('reason')} — 待生成终传")
+        hits.sort(key=lambda hv: hv[1].get("playthrough_id") != melt_pt)
+        for path, prev in hits:
+            dd = c.get("dead_data") or {}
+            if not dd.get("date"):
+                continue
+            if prev.get("player_death") is not None:
+                continue
+            # 身份校验: 名字一致
+            rec = (prev.get("characters") or {}).get(str(cid)) or {}
+            cached_name = rec.get("name_zh") or rec.get("name_full") or ""
+            dead_name = cl.name_zh(c)
+            if cached_name and dead_name and cl.zh(cached_name) != cl.zh(dead_name):
+                continue  # id 撞号, 非同一人
+            # 死亡日期必须晚于其最后存活档
+            if cl.date_key(dd.get("date")) <= cl.date_key(prev.get("last_date") or "0.0.0"):
+                continue
+            prev["player_death"] = {
+                "date": dd.get("date"),
+                "reason": dd.get("reason"),
+                "killer": dd.get("killer"),
+                "kills": dd.get("kills") or [],  # v8: 刺客列传数据源之一
+            }
+            cl.save_cache(prev, path)
+            llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 殁于 {dd.get('date')}, "
+                    f"原因 {dd.get('reason')} — 待生成终传")
+            break
 
 
 _BIO_LOCK = threading.Lock()
-_BIO_PENDING = set()        # 待生成任务 (pid, kind, decade) 去重; kind ∈ {"death","decade"}
-_BIO_LAST_TRY = {}          # (pid, kind, decade) -> time.monotonic() 上次尝试时间 (失败退避)
+_BIO_PENDING = set()        # 待生成任务 ((pid, pt), kind, decade) 去重; kind ∈ {"death","decade"}
+_BIO_LAST_TRY = {}          # ((pid, pt), kind, decade) -> time.monotonic() 上次尝试时间 (失败退避)
 _BIO_RETRY_SECONDS = 300    # 生成失败后至少间隔多久重试
 _BIO_WORKER = None
 _DECADE_SKIP_LOGGED = set()  # 已打「满十年但已死, 跳过」日志的玩家 (每会话一次, 防刷屏)
@@ -931,7 +959,7 @@ def _ensure_bio_worker(cfg):
 
 
 def _campaign_caches(cfg, anchor):
-    """与 anchor 同战役 (playthrough_id 一致) 的玩家缓存 {pid: cache};
+    """与 anchor 同战役 (playthrough_id 一致) 的玩家缓存 {player_id: cache};
     anchor 无 playthrough 时只返回其自身。v10: watch/continue 只检查
     当前战役的玩家, 不再全局扫描旧战役 (对齐 D:\\Journal 会话语义)。"""
     out = {}
@@ -943,9 +971,9 @@ def _campaign_caches(cfg, anchor):
         if pid is not None:
             out[pid] = anchor
         return out
-    for _p, (_path, c) in all_caches(cfg).items():
+    for _k, (_path, c) in all_caches(cfg).items():
         if c.get("playthrough_id") == pt:
-            out[_p] = c
+            out[_k[0]] = c
     return out
 
 
@@ -955,26 +983,31 @@ def _auto_bio(cfg, caches=None):
     v10: caches 限定检查范围 (同战役); 缺省全部 (rebuild 等一次性路径)。"""
     _ensure_bio_worker(cfg)
     if caches is None:
-        caches = {pid: c for pid, (_path, c) in all_caches(cfg).items()}
+        caches = {k: c for k, (_path, c) in all_caches(cfg).items()}
+    else:
+        # v18: 调用方可能传 {pid: cache} (int 键, _campaign_caches) — 统一为
+        # {(pid, pt): cache} 元组键, 与后台 worker 的 ((pid, pt), kind, decade) 一致
+        caches = {(k if isinstance(k, tuple) else (k, c.get("playthrough_id"))): c
+                  for k, c in caches.items()}
     queued = 0
     now = time.monotonic()
     with _BIO_LOCK:
-        for pid, cache in caches.items():
+        for key, cache in caches.items():
             death = cache.get("player_death")
             if not death or cache.get("bio_generated"):
                 continue
             if not cfg.get("auto_bio_on_death", True):
-                llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={pid}) 殁于 "
+                llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={key[0]}) 殁于 "
                         f"{death.get('date')}, 但 auto_bio_on_death=false, 跳过")
                 continue
-            key = (pid, "death", None)
-            if key in _BIO_PENDING:
+            qkey = (key, "death", None)
+            if qkey in _BIO_PENDING:
                 continue
-            if now - _BIO_LAST_TRY.get(key, 0) < _BIO_RETRY_SECONDS:
+            if now - _BIO_LAST_TRY.get(qkey, 0) < _BIO_RETRY_SECONDS:
                 continue
-            _BIO_PENDING.add(key)
+            _BIO_PENDING.add(qkey)
             queued += 1
-            llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={pid}) 已殁于 "
+            llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={key[0]}) 已殁于 "
                     f"{death.get('date')} — 排队生成终传")
     if queued:
         llm.log(f"待生成 {queued} 篇终传")
@@ -1023,15 +1056,20 @@ def _auto_decade_bios(cfg, caches=None):
     v10: caches 限定检查范围 (同战役); 缺省全部。"""
     _ensure_bio_worker(cfg)
     if caches is None:
-        caches = {pid: c for pid, (_path, c) in all_caches(cfg).items()}
+        caches = {k: c for k, (_path, c) in all_caches(cfg).items()}
+    else:
+        # v18: 统一为 {(pid, pt): cache} 元组键 (同 _auto_bio)
+        caches = {(k if isinstance(k, tuple) else (k, c.get("playthrough_id"))): c
+                  for k, c in caches.items()}
     queued = 0
     now = time.monotonic()
     with _BIO_LOCK:
-        for pid, cache in caches.items():
+        for key, cache in caches.items():
+            pid = key[0]
             if cache.get("player_death"):
                 ds = _completed_decades(cache)
-                if ds and pid not in _DECADE_SKIP_LOGGED:
-                    _DECADE_SKIP_LOGGED.add(pid)
+                if ds and key not in _DECADE_SKIP_LOGGED:
+                    _DECADE_SKIP_LOGGED.add(key)
                     llm.log(f"  [十年] 玩家 {cache.get('player_name')} (id={pid}) "
                             f"数据已满十年 {ds} 但已死亡, 按设计跳过 (终传覆盖一生)")
                 continue
@@ -1041,12 +1079,12 @@ def _auto_decade_bios(cfg, caches=None):
             for k in _completed_decades(cache):
                 if k in done:
                     continue
-                key = (pid, "decade", k)
-                if key in _BIO_PENDING:
+                qkey = (key, "decade", k)
+                if qkey in _BIO_PENDING:
                     continue
-                if now - _BIO_LAST_TRY.get(key, 0) < _BIO_RETRY_SECONDS:
+                if now - _BIO_LAST_TRY.get(qkey, 0) < _BIO_RETRY_SECONDS:
                     continue
-                _BIO_PENDING.add(key)
+                _BIO_PENDING.add(qkey)
                 queued += 1
                 llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={pid}) "
                         f"数据已满第{k}个十年 — 排队生成十年传记")
@@ -1058,7 +1096,9 @@ def _auto_decade_bios(cfg, caches=None):
 def _bio_worker_loop(cfg):
     """后台线程: 从队列取任务 (终传 / 十年传记) → 生成 → 置对应标记。
     以磁盘最新缓存为准只翻转标记, 防覆盖主线程刚写入的新档数据。
-    v8: 队列项为 (pid, kind, decade), kind ∈ {"death", "decade"}。"""
+    v8: 队列项为 (pid, kind, decade), kind ∈ {"death", "decade"};
+    v18: 队列键改为 ((pid, playthrough_id), kind, decade) — 玩家 id 跨战役
+    复用 (867 自定义角色恒为 38701), 生成/回写必须落在该战役自己的缓存。"""
     while True:
         key = None
         with _BIO_LOCK:
@@ -1070,9 +1110,10 @@ def _bio_worker_loop(cfg):
         if key is None:
             time.sleep(2)
             continue
-        pid, kind, decade = key
+        pkey, kind, decade = key
+        pid, pt = pkey
         try:
-            path = find_cache_path(cfg, pid)
+            path = find_cache_path(cfg, pid, pt)
             if not path:
                 continue
             cache = cl.load_cache(path)
@@ -1211,6 +1252,7 @@ def step_watch(cfg, continue_mode=False):
             s = _newest_save(save_dir)
             processed = 0
             processed_player = None
+            processed_pt = None
             if s is not None and s["mtime"] > baseline and s["mtime"] != last_mtime:
                 nm = player_char_name(s.get("player"))
                 if nm and last_player is not None and nm != last_player:
@@ -1229,10 +1271,10 @@ def step_watch(cfg, continue_mode=False):
                     llm.log(f"[{time.strftime('%H:%M:%S')}] 检测到新存档: "
                             f"{os.path.basename(s['path'])} ({s['date']})")
                     try:
-                        pid_ok = _process_save(cfg, s, continue_mode=continue_mode)
-                        if pid_ok:
+                        ret = _process_save(cfg, s, continue_mode=continue_mode)
+                        if ret:
                             processed += 1
-                            processed_player = pid_ok
+                            processed_player, processed_pt = ret
                         # 处理完成 (并入或判定重复/跳过) → 记住该文件与该日期;
                         # 失败 (异常) 不推进, 下轮重试
                         last_mtime = s["mtime"]
@@ -1252,12 +1294,13 @@ def step_watch(cfg, continue_mode=False):
             anchor = None
             if continue_mode:
                 if processed_player:
-                    p = find_cache_path(cfg, processed_player)
+                    # v18: 按战役过滤加载 — 玩家 id 跨战役复用 (867 自定义角色恒为 38701)
+                    p = find_cache_path(cfg, processed_player, processed_pt)
                     if p:
                         continue_anchor = cl.load_cache(p)
                 anchor = continue_anchor
             elif processed_player:
-                p = find_cache_path(cfg, processed_player)
+                p = find_cache_path(cfg, processed_player, processed_pt)
                 if p:
                     watch_anchor = cl.load_cache(p)
                 anchor = watch_anchor
@@ -1297,15 +1340,16 @@ def step_status(cfg):
     if not caches:
         llm.log("暂无玩家缓存 (运行 watch 或 continue 建立素材库)")
         return
-    for pid in sorted(caches):
-        path, cache = caches[pid]
+    for key in sorted(caches, key=lambda k: (k[0], str(k[1]))):
+        path, cache = caches[key]
         n_mem = sum(len(c.get("memories") or []) for c in cache["characters"].values())
         death = cache.get("player_death")
         dstr = (f"已殁于 {death.get('date')} ({death.get('reason')})"
                 + (" [终传已生成]" if cache.get("bio_generated") else " [待生成终传]")
                 if death else "在世")
         house = cache.get("house_name") or "(家族未定)"
-        print(f"玩家 {pid}: {cache.get('player_name')}")
+        pt = cache.get("playthrough_id") or "—"
+        print(f"玩家 {key[0]}: {cache.get('player_name')} (战役 {pt})")
         print(f"  家族: {house} | 来源档: {cache.get('sources')} | 最后日期: {cache.get('last_date')}")
         print(f"  相关人物: {len(cache['characters'])} | 累计记忆: {n_mem} | 状态: {dstr}")
         print()
@@ -1313,17 +1357,38 @@ def step_status(cfg):
 
 def step_bio(cfg, player_id=None, decade=None):
     """手动生成传记。player_id 缺省取当前战役 (最新存档所属战役) 的玩家。
-    decade 非空时生成第 N 个十年传记 (验证十年功能/补档用)。"""
+    decade 非空时生成第 N 个十年传记 (验证十年功能/补档用)。
+    v18: 玩家 id 跨战役复用 (867 自定义角色恒为 38701) — 同 id 多战役
+    缓存时优先当前战役 (active_cache 的 playthrough), 无法判定时取
+    last_date 最新者并在日志说明。"""
     caches = all_caches(cfg)
     if not caches:
         llm.log("暂无玩家缓存 (先运行 watch/continue)")
         return None
     if player_id is None:
         player_id, _ = active_cache(cfg)
-    if player_id not in caches:
+    if player_id is None:
+        return None
+    cands = {k: v for k, v in caches.items() if k[0] == player_id}
+    if not cands:
         llm.log(f"玩家 {player_id} 无缓存")
         return None
-    path, cache = caches[player_id]
+    if len(cands) == 1:
+        key = next(iter(cands))
+    else:
+        # 同 id 跨战役: 优先当前战役 (active_cache 按最新存档解析)
+        act_pid, act = active_cache(cfg)
+        act_pt = act.get("playthrough_id") if act else None
+        key = next((k for k in cands if k[1] == act_pt), None)
+        if key is None:
+            key = max(cands, key=lambda k: cl.date_key(
+                cands[k][1].get("last_date") or ""))
+            llm.log(f"玩家 {player_id} 存在多战役缓存且未匹配当前战役, "
+                    f"取 {cands[key][1].get('player_name')} "
+                    f"(last={cands[key][1].get('last_date')})")
+    _path, cache = cands[key]
+    llm.log(f"生成传记: {cache.get('player_name')} (id={player_id}, "
+            f"战役={cache.get('playthrough_id')})")
     out_path, _ = generate_bio(cfg, cache, force=True, decade=decade)
     return out_path
 
@@ -1375,7 +1440,8 @@ def step_rebuild_cache(cfg):
         if not folder:
             # 旧根目录熔件 (legacy 布局): 与既有根熔件合并, 首次并入后解析会话文件夹
             if ent is None:
-                prev = cl.load_cache(find_cache_path(cfg, player_id) or "")
+                prev = cl.load_cache(
+                    find_cache_path(cfg, player_id, melt.get("playthrough_id")) or "")
                 cache = cl.new_cache()
                 if prev.get("player_death"):
                     cache["player_death"] = prev["player_death"]
@@ -1465,11 +1531,12 @@ def step_migrate(cfg):
         else:
             llm.log("冯·大马士革 已存在, 跳过更名")
     if rename_map:
-        for pid, (_path, cache) in all_caches(cfg).items():
+        for key, (_path, cache) in all_caches(cfg).items():
             f = cache.get("output_folder")
             if f in rename_map:
                 cache["output_folder"] = rename_map[f]
-                cl.save_cache(cache, find_cache_path(cfg, pid) or _path)
+                cl.save_cache(cache, find_cache_path(
+                    cfg, key[0], cache.get("playthrough_id")) or _path)
     # 3) 重建 (v4)
     step_rebuild_cache(cfg)
     llm.log("迁移完成: 缓存已按 v4 重建")
@@ -1492,7 +1559,7 @@ def _legacy_folder_for(cfg, cache, pid):
         return f2
     pt = cache.get("playthrough_id")
     if pt:
-        for _pid, (_p, other) in all_caches(cfg).items():
+        for _key, (_p, other) in all_caches(cfg).items():
             if other.get("playthrough_id") == pt and other.get("output_folder") \
                     and os.path.isdir(os.path.join(out, other["output_folder"])):
                 return other["output_folder"]
