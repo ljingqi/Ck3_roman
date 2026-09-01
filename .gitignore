@@ -1,14 +1,23 @@
 # 隐私与密钥
 config.json
 
+# 本地备份 (勿提交；曾误提交 _backup_20260829 超大文件导致无法 push)
+_backup_*/
+*.bak
+*.corrupt*
+
 # 生成物 (可再生成)
 data/melt_*.json
+data/player_*.json
 cache/
 logs/
 output/
 
 # 研究文档 (一次性排查脚本与输出)
 experiments/
+
+# 第三方工具 (README 已说明需自行下载到 tools/)
+tools/rakaly.exe
 
 # Python
 __pycache__/
