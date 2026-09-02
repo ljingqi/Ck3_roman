@@ -1383,6 +1383,12 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         langs = (c.get("alive_data") or {}).get("languages") or []
         if langs:
             rec["languages"] = list(langs)
+        # v24: 角色最近已知所在省份 (存活期每快照更新; 死亡写入时复制进
+        # rec.death.location_province, 供刺客列传/时间线的受害者所在地标注)。
+        _loc = (c.get("alive_data") or {}).get("location") or {}
+        _prov = _loc.get("location") if isinstance(_loc, dict) else _loc
+        if isinstance(_prov, int):
+            rec["last_location"] = {"date": date_label, "province": _prov}
         # 特质与 trait_history (v4): 每快照 diff
         new_traits = c.get("traits") or []
         old_traits = rec.get("traits") or []
@@ -1452,6 +1458,16 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 hist = cache.setdefault("player_locations", [])
                 if not hist or hist[-1].get("province") != prov:
                     hist.append({"date": date_label, "province": prov})
+            # v24: 营地宗旨史 (历任营地阶段称呼词用: 头目/领袖/队长…);
+            # 营地宗旨是持有者律法 (camp_purpose_*), 只记变化点防膨胀。
+            if ld.get("government") == "landless_adventurer_government":
+                _purpose = next(
+                    (str(x).split("_", 2)[2] for x in (ld.get("laws") or [])
+                     if str(x).startswith("camp_purpose_")), "")
+                if _purpose:
+                    _ph = cache.setdefault("camp_purposes", [])
+                    if not _ph or _ph[-1].get("purpose") != _purpose:
+                        _ph.append({"date": date_label, "purpose": _purpose})
             # 玩家所属家族名 (姓名字显示用, v4: 存纯家族名)
             if rec.get("dynasty_house") is not None:
                 h = house_name_zh(melt, rec["dynasty_house"])
@@ -1474,6 +1490,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 "liege_title": dd.get("liege_title"),
                 "named_title": dd.get("named_title"),
             }
+            # v24: 死前最近已知所在省份 (存活期快照捕获; 旧缓存/死后才入缓存无则缺省)
+            if (rec.get("last_location") or {}).get("province") is not None:
+                rec["death"]["location_province"] = rec["last_location"]["province"]
             if _new_deaths is not None:
                 _new_deaths.append(cid)
         # 记忆: alive_data.memories → database

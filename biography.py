@@ -63,6 +63,15 @@ WORLD_FRAME_RULE = (
     "所有人物、家族、官职、事件、日期、数字一律以资料为准, 资料未提供的视为不存在或未知。"
 )
 
+# v24: 平实用词 (用户决策) — 死亡一律现代平实词, 不用文言等级词 (崩/薨/殁/殒/卒等)。
+# 正向锚点: 只列应写的词与例句, 让模型按这一套词汇表达全部死亡事件。
+PLAIN_WORD_RULE = (
+    "「平实用词」: 一切死亡事件一律用现代平实词表达——死于(某年某月某日)、"
+    "病逝、去世、逝世、战死、遇害、被杀、被处死。"
+    "例:「某年某月某日，某人死于某地」「某人病逝于某年」「某人战死/遇害/被杀」。"
+    "帝王、君主、贵胄与庶民一律用同一套词; 全文的死亡表达与这套词完全一致。"
+)
+
 # 各篇文章的板块名 (首段/中段/尾段) — tail 按文风取
 SECTION_TITLES = {
     "benji":   {"lead": "开篇·家世与出身", "mid": "纪事·一生大事", "tail": None},
@@ -540,9 +549,9 @@ _MARRIAGE_TYPES = {
     "married", "grand_wedding_completed_guest", "broke_up_lovers",
     "became_lovers", "had_sex", "spouse_died", "divorced",
 }
-# v20 (B1): 死句中由 _death_sentence 嵌入的「（时主角驻X）」标注 — 档案行里
-# 改用独立行「某某于某年某月某日死于（主角当时驻X）」呈现, 故先从死句剥离。
-_STATION_RE = re.compile(r"（时主角驻[^）]*）")
+# v20 (B1): 死句中由 _death_sentence 嵌入的「（时主角驻X）」标注; v24 起改为
+# 受害者所在地「（死于X）」。档案行里两式标注都改独立行呈现, 故先从死句剥离。
+_STATION_RE = re.compile(r"（(?:时主角驻|死于)[^）]*）")
 
 
 def _strip_station(s):
@@ -551,29 +560,31 @@ def _strip_station(s):
 
 def _assassin_kill_lines(facts, cache, k):
     """一名死者的新口径档案行: 官职名 + 生卒 + 死句 + 亲缘 + 婚恋记忆。
-    返回 ['死者：唐皇帝李漼（殁于878年4月9日，被崔佛·菲利普处决。）', …]。
+    返回 ['死者：唐皇帝李漼（死于878年4月9日，被崔佛·菲利普处决。）', …]。
     v16: 死者行带出生日期 — 防止同名/近名角色被误认 (里瓦朗 vs 里瓦尔:
-    生于830年的萨洛蒙亲生子不可能被当成869年私通所出之子)。"""
+    生于830年的萨洛蒙亲生子不可能被当成869年私通所出之子)。
+    v24: 死因不详不再叠双层括号; 地点标注改受害者所在男爵领独立行。"""
     lines = []
     nm = k["name"]
     off = k.get("office") or ""
     disp = f"{off}{nm}" if off else nm
-    db = k.get("death") or "（死因不详）"
-    if db.startswith(nm + "殁于"):
-        db = "殁于" + db[len(nm) + 2:]
-    db = _strip_station(db)  # v20: 驻地标注改独立行呈现
-    bd = k.get("birth") or ""
-    head = f"（生于{bd}，" if bd else "（"
-    lines.append(f"死者：{disp}{head}{db}）")
-    # v20 (B1): 主角当时所驻伯爵领 — 击杀无案发地点, 依位置史直出
-    # 「某某于某年某月某日死于（主角当时驻X）」
-    st = (k.get("killer_where") or "").strip()
-    if st:
-        dd = k.get("death_date") or ""
-        if dd and dd != "9999.9.9":
-            lines.append(f"{nm}于{llm.fmt_cn_date(dd)}死于（主角当时驻{st}）。")
-        else:
-            lines.append(f"{nm}死于（主角当时驻{st}）。")
+    db = k.get("death") or ""
+    if db.startswith(nm + "死于"):
+        db = "死于" + db[len(nm) + 2:]
+    db = _strip_station(db)  # v20/v24: 地点标注改独立行呈现
+    if db and db != "（死因不详）":
+        bd = k.get("birth") or ""
+        head = f"（生于{bd}，" if bd else "（"
+        lines.append(f"死者：{disp}{head}{db}）")
+    elif k.get("birth"):
+        lines.append(f"死者：{disp}（生于{k.get('birth')}）")
+    else:
+        lines.append(f"死者：{disp}")
+    # v24: 受害者死前最近可知所在男爵领 — 击杀无案发地点, 以受害者位置为锚
+    # 「某某死于X」(X 为男爵领名; 数据无则整行省略)
+    vp = (k.get("victim_place") or "").strip()
+    if vp:
+        lines.append(f"{nm}死于{vp}。")
     # 亲缘: 父/母/妻/妾 (从缓存 family 取)
     fam = ((cache.get("characters") or {}).get(str(k.get("id"))) or {}).get("family") or {}
     bits = []
@@ -778,8 +789,8 @@ def _article_facts(facts, cache, key, section=None):
                     off = k.get("office") or ""
                     disp = f"{off}{nm}" if off else nm
                     db = k.get("death") or ""
-                    if db.startswith(nm + "殁于"):
-                        db = "殁于" + db[len(nm) + 2:]  # 去掉「名+殁于」前缀
+                    if db.startswith(nm + "死于"):
+                        db = "死于" + db[len(nm) + 2:]  # 去掉「名+死于」前缀
                     db = _strip_station(db)  # v20: 开篇压缩名录不带驻地标注
                     parts.append(f"死者：{disp}（{db}）" if db and db != "（死因不详）"
                                  else f"死者：{disp}")
@@ -862,11 +873,11 @@ def _article_facts(facts, cache, key, section=None):
 def _system_msg(style="east", extra=""):
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
     return ("你是史官, 撰写传记。\n\n"
-            f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}")
+            f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n{PLAIN_WORD_RULE}")
 
 
 def _decade_theme_note(facts):
-    """戏剧主题预告 (v14): 数据驱动 Top10 (并列第10名全保留, facts.py
+    """戏剧主题预告 (v14): 数据驱动 Top5 (并列第5名全保留, facts.py
     decade_module_top)。十年传记 (有 as_of) 称「本十年」, 终传/在世称「一生」。
     正向表述指引各篇围绕主题取材。无主题时返回空串。"""
     dm = facts.get("decade_modules") or []
@@ -892,7 +903,7 @@ def _shared_facts_block(facts):
     house = _house_text(facts)
     death = facts.get("player_death")
     if death:
-        rz = death.get("reason_zh") or death.get("reason") or "身故"
+        rz = death.get("reason_zh") or death.get("reason") or "去世"
         life_note = (f"【卒年】{llm.fmt_cn_date(death.get('date'))}，{rz}"
                      "——此为终传")
     elif facts.get("as_of"):
@@ -943,7 +954,7 @@ def build_intro_messages(facts, cfg, articles=None):
         span_cn = f"生于{birth}" if birth else ""
     sys_msg = (
         "你是史官, 为一位乱世人物修传。\n\n"
-        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n\n"
+        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n{PLAIN_WORD_RULE}\n\n"
         "撰写传记「总纲」: 概括此人的一生大势, 预告以下各篇文章, "
         "点明其家族与身份。总纲正文控制在400–600字, 以「太史公曰」作结。"
     )
@@ -987,7 +998,7 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     blocks = _article_facts(facts, cache, key, sec)
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
-        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}"
+        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n{PLAIN_WORD_RULE}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = ""
@@ -1031,7 +1042,7 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
     blocks = _article_facts(facts, cache, key, section)
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
-        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}"
+        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n{PLAIN_WORD_RULE}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = ""
@@ -1158,7 +1169,7 @@ def _assemble(facts, intro, leads, sections, articles):
     death = facts.get("player_death")
     span = ""
     if death:
-        span = f"卒于{llm.fmt_cn_date(death.get('date'))}（终传）"
+        span = f"死于{llm.fmt_cn_date(death.get('date'))}（终传）"
     else:
         cutoff = facts.get("as_of") or facts.get("last_date")
         span = f"截至{llm.fmt_cn_date(cutoff or '?')}"
@@ -1199,8 +1210,8 @@ def _appendix_text(facts):
     - 某月仅 1 条事件时月/日合写 (8月4日 事件), 某年仅 1 条时年/月/日合写 (1067年6月29日 事件);
     - 年表只收与主角相关的事件 (主角或家人姓名出现者), 无关宗亲条目自然略去;
     - 同一事件的多方视角 (如「赵阿足得长子约书亚」/「巴沙尔·冯·大马士革得长子约书亚」,
-      「巴沙尔的亲属约书亚亡故」/「约书亚殁于…」) 按 (日期, 事件语义) 去重, 只保留一条;
-      死亡记录优先于亲属亡故记忆, 出生事件优先保留主角视角。"""
+      「巴沙尔的亲属约书亚去世」/「约书亚死于…」) 按 (日期, 事件语义) 去重, 只保留一条;
+      死亡记录优先于亲属去世记忆, 出生事件优先保留主角视角。"""
     lines = []
     gen = facts.get("genealogy") or []
     if gen:
@@ -1276,18 +1287,18 @@ def _appendix_text(facts):
 
 def _timeline_event_key(body):
     """事件语义键: 同一事件的多方表述归为同键 (日期另行参与)。
-    - 亡故: 「X的亲属Y亡故。」/「X的友人Y亡故。」/「X的仇人Y身亡。」/「Y殁于…」→ ('亡', 'Y亡故。')
+    - 去世: 「X的亲属Y去世。」/「X的友人Y去世。」/「X的仇人Y去世。」/「Y死于…」→ ('亡', 'Y去世。')
     - 出生: 「X得长子Y。」/「X添子Y。」/「X得孪生子。」/「X幼子夭折。」→ ('生', 对象)
     - 其余按原文本。"""
-    m = re.match(r"^.+?的(?:亲属|友人)(.+亡故。)$", body)
+    m = re.match(r"^.+?的(?:亲属|友人)(.+去世。)$", body)
     if m:
         return ("亡", m.group(1))
-    m = re.match(r"^.+?的仇人(.+身亡。)$", body)
+    m = re.match(r"^.+?的仇人(.+去世。)$", body)
     if m:
-        return ("亡", m.group(1).replace("身亡。", "亡故。"))
-    m = re.match(r"^(.+?)殁于\d+年\d+月\d+日", body)
+        return ("亡", m.group(1))
+    m = re.match(r"^(.+?)死于\d+年\d+月\d+日", body)
     if m:
-        return ("亡", m.group(1) + "亡故。")
+        return ("亡", m.group(1) + "去世。")
     m = re.match(r"^.+?(?:得长子|添子)(.+。)$", body)
     if m:
         return ("生", m.group(1))
@@ -1301,11 +1312,11 @@ def _timeline_event_key(body):
 
 
 def _timeline_event_priority(body, pname):
-    """同一事件多视角并存时优先保留哪条: 死亡记录 (信息最全) > 亡故记忆 > 其余;
+    """同一事件多视角并存时优先保留哪条: 死亡记录 (信息最全) > 去世记忆 > 其余;
     同层内主角视角 (文本以主角名开头) 优先。"""
-    if re.search(r"殁于\d+年\d+月\d+日", body):
+    if re.search(r"死于\d+年\d+月\d+日", body):
         tier = 2
-    elif re.search(r"的(?:亲属|友人|仇人).+?(?:亡故|身亡)。$", body):
+    elif re.search(r"的(?:亲属|友人|仇人).+?去世。$", body):
         tier = 1
     else:
         tier = 0

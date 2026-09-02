@@ -681,17 +681,97 @@ def _bio_as_of(cache, decade=None):
     return _decade_cutoff(cache, decade)
 
 
+def _backfill_tail_deaths(cfg, cache):
+    """v24: 终传尾年死者死亡记录回填。
+
+    主角之死若发生在最后一次并入快照 (每年 1月1日) 之后, 其间死去的角色
+    (处决/谋杀受害者等) 的死亡记录只存在于死亡后的下一份存档。若不同步回填,
+    终传的刺客列传/时间线会把这些死者渲染成「死因不详」, v22 处决方式亦无从
+    动态化 (郭氏 1200.2.21 处决 / 1200.9.29 谋杀即此例)。
+
+    取战役文件夹中日期晚于 cache.last_date 的最早熔件, 把其中 dead chars 的
+    死亡记录写入缓存 (仅限缓存已有档案、death 为空、死日晚于 last_date 者,
+    并做名字身份校验防 id 撞号)。返回回填条数。"""
+    folder = cache.get("output_folder") or ""
+    d = os.path.join(cfg.get("output_dir", ""), folder, "data")
+    pat = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json$")
+    cands = []
+    if os.path.isdir(d):
+        for fn in os.listdir(d):
+            m = pat.match(fn)
+            if m:
+                date = ".".join(str(int(x)) for x in m.group(1).split("_"))
+                cands.append((cl.date_key(date), os.path.join(d, fn)))
+    last = cl.date_key(cache.get("last_date") or "0.0.0")
+    cands = sorted((k, p) for k, p in cands if k > last)
+    if not cands:
+        return 0
+    try:
+        melt = cl.load_melt(cands[0][1])
+    except Exception as e:
+        llm.log(f"  [终传回填失败] 载入死亡后档失败: {e}")
+        return 0
+    pid = cache.get("player_id")
+    chars = cache.get("characters") or {}
+    dead = list((melt.get("dead_unprunable") or {}).items())
+    dead += list(((melt.get("characters") or {}).get("dead_prunable") or {}).items())
+    n = 0
+    for cid2, c2 in dead:
+        if not isinstance(c2, dict):  # v9: none 条目防护
+            continue
+        cid2 = str(cid2)
+        if pid is not None and cid2 == str(pid):
+            continue
+        rec = chars.get(cid2)
+        if not rec or rec.get("death"):
+            continue
+        dd = c2.get("dead_data") or {}
+        ddate = dd.get("date")
+        if not ddate or cl.date_key(ddate) <= last:
+            continue
+        # 身份校验: 名字一致 (防跨战役 id 撞号)
+        cn = rec.get("name_zh") or rec.get("name_full") or ""
+        dn = cl.name_zh(c2)
+        if cn and dn and cl.zh(cn) != cl.zh(dn):
+            continue
+        rec["death"] = {
+            "date": ddate,
+            "reason": dd.get("reason"),
+            "killer": dd.get("killer"),
+            "liege": dd.get("liege"),
+            "liege_title": dd.get("liege_title"),
+            "named_title": dd.get("named_title"),
+        }
+        if (rec.get("last_location") or {}).get("province") is not None:
+            rec["death"]["location_province"] = rec["last_location"]["province"]
+        n += 1
+    if n:
+        path = find_cache_path(cfg, cache.get("player_id"),
+                               cache.get("playthrough_id"))
+        if path:
+            cl.save_cache(cache, path)
+        llm.log(f"  [终传回填] 尾年死者死亡记录 {n} 条写入 "
+                f"{folder or cache.get('player_id')}")
+    return n
+
+
 def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     """为一名玩家生成传记 (终传 / 在世传记 / 第decade个十年传记), 刷新家族 index.html。
     返回 (输出路径, facts) 或 None。
     v14: continue_mode — 后台传记线程传 True, 输出文件夹一律按缓存绑定/同战役解析,
     永不新建文件夹 (修复方案_菲利普2.md 问题2: 旧逻辑 watch 运行期间死者终传
-    被 resolve 到新文件夹 菲利普5, 缓存绑定被污染)。"""
+    被 resolve 到新文件夹 菲利普5, 缓存绑定被污染)。
+    v24: 终传生成前回填尾年死者死亡记录 (材料构建前落库)。"""
     melt = load_latest_melt(cfg, cache)
     if melt is None:
         llm.log(f"玩家 {cache.get('player_id')} 无可用 melt, 跳过生成")
         return None
     as_of = _bio_as_of(cache, decade)
+    # v24: 主角死亡晚于最后一次并入快照 → 先把尾年死者死亡记录回填进缓存
+    pd = cache.get("player_death") or {}
+    if pd.get("date") and cl.date_key(pd["date"]) > \
+            cl.date_key(cache.get("last_date") or "0.0.0"):
+        _backfill_tail_deaths(cfg, cache)
     # v20: 十年传记按时代取绰号 — 绰号存于各年熔件 nickname_text, 最新档只是
     # 当前值; 重跑十年1 (as_of=878) 若不覆盖会被 888 档的「屠狼者」漂移。
     # v21: 时代末熔件存在即显式覆盖 (含空绰号) — 该时代无绰号时清空,
@@ -880,7 +960,7 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
                     n = cl.recover_dead_memories_from(idx_or_melt, cache, int(cid))
                 if n:
                     llm.log(f"  [回溯] 角色 {cid} ({rec.get('name_zh') or rec.get('name_full') or ''}) "
-                            f"殁于{ddate}, 从{src}档{('归档' if via_index else '')}恢复 {n} 条记忆")
+                            f"死于{ddate}, 从{src}档{('归档' if via_index else '')}恢复 {n} 条记忆")
                     recovered += 1
             except Exception as e:
                 llm.log(f"  [回溯失败] 角色 {cid}: {e}")
@@ -902,7 +982,7 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
                 n = cl.recover_dead_memories_from(melt, cache, int(cid), chars=chars)
                 if n:
                     llm.log(f"  [回溯] 角色 {cid} ({rec.get('name_zh') or rec.get('name_full') or ''}) "
-                            f"殁于{ddate}, 从{src}档恢复 {n} 条记忆")
+                            f"死于{ddate}, 从{src}档恢复 {n} 条记忆")
                     recovered += 1
             except Exception as e:
                 llm.log(f"  [回溯失败] 角色 {cid}: {e}")
@@ -957,7 +1037,7 @@ def _cross_check_deaths(cfg, melt, current_player):
                 "kills": dd.get("kills") or [],  # v8: 刺客列传数据源之一
             }
             cl.save_cache(prev, path)
-            llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 殁于 {dd.get('date')}, "
+            llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 死于 {dd.get('date')}, "
                     f"原因 {dd.get('reason')} — 待生成终传")
             break
 
@@ -1019,7 +1099,7 @@ def _auto_bio(cfg, caches=None):
             if not death or cache.get("bio_generated"):
                 continue
             if not cfg.get("auto_bio_on_death", True):
-                llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={key[0]}) 殁于 "
+                llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={key[0]}) 死于 "
                         f"{death.get('date')}, 但 auto_bio_on_death=false, 跳过")
                 continue
             qkey = (key, "death", None)
@@ -1029,7 +1109,7 @@ def _auto_bio(cfg, caches=None):
                 continue
             _BIO_PENDING.add(qkey)
             queued += 1
-            llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={key[0]}) 已殁于 "
+            llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={key[0]}) 已死于 "
                     f"{death.get('date')} — 排队生成终传")
     if queued:
         llm.log(f"待生成 {queued} 篇终传")
@@ -1366,7 +1446,7 @@ def step_status(cfg):
         path, cache = caches[key]
         n_mem = sum(len(c.get("memories") or []) for c in cache["characters"].values())
         death = cache.get("player_death")
-        dstr = (f"已殁于 {death.get('date')} ({death.get('reason')})"
+        dstr = (f"已死于 {death.get('date')} ({death.get('reason')})"
                 + (" [终传已生成]" if cache.get("bio_generated") else " [待生成终传]")
                 if death else "在世")
         house = cache.get("house_name") or "(家族未定)"

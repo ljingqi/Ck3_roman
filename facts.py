@@ -53,6 +53,13 @@ TRAIT_ZH = {
 }
 
 CULTURE_TEMPLATE_ZH = {"han": "汉"}
+
+# v24: 中文建制地名 (地名本身以 州/府/京/郡/县 收尾) 不再叠西式/政体层级词 —
+# 贝州伯爵领/杭州州府 → 贝州/杭州 (只对伯爵领 c_ 级生效, 公国/王国名不受影响)。
+_CN_PLACE_SUFFIX_RE = re.compile(r"[州府京郡县]$")
+# v24: CK3 culture_titles 词族 (汉人文化 → 键后缀 chinese: 王/公/侯/伯/将军…)。
+_CULTURE_TITLE_FAMILY = {"han": "chinese"}
+
 FAITH_TYPE_ZH = {"jingxue": "经学"}
 
 GOVERNMENT_ZH = {
@@ -71,14 +78,14 @@ DEATH_REASON_ZH = {
     "death_natural_causes": "寿终", "death_heart_attack": "心疾",
     "death_broken_bones": "骨碎", "death_drinking_passive": "酗酒",
     "death_disappearance": "失踪而亡", "death_plotting": "密谋致死",
-    "death_battle": "战殁", "death_imprisonment": "囚毙",
+    "death_battle": "战死", "death_imprisonment": "囚毙",
     "death_bubonic_plague": "黑死病", "death_physique_bad_2": "体弱不支",
 }
 
 # v11: 游戏 UI 腔/坏文本死因 → 传记雅化 (优先于本地化值, 本地化文案是游戏内
 # 通知腔, 如 blind = 「因绊倒坠落而失去的生命」, 直接进传记会读起来像抄游戏)。
 # v16: 病弱/疾病类死因的本地化是 [GetTrait(...)] 模板 (查不出中文), 原样进
-# 传记会退化成千篇一律的「身故」, 一并雅化为自然短句。
+# 传记会退化成千篇一律的「去世」, 一并雅化为自然短句。
 FLAVOR_DEATH_ZH = {
     "blind": "因绊倒坠落而亡",
     "death_fall": "因坠落而亡",
@@ -92,7 +99,7 @@ FLAVOR_DEATH_ZH = {
     # 成功而未败露的谋杀: 游戏显示「神秘死亡」; v16 起点破为谋杀, 用
     # 「被…秘密谋杀」与明面上败露的「被…谋杀」区分 (施事由 _death_clause 嵌入)
     "death_mysterious": "被秘密谋杀",
-    # 病弱/疾病 (本地化为模板或缺失, 原会退化成「身故」)
+    # 病弱/疾病 (本地化为模板或缺失, 原会退化成「去世」)
     "death_depressed": "忧郁而亡",
     "death_ill": "染疾而亡",
     "death_consumption": "染肺痨而亡",
@@ -132,10 +139,10 @@ MEMORY_TEMPLATES = {
     "became_grudge": "{name}与{other}结怨。",
     "became_nemesis": "{name}与{other}结为死敌。",
     "stopped_being_rivals": "{name}与{other}化解仇怨。",
-    "rival_died": "{name}的仇人{other}身亡。",
-    "friend_died": "{name}的友人{other}亡故。",
-    "relative_died": "{name}的亲属{other}亡故。",
-    "spouse_died": "{name}丧偶，{other}身亡。",
+    "rival_died": "{name}的仇人{other}去世。",
+    "friend_died": "{name}的友人{other}去世。",
+    "relative_died": "{name}的亲属{other}去世。",
+    "spouse_died": "{name}丧偶，{other}去世。",
     "married": "{name}与{other}成婚。",
     "broke_up_lovers": "{name}与{other}分手。",
     "became_lovers": "{name}与{other}相恋。",
@@ -168,7 +175,7 @@ MEMORY_TEMPLATES = {
     "war_won": "{name}赢得战争。",
     "war_lost": "{name}战败。",
     "joined_allys_war": "{name}助盟友作战。",
-    "witnessed_death_battle": "{name}目击战殁。",
+    "witnessed_death_battle": "{name}目击战死。",
     "became_incapable_due_to_battle_concussion": "{name}战伤致残。",
     "completed_hajj_memory": "{name}朝觐归来。",
     "hostage_created_hostage": "{name}为人质。",
@@ -310,14 +317,14 @@ def _daynum(d):
 def _death_reason(table, reason):
     """死因 key → 中文: v11 先查雅化表 (游戏腔/坏文本), 再本地化, 最后兜底表。"""
     if not reason:
-        return "身故"
+        return "去世"
     v = FLAVOR_DEATH_ZH.get(reason)
     if v:
         return v
     v = L.loc(table, reason)
     if v and "[" not in v and "$" not in v and v != "死于":
         return v
-    return DEATH_REASON_ZH.get(reason, "身故")
+    return DEATH_REASON_ZH.get(reason, "去世")
 
 
 # v16: 动作型死因 → 施事句式 (原始 reason key → 动词)。有凶手/行刑者/对手
@@ -835,6 +842,10 @@ class Facts:
                     and word != generic_word
                     and not self._has_hegemon_above(tid)):
                 word = generic_word
+            # v24: 中文建制地名 (地名以州/府/京/郡/县收尾, 贝州/杭州…) —
+            # 不再叠「伯爵领/州府」层级词, 直用地名本身; 西式地名 (施派尔…) 照旧。
+            if key.startswith("c_") and word and _CN_PLACE_SUFFIX_RE.search(name):
+                return name
             # 名字已含任意国名/层级词后缀 (神圣罗马帝国/黠戛斯汗国/教宗国) 或词为空时不追加
             if word and not _STATE_SUFFIX_RE.search(name):
                 return f"{name}{word}"
@@ -1044,8 +1055,10 @@ class Facts:
 
     def held_titles(self, cid):
         """历任 (v11): 只记首要头衔的变化; 层级≤公国时同级营地/庄园并写。
-        依 title history (精确) + realm_history (兜底); 头衔名按日期 + 独立词
-        (独立天朝王国用「国」)。返回 ['867年1月1日任范德林帮之主', ...]"""
+        依 title history (精确) + realm_history (兜底)。
+        v24: 阶段行用游戏口径统治者称呼 — 营地「东邪吸毒头目（无地冒险者营地）」、
+        领地「撒丁尼亚王 / 撒丁王 / 贝州侯」(文化词族×层级×政体), 不再写「任X之主」。
+        返回 ['1200年10月18日任东邪吸毒头目（无地冒险者营地）', ...]"""
         intervals = self._hold_intervals(cid)
         events = []
         loss_types = {}  # (tid, date_key) -> type
@@ -1086,12 +1099,28 @@ class Facts:
         for i, (d, group, lost_now) in enumerate(phases):
             end = phases[i + 1][0] if i + 1 < len(phases) else span_end
             ids = [tid for _g, tid in group]
-            names = [n for n in (self._name_in_span(t, d, end, cid) for t in ids) if n]
-            if not names:
+            parts = []
+            for t in ids:
+                key = (self._lt.get(str(t)) or {}).get("key") or ""
+                if key.startswith("x_"):
+                    # v24: 营地阶段用游戏口径 (营地宗旨词: 头目/领袖/队长…);
+                    # 词取不到时回退旧式「X之主」防失名。
+                    nm = self._name_in_span(t, d, end, cid) or ""
+                    w = self._camp_holder_word(cid, d)
+                    parts.append(f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else ""))
+                else:
+                    # v24: 领地阶段用「头衔地名+统治者称呼词」(游戏口径,
+                    # 文化/政体感知: 撒丁尼亚王/撒丁王/贝州侯…), 不再用「X之主」。
+                    mid = self._span_mid(d, end)
+                    nm = self._name_at_date(t, mid) or self.title_base_name(t)
+                    w = self._ruler_word_at(cid, t, d)
+                    parts.append(f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else ""))
+            parts = [p for p in parts if p]
+            if not parts:
                 continue
-            line = f"{self.date(d)}任{'/'.join(names)}之主"
+            line = f"{self.date(d)}任{'／'.join(parts)}"
             # v20 (B3): 无地营地头衔 (x_, 冒险者营地/教团) 显式标注 —
-            # 防模型把「东邪之主」等营地头衔当成有领地的普通头衔
+            # 防模型把「东邪头目」等营地身份当成有领地的普通头衔
             if ids and all(
                     (self._lt.get(str(t)) or {}).get("key", "").startswith("x_")
                     for t in ids):
@@ -1111,6 +1140,72 @@ class Facts:
                 line += "（" + "、".join(lost_names) + "）"
             out.append(line)
         return out
+
+    def _span_mid(self, start, end):
+        """区间中点日期 (v24, 供阶段稳定命名复用 _name_in_span 的中点口径)。"""
+        if start and end:
+            try:
+                sy = [int(x) for x in str(start).split(".")[:3]]
+                ey = [int(x) for x in str(end).split(".")[:3]]
+                if len(sy) == 3 and len(ey) == 3:
+                    return ".".join(str((a + b) // 2) for a, b in zip(sy, ey))
+            except Exception:
+                pass
+        return start
+
+    def _ruler_word_at(self, cid, tid, date):
+        """领地阶段统治者称呼词 (v24): 依 (文化词族 × 层级 × 政体 × 独立 × 性别)
+        取游戏口径词 — 与 official_title 同源, 供历任阶段行使用。"""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        tier = ""
+        for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
+            if key.startswith(pfx):
+                tier = tv
+                break
+        if not tier:
+            return ""
+        gov = self._title_government(tid)
+        female = bool((self._chars.get(str(cid)) or {}).get("female"))
+        return self._office_word(tier, gov, independent=self._is_independent(cid),
+                                 female=female, tid=tid, cid=cid)
+
+    def _camp_purpose_at(self, cid, date=None):
+        """角色在某日期的营地宗旨 (camp_purpose_brigands 等 → 'brigands'):
+        现职营地 (缓存 landed 政体=landless) 读现行 laws; 过往阶段读
+        cache.camp_purposes 位置史 (每次并入记录变化点); 未知返回 ''。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        ld = rec.get("landed") or {}
+        if ld.get("government") == "landless_adventurer_government":
+            for law in ld.get("laws") or []:
+                if str(law).startswith("camp_purpose_"):
+                    return str(law).split("_", 2)[2]
+        hist = self.cache.get("camp_purposes") or []
+        if not hist:
+            return ""
+        dk = cl.date_key(date) if date else None
+        purpose = None
+        for h in hist:
+            if not h.get("date"):
+                continue
+            if dk is None or cl.date_key(h["date"]) <= dk:
+                purpose = h.get("purpose")
+        if purpose is None:
+            purpose = (hist[0] or {}).get("purpose")
+        return purpose or ""
+
+    def _camp_holder_word(self, cid, date=None):
+        """营地持有者称呼词 (v24): 依营地宗旨查游戏键
+        (duke_landless_adventurer_camp_brigands=头目 / explorers=领袖 /
+        mercenaries=队长…); 宗旨/词取不到返回 ''。"""
+        purpose = self._camp_purpose_at(cid, date)
+        if not purpose:
+            return ""
+        female = bool((self._chars.get(str(cid)) or {}).get("female"))
+        key = f"{'duchess' if female else 'duke'}_landless_adventurer_camp_{purpose}"
+        v = L.loc(self.table, key)
+        if v and not v.startswith("$") and not v.startswith("["):
+            return v
+        return ""
 
     def title_by_key(self, key):
         if not key:
@@ -1178,7 +1273,8 @@ class Facts:
             self._indep_cache[cid] = v
         return v
 
-    def _office_word(self, tier, government, independent=False, female=False, tid=None):
+    def _office_word(self, tier, government, independent=False, female=False, tid=None,
+                     cid=None):
         """官职词: (层级, 政体) → 词。天朝/行政/草原行政共用同一套 (刺史/节度使/
         观察使/宣抚使…), 与文化无关 (实测: 诺斯伯爵在中国亦为刺史)。
         独立天朝制统治者用独立词 (皇帝/王/节度使), 不用封臣官职词。
@@ -1236,6 +1332,12 @@ class Facts:
             v = L.loc(self.table, key)
             if v and not v.startswith("$") and not v.startswith("["):
                 return v
+        # v24: 文化 title 词族 (汉人 → chinese: 王/公/侯/伯/将军…) — 封建/宗族等
+        # 非天朝政体下游戏按文化称呼统治者 (实测: 汉人独立公爵/国王皆称「王」,
+        # 存档信封 meta_player_name = 王，郭冬临), 此前回退通用 国王/公爵 与游戏不符。
+        w = self._culture_office_word(cid, tier, independent, female)
+        if w:
+            return w
         prefix = re.sub(r"_government$", "", gov)
         for k in (f"{self._TIER_KEY[tier]}_{prefix}_male",
                   f"{self._TIER_KEY[tier]}_feudal_male"):
@@ -1243,6 +1345,48 @@ class Facts:
             if v and not v.startswith("$") and not v.startswith("["):
                 return v
         return L.GENERIC_TIER_ZH.get(tier, "")
+
+    # v24: CK3 culture_titles 词族 (dlc_tgp_cultural_titles 的 chinese 族键;
+    # 键名与游戏一致: king_male_chinese=王 / duke_independent_male_feudal_chinese=王 /
+    # duke_male_feudal_chinese=公 / count_male_feudal_chinese=侯 /
+    # count_independent_male_feudal_chinese=将军 / baron_male_feudal_chinese=伯)。
+    _CULTURE_OFFICE_KEYS = {
+        "hegemon": ("hegemon_male_chinese", None),
+        "empire":  ("emperor_male_feudal_chinese", "emperor_female_feudal_chinese"),
+        "kingdom": ("king_male_chinese", "king_female_chinese"),
+        "duchy":   ("duke_independent_male_feudal_chinese",
+                    "duke_independent_female_feudal_chinese"),
+        "county":  ("count_independent_male_feudal_chinese",
+                    "count_independent_female_feudal_chinese"),
+        "barony":  ("baron_male_feudal_chinese", "baron_female_feudal_chinese"),
+    }
+    _CULTURE_OFFICE_KEYS_VASSAL = {
+        "duchy":  ("duke_male_feudal_chinese", "duke_female_feudal_chinese"),
+        "county": ("count_male_feudal_chinese", "count_female_feudal_chinese"),
+    }
+
+    def _culture_office_word(self, cid, tier, independent, female):
+        """文化 title 词族查词; 仅当 cid 文化与词族映射命中时可用。"""
+        if cid is None:
+            return ""
+        tpl = (self.culture_template(cid) or "").lower()
+        fam = _CULTURE_TITLE_FAMILY.get(tpl)
+        if fam != "chinese":
+            return ""
+        if tier == "hegemon":
+            male, fem = self._CULTURE_OFFICE_KEYS[tier]
+        elif independent:
+            male, fem = self._CULTURE_OFFICE_KEYS.get(tier, (None, None))
+        else:
+            male, fem = (self._CULTURE_OFFICE_KEYS_VASSAL.get(tier)
+                         or self._CULTURE_OFFICE_KEYS.get(tier, (None, None)))
+        for k in (fem if female else male, male):
+            if not k:
+                continue
+            v = L.loc(self.table, k)
+            if v and not v.startswith("$") and not v.startswith("["):
+                return v
+        return ""
 
     def _last_title_place(self, cid, fkey=""):
         """角色官职的地名 (dead_data.flavor 只有官职词无地名 — v13 补全用)。
@@ -1388,7 +1532,7 @@ class Facts:
             gov = (c.get("landed_data") or {}).get("government") or ""
         word = self._office_word(tier, gov, independent=self._is_independent(cid),
                                  female=bool((self._chars.get(str(cid)) or {}).get("female")),
-                                 tid=tid)
+                                 tid=tid, cid=cid)
         return f"{name}{word}" if word else name
 
     # v13: 朝廷职司 (e_minister_*) → 官职词 (游戏本地化键, 六部+御史台+枢密院)
@@ -1424,7 +1568,7 @@ class Facts:
         gov = self._title_government(tid)
         word = self._office_word(tier, gov, independent=self._is_independent(cid),
                                  female=bool((self._chars.get(str(cid)) or {}).get("female")),
-                                 tid=tid)
+                                 tid=tid, cid=cid)
         return f"{tname}{word}{name}" if word else f"{tname}{name}"
 
     def _rerender_feud_event(self, raw, date):
@@ -2276,8 +2420,10 @@ class Facts:
         return out
 
     def trait_history_lines(self, cid):
-        """特质履历 (v4): 每条 = 「<特质>（自X年起获得 / 至晚自X年起已具 / 自X年后消失…）」
+        """特质履历 (v4): 每条 = 「<特质>（自X年起获得 / 自X年后消失…）」
         v11: as_of 截断 — 丢弃 as_of 之后才获得的区间。
+        v24: 首见即具的区间 (first=True, 数据起点前已存在, 无获得起点) 不再
+        渲染「至晚自X年起已具」— 该类特质仍在「为人」列表出现, 信息不丢。
         日期只保留年 (快照差分日期全是 1月1日, 日内粒度无意义)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
@@ -2291,11 +2437,11 @@ class Facts:
             for iv in th[key]:
                 if ao is not None and iv.get("from") and cl.date_key(iv.get("from")) > ao:
                     continue
+                if iv.get("first"):
+                    continue  # v24: 首见即具 — 无信息量, 略去
                 d_from = self._year_only(iv.get("from"))
                 d_to = self._year_only(iv.get("to"))
-                if iv.get("first"):
-                    spans.append(f"至晚自{d_from}起已具")
-                elif iv.get("from") and not iv.get("to"):
+                if iv.get("from") and not iv.get("to"):
                     spans.append(f"自{d_from}起获得")
                 elif iv.get("from") and iv.get("to"):
                     spans.append(f"自{d_from}起获得，自{d_to}后消失")
@@ -2524,11 +2670,27 @@ class Facts:
             cur = str(liege) if liege is not None else None
         return chain
 
+    def _prov_entry(self, province):
+        """省份映射条目: {"county": c_ key, "barony": b_ key} (v24; 兼容旧字符串)。"""
+        if province is None:
+            return {}
+        v = self.provmap.get(int(province))
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str) and v:
+            return {"county": v, "barony": ""}
+        return {}
+
     def county_at_province(self, province):
         """省份 id → 伯爵领头衔 id (经省份映射); 未知返回 None。"""
-        if province is None:
+        key = self._prov_entry(province).get("county") or ""
+        if not key:
             return None
-        key = self.provmap.get(int(province))
+        return self.title_by_key(key)
+
+    def barony_at_province(self, province):
+        """省份 id → 男爵领 (b_) 头衔 id (v24, 受害者所在地标注用); 未知返回 None。"""
+        key = self._prov_entry(province).get("barony") or ""
         if not key:
             return None
         return self.title_by_key(key)
@@ -2537,6 +2699,30 @@ class Facts:
         c = self._chars.get(str(cid)) or {}
         loc = (c.get("alive_data") or {}).get("location") or {}
         return loc.get("location") if isinstance(loc, dict) else loc
+
+    def victim_place(self, cid):
+        """受害者所在地 (v24): 其死亡前后最近可知的男爵领名。
+        取值: ① 时代熔件中仍存活 → alive_data.location (终传尾年死者属此);
+        ② 缓存死亡记录 location_province (死亡写入时复制自 last_location);
+        ③ 缓存 last_location。解析失败返回 '' — 调用方省略地点标注。"""
+        prov = self.character_location_province(cid)
+        if prov is None:
+            rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+            prov = ((rec.get("death") or {}).get("location_province")
+                    or (rec.get("last_location") or {}).get("province"))
+        if prov is None:
+            return ""
+        bid = self.barony_at_province(prov)
+        if bid is not None:
+            nm = self.title_base_name(bid)
+            if nm and not nm.startswith("b_"):
+                return nm
+        cid2 = self.county_at_province(prov)
+        if cid2 is not None:
+            nm = self.title_base_name(cid2)
+            if nm and not nm.startswith("c_"):
+                return nm
+        return ""
 
     def player_station_at(self, date):
         """主角在 date (含) 前最后已知驻地伯爵领名 (v20, B1/B3):
@@ -2706,10 +2892,10 @@ _FEUD_ROLE_RE = re.compile(
 
 def _death_sentence(f, cid):
     """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
-    v20 (B1): 凶手为主角时附「时主角驻X」— 击杀无案发地点数据, 依主角位置史
-    标注其当时驻地, 防模型把冒险者时期/游走期的击杀全部安到定居后的桂州。
     v22: death_execution 且行刑者已知时, 处决方式按当时可用选项稳定伪随机
-    (斩首/做成神秘的肉/犬决/烧死/食人/献祭) — 存档只记「处决」, 不再千篇一律。"""
+    (斩首/做成神秘的肉/犬决/烧死/食人/献祭) — 存档只记「处决」, 不再千篇一律。
+    v24: 凶手为主角时附「（死于X）」(X = 受害者死前最近可知男爵领, 数据无则省略);
+    弃用 v20 的「时主角驻X」(主角驻地 ≠ 案发地, 误导模型把刺杀安在主角驻地)。"""
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     d = rec.get("death") or {}
     if not d:
@@ -2723,12 +2909,12 @@ def _death_sentence(f, cid):
         _k, zh = f.execution_method(killer, cid, d.get("date"))
         if zh:
             clause = f"被{f.name_or(killer, '某人')}{zh}"
-    s = f"{name}殁于{f.date(d.get('date'))}，{clause}。"
+    s = f"{name}死于{f.date(d.get('date'))}，{clause}。"
     pid = f.cache.get("player_id")
     if pid is not None and killer == pid:
-        st = f.player_station_at(d.get("date"))
-        if st:
-            s = s.rstrip("。") + f"（时主角驻{st}）。"
+        vp = f.victim_place(cid)
+        if vp:
+            s = s.rstrip("。") + f"（死于{vp}）。"
     return s
 
 
@@ -2740,7 +2926,7 @@ MODULE_TABLE = {
     "失位让土":   {"lost_title_memory"},
     "开战兴兵":   {"offensive_war", "defensive_war", "joined_allys_war"},
     "战和胜负":   {"battle_won_memory", "battle_lost_memory", "war_won", "war_lost"},
-    "战殁负伤":   {"witnessed_death_battle", "became_incapable_due_to_battle_concussion"},
+    "战死负伤":   {"witnessed_death_battle", "became_incapable_due_to_battle_concussion"},
     "人质质任":   {"hostage_created_hostage", "hostage_created_warden", "hostage_created_home_court"},
     "囚禁入狱":   {"imprisoned", "imprisoned_other"},
     "获释出狱":   {"released_from_prison_memory"},
@@ -2749,7 +2935,7 @@ MODULE_TABLE = {
     "结仇结怨":   {"became_rivals", "became_grudge"},
     "死敌之仇":   {"became_nemesis"},
     "化仇解怨":   {"stopped_being_rivals"},
-    "仇雠消亡":   {"rival_died"},
+    "仇人死亡":   {"rival_died"},
     "结友知交":   {"became_friends"},
     "挚友血盟":   {"became_soulmates", "became_blood_brother"},
     "丧友之恸":   {"friend_died"},
@@ -2757,7 +2943,7 @@ MODULE_TABLE = {
     "情变私通":   {"became_lovers", "had_sex", "broke_up_lovers"},
     "丧偶之痛":   {"spouse_died"},
     "添丁进口":   {"child_born", "first_born", "twins_born"},
-    "幼殇夭折":   {"child_premature", "child_stillborn"},
+    "夭折":       {"child_premature", "child_stillborn"},
     "丧亲之恸":   {"relative_died"},
     "教化求学":   {"childhood_education_guardian", "childhood_education_no_guardian",
                    "ward_education_completed", "completed_rites_of_passage",
@@ -2768,7 +2954,7 @@ MODULE_TABLE = {
     "拥戴加冕":   {"became_acclaimed", "witnessed_a_coronation_memory"},
     "信仰皈依":   {"completed_hajj_memory", "picked_serenity_aspect_memory",
                    "picked_creation_aspect_memory"},
-    # 死亡记录 (death) 不在此表: 由 _timeline 按死者关系并入 仇雠消亡/丧友之恸/
+    # 死亡记录 (death) 不在此表: 由 _timeline 按死者关系并入 仇人死亡/丧友之恸/
     # 丧偶之痛/丧亲之恸 同键去重 (研究_戏剧模块化.md 模块 28)。
 }
 _TYPE2MODULE = {}
@@ -2825,8 +3011,8 @@ def _related_ids(f):
         add(cfam.get("child"), 2)
         add(cfam.get("primary_spouse"), 2)
         add(cfam.get("spouse"), 2)
-    # v15: 主角情人 (became_lovers/had_sex 参与者, 含已分手) — 情人的婚配/生育/亲属亡故
-    # 进时间线 (阿尔东萨与国王成婚、诞女、长女被谋杀后亡故等, 大奸大恶戏剧的上下文)。
+    # v15: 主角情人 (became_lovers/had_sex 参与者, 含已分手) — 情人的婚配/生育/亲属去世
+    # 进时间线 (阿尔东萨与国王成婚、诞女、长女被谋杀后去世等, 大奸大恶戏剧的上下文)。
     for m in prec.get("memories") or []:
         if m.get("type") in ("became_lovers", "had_sex"):
             for v in (m.get("participants") or {}).values():
@@ -2836,7 +3022,7 @@ def _related_ids(f):
 
 
 # v14: death 记录 (类型 "death", 由 _death_sentence 渲染) 的模块标注 —
-# 按死者与主角的关系: 仇人→仇雠消亡, 友人→丧友之恸, 配偶→丧偶之痛, 其余→丧亲之恸。
+# 按死者与主角的关系: 仇人→仇人死亡, 友人→丧友之恸, 配偶→丧偶之痛, 其余→丧亲之恸。
 def _death_module(f, dead_cid):
     """death 时间线事件归属的戏剧性模块 (按死者关系; v15: 主角所杀者→谋害人命)。"""
     pid = f.cache.get("player_id")
@@ -2855,7 +3041,7 @@ def _death_module(f, dead_cid):
                 parts = m.get("participants") or {}
                 if any(isinstance(v, int) and v == dead_cid for v in parts.values()) \
                         and any(isinstance(v, int) and v == pid for v in parts.values()):
-                    return "仇雠消亡"
+                    return "仇人死亡"
             if m.get("type") in ("became_friends", "became_soulmates", "became_blood_brother"):
                 parts = m.get("participants") or {}
                 if any(isinstance(v, int) and v == dead_cid for v in parts.values()) \
@@ -2901,7 +3087,7 @@ def _decade_lower_bound(f):
 def _year_summary(timeline, pname):
     """【主角大事摘要】按年聚合 (v17, 修复方案_汤利五问题.md 问题4):
     一年一行 — 同型事件 (谋杀/添丁) 合并人名 (≤3 全列 + 等N人),
-    其余关键事件 (结怨/结仇/结友/私通/成婚/登位/亡故/囚禁…) 去月日保留动词原句;
+    其余关键事件 (结怨/结仇/结友/私通/成婚/登位/去世/囚禁…) 去月日保留动词原句;
     出生年括注一律不写。timeline 已按 as_of/十年窗口截断。
     返回 [str] (每行 'NNNN年，…。')。"""
     by_year = {}
@@ -2958,7 +3144,7 @@ def _timeline(f):
     按人按事去重, 按日期排序。
     每条 = {"date", "type", "text"} (text 为干净中文句, 提示词只用 text)。
     - 路人剔除: 记忆拥有者与参与者都不在相关集内的事件一律不收;
-    - 死亡去重: 同一死者只留一条 (死亡记录 > 亡故/身亡 > 丧偶), 消除「同一人不停地死」;
+    - 死亡去重: 同一死者只留一条 (死亡记录 > 去世 > 丧偶), 消除「同一人不停地死」;
     - 出生去重: 同一出生只留一条 (玩家/家人视角优先);
     - 成对事件 (双方各自的记忆, 如王铎娶玘/玘嫁王铎) 按 (类型, 日期, 参与者集) 去重。"""
     cache = f.cache
@@ -2984,7 +3170,7 @@ def _timeline(f):
             if not owner_rel and not part_rel:
                 continue  # 路人记忆大事: 剔除
             mtype = mem.get("type")
-            # 死亡类记忆: 按死者 id 去重 (亡故/身亡 > 丧偶)
+            # 死亡类记忆: 按死者 id 去重 (去世 > 丧偶)
             if mtype in ("relative_died", "friend_died", "rival_died",
                          "spouse_died"):
                 dead = parts.get("dead_relation")
@@ -3010,11 +3196,12 @@ def _timeline(f):
                         by = str(drec.get("birth") or "").split(".")[0] or ""
                         if by:
                             s = s.rstrip("。") + f"（{by}年生）。"
-                        # v20 (B1): 依谋杀发生日附主角当时驻地 — 击杀无案发地点,
-                        # 防模型把游走期击杀锚定到定居后的治所
-                        st = f.player_station_at(mem.get("creation_date"))
-                        if st:
-                            s = s.rstrip("。") + f"（时主角驻{st}）。"
+                        # v24: 依谋杀发生日标受害者死前最近可知所在 (男爵领名;
+                        # 数据无则省略) — 击杀无案发地点, 以受害者位置为锚,
+                        # 不再用主角驻地 (主角驻地 ≠ 案发地)。
+                        vp = f.victim_place(dead)
+                        if vp:
+                            s = s.rstrip("。") + f"（死于{vp}）。"
                         old = deaths.get(dead)
                         if old is None or 2 > old[0]:
                             deaths[dead] = (2, mem.get("creation_date"),
@@ -3047,12 +3234,12 @@ def _timeline(f):
             seen_keys.add(key)
             events.append((mem.get("creation_date"), mtype, s,
                            _TYPE2MODULE.get(mtype, "")))
-    # 合并 死亡记录 + 亡故记忆 + 出生事件
+    # 合并 死亡记录 + 去世记忆 + 出生事件
     for cid, (_prio, _d, t, s) in deaths.items():
-        # v14: death 记录按死者关系标模块 (仇雠消亡/丧友之恸/丧偶之痛/丧亲之恸)
+        # v14: death 记录按死者关系标模块 (仇人死亡/丧友之恸/丧偶之痛/丧亲之恸)
         events.append((_d, t, s, _death_module(f, cid)))
     for _prio, _d, t, s in births.values():
-        events.append((_d, t, s, "添丁进口" if t in ("child_born", "first_born", "twins_born") else "幼殇夭折"))
+        events.append((_d, t, s, "添丁进口" if t in ("child_born", "first_born", "twins_born") else "夭折"))
     # v11: as_of 截断 (十年传记只到十年末)
     if f.as_of:
         ao = cl.date_key(f.as_of)
@@ -3108,9 +3295,10 @@ def _timeline(f):
 
 # v14: 十年戏剧主题抽取 (研究_戏剧模块化.md 3.2) — 时间线事件按模块计数,
 # 主角参与 ×3 / 直系参与 ×2 / 其余 ×1 (时间线已只含直系, 权重简化为
-# 主角名在文本中 ×3 否则 ×1); 取 Top10, 与第10名并列的模块全保留。
-def decade_module_top(timeline, protagonist, top_n=10):
-    """十年戏剧主题: [(模块名, 得分)] 按得分降序; 并列第10名全保留 (可能 >10)。
+# 主角名在文本中 ×3 否则 ×1); v24: 取 Top5 (用户: 呈现 5 个左右), 与第 5 名
+# 并列的模块全保留; 专题模块 (血脉登基等) 先并入再统一切口。
+def decade_module_top(timeline, protagonist, top_n=5):
+    """十年戏剧主题: [(模块名, 得分)] 按得分降序; 并列第5名全保留 (可能 >5)。
     无时间线/无模块事件时返回 []。"""
     pname = (protagonist or {}).get("name") or ""
     score = {}
@@ -3125,7 +3313,18 @@ def decade_module_top(timeline, protagonist, top_n=10):
     ranked = sorted(score.items(), key=lambda x: -x[1])
     if len(ranked) <= top_n:
         return ranked
-    # Top10 + 与第10名并列者
+    # Top5 + 与第5名并列者
+    cutoff = ranked[top_n - 1][1]
+    return [r for r in ranked if r[1] >= cutoff]
+
+
+def _cut_module_top(dm, top_n=5):
+    """对 (模块, 得分) 列表重排并截到 Top5 (+与第5名并列), 供专题模块并入后统一收口。"""
+    if not dm:
+        return []
+    ranked = sorted(dm, key=lambda x: -x[1])
+    if len(ranked) <= top_n:
+        return ranked
     cutoff = ranked[top_n - 1][1]
     return [r for r in ranked if r[1] >= cutoff]
 
@@ -3211,11 +3410,11 @@ def _merge_same_day_events(events, f=None):
 _STATS_LABEL = {
     "became_rivals": "结仇", "became_grudge": "结怨", "became_nemesis": "结为死敌",
     "child_born": "添丁", "first_born": "添丁", "twins_born": "添丁",
-    "child_premature": "幼殇", "child_stillborn": "夭折",
+    "child_premature": "夭折", "child_stillborn": "夭折",
     "successful_murder": "谋杀",
     "had_sex": "私通", "became_lovers": "私通",
     "relative_died": "丧亲", "spouse_died": "丧偶", "friend_died": "丧友",
-    "rival_died": "仇雠消亡",
+    "rival_died": "仇人死亡",
     "married": "成婚", "broke_up_lovers": "分手",
     "imprisoned": "被囚", "imprisoned_other": "囚禁他人",
     "offensive_war": "开战", "defensive_war": "应战",
@@ -3224,7 +3423,7 @@ _STATS_LABEL = {
 }
 _DEATH_STAT_LABEL = {
     "谋害人命": "谋杀", "丧亲之恸": "丧亲", "丧偶之痛": "丧偶",
-    "丧友之恸": "丧友", "仇雠消亡": "仇雠消亡",
+    "丧友之恸": "丧友", "仇人死亡": "仇人死亡",
 }
 
 # v15: 同月同型流水事件聚合 — 只合并单槽可变、结构一致的流水 (结怨/结仇/助战等)。
@@ -3541,13 +3740,13 @@ def _protagonist(f):
                 bits.append(f"{label}{v}")
         if bits:
             p["status"] = "，".join(bits) + "。"
-    # 死亡 (终传时; v11: as_of 早于死期视为在世, 十年传记不泄漏「殁于…」)
+    # 死亡 (终传时; v11: as_of 早于死期视为在世, 十年传记不泄漏「死于…」)
     pd = cache.get("player_death")
     if pd and f.as_of and cl.date_key(f.as_of) < cl.date_key(pd.get("date") or "9999.9.9"):
         pd = None
     if pd:
         p["death"] = (
-            f"殁于{f.date(pd.get('date'))}，"
+            f"死于{f.date(pd.get('date'))}，"
             f"{_death_clause(f.table, pd.get('reason'), pd.get('killer'),
                              lambda k: f.name_or(k, '某人'))}。"
         )
@@ -4374,12 +4573,12 @@ def _killed_by_player(f):
                 clause = _death_clause(f.table, mdd.get("reason"),
                                        mdd.get("killer"),
                                        lambda k: f.name_or(k, "某人"))
-                ds = f"{f.name_or(cid)}殁于{f.date(mdd.get('date'))}，{clause}。"
-                # v20 (B1): 熔件反查兜底同样附主角当时驻地
+                ds = f"{f.name_or(cid)}死于{f.date(mdd.get('date'))}，{clause}。"
+                # v24: 熔件反查兜底同样附受害者所在地 (男爵领; 无则省略)
                 if mdd.get("killer") == pid:
-                    st = f.player_station_at(mdd.get("date"))
-                    if st:
-                        ds = ds.rstrip("。") + f"（时主角驻{st}）。"
+                    vp = f.victim_place(cid)
+                    if vp:
+                        ds = ds.rstrip("。") + f"（死于{vp}）。"
         entry = {
             "id": cid,
             # v17: 死者名带世系编号 (以死期首要头衔计算, 鲁斯兰·克里维奇二世)
@@ -4387,8 +4586,8 @@ def _killed_by_player(f):
             "birth": f.date(prof.get("birth")),
             "death": ds or "（死因不详）",
             "death_date": (prof.get("death") or {}).get("date") or "9999.9.9",
-            # v20 (B1): 主角当时所驻伯爵领 (依死亡日期反查位置史; 无则 '')
-            "killer_where": f.player_station_at((prof.get("death") or {}).get("date")),
+            # v24: 受害者死前最近可知所在男爵领 (无则 '', 调用方省略标注)
+            "victim_place": f.victim_place(cid),
             "house": _dynasty_display(prof.get("dynasty_name"),
                                       prof.get("house_name")),
             "house_branch": _house_branch(prof.get("dynasty_name"),
@@ -4683,7 +4882,7 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # v13: Facts 实例引用 (biography 的关系缘由渲染等需要实例方法)
         "_facts": f,
     }
-    # v14: 十年戏剧主题 (Top10, 并列第10名全保留) — 模块切片与总纲预告用
+    # v14/v24: 十年戏剧主题 (Top5, 并列第5名全保留) — 模块切片与总纲预告用
     facts["decade_modules"] = decade_module_top(facts.get("timeline") or [],
                                                 facts.get("protagonist") or {})
     # v15: 大奸大恶关系链 (程序直算) — 句并入主角【戏剧性事件】(共享前缀
@@ -4699,7 +4898,8 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         for _m, _s in vc:
             if not any(x[0] == _m for x in dm):
                 dm.append((_m, 3))
-        facts["decade_modules"] = dm
+        # v24: 专题模块并入后再统一收口到 Top5 (此前并入后不再截断, 主题可 >10)
+        facts["decade_modules"] = _cut_module_top(dm, top_n=5)
     stats = getattr(f, "_timeline_stats", None) or {}
     if stats:
         # 取计数前 6 的标签, 按计数降序; 供【概览】块渲染「本十年结怨9次…」
