@@ -446,8 +446,17 @@ def _profile_lines(facts, cid=None):
         if gov:
             lines.append(gov + "。")
     # ---- 官职句 ----
+    # v23: p.court_positions 是主角营/廷内**他人任职**花名册 (雇主=主角,
+    # 任职者已在 facts 层按人聚合: 「仲宣任丑角（自…任），又任盗贼大师…」),
+    # 标题按营/廷区分 — 弃用「宫廷官职」, 防止被读成主角自身官职履历
+    # (郭氏 bug: 花名册被模型当主角 CV, 脑补出「历任之职/众人争相延揽」)。
     if p.get("court_positions"):
-        lines.append(f"宫廷官职：{p['court_positions']}。")
+        if cid is None and p.get("landless"):
+            lines.append(f"营中僚属任职：{p['court_positions']}。")
+        elif cid is None:
+            lines.append(f"廷中僚属任职：{p['court_positions']}。")
+        else:
+            lines.append(f"帐下僚属任职：{p['court_positions']}。")
     if p.get("court_position"):
         lines.append(f"在主角处任{p['court_position']}。")
     # ---- 家庭句 ----
@@ -720,10 +729,14 @@ def _article_facts(facts, cache, key, section=None):
         # 朝局动态: 政治类记忆时间线 + 高位头衔更替
         dyn = list(tl)
         blocks["朝局动态"] = "\n".join(dyn) if dyn else "（无朝局动态记录）"
-        # v7: 玩家宫廷/营地官职任免 (逐年数据驱动)
+        # v7/v23: 玩家营/廷内僚属任免 (逐年数据驱动, 主语=任职者);
+        # 块首标注归属, 防止被读成主角在别家朝堂的任免升沉
         cp_ch = facts.get("court_position_changes") or []
         if cp_ch:
-            blocks["官职任免"] = "\n".join(cp_ch)
+            pr = facts.get("protagonist") or {}
+            tag = "营中" if pr.get("landless") else "廷中"
+            blocks["官职任免"] = (f"（主角{tag}僚属任免）\n"
+                                  + "\n".join(cp_ch))
         # 要员名录: 主角相关角色 (家人/好友/仇人/宫廷任官) 中有政治类记忆或历任高位头衔者
         # (剔除路人; 截断 60 名防提示词膨胀)
         names = []

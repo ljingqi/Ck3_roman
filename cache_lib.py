@@ -484,7 +484,9 @@ def date_filekey(s):
 # ---------------------------------------------------------------------------
 
 def memory_brief(mem_id, e):
-    """记忆对象 → 精简条目 (附记忆ID; vars 带 {flag,type,identity} 以便取关联对象)。"""
+    """记忆对象 → 精简条目 (附记忆ID; vars 带 {flag,type,identity} 以便取关联对象)。
+    v21: 变量类型为 flag 时补存其值 (data.flag) — 刑虐记忆的
+    castrated / castrated_beardless 标志此前被丢弃, 阉割无从渲染。"""
     vars_out = []
     for f in (e.get("variables") or {}).get("data") or []:
         d = f.get("data") or {}
@@ -492,6 +494,7 @@ def memory_brief(mem_id, e):
             "flag": f.get("flag"),
             "type": d.get("type"),
             "identity": d.get("identity"),
+            "value": d.get("flag") if (d.get("type") or "") == "flag" else None,
         })
     return {
         "id": mem_id,
@@ -524,7 +527,7 @@ EMPTY_CACHE = {
     "output_folder": None,    # 会话输出文件夹名 (watch/continue 绑定, 见 pipeline)
     "player_title_history": [],  # [{date, name}] 玩家主头衔名变化 (复兴党流亡委员会等)
     "realm_history": [],         # [{date, holders:{title_id: holder_id}}] 关键头衔持有者逐年
-    "court_positions": [],       # [{date, positions:[{type, employee, hire_date, task}]}] 玩家宫廷/营地官职逐年 (v7)
+    "court_positions": [],       # [{date, positions:[{type, employee, hire_date, task}]}] 玩家营/廷内僚属任职逐年 (v7; employer==玩家, 非玩家自身官职)
     "house_motto": None,         # 玩家家族家训 (dynasty_house.motto, 字符串或模板 dict) (v7)
     "characters": {},
     "relations": {},
@@ -1255,8 +1258,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         cache.setdefault("realm_history", []).append(
             {"date": date_label, "holders": realm_holders})
 
-    # 玩家宫廷/营地官职 (v7): court_positions.database 中 employer == 玩家,
-    # 逐年记录 (含宫廷职位与营地军官, 供「每年主角宫廷/营地内的人的官职」)。
+    # 玩家营/廷内僚属任职 (v7): court_positions.database 中 employer == 玩家,
+    # 逐年记录 (含营地军官与宫廷职位 — 这些岗位由玩家麾下僚属担任, **不是玩家
+    # 自身的官职**; 玩家自身官职走 player_title_history/历任头衔, v23 语义重申)。
     if player_id is not None:
         cpd = (melt.get("court_positions") or {}).get("database") or {}
         mine = []
