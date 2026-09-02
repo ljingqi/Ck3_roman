@@ -694,6 +694,9 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     as_of = _bio_as_of(cache, decade)
     # v20: 十年传记按时代取绰号 — 绰号存于各年熔件 nickname_text, 最新档只是
     # 当前值; 重跑十年1 (as_of=878) 若不覆盖会被 888 档的「屠狼者」漂移。
+    # v21: 时代末熔件存在即显式覆盖 (含空绰号) — 该时代无绰号时清空,
+    # 防末档绰号泄漏进早期十年 (郭靖 1197 年才得「欺诈者」, 第1个十年
+    # as_of=1189 不得出现该绰号)。
     nickname_override = None
     if decade and as_of:
         last = cache.get("last_date")
@@ -705,9 +708,8 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
                     pid = cache.get("player_id")
                     nick = ((era.get("living") or {}).get(str(pid)) or {}).get(
                         "nickname_text")
-                    if nick:
-                        nickname_override = {pid: str(nick).strip()}
-                        llm.log(f"  按时代取绰号 ({as_of}): {nick}")
+                    nickname_override = {pid: str(nick).strip()}
+                    llm.log(f"  按时代取绰号 ({as_of}): {nick!r}")
             except Exception as e:
                 llm.log(f"  按时代取绰号失败: {e}")
     house, fname = output_paths(cfg, cache, continue_mode=continue_mode, decade=decade)

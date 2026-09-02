@@ -371,13 +371,23 @@ def _parse_header(text):
 
 _FILENAME_PERSON_RE = re.compile(r"^(.*?)\((\d+)\)$")
 _EPITHET_SUFFIX_RE = re.compile(r'[“"][^”"]*[”"]\s*$')
+# v21: 昵称改前缀式 (欺诈者郭靖 / 秃头仲宣) — 旧格式靠引号后缀识别,
+# 新格式无引号, 用启发式剥「以 者/头 等结尾的 1–4 字前缀」(仅兜底; 主路径
+# 靠文件名基名/人物ID 归并, 见 _person_identity)。
+_EPITHET_PREFIX_RE = re.compile(
+    r'^([\u4e00-\u9fff]{1,4}(?:者|头|狂|痴))([\u4e00-\u9fff]{2,})$')
 
 
 def _strip_epithet(name):
-    """去显示名里的绰号后缀 (东方名序 名“绰号” → 名; 无则原样)。"""
+    """去显示名里的绰号 (旧格式 名“绰号” 后缀 / 新格式 绰号名前缀; 无则原样)。"""
     if not name:
         return name
     s = _EPITHET_SUFFIX_RE.sub("", name).strip()
+    if s and s != name:
+        return s
+    m = _EPITHET_PREFIX_RE.match(s or name)
+    if m and not m.group(2).startswith(m.group(1)):
+        return m.group(2)
     return s or name
 
 
@@ -401,7 +411,7 @@ def _person_identity(fn, folder, text):
     """(分组键, 显示名) — v20 稳定身份:
     - A2: 头部注释有 人物ID (游戏角色 id) → 键 ('id', pid), 最精确;
     - A1: 否则 键 ('name', 去绰号名, 生年) — 生年取头部 出生 或文件名 (849),
-      去绰号优先用文件名基名 (缓存纯名), 无则剥头部 名“绰号” 后缀。
+      去绰号优先用文件名基名 (缓存纯名), 无则剥头部 名“绰号”后缀 / 绰号前缀。
     同角色因绰号随时代变化 (嗜血者→屠狼者) 也归并到同一键。"""
     h = _parse_header(text)
     person = h.get("person") or ""

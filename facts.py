@@ -16,6 +16,8 @@ v4 变更:
 import json
 import os
 import re
+import hashlib
+import random
 
 import llm
 import cache_lib as cl
@@ -356,6 +358,44 @@ _DEATH_EXECUTOR_VERB = {  # 行刑者: 被{行刑者}{动词}
     "death_crucified_by_mob": "钉上十字架",
     "death_burned_witch": "烧死在火刑柱上",
 }
+
+# v22: 处决方式 (用户需求 2026-09-02) — 存档不记录行刑者实际选择的方式,
+# 受害死因键恒为 death_execution; 依 execute_prisoner_interaction 的
+# send_option 可用条件 (见游戏 common/character_interactions/00_prison_interactions.txt),
+# 用传记所用熔件/缓存的行刑者状态近似判定可用方式, 再按 (行刑者, 受害者,
+# 死亡日期) 稳定伪随机取一 — 不同处决有变化, 同一处决重跑不漂移。
+# (顺序即游戏界面顺序; 措辞按 EXECUTION_* 本地化与 death_* 死因雅化。)
+_EXECUTION_OPTIONS = (
+    ("beheaded",   "斩首"),                     # EXECUTION_BEHEADED 砍头
+    ("devour",     "砍头后吃掉"),               # EXECUTION_DEVOUR 砍头……然后吃掉!
+    ("burned",     "烧死"),                     # EXECUTION_BURNED 烧死在火刑柱上
+    ("sacrifice",  "献祭给神灵"),               # EXECUTION_SACRIFICE 献祭
+    ("kennel",     "处以犬决"),                 # EXECUTION_KENNEL 犬决
+    ("provisions", "做成神秘的肉充作口粮"),     # EXECUTION_PROVISIONS 做成神秘的肉
+)
+_EXECUTION_ORDER = {k: i for i, (k, _v) in enumerate(_EXECUTION_OPTIONS)}
+
+# 东亚系文化模板 (近似的 asian heritage 支柱 — 存档不存文化支柱, 用熔件
+# culture_manager 实测模板 + 周边族系近似; 实际数据中行刑者以玩家(汉)与
+# 欧洲 AI 为主, 误判只影响 斩首/烧死 二选一, 影响有限)。
+_ASIAN_HERITAGE_TPL = frozenset({
+    # heritage_chinese 系 (熔件实测: han/bai/shatuo)
+    "han", "bai", "shatuo", "yue", "wu", "shu", "chinese",
+    # heritage_japonic
+    "japanese", "ryukyuan",
+    # heritage_korean / buyeo
+    "korean", "silla", "goryeo", "baekje", "goguryeo", "balhae", "parhae",
+    # heritage_qiangic (西夏/党项/羌)
+    "qiang", "tangut", "xixia", "dangxiang", "sumpa",
+    # heritage_tibetan
+    "tibetan", "bodpa", "tsangpa", "wenmo",
+    # heritage_viet
+    "viet", "vietnamese", "muong",
+    # 北亚 (契丹/女真/蒙古)
+    "khitan", "jurchen", "manchu", "mongol", "nivkh",
+    # 中南半岛
+    "burmese", "mon", "shan", "thai", "dai", "lao", "khmer",
+})
 _DEATH_OPPONENT_VERB = {  # 对手: 与{对手}{动词}而亡
     "death_duel": "决斗",
     "death_fight": "斗殴",
@@ -680,18 +720,15 @@ class Facts:
         return (c.get("nickname_text") or "").strip()
 
     def _insert_nickname(self, nm, nick):
-        """把昵称并入显示名 (v18, 用户决策 2026-08-31):
-        西方名序 (名·家名/父名) 绰号前置、去引号 — 中文史传惯例
-        (秃头查理·加洛林 / 青年路易·加洛林 / 征服者威廉·诺曼底);
-        东方名序 (姓+名 无分隔) 与单段名维持 v17 原设定 (大和惟条“秃头”)。
+        """把昵称并入显示名 (v21, 用户决策 2026-09-02): 一律绰号前置、去引号 —
+        中文史传惯例, 东方人名与西方名序同框架 (欺诈者郭靖 / 秃头仲宣 /
+        秃头查理·加洛林 / 征服者威廉·诺曼底), 不再用 名“绰号” 后缀。
         有绰号即不再使用世系编号 (编号让位于绰号)。"""
-        if "·" in nm:
-            return f"{nick}{nm}"
-        return f"{nm}“{nick}”"
+        return f"{nick}{nm}"
 
     def name_with_regnal(self, cid, date=None):
-        """显示名 + 昵称 + 世系编号 (v18): 有绰号 → 绰号形式 (西方 绰号名·家名,
-        东方 姓+名“绰号”), 不追加世系编号 — 编号让位于绰号 (秃头查理/青年路易);
+        """显示名 + 昵称 + 世系编号 (v21): 有绰号 → 绰号前置形式 (欺诈者郭靖 /
+        秃头查理·加洛林), 不追加世系编号 — 编号让位于绰号;
         无绰号 → 仅西方名序 (名·家名) 标编号, 紧跟名 (史书惯例: 路易十四/查理二世,
         鲁斯兰二世·克里维奇, 不给姓冠编号); 东方人名 (姓+名 无分隔) 与单段名无编号;
         十起不带世 (路易十一)。
@@ -700,7 +737,7 @@ class Facts:
         if tn:
             nick = self.nickname(cid)
             if nick:
-                return f"{tn}“{nick}”"
+                return f"{nick}{tn}"
             return tn
         nm = self.name_or(cid)
         if not nm:
@@ -853,7 +890,14 @@ class Facts:
                 except Exception:
                     continue
         if best is not None:
-            return L.loc(self.table, str(best)) or str(best)
+            v = L.loc(self.table, str(best))
+            if v:
+                return v
+            s = str(best)
+            if re.search(r"[A-Za-z_]", s):
+                # v21: 本地化表缺该改名键时回退基础名, 不直出裸 key (防 key 泄漏)
+                return (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()
+            return s  # 直写名 (青徐 等) 原样返回
         return (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()
 
     def _title_name_at(self, tid, date, cid=None):
@@ -1212,6 +1256,34 @@ class Facts:
             if fkey and fkey.startswith(pfx):
                 tier_want = rk
                 break
+
+        def _place_nm(tid):
+            """头衔的 as_of/当前国号 (非上任日, 与主循环口径一致)。"""
+            if tid is None:
+                return ""
+            t = self._lt.get(str(tid)) or {}
+            key = t.get("key") or ""
+            if not key or key.startswith(("x_", "e_minister_")):
+                return ""
+            return self._name_at_date(tid, self.as_of) or self.title_base_name(tid)
+
+        # v21: 同级多头衔的场合, 优先取「首要头衔」与死档 liege_title (游戏口径),
+        # 不再按迭代序取第一个 — 嵬名仁孝同持 k_xia(夏) 与 k_hexi(河西) 时稳定得「夏」
+        # (修复: 1179 年「河西宁令嵬名仁孝」应为游戏显示的「夏宁令」)。
+        if tier_want is not None:
+            _pt, ptid = self._primary_title_at(cid)
+            if ptid is not None and \
+                    self._TT_RANK.get((self._lt.get(str(ptid)) or {}).get("key", "")[:2], 0) == tier_want:
+                nm = _place_nm(ptid)
+                if nm:
+                    return nm
+            drec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+            ltid = (drec.get("death") or {}).get("liege_title")
+            if ltid is not None and int(ltid) != ptid and \
+                    self._TT_RANK.get((self._lt.get(str(ltid)) or {}).get("key", "")[:2], 0) == tier_want:
+                nm = _place_nm(int(ltid))
+                if nm:
+                    return nm
         intervals = self._hold_intervals(cid)
         best_tier, best_tier_nm = -1, ""
         best_late, best_late_nm = None, ""
@@ -1540,15 +1612,17 @@ class Facts:
             return ""
         return given + word
 
-    def prince_title(self, cid):
+    def prince_title(self, cid, date=None):
         """王子/公主称号: 角色无头衔, 且父/母首要头衔层级 ∈ {王国,帝国,霸权}
         (王国/帝国/霸权统治者子女都用此模板)。前缀 = 父头衔名+层级词
         (独立天朝制王国=「国」, 如大理国王子; 封臣=「路」, 如青徐路公子;
         伊斯兰: 家族名+苏丹国/哈里发国) + 王子词。
-        v20: 天皇座子女的称号已并入显示名 (name_with_regnal), 此处返回 '' 防重复。"""
-        if self._tenno_prince_word(cid):
+        v20: 天皇座子女的称号已并入显示名 (name_with_regnal), 此处返回 '' 防重复。
+        v21: date 参数 — 按指定日期 (死者死亡日) 计算父头衔, 供刺客列传等
+        名单型数据使用 (王祦 → 高丽国皇子), 防 as_of 穿越。"""
+        if self._tenno_prince_word(cid, date):
             return ""
-        tier0, _ = self._primary_title_at(cid)
+        tier0, _ = self._primary_title_at(cid, as_of=date)
         if tier0 is not None:
             return ""  # 自己已有头衔, 不适用
         parents = self._parents_of_cid(cid)
@@ -1557,14 +1631,14 @@ class Facts:
         best = None  # (rank, ptier, parent_cid)
         for pid2 in parents:
             pid2 = int(pid2)
-            t, _tid = self._primary_title_at(pid2)
+            t, _tid = self._primary_title_at(pid2, as_of=date)
             rank = {"hegemon": 6, "empire": 5, "kingdom": 4}.get(t, 0)
             if rank > 0 and (best is None or rank > best[0]):
                 best = (rank, t, pid2)
         if best is None:
             return ""
         _rank, ptier, pparent = best
-        _t, ptid = self._primary_title_at(pparent)
+        _t, ptid = self._primary_title_at(pparent, as_of=date)
         prec = (self.cache.get("characters") or {}).get(str(pparent)) or {}
         pgov = (prec.get("landed") or {}).get("government") or ""
         if not pgov:
@@ -1576,7 +1650,7 @@ class Facts:
         if rn:
             prefix = rn
         else:
-            pbase = self._name_at_date(ptid, self.as_of) or self.title_base_name(ptid)
+            pbase = self._name_at_date(ptid, date or self.as_of) or self.title_base_name(ptid)
             if pgov in self._CELESTIAL_LIKE_GOVS and independent \
                     and ptier in ("kingdom", "empire", "hegemon"):
                 # 独立天朝制: 王国/帝国=国, 皇朝=皇朝 (大理国)
@@ -1670,9 +1744,11 @@ class Facts:
         out.sort(key=lambda x: len(x["events"]), reverse=True)
         return out
 
-    # v13: 宝物志只收「传奇级」珍奇 (用户定稿); 狩猎战利品类型 (毛皮/角/颅骨)
-    # 一律剔除 (即使传奇级也是凑数); 最多 20 件防提示词膨胀。
-    ARTIFACT_RARITY = ("legendary",)
+    # v13: 宝物志只收高稀珍奇; v21: 门槛改为游戏最高档 名望级 (illustrious) —
+    # 存档与游戏定义均无「传奇级 (legendary)」档位, 原 (legendary,) 永远筛空,
+    # 玩家偷来的宋御玺/帝国皇冠等 (illustrious) 进不了板块; 狩猎战利品类型
+    # (毛皮/角/颅骨) 一律剔除 (即使高稀也是凑数); 最多 20 件防提示词膨胀。
+    ARTIFACT_RARITY = ("illustrious",)
     ARTIFACT_FILLER_TYPES = {
         "animal_hide", "animal_hide_big", "animal_trinket",
         "animal_skull", "VIET_clutter",
@@ -1680,7 +1756,7 @@ class Facts:
     ARTIFACT_MAX = 20
 
     def family_artifacts(self):
-        """宝物志数据源: 传奇级、相关集持有、且被其他宗族持有过的宝物。
+        """宝物志数据源: 高稀 (名望级起)、相关集持有、且被其他宗族持有过的宝物。
         返回 [多行文本], 含名称/稀有度/流转史。"""
         related = _related_ids(self)
         art = (self.melt.get("artifacts") or {}).get("artifacts") or {}
@@ -1744,6 +1820,13 @@ class Facts:
                     entries.append(f"{d}，克定所得")
                 elif t == "created_before_history":
                     entries.append("年代久远，创制无考")
+                # v21: 窃得 (玩家/他人盗取) — actor=失主, recipient=得宝者
+                elif t == "stolen" and actor and rec2:
+                    entries.append(f"{d}，{rec2}自{actor}处窃得")
+                elif t == "stolen" and actor:
+                    entries.append(f"{d}，{actor}处宝物遭窃")
+                elif t == "stolen":
+                    entries.append(f"{d}，宝物遭窃")
                 # v14: 未知流转类型不直出 key (元注释泄露), 略去
             if entries:
                 lines.append("流转：" + "；".join(entries))
@@ -1833,6 +1916,93 @@ class Facts:
         if v and not v.startswith("$") and not v.startswith("["):
             return v
         return ""
+
+    # ---- v22: 处决方式 (近似复现 execute_prisoner_interaction 的 send_option) ----
+
+    def execution_method(self, killer_id, victim_id, date=None):
+        """处决方式: 依行刑者当时状态判定可用 send_option, 稳定伪随机取一。
+
+        存档只存 death_execution, 不存方式; 此函数按游戏可用条件近似复现
+        (行刑者状态取传记所用熔件/缓存 — 数据只有年度快照, 不做逐日重建):
+          - 斩首: 东亚系文化 (asian heritage 支柱近似) 或 与受害者同信仰;
+            文化完全未知时默认可用 (通用处决即斩首)。
+          - 烧死: 非东亚系文化 (与斩首互斥方向)。
+          - 做成神秘的肉: 无地冒险者政体 + 恐惧税天赋 (fear_tax_perk)。
+          - 犬决: 雇有猎犬人 (kennelperson_camp_officer)。
+          - 食人: cannibal 特质或 secret_cannibal (信仰教义参数无存档, 略)。
+          - 献祭: 需信仰 human_sacrifice_active 教义 (无存档教义表, 暂不判定)。
+        返回 (key, 中文短语); killer 缺失或状态不可用回退 ('', '') —
+        调用方保持既有「被X处决」。"""
+        if killer_id is None:
+            return "", ""
+        tpl = (self.culture_template(killer_id) or "").lower()
+        asian = (not tpl) or tpl in _ASIAN_HERITAGE_TPL
+        kf = self._faith_id(killer_id)
+        same_faith = kf is not None and kf == self._faith_id(victim_id)
+        avail = []
+        if asian or same_faith:
+            avail.append("beheaded")
+        if not asian:
+            avail.append("burned")
+        # 做成神秘的肉: 无地冒险者 + 恐惧税天赋 (营地口粮系瞬态, 未入传记)
+        c = self._chars.get(str(killer_id)) or {}
+        gov = (self.cache.get("characters") or {}).get(str(killer_id), {}) \
+            .get("landed") or {}
+        gv = gov.get("government") or (c.get("landed_data") or {}).get("government") or ""
+        if gv == "landless_adventurer_government" and \
+                "fear_tax_perk" in ((c.get("alive_data") or {}).get("perk") or []):
+            avail.append("provisions")
+        # 犬决: 雇有猎犬人廷臣
+        cpd = (self.melt.get("court_positions") or {}).get("database") or {}
+        if any(isinstance(e, dict) and e.get("employer") == killer_id
+               and e.get("court_position") == "kennelperson_camp_officer"
+               for e in cpd.values()):
+            avail.append("kennel")
+        # 食人: cannibal 特质 (依 trait_history 按日期判定, 旧缓存看当前) 或秘密
+        if self._has_trait_at(killer_id, "cannibal", date) or \
+                self._has_secret(killer_id, "secret_cannibal"):
+            avail.append("devour")
+        if not avail:
+            return "", ""
+        avail.sort(key=lambda k: _EXECUTION_ORDER.get(k, 99))
+        seed = int(hashlib.md5(
+            f"exec::{killer_id}:{victim_id}:{date or ''}".encode("utf-8")
+        ).hexdigest()[:12], 16)
+        key = random.Random(seed).choice(avail)
+        zh = dict(_EXECUTION_OPTIONS).get(key, "")
+        return key, zh
+
+    def _has_trait_at(self, cid, trait_key, date=None):
+        """角色在某日期是否持指定特质: 缓存 trait_history 区间判定
+        (from ≤ date < to), 无 history (旧缓存) 回退当前特质。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        th = rec.get("trait_history") or {}
+        ivs = th.get(trait_key)
+        dk = cl.date_key(date) if date else \
+            (cl.date_key(self.as_of) if self.as_of else None)
+        if ivs:
+            for iv in ivs:
+                frm, to = iv.get("from"), iv.get("to")
+                if frm and dk is not None and cl.date_key(frm) > dk:
+                    continue
+                if to and dk is not None and cl.date_key(to) <= dk:
+                    continue
+                return True
+            return False
+        for t in rec.get("traits") or []:
+            if isinstance(t, int) and 0 <= t < len(self._tl) \
+                    and self._tl[t] == trait_key:
+                return True
+        return False
+
+    def _has_secret(self, cid, secret_type):
+        """角色是否持某秘密 (secret_cannibal 等): melt.secrets.secrets owner 命中。"""
+        try:
+            secs = (self.melt.get("secrets") or {}).get("secrets") or {}
+            return any(isinstance(e, dict) and e.get("owner") == cid
+                       and e.get("type") == secret_type for e in secs.values())
+        except Exception:
+            return False
 
     # ---- v16: 游戏自带的关系原因 (opinions.active_opinions) ----
     # 游戏为每对角色记录 scripted_relations.reason (如 rival_murderer =
@@ -2178,8 +2348,14 @@ class Facts:
         return f"{off}{nm}" if nm else off
 
     def court_positions_lines(self):
-        """玩家宫廷/营地官职 (v7): 返回 (最新职位行, 任免变化行)。
-        最新职位每条 = 「职位：人名（自X任）」; 变化行 = 跨快照同职位更替。
+        """玩家营/廷内他人任职 (v7/v23): 返回 (最新任职行, 任免变化行)。
+
+        语义: cache.court_positions 只收 employer==玩家 的条目 — 即玩家营地/
+        宫廷中由**僚属担任**的岗位, **不是玩家自身的官职** (玩家自身官职走
+        历任头衔/官职词)。v23: 最新任职按任职者聚合、主语前置 (「仲宣任丑角
+        （自…任），又任盗贼大师（自…任）」), 防止模型把花名册读成主角履历
+        (郭氏 bug: 「靖历任丑角…众人争相延揽」系由此错读 + 幻觉补全)。
+        变化行 = 跨快照同职位更替 (主语已是任职者)。
         v11: as_of 截断 — 只取 as_of 前最后一个快照的职位。"""
         pid = self.cache.get("player_id")
         if pid is None:
@@ -2193,18 +2369,30 @@ class Facts:
         if not hist:
             return [], []
         latest = hist[-1].get("positions") or []
-        latest_lines = []
+        holder_roles = {}  # 任职者名 -> [角色句]; 保持花名册出现序
+        order = []
         for p in latest:
             zh = L.loc(self.table, p.get("type")) or ""
             if not zh or zh == p.get("type"):
                 continue
             emp = p.get("employee")
             nm = self._office_name(emp) if emp is not None else ""
+            if not nm:
+                continue
             hire = self.date(p.get("hire_date")) if p.get("hire_date") else ""
-            if nm and hire:
-                latest_lines.append(f"{zh}：{nm}（自{hire}任）")
-            elif nm:
-                latest_lines.append(f"{zh}：{nm}")
+            roles = holder_roles.setdefault(nm, [])
+            if not roles:
+                order.append(nm)
+            roles.append(f"{zh}（自{hire}任）" if hire else zh)
+        latest_lines = []
+        for nm in order:
+            roles = holder_roles[nm]
+            # v23: 主语=任职者; 同人多职用「又任」递进, 避免「职位：人名」式
+            # 履历错觉 (那会诱导模型把岗位归给主角本人)。
+            s = f"{nm}任{roles[0]}"
+            for r in roles[1:]:
+                s += f"，又任{r}"
+            latest_lines.append(s)
         # 任免变化: 相邻快照 (type, employee) 集合差集 → 上任/卸任
         change_lines = []
         prev = set()
@@ -2376,6 +2564,70 @@ class Facts:
 # 事实渲染
 # ---------------------------------------------------------------------------
 
+# v21: 刑虐记忆的酷刑类型 → 中文 (存档变量 flag=type 的值; 实测
+# torture/castrated/castrated_beardless/blind, 游戏另有 disfigured/maim_arm/
+# maim_leg — 一并覆盖, 防新酷刑选项漏渲染; 无标志或未知一律按「折磨」)。
+_TORTURE_TORTURER = {
+    "torture": "{owner}折磨{other}。",
+    "castrated": "{owner}阉割了{other}。",
+    "castrated_beardless": "{owner}阉割了{other}（自幼，终身无须）。",
+    "blind": "{owner}致盲了{other}。",
+    "blinded": "{owner}致盲了{other}。",
+    "disfigured": "{owner}毁了{other}的容貌。",
+    "maim_arm": "{owner}打断了{other}的手臂。",
+    "maim_leg": "{owner}打断了{other}的腿。",
+}
+_TORTURE_VICTIM = {
+    "torture": "{owner}受{other}折磨。",
+    "castrated": "{owner}被{other}阉割。",
+    "castrated_beardless": "{owner}被{other}阉割（自幼，终身无须）。",
+    "blind": "{owner}被{other}致盲。",
+    "blinded": "{owner}被{other}致盲。",
+    "disfigured": "{owner}被{other}毁容。",
+    "maim_arm": "{owner}被{other}打断手臂。",
+    "maim_leg": "{owner}被{other}打断腿。",
+}
+_TORTURE_TORTURER_NO_OTHER = {
+    "torture": "{owner}施刑于人。",
+    "castrated": "{owner}施以阉刑。",
+    "castrated_beardless": "{owner}施以阉刑（自幼）。",
+    "blind": "{owner}施以剜目之刑。",
+    "blinded": "{owner}施以剜目之刑。",
+    "disfigured": "{owner}施以毁容之刑。",
+    "maim_arm": "{owner}施以断臂之刑。",
+    "maim_leg": "{owner}施以断腿之刑。",
+}
+_TORTURE_VICTIM_NO_OTHER = {
+    "torture": "{owner}受刑。",
+    "castrated": "{owner}被施以阉刑。",
+    "castrated_beardless": "{owner}被施以阉刑（自幼）。",
+    "blind": "{owner}被施以剜目之刑。",
+    "blinded": "{owner}被施以剜目之刑。",
+    "disfigured": "{owner}被施以毁容之刑。",
+    "maim_arm": "{owner}被施以断臂之刑。",
+    "maim_leg": "{owner}被施以断腿之刑。",
+}
+
+
+def _torture_kind(f, mem):
+    """刑虐记忆的酷刑类型: 优先读缓存 vars.value (v21 起保留), 旧缓存无 value
+    时回读熔件记忆库 (存档保留完整变量)。返回 'torture'/'castrated'/
+    'castrated_beardless'/'blind'/'disfigured'/'maim_arm'/'maim_leg' 等; 无则 ''。"""
+    for v in mem.get("vars") or []:
+        if v.get("flag") == "type" and v.get("value"):
+            return str(v["value"])
+    try:
+        db = (f.melt.get("character_memory_manager") or {}).get("database") or {}
+        e = db.get(str(mem.get("id"))) or {}
+        for var in (e.get("variables") or {}).get("data") or []:
+            d = var.get("data") or {}
+            if var.get("flag") == "type" and d.get("type") == "flag" and d.get("flag"):
+                return str(d["flag"])
+    except Exception:
+        pass
+    return ""
+
+
 def _mem_sentence(f, owner_id, mem):
     """一条记忆 → 干净中文句。"""
     tpl = MEMORY_TEMPLATES.get(mem.get("type"))
@@ -2394,6 +2646,17 @@ def _mem_sentence(f, owner_id, mem):
                 break
     other = (f.name_with_regnal(other_id, date=mem.get("creation_date"))
              if other_id is not None else "")
+    # v21: 刑虐记忆按酷刑类型渲染 (阉割/致盲/毁容/断臂/断腿…, 含受害者名) —
+    # 大事记/年表此前只写「施刑/受刑」, 具体酷刑事迹丢失 (王晧 1190 被阉)。
+    if mem.get("type") in ("torturer_memory", "tortured_memory"):
+        kind = _torture_kind(f, mem)
+        table = (_TORTURE_TORTURER if mem.get("type") == "torturer_memory"
+                 else _TORTURE_VICTIM)
+        no_other = (_TORTURE_TORTURER_NO_OTHER if mem.get("type") == "torturer_memory"
+                    else _TORTURE_VICTIM_NO_OTHER)
+        tpl2 = (table.get(kind) or table.get("torture")) if other \
+            else (no_other.get(kind) or no_other.get("torture"))
+        return tpl2.format(owner=owner, other=other)
     title = ""
     if mem.get("type") in TITLE_VAR_TYPES:
         for v in mem.get("vars") or []:
@@ -2444,18 +2707,25 @@ _FEUD_ROLE_RE = re.compile(
 def _death_sentence(f, cid):
     """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
     v20 (B1): 凶手为主角时附「时主角驻X」— 击杀无案发地点数据, 依主角位置史
-    标注其当时驻地, 防模型把冒险者时期/游走期的击杀全部安到定居后的桂州。"""
+    标注其当时驻地, 防模型把冒险者时期/游走期的击杀全部安到定居后的桂州。
+    v22: death_execution 且行刑者已知时, 处决方式按当时可用选项稳定伪随机
+    (斩首/做成神秘的肉/犬决/烧死/食人/献祭) — 存档只记「处决」, 不再千篇一律。"""
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     d = rec.get("death") or {}
     if not d:
         return None
     name = f.name_with_regnal(cid, date=d.get("date"))
+    killer = d.get("killer")
     # 施事者名字缺失时用「某人」 (比默认「一位人物」更像自然语言)
-    clause = _death_clause(f.table, d.get("reason"), d.get("killer"),
+    clause = _death_clause(f.table, d.get("reason"), killer,
                            lambda k: f.name_or(k, "某人"))
+    if d.get("reason") == "death_execution" and killer is not None:
+        _k, zh = f.execution_method(killer, cid, d.get("date"))
+        if zh:
+            clause = f"被{f.name_or(killer, '某人')}{zh}"
     s = f"{name}殁于{f.date(d.get('date'))}，{clause}。"
     pid = f.cache.get("player_id")
-    if pid is not None and d.get("killer") == pid:
+    if pid is not None and killer == pid:
         st = f.player_station_at(d.get("date"))
         if st:
             s = s.rstrip("。") + f"（时主角驻{st}）。"
@@ -3159,7 +3429,8 @@ def _protagonist(f):
         p["motto"] = mot
     cpl, _cpch = f.court_positions_lines()
     if cpl:
-        p["court_positions"] = "、".join(cpl)
+        # v23: 主语=任职者 (仲宣任丑角…；德方任私人医生…), 组间以「；」分隔
+        p["court_positions"] = "；".join(cpl)
     # v11: as_of 早于末档时, 直辖/封臣/营规等明细是「后期快照」数据, 不进入提示词
     # (只做头衔维度; 明细维度如要按时期需另行逐年快照, 成本高暂不做)
     skip_detail = bool(f.as_of) and cl.date_key(f.as_of) < cl.date_key(
@@ -4123,7 +4394,10 @@ def _killed_by_player(f):
             "house_branch": _house_branch(prof.get("dynasty_name"),
                                           prof.get("house_name")),
             # v13: 死者官职 (含家族领袖的「XX家族乡绅」, 此前刺客列传无官职信息)
-            "office": f.official_title(cid),
+            # v21: 无领地头衔时接王子/公主称号兜底 (按死亡日期算父头衔 —
+            # 王祦 → 高丽国皇子, 防模型把无头衔死者臆成平民)
+            "office": f.official_title(cid)
+            or f.prince_title(cid, date=(prof.get("death") or {}).get("date")),
             "culture": f.culture(cid),
             "faith": f.faith(cid),
             "traits": "、".join(f.traits(cid)),
