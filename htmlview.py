@@ -433,7 +433,7 @@ def _person_identity(fn, folder, text):
 def _article_label(fn, text, folder=None):
     """标签: 十年传记/终传 语义化 (v8)。返回 (label, meta)。
     - 十年传记: 「第N个十年传记」+「至<日期>」
-    - 终传: 「终传」+「殁于<日期>」
+    - 终传: 「终传」+「死于<日期>」
     - 普通传记: 「传记」+「至<日期>」
     - 旧文件 (无头部注释): 回退文件名/首行标题。"""
     title = os.path.splitext(fn)[0]
@@ -456,7 +456,7 @@ def _article_label(fn, text, folder=None):
         label = f"第{h['decade']}个十年传记"
         return label, f"至{date}" if date else ""
     if h.get("piece") == "终传" or kind == "终传":
-        return f"{title}（终传）", f"殁于{date}" if date else ""
+        return f"{title}（终传）", f"死于{date}" if date else ""
     if kind == "传记":
         return f"{title}（传记）", f"至{date}" if date else ""
     return title, ""

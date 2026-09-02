@@ -10,11 +10,12 @@
   - 头衔: titles_l_simp_chinese.yml (k_lingxi:"岭西", c_fuzhou_5:"鄜州")
   - 政体层级词: government_l_simp_chinese.yml 的 <政体>_salary_rank_<层级>_short
     (celestial: 路/大路/镇/州府; administrative: 督军/大督军/军区; 无则回退通用表)
-  - 省份→伯爵领: game/common/landed_titles/*.txt 的 b_ 标题 province = N (Mod 覆盖)
+  - 省份→伯爵领/男爵领: game/common/landed_titles/*.txt 的 b_ 标题 province = N (Mod 覆盖)
 
 产物 (静态参考表, 存 data/):
   - data/localization.json   : {key: 中文} 合并表
-  - data/province_map.json   : {省份id: 伯爵领key}
+  - data/province_map.json   : {省份id: {"county": 伯爵领key, "barony": 男爵领key}}
+    (v24: 值由单一伯爵领 key 升级为 county+barony 两键 — 受害者所在地标注用男爵领)
 
 用法:
   python localization.py build        # 重建本地化表
@@ -310,7 +311,8 @@ def _province_map_path(cfg):
 
 
 def _parse_landed_titles(path, out):
-    """解析一份 landed_titles.txt 的 b_ 标题 province = N → 伯爵领 key。"""
+    """解析一份 landed_titles.txt 的 b_ 标题 province = N → 伯爵领/男爵领 key。
+    v24: 每省份同时记 b_ (男爵领/城堡级) 与最近 c_ (伯爵领) 两级 key。"""
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as fp:
             txt = fp.read()
@@ -345,7 +347,7 @@ def _parse_landed_titles(path, out):
                     ckey = k
                     break
             if bkey:
-                out[prov] = ckey or bkey
+                out[prov] = {"barony": bkey, "county": ckey}
         for ch in ln:
             if ch == "}":
                 if stack:
@@ -353,7 +355,8 @@ def _parse_landed_titles(path, out):
 
 
 def build_province_map(cfg):
-    """游戏 + Mod 的 landed_titles → {省份id: 伯爵领key}。Mod 覆盖游戏。"""
+    """游戏 + Mod 的 landed_titles → {省份id: {"barony": b_ key, "county": c_ key}}。
+    Mod 覆盖游戏; 旧版文件 (值=伯爵领 key 字符串) 由 load 层兼容。"""
     out = {}
     roots = []
     g = game_dir(cfg)
@@ -374,7 +377,7 @@ def save_province_map(cfg, mapping, path=None):
     path = path or _province_map_path(cfg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fp:
-        json.dump({"schema": 1, "entries": len(mapping), "map": mapping},
+        json.dump({"schema": 2, "entries": len(mapping), "map": mapping},
                   fp, ensure_ascii=False)
     return path
 
@@ -385,8 +388,12 @@ def load_province_map(cfg, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1:
-                return {int(k): v for k, v in (data.get("map") or {}).items()}
+            if data.get("schema") in (1, 2):
+                m = {int(k): v for k, v in (data.get("map") or {}).items()}
+                if data.get("schema") == 1:
+                    # v24: 旧版 (值=伯爵领 key) → 兼容外壳, 男爵领暂缺 (待重建)
+                    m = {k: {"county": v, "barony": ""} for k, v in m.items()}
+                return m
         except Exception:
             pass
     mapping = build_province_map(cfg)
