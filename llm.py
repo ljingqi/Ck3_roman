@@ -63,10 +63,12 @@ def load_config(path=None):
                     cfg[k] = v
         except Exception as e:
             log(f"警告: 读取 config.json 失败 ({e}), 使用默认配置。")
-    # 目录回退
+    # 目录回退: 按当前 Windows 用户动态取 Documents (不写死旧机器用户名)
     if not cfg.get("ck3_user_dir"):
-        cfg["ck3_user_dir"] = (r"C:\Users\CHINE\Documents\Paradox Interactive"
-                               r"\Crusader Kings III")
+        profile = os.environ.get("USERPROFILE", "")
+        if profile:
+            cfg["ck3_user_dir"] = os.path.join(
+                profile, "Documents", "Paradox Interactive", "Crusader Kings III")
     if not cfg.get("save_dir"):
         cfg["save_dir"] = os.path.join(cfg["ck3_user_dir"], "save games")
     if not cfg.get("rakaly_path") or not os.path.isfile(cfg.get("rakaly_path")):

@@ -415,6 +415,125 @@ _DEATH_AGENT_TAIL = {  # 死因自带惨状/情状, 施事者用「凶手/行刑
     "death_eradicated": "行刑者",      # 连同全族被处决，行刑者为XXX
 }
 
+# v25: 暗杀死法池 (用户需求 2026-09-08) — 存档对暗杀只记四类泛化死因
+# (death_mysterious / death_murder / death_disappearance / death_poison), 传记
+# 因此只剩「被X秘密谋杀」「消失无踪」两句。此池以游戏本地化 death_*_killer 文案
+# 为主 (data/localization.json 中文原文), 辅以史实手写短语 — 中世纪至文艺复兴
+# 东西方暗杀手法的研究见 docs/修复方案_田所两问题.md 2.2。
+# 存档已记具体死法者 (death_defenestration 等) 仍按存档原样渲染, 池子只补泛化死因。
+#
+# 痕迹标签: covert=不留伤痕可伪装病亡 / overt=见血张扬 / vanish=尸骨无踪 / poison=毒杀
+# 死因 → 允许的标签集 (方法标签须为其子集):
+_METHOD_REASON_TAGS = {
+    "death_mysterious":     frozenset({"covert", "vanish", "poison"}),
+    "death_disappearance":  frozenset({"vanish"}),
+    "death_murder":         frozenset({"covert", "overt", "poison"}),
+    "death_murder_known":   frozenset({"covert", "overt", "poison"}),
+    "death_assassination":  frozenset({"covert", "overt", "poison"}),
+    "death_poison":         frozenset({"poison"}),
+}
+# 游戏本地化条目: (本地化键, 标签集, 文化圈, 幼童可用) — 短语由本地化表渲染,
+# 槽位 [TARGET_CHARACTER.GetUIName(Possessive)] → 凶手名, [CHARACTER.GetHerHis] → 其。
+_ASSASSINATION_GAME_KEYS = (
+    # 隐蔽 / 毒杀
+    ("death_poison_killer",                      frozenset({"covert", "poison"}), "any", True),
+    ("death_drowned_killer",                     frozenset({"covert"}), "any", True),
+    ("death_smothered_by_downy_robe_killer",     frozenset({"covert"}), "west", True),
+    ("death_too_much_dessert_killer",            frozenset({"covert", "poison"}), "west", False),
+    ("death_strongest_potion_killer",            frozenset({"covert", "poison"}), "any", False),
+    ("death_treatment_killer",                   frozenset({"covert", "poison"}), "any", False),
+    ("death_hunting_mysterious_killer",          frozenset({"covert"}), "west", False),
+    # 失踪 (尸骨无踪) — 短语均含致死意 (传记句式为「死于…，X」)
+    ("death_disappearance_killer",               frozenset({"vanish"}), "any", True),
+    ("death_fall_in_hole_killer",                frozenset({"vanish"}), "any", True),
+    ("death_nailed_in_cabinet_killer",           frozenset({"covert"}), "any", False),
+    ("death_starved_killer",                     frozenset({"covert"}), "any", False),
+    # 张扬
+    ("death_assassination_killer",               frozenset({"overt"}), "any", False),
+    ("death_murder_killer",                      frozenset({"overt"}), "any", False),
+    ("death_decapitated_killer",                 frozenset({"overt"}), "any", False),
+    ("death_beaten_killer",                      frozenset({"overt"}), "any", False),
+    ("death_skull_cracked_open_killer",          frozenset({"overt"}), "any", False),
+    ("death_dragged_killer",                     frozenset({"overt"}), "any", False),
+    ("death_trampled_killer",                    frozenset({"overt"}), "any", False),
+    ("death_whipping_killer",                    frozenset({"overt"}), "any", False),
+    ("death_torture_killer",                     frozenset({"overt"}), "any", False),
+    ("death_piteously_cut_down_killer",          frozenset({"overt"}), "any", False),
+    ("death_revenge_killer",                     frozenset({"overt"}), "any", False),
+    ("death_by_artifact_killer",                 frozenset({"overt"}), "any", False),
+    ("death_manhunted_killer",                   frozenset({"overt"}), "any", False),
+    ("death_ritually_hung_killer",               frozenset({"overt"}), "any", False),
+    ("death_scuffle_with_soldiers_killer",       frozenset({"overt"}), "any", False),
+    ("death_head_ripped_off_killer",             frozenset({"overt"}), "any", False),
+    ("death_heart_ripped_out_killer",            frozenset({"overt"}), "any", False),
+    ("death_defenestration_killer",              frozenset({"overt"}), "west", False),
+    ("death_bell_killer",                        frozenset({"overt"}), "west", False),
+    ("death_burned_killer",                      frozenset({"overt"}), "west", False),
+    ("death_viciously_dismembered_killer",       frozenset({"overt"}), "west", False),
+    # 需受害者身居高位 (宫廷政变 / 御座 / 凯旋道)
+    ("death_murder_feast_killer",                frozenset({"overt"}), "any", False),
+    ("death_coup_successful_killer",             frozenset({"overt"}), "any", False),
+    ("death_thrown_off_kathisma_killer",         frozenset({"overt"}), "west", False),
+    ("death_thrown_onto_chariot_track_killer",   frozenset({"overt"}), "west", False),
+)
+_METHOD_HIGH_RANK = frozenset({
+    "death_murder_feast_killer", "death_coup_successful_killer",
+    "death_thrown_off_kathisma_killer",
+    "death_thrown_onto_chariot_track_killer",
+})
+# 史实补充条目: (键, 短语模板 {k}=凶手名, 标签集, 文化圈, 幼童可用)
+# 东方手法依据: 《史记·刺客列传》(荆轲图穷匕见/专诸鱼肠剑/豫让)、
+# 《资治通鉴》卷十二「使人持酖饮之」(鸩杀); 西方依据见 docs 2.2 所列诸源。
+_ASSASSINATION_HISTORY = (
+    ("hist_zhen_wine",     "被{k}遣人奉鸩酒赐死",             frozenset({"covert", "poison"}), "east", False),
+    ("hist_silk_cord",     "被{k}使人以丝绳缢杀",             frozenset({"covert"}), "east", False),
+    ("hist_poison_needle", "被{k}以毒针刺入要穴而亡",         frozenset({"covert", "poison"}), "east", False),
+    ("hist_dagger_scroll", "被{k}遣刺客藏匕首于书卷中刺死",   frozenset({"overt"}), "east", False),
+    ("hist_fish_sword",    "被{k}遣刺客以鱼肠短剑刺于席间",   frozenset({"overt"}), "east", False),
+    ("hist_smother",       "被{k}使人以枕褥闷杀",             frozenset({"covert"}), "east", True),
+    ("hist_night_cord",    "被{k}夜入寝帐扼杀",               frozenset({"covert"}), "east", True),
+    ("hist_river_drown",   "被{k}使人沉于江中",               frozenset({"vanish"}), "east", True),
+    ("hist_herb_poison",   "被{k}使人以断肠草下于汤药",       frozenset({"covert", "poison"}), "east", False),
+    ("hist_arsenic",       "被{k}使人以砒霜下于酒食",         frozenset({"covert", "poison"}), "east", False),
+    ("hist_fake_edict",    "被{k}矫诏赐死",                   frozenset({"covert"}), "east", False),
+    ("hist_borrowed_blade", "被{k}假手他人所杀",              frozenset({"covert", "overt"}), "east", False),
+    ("hist_buried_alive",  "被{k}使人活埋",                   frozenset({"vanish", "overt"}), "east", True),
+    ("hist_poison_arrow",  "被{k}遣人自暗处以毒箭射杀",       frozenset({"covert", "poison"}), "east", False),
+    ("hist_temple_vanished", "被{k}使人缢杀后弃尸荒野，尸骨无踪", frozenset({"vanish"}), "east", False),
+    ("hist_poison_ring",   "被{k}以毒戒指将毒药投入酒中",     frozenset({"covert", "poison"}), "west", False),
+    ("hist_poison_gloves", "被{k}以浸毒的手套毒杀",           frozenset({"covert", "poison"}), "west", False),
+    ("hist_sack_river",    "被{k}装入麻袋沉入河中",           frozenset({"vanish"}), "west", True),
+    ("hist_bath_drown",    "被{k}溺毙于浴盆",                 frozenset({"covert"}), "west", False),
+    ("hist_church_stab",   "被{k}遣刺客刺杀于教堂",           frozenset({"overt"}), "west", False),
+    ("hist_throat_sleep",  "被{k}遣人于睡梦中割喉",           frozenset({"covert"}), "west", True),
+    ("hist_crossbow",      "被{k}遣人自窗口以弩箭射杀",       frozenset({"covert"}), "west", False),
+    ("hist_snake_basket",  "被{k}以毒蛇置于篮中咬毙",         frozenset({"covert", "poison"}), "west", False),
+    ("hist_bravo",         "被{k}雇刺客行刺于街巷",           frozenset({"overt"}), "west", False),
+    ("hist_physician",     "被{k}买通医者，于汤药中下毒",     frozenset({"covert", "poison"}), "west", False),
+    ("hist_mercury",       "被{k}以水银慢性下毒",             frozenset({"covert", "poison"}), "west", False),
+    ("hist_well_drown",    "被{k}推入井中溺毙",               frozenset({"covert", "vanish"}), "west", True),
+    ("hist_fake_suicide",  "被{k}使人缢死，伪作自尽",         frozenset({"covert"}), "any", False),
+    ("hist_banquet",       "被{k}于酒宴中下毒，归而暴卒",     frozenset({"covert", "poison"}), "any", False),
+)
+
+
+def _render_killer_loc(table, loc_key, kname):
+    """本地化死法文案 → 中文短语 (槽位替换凶手名)。
+    直接用原始表值 — L.loc 会把 [TARGET_CHARACTER.GetUIName] 一并剥掉; 此处先把
+    凶手/受害者槽位换成控制符, 剥完格式码再回填, 未解槽位/模板引用返回 ''。"""
+    raw = table.get(str(loc_key))
+    if not isinstance(raw, str) or not raw:
+        return ""
+    s = raw.replace("[CHARACTER.GetHerHis]的", "\x03")
+    s = s.replace("[TARGET_CHARACTER.GetUINamePossessive]", "\x01")
+    s = s.replace("[TARGET_CHARACTER.GetUIName]", "\x02")
+    s = s.replace("[CHARACTER.GetHerHis]", "\x03")
+    s = L.clean_loc_value(s, table)
+    s = s.replace("\x01", kname).replace("\x02", kname).replace("\x03", "其")
+    if "[" in s or "$" in s or "\x01" in s or "\x02" in s or "\x03" in s:
+        return ""
+    return s
+
 
 def _death_clause(table, reason_key, killer, name_of):
     """死因 → 自然中文短句 (含施事者嵌入)。
@@ -1388,12 +1507,27 @@ class Facts:
                 return v
         return ""
 
-    def _last_title_place(self, cid, fkey=""):
+    def _anchor_date(self, cid, date=None):
+        """官职/国号的日期锚点 (v25): 显式 date > 卒日 (已死且在传记窗口内) > as_of。
+        死者取卒日 → 卒于唐则为「唐皇帝」(李漼 874.8.15 卒, h_china 875.6.25 才
+        由崔氏改国号秦); 卒于 as_of 之后者视为在世, 取 as_of (窗口外国号不外泄)。"""
+        if date:
+            return date
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        dd = (rec.get("death") or {}).get("date")
+        if dd and (not self.as_of or cl.date_key(dd) <= cl.date_key(self.as_of)):
+            return dd
+        return self.as_of
+
+    def _last_title_place(self, cid, fkey="", date=None):
         """角色官职的地名 (dead_data.flavor 只有官职词无地名 — v13 补全用)。
         取值顺序: ① 与官职层级精确匹配的头衔 (关白=帝国级→日本; 国司=郡级→出云);
         ② 最高层级头衔; ③ 最近一次持有的头衔; ④ v14: 死者 dead_data.domain 的
         头衔名 (title history 被存档剪除时, dead_data 仍带死时辖地 — 蓝田县令)。
+        v25: 国号取 date (默认卒日) 时点的名 — 死者按其卒时国号称呼, 不再一律
+        取 as_of 现名 (修: 李漼卒于唐而被写作「秦皇帝」)。
         返回 '建宁'/'颍州'/'出云' 等; 无则 ''。"""
+        anchor = self._anchor_date(cid, date)
         tier_want = None
         for pfx, rk in (("hegemon_", 6), ("emperor_", 5), ("king_", 4),
                         ("duke_", 3), ("count_", 2), ("baron_", 1)):
@@ -1402,20 +1536,20 @@ class Facts:
                 break
 
         def _place_nm(tid):
-            """头衔的 as_of/当前国号 (非上任日, 与主循环口径一致)。"""
+            """头衔的 date (默认卒日) 时点国号 (v25: 死者按卒时国号)。"""
             if tid is None:
                 return ""
             t = self._lt.get(str(tid)) or {}
             key = t.get("key") or ""
             if not key or key.startswith(("x_", "e_minister_")):
                 return ""
-            return self._name_at_date(tid, self.as_of) or self.title_base_name(tid)
+            return self._name_at_date(tid, anchor) or self.title_base_name(tid)
 
         # v21: 同级多头衔的场合, 优先取「首要头衔」与死档 liege_title (游戏口径),
         # 不再按迭代序取第一个 — 嵬名仁孝同持 k_xia(夏) 与 k_hexi(河西) 时稳定得「夏」
         # (修复: 1179 年「河西宁令嵬名仁孝」应为游戏显示的「夏宁令」)。
         if tier_want is not None:
-            _pt, ptid = self._primary_title_at(cid)
+            _pt, ptid = self._primary_title_at(cid, as_of=anchor)
             if ptid is not None and \
                     self._TT_RANK.get((self._lt.get(str(ptid)) or {}).get("key", "")[:2], 0) == tier_want:
                 nm = _place_nm(ptid)
@@ -1440,9 +1574,10 @@ class Facts:
             for (gain, _loss, _lt) in ivs:
                 if not gain:
                     continue
-                # v17: 地名取「当前/as_of 时点」国号, 非上任日 (修复方案_汤利五问题.md
-                # 问题6 — 王言 886 年上任时国号关内, 游戏角色窗显示当前国号秦)。
-                nm = self._name_at_date(tid, self.as_of) or self.title_base_name(tid)
+                # v17: 地名取「当前」国号, 非上任日 (修复方案_汤利五问题.md 问题6
+                # — 王言 886 年上任时国号关内, 角色窗显示当时/当前国号)。
+                # v25: 「当前」锚点改为 anchor — 死者取卒日国号 (李漼卒于唐 → 唐皇帝)。
+                nm = self._name_at_date(tid, anchor) or self.title_base_name(tid)
                 if not nm:
                     continue
                 if tier_want is not None and rank == tier_want:
@@ -1487,26 +1622,29 @@ class Facts:
             return b_nm
         return ""
 
-    def official_title(self, cid):
+    def official_title(self, cid, date=None):
         """角色官职名: 「头衔名+官职词」(交州刺史/淄青节度使/青徐路观察使)。
         已死角色优先读存档 dead_data.flavor (游戏算好的键, 最准)。
         v13: flavor 只有官职词 (节度使/国司/关白) 无地名 — 用最后持有头衔的地名补全
         (颍州刺史/建宁节度使/出云国司), 与在世角色渲染一致。
         伊斯兰统治者特殊: 家族名+苏丹国/哈里发国 (复用 realm_name)。
-        v15: 宗教领袖 (教宗) 优先 — 称谓直达, 不走「X国国王主教」神权词。"""
+        v15: 宗教领袖 (教宗) 优先 — 称谓直达, 不走「X国国王主教」神权词。
+        v25: date 锚点 — 默认取卒日 (死者按其卒时国号称呼), 在世取 as_of;
+        动态国号 (h_china 唐→秦) 据此按卒期正确落名。"""
         rhw = self.religious_head_word(cid)
         if rhw:
             return rhw
+        anchor = self._anchor_date(cid, date)
         c = self._chars.get(str(cid)) or {}
         fkey = (c.get("dead_data") or {}).get("flavor")
         if fkey:
             v = L.loc(self.table, fkey)
             if v and not v.startswith("$") and not v.startswith("["):
-                place = self._last_title_place(cid, fkey)
+                place = self._last_title_place(cid, fkey, date=anchor)
                 if place and not v.startswith(place):
                     return f"{place}{v}"
                 return v
-        tier, tid = self._primary_title_at(cid)
+        tier, tid = self._primary_title_at(cid, as_of=anchor)
         if tid is None or tier is None:
             # v13: 无地家族/庄园头衔 (x_nf_*「XX家族」) 的持有者官职词 —
             # 按文化选词 (日本: 当主; 高丽系: 户长; 其余天朝/选贤/行政: 乡绅)。
@@ -1525,7 +1663,7 @@ class Facts:
         rn = self.realm_name(tid)
         if rn:
             return rn
-        name = self._name_at_date(tid, self.as_of) or self.title_base_name(tid)
+        name = self._name_at_date(tid, anchor) or self.title_base_name(tid)
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         gov = (rec.get("landed") or {}).get("government") or ""
         if not gov:
@@ -2115,6 +2253,105 @@ class Facts:
         key = random.Random(seed).choice(avail)
         zh = dict(_EXECUTION_OPTIONS).get(key, "")
         return key, zh
+
+    def assassination_method(self, killer_id, victim_id, date=None, reason_key=None):
+        """暗杀死法 (v25): 泛化死因按池子取一具体手法, 稳定伪随机不漂移。
+
+        可用门 (见 _METHOD_REASON_TAGS / _ASSASSINATION_GAME_KEYS /
+        _ASSASSINATION_HISTORY):
+          - 死因: 神秘死亡/失踪/谋杀/毒杀各自的允许标签集, 方法标签须为其子集;
+          - 文化圈: 凶手或受害者属东亚系文化 (_ASIAN_HERITAGE_TPL) → 东方池,
+            否则西方池; 标 any 者两池通用;
+          - 幼童: 受害者卒时不足 8 岁只取幼童可用条目;
+          - 高位: 宫廷政变/御座/凯旋道类仅受害者卒时为王国级及以上可用。
+        返回 (键, 中文短语); 死因不在池内/池子为空时回 ('', '') — 调用方回退
+        既有「被X谋杀」「消失无踪」。"""
+        if killer_id is None or not reason_key:
+            return "", ""
+        tags = _METHOD_REASON_TAGS.get(reason_key)
+        if not tags:
+            return "", ""
+        tpl_k = (self.culture_template(killer_id) or "").lower()
+        tpl_v = (self.culture_template(victim_id) or "").lower()
+        east = (tpl_k in _ASIAN_HERITAGE_TPL) or (tpl_v in _ASIAN_HERITAGE_TPL)
+        sphere = "east" if east else "west"
+        kname = self.name_or(killer_id, "某人")
+        age = self._age_at_death(victim_id, date)
+        child = age is not None and age < 8
+        high = self._is_high_rank_at(victim_id, date)
+        avail = []
+        for loc_key, mtags, msphere, child_ok in _ASSASSINATION_GAME_KEYS:
+            if not mtags <= tags or msphere not in ("any", sphere):
+                continue
+            if child and not child_ok:
+                continue
+            if loc_key in _METHOD_HIGH_RANK and not high:
+                continue
+            text = _render_killer_loc(self.table, loc_key, kname)
+            if text:
+                avail.append((loc_key, text))
+        for mkey, tmpl, mtags, msphere, child_ok in _ASSASSINATION_HISTORY:
+            if not mtags <= tags or msphere not in ("any", sphere):
+                continue
+            if child and not child_ok:
+                continue
+            avail.append((mkey, tmpl.format(k=kname)))
+        if not avail:
+            return "", ""
+        seed = int(hashlib.md5(
+            f"assassin::{killer_id}:{victim_id}:{date or ''}:{reason_key}"
+            .encode("utf-8")
+        ).hexdigest()[:12], 16)
+        return random.Random(seed).choice(avail)
+
+    def _age_at_death(self, cid, date=None):
+        """角色卒时年龄 (整岁); 生卒缺一返回 None。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        c = self._chars.get(str(cid)) or {}
+        birth = rec.get("birth") or c.get("birth")
+        death = date or (rec.get("death") or {}).get("date") \
+            or (c.get("dead_data") or {}).get("date")
+        if not birth or not death:
+            return None
+        try:
+            return int(str(death).split(".")[0]) - int(str(birth).split(".")[0])
+        except Exception:
+            return None
+
+    def _is_high_rank_at(self, cid, date=None):
+        """受害者卒时是否王国级 (k_) 及以上 — 宫廷政变/御座类手法用。"""
+        try:
+            tier, tid = self._primary_title_at(cid, as_of=date)
+        except Exception:
+            return False
+        if tid is None:
+            return False
+        rank = self._TT_RANK.get((self._lt.get(str(tid)) or {}).get("key", "")[:2], 0)
+        return rank >= 4
+
+    def death_clause(self, cid, date=None, reason=None, killer=None):
+        """角色死因句 (含施事者): 处决走处决方式池, 暗杀类走暗杀死法池, 其余通用。
+        date/reason/killer 显式传入时以传入为准 (受害者不在缓存时的熔件兜底用)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        d = rec.get("death") or {}
+        if reason is None:
+            reason = d.get("reason")
+        if killer is None:
+            killer = d.get("killer")
+        if date is None:
+            date = d.get("date")
+        if killer is None:
+            return _death_clause(self.table, reason, None, lambda k: "")
+        kname = self.name_or(killer, "某人")
+        if reason == "death_execution":
+            _k, zh = self.execution_method(killer, cid, date)
+            if zh:
+                return f"被{kname}{zh}"
+        _mkey, mzh = self.assassination_method(killer, cid, date, reason)
+        if mzh:
+            return mzh
+        return _death_clause(self.table, reason, killer,
+                             lambda k: self.name_or(k, "某人"))
 
     def _has_trait_at(self, cid, trait_key, date=None):
         """角色在某日期是否持指定特质: 缓存 trait_history 区间判定
@@ -2895,7 +3132,8 @@ def _death_sentence(f, cid):
     v22: death_execution 且行刑者已知时, 处决方式按当时可用选项稳定伪随机
     (斩首/做成神秘的肉/犬决/烧死/食人/献祭) — 存档只记「处决」, 不再千篇一律。
     v24: 凶手为主角时附「（死于X）」(X = 受害者死前最近可知男爵领, 数据无则省略);
-    弃用 v20 的「时主角驻X」(主角驻地 ≠ 案发地, 误导模型把刺杀安在主角驻地)。"""
+    弃用 v20 的「时主角驻X」(主角驻地 ≠ 案发地, 误导模型把刺杀安在主角驻地)。
+    v25: 死因句统一走 Facts.death_clause — 暗杀类死因按死法池取具体手法。"""
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     d = rec.get("death") or {}
     if not d:
@@ -2903,12 +3141,7 @@ def _death_sentence(f, cid):
     name = f.name_with_regnal(cid, date=d.get("date"))
     killer = d.get("killer")
     # 施事者名字缺失时用「某人」 (比默认「一位人物」更像自然语言)
-    clause = _death_clause(f.table, d.get("reason"), killer,
-                           lambda k: f.name_or(k, "某人"))
-    if d.get("reason") == "death_execution" and killer is not None:
-        _k, zh = f.execution_method(killer, cid, d.get("date"))
-        if zh:
-            clause = f"被{f.name_or(killer, '某人')}{zh}"
+    clause = f.death_clause(cid, date=d.get("date"))
     s = f"{name}死于{f.date(d.get('date'))}，{clause}。"
     pid = f.cache.get("player_id")
     if pid is not None and killer == pid:
@@ -3747,8 +3980,7 @@ def _protagonist(f):
     if pd:
         p["death"] = (
             f"死于{f.date(pd.get('date'))}，"
-            f"{_death_clause(f.table, pd.get('reason'), pd.get('killer'),
-                             lambda k: f.name_or(k, '某人'))}。"
+            f"{f.death_clause(pid, date=pd.get('date'), reason=pd.get('reason'), killer=pd.get('killer'))}。"
         )
     # 家庭 (v11: as_of 截断 — 出生晚于 as_of 的未出生者不列)
     fam = rec.get("family") or {}
@@ -4570,9 +4802,9 @@ def _killed_by_player(f):
             mc = f._chars.get(str(cid)) or {}
             mdd = (mc or {}).get("dead_data") or {}
             if mdd and mdd.get("date"):
-                clause = _death_clause(f.table, mdd.get("reason"),
-                                       mdd.get("killer"),
-                                       lambda k: f.name_or(k, "某人"))
+                clause = f.death_clause(cid, date=mdd.get("date"),
+                                        reason=mdd.get("reason"),
+                                        killer=mdd.get("killer"))
                 ds = f"{f.name_or(cid)}死于{f.date(mdd.get('date'))}，{clause}。"
                 # v24: 熔件反查兜底同样附受害者所在地 (男爵领; 无则省略)
                 if mdd.get("killer") == pid:
@@ -4595,7 +4827,9 @@ def _killed_by_player(f):
             # v13: 死者官职 (含家族领袖的「XX家族乡绅」, 此前刺客列传无官职信息)
             # v21: 无领地头衔时接王子/公主称号兜底 (按死亡日期算父头衔 —
             # 王祦 → 高丽国皇子, 防模型把无头衔死者臆成平民)
-            "office": f.official_title(cid)
+            # v25: 官职国号按卒日 (李漼卒于唐 → 唐皇帝, 不随 as_of 写成秦皇帝)
+            "office": f.official_title(
+                cid, date=(prof.get("death") or {}).get("date"))
             or f.prince_title(cid, date=(prof.get("death") or {}).get("date")),
             "culture": f.culture(cid),
             "faith": f.faith(cid),
@@ -4843,9 +5077,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         pd = None
     if pd:
         pd = dict(pd)
-        pd["reason_zh"] = _death_clause(f.table, pd.get("reason"),
-                                        pd.get("killer"),
-                                        lambda k: f.name_or(k, "某人"))
+        pd["reason_zh"] = f.death_clause(
+            cache.get("player_id"), date=pd.get("date"),
+            reason=pd.get("reason"), killer=pd.get("killer"))
     facts = {
         # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充)
         "house": _dynasty_display(cache.get("dynasty_name"),
