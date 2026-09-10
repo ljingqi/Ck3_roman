@@ -209,10 +209,10 @@ SECRET_TOPICS = {
     "secret_murder_attempt": "行刺{target}未遂",
     "secret_exam_cheater": "科举舞弊",
     "secret_lover": "与{target}私通",
-    "secret_deviant": "性僻",
-    "secret_non_believer": "不信教",
+    "secret_deviant": "性情怪僻",
+    "secret_non_believer": "不信神明",
     "secret_crypto_religionist": "暗奉异教",
-    "secret_witch": "行巫",
+    "secret_witch": "暗行巫术",
     "secret_embezzler": "侵吞库银",
     "secret_siphoned_treasury": "挪用国库",
     "secret_unmarried_illegitimate_child": "血脉存疑",
@@ -227,7 +227,7 @@ SECRET_TOPICS = {
 SECRET_TOPICS_NO_TARGET = {
     "secret_murder": "谋害人命",
     "secret_murder_attempt": "行刺未遂",
-    "secret_lover": "私通",
+    "secret_lover": "与人私通",
 }
 # 谋杀类隐事: 正文归《刺客列传》, 篇内只计数 + 索引
 SECRET_MURDER_TYPES = {"secret_murder", "secret_murder_attempt"}
@@ -1992,25 +1992,9 @@ class Facts:
     # change_reason 里游戏只写「国王/王」无国号, 渲染层有头衔能力却绕过了它。
     # 按事件日期查两端角色头衔: 主角侧「瑞典国王崔佛」, 对方侧「粤王范承宗」。
     def _feud_role_title(self, cid, date):
-        """事件中某角色的「头衔名+名」: 按事件日期查首要头衔 (国号随年份:
-        903 是粤、更早是桂), 无头衔/查不到时回退纯名; v15: 教宗直称「教宗」;
-        v17: 名带世系编号 (同名前任 ≥1 时, 奇普里安II)。"""
-        rhw = self.religious_head_word(cid)
-        if rhw:
-            return rhw + self.name_or(cid)
-        tier, tid = self._primary_title_at(cid, as_of=date)
-        name = self.name_with_regnal(cid, date)
-        if tid is None or tier is None:
-            return name
-        tname = self._name_at_date(tid, date) or self.title_base_name(tid)
-        if not tname:
-            return name
-        # 政体从头衔侧取 (角色 landed 在死者/时点会被清空, 头衔政体更稳)
-        gov = self._title_government(tid)
-        word = self._office_word(tier, gov, independent=self._is_independent(cid),
-                                 female=self._is_female(cid),
-                                 tid=tid, cid=cid)
-        return f"{tname}{word}{name}" if word else f"{tname}{name}"
+        """事件中某角色的「头衔名+名」— person_label 的 event 式入口
+        (国号随年份: 903 是粤、更早是桂)。"""
+        return self.person_label(cid, date, "event")
 
     def _rerender_feud_event(self, raw, date):
         """change_reason 原文 → 两端角色按日期重渲染的干净中文句。
@@ -2102,29 +2086,72 @@ class Facts:
             return f"{nm}{w}"
         return nm
 
-    def kin_label(self, cid, date=None):
-        """亲属/世系/妻族专用称谓 (v27): 「[前X，]现职Y 姓名」。
-        ① 宗教领袖 → 「教宗X」;
-        ② 现头衔 (official_title, 含死者 dead_data.flavor) → 「可萨布兰部可敦塔坦尼·布兰」;
-        ③ 前头衔层级 > 现头衔层级 → 「前拜占庭皇帝，安卡拉伯爵君士坦丁十一」;
-        ④ 无头衔者 → 父/母头衔 ≥ 王国时取王子/公主称号 → 「楚国郡主苗映娘」;
-        ⑤ 其余 → 统一显示名 (含绰号/世系编号/天皇座称号)。
-        长名 (天皇座子女已把称号并入姓名) 不再叠前缀。"""
+    # ------------------------------------------------------------------
+    # v28b: 「头衔+姓名」统一组装 — 全项目人物称谓只此一处出词
+    # (kin_label / 隐事句 / 要员隐事 / 恩怨事件 / 宫廷僚属行 都调 person_label)
+    # ------------------------------------------------------------------
+    def person_label(self, cid, date=None, style="full"):
+        """人物称谓统一入口 (v28b)。style:
+        - "full": 家室/世系 (kin_label) — 「[前X，]现职Y 姓名」;
+        - "brief": 隐事/把柄/要员隐事 — 「现职Y 姓名」(前头衔不前置);
+        - "event": 恩怨史事件 (v14) — 现职按**事件日期**取 (死者按事件时官职);
+        - "office": 宫廷僚属行 (v23) — 「现职Y 名」(去宗族姓, 免与主角同姓冗)。
+        ① 宗教领袖 → 「教宗X」; ② 天皇座子女称号已并入姓名, 不叠前缀;
+        ③ 无头衔者 → full 式按父/母头衔取王子/公主称号, 其余只给显示名。"""
         nm = self.name_with_regnal(cid, date)
         if not nm:
             return ""
-        # 天皇座子女的称号已并入姓名, 不叠任何前缀
         if self._tenno_prince_word(cid, date):
             return nm
         rhw = self.religious_head_word(cid)
         if rhw:
             return f"{rhw}{nm}"
-        cur = self.official_title(cid, date)
+        if style == "office":
+            off = self.official_title(cid, date)
+            if not off:
+                return self.name_or(cid, "")
+            return f"{off}{self._given_name(cid) or self.name_or(cid, '')}"
+        off = self._event_office(cid, date) if style == "event" \
+            else self.official_title(cid, date)
+        if style == "full":
+            return self._full_label(cid, date, off, nm)
+        return f"{off}{nm}" if off else nm
+
+    def _given_name(self, cid):
+        """角色名 (不含宗族/家族前缀): 熔件 name_zh → 显示名去宗族姓 (v14 口径)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        nm = rec.get("name_zh") or ""
+        if nm:
+            return nm
+        full = self.name_or(cid, "")
+        for h in (rec.get("dynasty_name"), rec.get("house_name")):
+            if h and full.startswith(h):
+                return full[len(h):]
+        return full
+
+    def _event_office(self, cid, date):
+        """恩怨史事件里的现职 (v14): 按事件日期取「头衔名+官职词」; 政体从头衔侧取
+        (角色 landed 在死者/时点会被清空, 头衔政体更稳)。"""
+        tier, tid = self._primary_title_at(cid, as_of=date)
+        if tid is None or tier is None:
+            return ""
+        tname = self._name_at_date(tid, date) or self.title_base_name(tid)
+        if not tname:
+            return ""
+        word = self._office_word(tier, self._title_government(tid),
+                                 independent=self._is_independent(cid),
+                                 female=self._is_female(cid), tid=tid, cid=cid)
+        return f"{tname}{word}" if word else tname
+
+    def _full_label(self, cid, date, cur, nm):
+        """full 式称谓 (v27 用户定稿): 只在**前头衔层级高于现头衔**时把前头衔前置,
+        形态「前拜占庭皇帝，安卡拉伯爵君士坦丁十一」; 现头衔缺失时只写
+        「前高昌国王毗伽庞特勤」。同一头衔 (同一 tid) 的今昔两种叫法不算前头衔 —
+        塔坦尼·布兰 现职「可萨布兰部可敦」, 其 881–893 年的 3981 就是同一头衔的
+        前身, 一律只写现职。无头衔者按父/母头衔取王子/公主称号。"""
         # 现职为空时不存在「现头衔」, 不能把「最近一段最高位持有」当成现职排除掉
         # (否则 毗伽庞特勤 的 高昌 会被自己挤掉, 只剩更低的 喀喇沙尔公国)。
-        cur_tid = None
-        if cur:
-            cur_tid = self._current_title_tid(cid, date)
+        cur_tid = self._current_title_tid(cid, date) if cur else None
         cur_rank = 0
         if cur_tid is not None:
             key = (self._lt.get(str(cur_tid)) or {}).get("key") or ""
@@ -2149,6 +2176,12 @@ class Facts:
         if pw:
             return f"{pw}{nm}"
         return nm
+
+    def kin_label(self, cid, date=None):
+        """亲属/世系/妻族专用称谓 (v27) — person_label 的 full 式入口:
+        「[前X，]现职Y 姓名」。"""
+        return self.person_label(cid, date, "full")
+
 
 
     def _minister_office(self, tid):
@@ -2296,14 +2329,26 @@ class Facts:
         out.sort(key=lambda r: cl.date_key(r.get("first_seen") or "9999.9.9"))
         return out
 
-    def secret_topic(self, rec):
-        """隐事主题短语 (不含持有人): 「科举舞弊（涉及樊骥）」/「谋害叠溪寋」/「与阿足私通」;
-        未收录类型回退游戏本地化类型名 (取不到返回 '')。"""
+    def _first_seen_note(self, rec):
+        """隐事首见标注: 「自873年见载」; 首档即见 (数据起点前已有) 返回 ''。"""
+        fs = rec.get("first_seen")
+        if not fs or rec.get("first"):
+            return ""
+        return f"自{self._year_only(fs)}见载"
+
+    def secret_topic(self, rec, self_cid=None):
+        """隐事主题短语 (不含持有人): 「科举舞弊（涉及唐皇帝李漼）」/「谋害叠溪寋」/
+        「与阿足私通」; 未收录类型回退游戏本地化类型名 (取不到返回 '')。
+        v28b: 涉及对象带官职称谓, 主角本人写作「自己」。"""
         if not isinstance(rec, dict):
             return ""
         tp = rec.get("type") or ""
         tgt = rec.get("target")
-        tname = self.name_or(tgt, "") if isinstance(tgt, int) else ""
+        if isinstance(tgt, int):
+            tname = "自己" if (self_cid is not None and tgt == self_cid) \
+                else self.person_label(tgt, style="brief")
+        else:
+            tname = ""
         tpl = SECRET_TOPICS.get(tp)
         if tpl:
             if "{target}" in tpl:
@@ -2315,47 +2360,79 @@ class Facts:
         z = L.loc(self.table, tp) or ""
         if not z or re.search(r"[A-Za-z_]", z):
             return ""
+        z = re.sub(r"者$", "", z)          # 类型名是名词 (考试舞弊者) — 去「者」成事
         return f"{z}（涉及{tname}）" if tname else z
 
-    def secret_sentence(self, rec, owner_label=None):
-        """隐事记录 → 中文事实句: 「陆荣廷有隐事：科举舞弊（自873年见载）。」"""
+    def secret_sentence(self, rec, owner_label=None, self_cid=None):
+        """隐事句: 「陆荣廷有一桩隐事：科举舞弊（涉及唐皇帝李漼，自873年见载）。」
+        首档即见者不写年份; 主题自带括注时年份并入同一括号。"""
         if not isinstance(rec, dict):
             return ""
-        topic = self.secret_topic(rec)
+        topic = self.secret_topic(rec, self_cid=self_cid)
         if not topic:
             return ""
         owner = owner_label if owner_label is not None \
             else self.name_or(rec.get("owner"))
         if not owner:
             return ""
-        s = f"{owner}有隐事：{topic}"
-        fs = rec.get("first_seen")
-        if fs and not rec.get("first"):
-            note = f"自{self._year_only(fs)}见载"
-            # 主题自带括注时并入同一括号, 避免「（涉及X）（自Y年见载）」
-            s = s[:-1] + f"；{note}）" if s.endswith("）") else s + f"（{note}）"
+        s = f"{owner}有一桩隐事：{topic}"
+        note = self._first_seen_note(rec)
+        if note:
+            # 主题自带括注 (科举舞弊（涉及X）) 时并入同一括号, 不叠两层括号
+            s = s[:-1] + f"，{note}）" if s.endswith("）") else s + f"（{note}）"
         return s + "。"
 
-    def secret_known_line(self, rec):
-        """该隐事的知情情形句: 「至今无人知晓」/「X、Y已知情（自Z年起）」;
-        无外人知情返回空串 (由调用方决定是否写「无人知晓」)。"""
+    def secret_knowers(self, rec, self_cid=None):
+        """知情者短语 (无句末句号): 「知情者：卢从度、从谠（同年）、孙元忠（自873年起）」;
+        无人知情返回 ''。同年知情者并列共用一个年份 (省词元)。"""
+        if not isinstance(rec, dict):
+            return ""
         owner = rec.get("owner")
-        names = []
+        seen = self._year_only(rec.get("first_seen")) if self._first_seen_note(rec) else ""
+        groups = []            # [(年份文本 or '', [名, ...])] — 同一年并列
+        index = {}
+        total = 0
         for k in rec.get("known_by") or []:
             kid = k.get("id")
             if not isinstance(kid, int) or kid == owner:
                 continue
-            nm = self.name_or(kid, "")
+            nm = self.name_with_regnal(kid) if kid == self_cid \
+                else self.person_label(kid, style="brief")
             if not nm:
                 continue
             frm = k.get("from")
-            if frm and not k.get("first"):
-                names.append(f"{nm}（自{self._year_only(frm)}起）")
-            else:
-                names.append(nm)
-        if not names:
+            yr = self._year_only(frm) if (frm and not k.get("first")) else ""
+            g = index.get(yr)
+            if g is None:
+                g = (yr, [])
+                index[yr] = g
+                groups.append(g)
+            g[1].append(nm)
+            total += 1
+            if total >= 6:
+                break
+        if not groups:
             return ""
-        return "知情者：" + "、".join(names[:6]) + "。"
+        parts = []
+        for yr, names in groups:
+            who = "、".join(names)
+            if not yr:
+                parts.append(who)
+            elif seen and yr == seen:
+                parts.append(f"{who}（同年）")     # 年份已在「见载」处写过, 只写一次
+            else:
+                parts.append(f"{who}（自{yr}起）")
+        return "知情者：" + "、".join(parts)
+
+    def secret_line(self, rec, owner_label=None, knowers=True, self_cid=None):
+        """隐事一行 (v28b): 「{owner}有一桩隐事：{topic}（涉及X，自Y年见载）；
+        知情者：A、B（同年）。」— 隐事与知情者同句, 一眼看出谁知道了哪桩事。"""
+        s = self.secret_sentence(rec, owner_label=owner_label, self_cid=self_cid)
+        if not s or not knowers:
+            return s
+        kl = self.secret_knowers(rec, self_cid=self_cid)
+        return s[:-1] + "；" + kl + "。" if kl else s
+
 
     def secrets_known_by(self, cid, date=None):
         """cid 知情、但主人不是他的隐事记录 (把柄维度)。"""
@@ -3557,23 +3634,8 @@ class Facts:
         return render_motto(mot, self.table)
 
     def _office_name(self, cid):
-        """官职名+名: 「交州刺史应偁」(官职前缀替换家族前缀; 无官职回退原名)。"""
-        off = self.official_title(cid)
-        if not off:
-            return self.name_or(cid, "")
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        nm = rec.get("name_zh") or ""
-        if not nm:
-            full = self.name_or(cid, "")
-            # v14: 东方名序的姓是宗族名, 先按宗族名剥前缀 (藤原道真 → 道真),
-            # 再按家族名 (旧行为, 兼容旧缓存)
-            for h in (rec.get("dynasty_name"), rec.get("house_name")):
-                if h and full.startswith(h):
-                    nm = full[len(h):]
-                    break
-            else:
-                nm = full
-        return f"{off}{nm}" if nm else off
+        """官职名+名: 「交州刺史应偁」 — person_label 的 office 式入口。"""
+        return self.person_label(cid, style="office")
 
     def court_positions_lines(self):
         """玩家营/廷内他人任职 (v7/v23): 返回 (最新任职行, 任免变化行)。
@@ -5442,7 +5504,8 @@ def _realm_facts(f):
 
 def _realm_secret_lines(f):
     """要员隐事 (v28): 上位链持有人 (不含主角) + 朝廷职司时任者的隐事句,
-    上限 6 条; 无则返回 []。"""
+    上限 6 条; 无则返回 []。v28b: 持有人带官职称谓 (唐皇帝李漼 / 御史大夫郭克勤),
+    隐事与其知情者同句。"""
     pid = f.cache.get("player_id")
     owners = []
     try:
@@ -5459,11 +5522,11 @@ def _realm_secret_lines(f):
     out = []
     for oid in owners:
         for rec in f.secrets_owned_by(oid, f.as_of):
-            s = f.secret_sentence(rec)
+            s = f.secret_line(rec, owner_label=f.person_label(oid, style="brief"),
+                              self_cid=pid)
             if not s:
                 continue
-            kl = f.secret_known_line(rec)
-            out.append(s + kl)
+            out.append(s)
             if len(out) >= 6:
                 return out
     return out
@@ -6235,8 +6298,9 @@ def _genealogy(f):
 def _secrets_facts(f):
     """隐事事实 (v28): 主角/家人近臣的隐事、知情情形、把柄、本十年见载事件。
 
-    返回 {held, held_murder, kinsmen, known, known_by_others, events, any};
+    返回 {held, held_murder, held_unrevealed, kinsmen, known, events, any};
     无相关隐事时返回 {} (剧本不生成《阴私录》)。
+    v28b: 每条隐事一行 (隐事 + 其知情者同句), 见载年与知情年同年时只写一次年份。
     """
     cache = f.cache
     pid = cache.get("player_id")
@@ -6249,17 +6313,23 @@ def _secrets_facts(f):
         (murder if rec.get("type") in SECRET_MURDER_TYPES else held).append(rec)
     out = {}
     if held:
-        out["held"] = [f.secret_sentence(r) for r in held if f.secret_sentence(r)]
-        out["held_known"] = [f.secret_known_line(r) for r in held
-                             if f.secret_known_line(r)]
-        if not out["held_known"]:
+        lines, revealed = [], False
+        for r in held:
+            ln = f.secret_line(r, self_cid=pid)
+            if not ln:
+                continue
+            lines.append(ln)
+            revealed = revealed or bool(f.secret_knowers(r, self_cid=pid))
+        if lines:
+            out["held"] = lines
+        if not revealed:
             out["held_unrevealed"] = True      # 至今无人知晓
     if murder:
         out["held_murder"] = len(murder)
         names = []
         for rec in murder:
             t = rec.get("target")
-            nm = f.name_or(t, "") if isinstance(t, int) else ""
+            nm = f.person_label(t, style="brief") if isinstance(t, int) else ""
             if nm:
                 names.append(nm)
         if names:
@@ -6281,7 +6351,7 @@ def _secrets_facts(f):
     kin_lines = []
     for kid in dict.fromkeys(kin):
         for rec in f.secrets_owned_by(kid, cut):
-            s = f.secret_sentence(rec, owner_label=f.kin_label(kid))
+            s = f.secret_line(rec, owner_label=f.kin_label(kid), self_cid=pid)
             if s:
                 kin_lines.append(s)
     if kin_lines:
@@ -6289,13 +6359,10 @@ def _secrets_facts(f):
     # 主角握有的他人把柄
     known = []
     for rec in f.secrets_known_by(pid, cut):
-        topic = f.secret_topic(rec)
-        owner = f.name_or(rec.get("owner"))
+        topic = f.secret_topic(rec, self_cid=pid)
+        owner = f.person_label(rec.get("owner"), style="brief")
         if topic and owner:
-            # 隐事对象就是主角本人时 (如「与X私通」), 换成「与自己」更顺
-            if rec.get("target") == pid:
-                topic = topic.replace(f"与{f.name_or(pid)}", "与自己")
-            known.append(f"{f.name_or(pid)}知悉{owner}的隐事：{topic}。")
+            known.append(f"{f.name_or(pid)}握有{owner}的把柄：{topic}。")
     if known:
         out["known"] = known[:10]
     # 本十年内首见的隐事 (纪事时间锚点); 终传/在世传记用全期
@@ -6319,7 +6386,7 @@ def _secrets_facts(f):
         owner = rec.get("owner")
         if owner != pid and owner not in kin:
             continue
-        s = f.secret_sentence(dict(rec, first=True))
+        s = f.secret_line(dict(rec, first=True), knowers=False, self_cid=pid)
         if s:
             # 事件行前缀已给日期, 句内不再重复「自X年见载」
             events.append(f"{f.date(fs)}，{s}")
