@@ -277,6 +277,46 @@ CK3 自动存档 (.ck3)  —(watch/continue 只处理启动后写入的新存档
   `token: 输入N = 命中H + 未命中M | 输出O | 字符C (命中率P%)` —— DeepSeek 缓存命中
   单价是未命中的 1/50，**未命中 token 才是验收指标**（此前 usage 从未被读取）。
 
+## v28 能力（跨战役名字防污染 / 世族庄园 / 头衔缘由 / 言语条件化）
+
+方案与证据见 `docs/修复方案_陆氏十二问题.md`（2026-09-10 用户拍板：乡绅 / 全政体按
+reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 `python experiments/verify_lushi.py`。
+
+- **跨战役名字防污染**：`data/names.json` 是按角色 id 索引的**跨战役**表（id 只在同一存档内
+  有意义）。`display_name` 取值链改为 缓存 → **熔件角色** → names.json，且表内
+  `playthrough_id` 与当前熔件不一致即整表弃用（`build_names.py` 写入战役号）。
+  实测陆氏档 16293 本名「郑良士」（汉人，宗族郑），此前被另一战役同名 id 顶成「藤原利仁」
+  —— 全档 27662/50261 个角色名与自身不符。`_father_name_of` 同步改序。
+- **世族庄园（乡绅）**：`x_` 头衔不再一律当「无地冒险者营地」。新增
+  `Facts.title_kind`（`estate` 世族庄园 `_nf_` / `nomad` 毡帐 / `camp` 冒险者营地
+  `_laamp_`+`x_mc_` / `landed`），`_primary_group` 不再让庄园挤掉领地阶段，
+  `held_titles` 写「陆家族乡绅（世族庄园）」，档案增「世族庄园「陆家族」（乡绅）。」。
+- **头衔得失按 reason 出词（全政体）**：`TITLE_GAIN_VERBS` / `TITLE_LOSS_VERBS`
+  把 `appointment_succession`→受任、`stepped_down`→卸任/接任、`inheritance`→承袭、
+  `conquest*`→攻取/失守、`revoked`→被褫夺… 未知 reason 回退旧词（登位/让出）。
+  天朝制/行政制下戏剧主题显示名换为「受任迁转/卸任调转」，板块要求同步换词
+  （陆氏：867 受封陆家族 → 869 受任阶州 → 872 卸任阶州 → 875 受任商州）。
+- **牧群/口粮按 domicile 门控**：牧群只在毡帐（yurt）写、口粮只在无地营地（camp）写，
+  0 值一律省略（天朝制世族此前写出「牧群0」）。
+- **朝廷职司 = 官职词+人名**：`兵部尚书任清`（原「兵部：任清（兵部尚书）」重复）；
+  `minister_revenue`/`minister_rites` 本地化键缺失，改走候选链
+  （`councillor_steward/court_chaplain_celestial_government_imperial`），
+  政事堂 → 宰相。`_minister_office` 是 `official_title` 共用出口，一并受益。
+- **文化随父系**：`culture_template` 改为 自身 → 亲属链（父→同胞→宗族→母）→ 语言反查；
+  同语言多文化时优先有父名规则的模板。子女不再因「共享 language_tai」被判成黎人。
+- **人物族属/信仰补全**：谋害对象并入档案白名单（`successful_murder` ∪ `killer==主角`），
+  时间线谋杀行带「（839年生，羌人，信正一派）」——存档里 `dead_unprunable` 一直保留这些
+  字段（游戏随时可读），此前只进《刺客列传》（击杀 >5 才生成）。
+- **元信息清零**：档案不再出现「出身自定/自定义出身/史无可考」（改「先世资料未载」），
+  健康/压力改现代白话档位（健康良好 / 压力较重…，0 级不写），
+  输出文档不再写 `> 存档来源：…` 与「生成时间」，头注释只留 htmlview 要用的字段。
+- **言语关系条件化**：`Facts.language_relation_line(s)` 由程序判定「共通X，言语相通」/
+  「无共通语，交谈须借通译」并直给，`「语言事实」`规则不再要求模型自行判断语言同异。
+- **配偶标签按主体性别**：女性角色的丈夫写「夫婿」（原「妻室商州刺史陆荣廷」）；
+  `_genealogy` 的 `spouse` 减去 `primary_spouse`（原「正妻：亮」+「侧室：亮」重复）。
+- **行文规则**：`「平行世界规则」`改为「资料未载之处行文径入下一事」，新增
+  `「行文落笔」`——治「满篇无可考」（陆氏兜底按语密度 1.79–2.46/千字 → 0）。
+
 ## 代码纪律（2026-09-10 用户定规）
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
@@ -344,7 +384,7 @@ python htmlview.py rebuild         :: 重建所有宗族文件夹的 index.html
 | `data/` | 全局表：names.json + localization.json + province_map.json（各战役共用） |
 | `output/<宗族>/data/` | 每玩家记忆缓存 + 熔化存档 melt_*.json（v6 起，与缓存同目录） |
 | `output/` | 传记输出（按宗族分文件夹） |
-| `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线） |
+| `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线；`verify_lushi.py` / `verify_tadokoro2.py` 为确定性回归） |
 
 ## 已知限制
 
