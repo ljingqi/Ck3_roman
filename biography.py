@@ -115,7 +115,7 @@ SECTION_TITLES = {
 SECTION_REQ = {
     "benji": {
         "lead": "从家世出身写起: 生于何年、家族渊源、族属信仰、性情特质, 立起人物一生基调。",
-        "mid": "按时间次序叙述一生大事: 执掌领地或经营营地、受任官职、让土、结仇、家变、再娶等, 以年表资料为限。本篇写出主角的登位与失土时刻、战争与囚狱转折, 把每个关键日期写成戏剧场景。",
+        "mid": "按时间次序叙述一生大事: 执掌领地、经营营地或世族庄园、受任官职、去职、结仇、家变、再娶等, 以年表资料为限。本篇写出主角的受任与去职时刻(封建制写登位与失土)、战争与囚狱转折, 把每个关键日期写成戏剧场景。",
         "tail": None,
     },
     "friend": {
@@ -650,6 +650,12 @@ def _profile_lines(facts, cid=None):
             gov = (gov + "，" if gov else "") + p["council"]
         if gov:
             lines.append(gov + "。")
+        # ---- v28: 世族庄园身份 (中国世族/日本武家/家族地产) ----
+        # 与「无地冒险者营地」分列: 营地是无地漂泊, 庄园是有家有业的世族根基
+        if p.get("estate_name"):
+            holder = f"（{p['estate_holder']}）" if p.get("estate_holder") else ""
+            lines.append(f"{p.get('estate_word') or '家族庄园'}"
+                         f"「{p['estate_name']}」{holder}。")
     # ---- 官职句 ----
     # v23: p.court_positions 是主角营/廷内**他人任职**花名册 (雇主=主角,
     # 任职者已在 facts 层按人聚合: 「仲宣任丑角（自…任），又任盗贼大师…」),
