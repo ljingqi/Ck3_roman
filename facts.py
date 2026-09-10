@@ -2853,8 +2853,11 @@ class Facts:
     # ---- 文化 / 信仰 / 特质 / 政体 ----
     def culture_template(self, cid):
         """角色文化模板名 (norse/han/balhae…): 缓存 culture id → 熔件 culture_manager。
-        v11: 缓存/熔件文化均缺失 (死后清空/存档版本无 culture 字段) 时,
-        依语言反查 (language_norse → norse), 供父名推断与族属显示。"""
+        v11: 缓存/熔件文化均缺失 (死后清空/存档版本无 culture 字段) 时依亲属链/语言反推。
+        v28: **亲属链优先于语言反查** —— 同一语言常被多个文化共享 (language_tai 同时
+        属 黎/傣/布僮/土家), 语言反查只能任取第一个, 会把「子女随父」的文化判错
+        (实测陆裕光: 父布僮、母羌, 只通泰语 → 旧序取到黎人, 应为布僮人)。
+        CK3 子女文化沿父系继承, 故顺序为 自身 → 父系线 → 同胞 → 宗族 → 母 → 语言。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         cul = rec.get("culture")
         if cul is None:
@@ -2866,8 +2869,15 @@ class Facts:
             tpl = (e or {}).get("culture_template") if isinstance(e, dict) else None
             if tpl:
                 return tpl
-        # 语言反查: 角色已知语言 → culture_manager.language → 文化模板
-        # (多文化共享同一语言时, 优先有父名规则的模板, 如 language_norse → norse 而非 norman)
+        # v28: 亲属链 (cl._culture_template_of 内部末步即含语言反查) 先于纯语言反查。
+        # 传 chars/memo 避免每次重建全角色索引 (同一次 build_facts 内复用)
+        tpl = cl._culture_template_of(self.cache, cid, self.melt,
+                                      chars=self._chars, memo=self._tpl_memo)
+        if tpl:
+            return tpl
+        # 语言反查 (亲属链全空时的最后兜底): 角色已知语言 → culture_manager.language
+        # → 文化模板; 多文化共享同一语言时优先有父名规则的模板
+        # (如 language_norse → norse 而非 norman)。
         for lg in self._languages_of(cid):
             cands = self._lang_to_tpl.get(lg) or []
             if not cands:
@@ -2876,10 +2886,7 @@ class Facts:
                 if tpl in _patronym_rules():
                     return tpl
             return cands[0]
-        # v13: 亲属链/宗族兜底 (玩家本人无 culture、死者被清空时, 经子女等反推)
-        # 传 chars/memo 避免每次重建全角色索引 (同一次 build_facts 内复用)
-        return cl._culture_template_of(self.cache, cid, self.melt,
-                                       chars=self._chars, memo=self._tpl_memo) or None
+        return None
 
     def _languages_of(self, cid):
         """角色语言 id 列表: 缓存捕获 (跨年保留) 优先, 缺失回退最新熔件 alive_data。"""
