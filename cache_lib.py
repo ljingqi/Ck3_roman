@@ -1596,7 +1596,122 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 b["first_seen"] = date_label
                 rec["memories"].append(b)
                 seen.add(key)
+    # v28: 隐事 (secrets) 逐档差分 — 存档只存「当前秘密」, 无日期; 逐档比对即得
+    # 「首次见于记载」的年份, 供《阴私录》写时间锚点。只收与相关集/朝廷要员
+    # 有关的秘密以控体积 (实测每档相关 4–30 条)。
+    _diff_secrets(cache, melt, date_label)
     return cache
+
+
+def _court_holder_ids(melt):
+    """本档高位头衔 (h_/e_/k_) 与朝廷职司 (e_minister_*) 的持有者 id 集
+    (《朝局风云录·要员隐事》取材范围)。"""
+    out = set()
+    lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
+    for t in lt.values():
+        if not isinstance(t, dict):
+            continue
+        key = t.get("key") or ""
+        if not key.startswith(("h_", "e_", "k_")):
+            continue
+        h = t.get("holder")
+        if isinstance(h, int):
+            out.add(h)
+    return out
+
+
+def _diff_secrets(cache, melt, date_label):
+    """把本档 secrets 并入 cache["secrets_history"] (逐档差分)。
+
+    记录形如::
+
+        {"102": {"type": "secret_exam_cheater", "owner": 38682,
+                 "target": 10914, "participants": [38682],
+                 "first_seen": "868.1.1", "first": true,   # 首档即见 = 之前已有
+                 "known_by": [{"id": 38682, "from": "868.1.1", "first": true}],
+                 "lost_at": "879.1.1"}}                    # 此后不再见于档
+    """
+    sec_root = melt.get("secrets") or {}
+    secs = sec_root.get("secrets") or {}
+    known = sec_root.get("known_secrets") or []
+    if not secs:
+        return
+    related = set()
+    for k in (cache.get("characters") or {}):
+        try:
+            related.add(int(k))
+        except (TypeError, ValueError):
+            continue
+    related |= _court_holder_ids(melt)
+    pid = cache.get("player_id")
+    if pid is not None:
+        related.add(int(pid))
+    if not related:
+        return
+    # 相关判定: owner/target/participant 属相关集, 或相关者知情 (把柄维度)
+    want = {}
+    for sid, v in secs.items():
+        if not isinstance(v, dict):
+            continue
+        owner = v.get("owner")
+        tgt = v.get("target")
+        tid = tgt.get("identity") if isinstance(tgt, dict) else None
+        parts = [x for x in (v.get("participants") or []) if isinstance(x, int)]
+        ids = {x for x in (owner, tid, *parts) if isinstance(x, int)}
+        if ids & related:
+            want[str(sid)] = v
+    knowers = {}
+    for e in known:
+        o = e.get("owner")
+        sid = e.get("secret")
+        if not isinstance(o, int) or sid is None:
+            continue
+        if o not in related:
+            continue
+        knowers.setdefault(str(sid), []).append(o)
+        if str(sid) not in want:
+            v = secs.get(str(sid))
+            if isinstance(v, dict):
+                want[str(sid)] = v
+    hist = cache.setdefault("secrets_history", {})
+    first_snap = len(cache.get("sources") or []) <= 1
+    for sid, v in want.items():
+        tgt = v.get("target")
+        tid = tgt.get("identity") if isinstance(tgt, dict) else None
+        rec = hist.get(sid)
+        if rec is None:
+            rec = {
+                "type": v.get("type") or "",
+                "owner": v.get("owner") if isinstance(v.get("owner"), int) else None,
+                "target": tid if isinstance(tid, int) else None,
+                "participants": [x for x in (v.get("participants") or [])
+                                 if isinstance(x, int)],
+                "first_seen": date_label,
+                "first": first_snap,
+                "known_by": [],
+            }
+            if v.get("relation_type"):
+                rec["relation_type"] = v.get("relation_type")
+            hist[sid] = rec
+        else:
+            # 复现/换主: 记录最新 owner 与 target (秘密可因原主死亡转归他人)
+            if isinstance(v.get("owner"), int):
+                rec["owner"] = v.get("owner")
+            if isinstance(tid, int):
+                rec["target"] = tid
+            rec.pop("lost_at", None)
+        known_ids = {x.get("id") for x in rec.get("known_by") or []}
+        for o in dict.fromkeys(knowers.get(sid) or []):
+            if o in known_ids:
+                continue
+            rec.setdefault("known_by", []).append({
+                "id": o, "from": date_label, "first": first_snap})
+            known_ids.add(o)
+    # 消失: 本档已不见 -> 记 lost_at (仅在记录仍属相关时)
+    for sid, rec in hist.items():
+        if sid in want or rec.get("lost_at"):
+            continue
+        rec["lost_at"] = date_label
 
 
 # ---------------------------------------------------------------------------
