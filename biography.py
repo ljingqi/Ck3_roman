@@ -598,11 +598,13 @@ def _profile_lines(facts, cid=None):
     lines = []
     name = p.get("name") or p.get("name_zh") or ""
     # ---- 名号句 (官职前置: 瑞典国王崔佛·菲利普; 无官职直接用姓名) ----
-    head = name
-    if p.get("office"):
-        head = f"{p['office']}{name}"
-    elif p.get("prince"):
-        head = f"{p['prince']}{name}"
+    # v28b: 称谓统一 — head 用 facts 组好的 person_label; 旧缓存无 label 时回退旧拼法
+    head = p.get("label") or name
+    if not p.get("label"):
+        if p.get("office"):
+            head = f"{p['office']}{name}"
+        elif p.get("prince"):
+            head = f"{p['prince']}{name}"
     bits = []
     h = _house_text(None, p)
     # 家族/宗族: 分家存在或家族名不在显示名中才单列 (西方名·姓已含家族, 不重复)
@@ -745,9 +747,9 @@ def _profile_lines(facts, cid=None):
         kin_bits.append(f"兄弟姊妹{p['siblings']}")
     if kin_bits:
         lines.append("，".join(kin_bits) + "。")
-    # ---- 任历句 ----
+    # ---- 任历句 (v28b: 加冒号断句 — 原「历任867年任X」年月与「历任」粘连) ----
     if p.get("titles_held"):
-        lines.append(f"历任{p['titles_held']}。")
+        lines.append(f"历任：{p['titles_held']}。")
     # ---- 现状句 (status 以「年X岁」开头时并入「现」字成散文句) ----
     if p.get("status"):
         st = p["status"]
@@ -790,6 +792,13 @@ def _render_block(title, lines):
     return f"{title}\n" + "\n".join(body)
 
 
+def _set_block(blocks, key, text):
+    """v28b: 只在该块确实有料时设键 — 空块不再写「（无X记录）」这类占位串
+    (占位串会进提示词, 既费词元又容易被模型照抄进正文)。"""
+    if text:
+        blocks[key] = text
+
+
 # v14: 刺客列传新口径 (用户定稿) — 死者名带官职 (「唐皇帝李漼」),
 # 只传 亲缘 (父/母/妻/妾) + 婚恋记忆 (成婚/相恋/分手/丧偶), 其余生前经历
 # (登位/战争/科考等) 从略 — 研究_戏剧模块化.md 7.3 实测: 46 死者 324 条记忆
@@ -817,10 +826,13 @@ def _assassin_kill_lines(facts, cache, k):
     lines = []
     nm = k["name"]
     off = k.get("office") or ""
-    disp = f"{off}{nm}" if off else nm
+    # v28b: 死者称谓用 facts 组好的 label (官职/称号+名), 旧缓存回退 office+name
+    disp = k.get("label") or (f"{off}{nm}" if off else nm)
     db = k.get("death") or ""
-    if db.startswith(nm + "死于"):
-        db = "死于" + db[len(nm) + 2:]
+    for _p in (disp, nm):
+        if db.startswith(_p + "死于"):
+            db = "死于" + db[len(_p) + 2:]
+            break
     db = _strip_station(db)  # v20/v24: 地点标注改独立行呈现
     if db and db != "（死因不详）":
         bd = k.get("birth") or ""
@@ -902,7 +914,7 @@ def _name_or(facts, cache, cid):
             return nm
     except Exception:
         pass
-    return "（名讳不详）"
+    return "某人"
 
 
 def _article_facts(facts, cache, key, section=None):
@@ -917,7 +929,7 @@ def _article_facts(facts, cache, key, section=None):
         sk = _sec_key(section)
         tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
                                  exclude=_has_assassins(facts))
-        blocks["大事年表"] = "\n".join(tl) if tl else "（本板块无年表记录）"
+        _set_block(blocks, "大事年表", "\n".join(tl))
         link = _murder_link_line(facts, key, sk)
         if link:
             blocks["说明"] = link
@@ -932,7 +944,7 @@ def _article_facts(facts, cache, key, section=None):
             if sk == "lead":
                 blocks["传主档案"] = "\n".join(lines)
             else:
-                blocks["传主行迹"] = "\n".join(events) if events else "（无行迹记录）"
+                _set_block(blocks, "传主行迹", "\n".join(events))
                 tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
                                  exclude=_has_assassins(facts))
                 if tl:
@@ -993,7 +1005,7 @@ def _article_facts(facts, cache, key, section=None):
             ev = p.get("events") or []
             if ev:
                 fam_lines.append("  " + "\n  ".join(ev))
-        blocks["家室档案"] = "\n".join(fam_lines) if fam_lines else "（本板块无家人档案）"
+        _set_block(blocks, "家室档案", "\n".join(fam_lines))
         tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
                                  exclude=_has_assassins(facts))
         if tl:
@@ -1013,11 +1025,11 @@ def _article_facts(facts, cache, key, section=None):
         # v13: 朝廷职司现任 (尚书省六部/御史台/枢密院)
         if realm.get("ministers"):
             dashi.append("朝廷职司：" + "、".join(realm["ministers"]))
-        blocks["天下大势"] = "\n".join(dashi) if dashi else "（无天下大势记录）"
+        _set_block(blocks, "天下大势", "\n".join(dashi))
         # 朝局动态: 模块切片 (v27, 与《本纪》纪事同口径; 排除谋害人命)
         dyn = F.slice_timeline(facts.get("timeline") or [], key, sk,
                                    exclude=_has_assassins(facts))
-        blocks["朝局动态"] = "\n".join(dyn) if dyn else "（本板块无朝局动态记录）"
+        _set_block(blocks, "朝局动态", "\n".join(dyn))
         link = _murder_link_line(facts, key, sk)
         if link:
             blocks["说明"] = link
@@ -1078,27 +1090,28 @@ def _article_facts(facts, cache, key, section=None):
                 for k in killed:
                     nm = k["name"]
                     off = k.get("office") or ""
-                    disp = f"{off}{nm}" if off else nm
+                    # v28b: 死者称谓用 facts 组好的 label (官职/称号+名)
+                    disp = k.get("label") or (f"{off}{nm}" if off else nm)
                     db = k.get("death") or ""
-                    if db.startswith(nm + "死于"):
-                        db = "死于" + db[len(nm) + 2:]  # 去掉「名+死于」前缀
+                    for _p in (disp, nm):
+                        if db.startswith(_p + "死于"):
+                            db = "死于" + db[len(_p) + 2:]  # 去掉「称谓+死于」前缀
+                            break
                     db = _strip_station(db)  # v20: 开篇压缩名录不带驻地标注
                     parts.append(f"死者：{disp}（{db}）" if db and db != "（死因不详）"
                                  else f"死者：{disp}")
-                blocks["刀下诸魂"] = "\n".join(parts)
+                _set_block(blocks, "刀下诸魂", "\n".join(parts))
             else:
                 # 各纪事: 按时段切片给完整档案 (v14 新口径: 官职名+亲缘+婚恋)
                 sl = (section or {}).get("slice")
                 picked = killed[sl[0]:sl[1]] if sl else killed
                 parts = ["\n".join(_assassin_kill_lines(facts, cache, k)) for k in picked]
-                blocks["刀下诸魂"] = "\n\n".join(parts)
-        else:
-            blocks["刀下诸魂"] = "（无刀下诸魂记录）"
+                _set_block(blocks, "刀下诸魂", "\n\n".join(parts))
     elif key == "youxia":
         # v27: 主角档案已在共享前缀; 行纪按前后二分 (开篇萍踪 / 纪事辗转)
         wander = list(facts.get("wandering") or [])
         seg = _split_span(wander, 0 if _sec_key(section) == "lead" else 1)
-        blocks["行纪"] = "\n".join(seg) if seg else "（本板块无行纪记录）"
+        _set_block(blocks, "行纪", "\n".join(seg))
     elif key == "qizu":
         # v27: 主角档案已在共享前缀
         imp = facts.get("imperial_spouses") or []
@@ -1119,20 +1132,15 @@ def _article_facts(facts, cache, key, section=None):
                     lines.append("经历：")
                     lines.extend("  " + s for s in ev)
                 parts.append("\n".join(lines))
-            blocks["帝胄姻亲"] = "\n\n".join(parts)
-        else:
-            blocks["帝胄姻亲"] = "（无帝胄姻亲记录）"
+            _set_block(blocks, "帝胄姻亲", "\n\n".join(parts))
     elif key == "qunying":
         # v27: 主角档案已在共享前缀; 朝局动态按模块切片 (排除谋害人命)
         lum = facts.get("luminaries") or []
-        if lum:
-            blocks["朝堂群英"] = "、".join(lum)
-        else:
-            blocks["朝堂群英"] = "（无要员名录）"
+        _set_block(blocks, "朝堂群英", "、".join(lum))
         tl = F.slice_timeline(facts.get("timeline") or [], key,
                               _sec_key(section),
                               exclude=_has_assassins(facts))
-        blocks["朝局动态"] = "\n".join(tl) if tl else "（本板块无朝局动态记录）"
+        _set_block(blocks, "朝局动态", "\n".join(tl))
         link = _murder_link_line(facts, key, sk)
         if link:
             blocks["说明"] = link
@@ -1147,16 +1155,11 @@ def _article_facts(facts, cache, key, section=None):
                 if fd.get("events"):
                     parts.append("恩怨史：")
                     parts.extend("  " + e for e in fd["events"])
-            blocks["家族恩怨"] = "\n\n".join(parts)
-        else:
-            blocks["家族恩怨"] = "（无家族恩怨记录）"
+            _set_block(blocks, "家族恩怨", "\n\n".join(parts))
     elif key == "artifacts":
         # v27: 主角档案已在共享前缀
         arts = facts.get("family_artifacts") or []
-        if arts:
-            blocks["传家重宝"] = "\n\n".join(arts)
-        else:
-            blocks["传家重宝"] = "（无传家重宝记录）"
+        _set_block(blocks, "传家重宝", "\n\n".join(arts))
     elif key == "secrets":
         # v28《阴私录·隐事秘辛》: 主角隐事归开篇, 家人近臣隐事与把柄归纪事
         sec = facts.get("secrets") or {}
@@ -1167,12 +1170,11 @@ def _article_facts(facts, cache, key, section=None):
                 lines.append(_murder_index_line(facts, sec))
             if sec.get("held_unrevealed"):
                 lines.append("这些隐事至今无人知晓。")
-            blocks["主角隐事"] = "\n".join(lines) if lines else "（无隐事记录）"
+            _set_block(blocks, "主角隐事", "\n".join(lines))
         else:
             mid_lines = list(sec.get("kinsmen") or [])
             mid_lines.extend(sec.get("known") or [])
-            blocks["家人近臣隐事"] = ("\n".join(mid_lines)
-                                     if mid_lines else "（无家人近臣隐事记录）")
+            _set_block(blocks, "家人近臣隐事", "\n".join(mid_lines))
             if sec.get("events"):
                 blocks["见载年表"] = "\n".join(sec["events"])
     return blocks
@@ -1194,13 +1196,25 @@ def _murder_index_line(facts, sec):
 # 提示词
 # ---------------------------------------------------------------------------
 
-def _system_msg(style="east", extra=""):
+def _rule_block(style, secret=False):
+    """system 规则块 (v28b): 隐事笔法只发给确实携带隐事事实的板块 —
+    《阴私录·隐事秘辛》与《朝局风云录》(要员隐事), 其余板块不再逐次携带。"""
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
+    out = (f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
+           f"{NARRATIVE_FOCUS_RULE}\n{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n"
+           f"{LANGUAGE_FLAVOR_RULE}")
+    if secret:
+        out += f"\n{SECRET_RULE}"
+    return out
+
+
+# v28b: 携带隐事事实的板块 (SECRET_RULE 只随这些板块下发)
+_SECRET_BOARDS = ("secrets", "chaoju")
+
+
+def _system_msg(style="east", extra="", secret=False):
     return ("你是史官, 撰写传记。\n\n"
-            f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
-            f"{NARRATIVE_FOCUS_RULE}\n"
-            f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n"
-            f"{SECRET_RULE}")
+            f"{_rule_block(style, secret)}{extra}")
 
 
 def _decade_theme_note(facts):
@@ -1265,7 +1279,7 @@ def _shared_facts_block(facts):
         life_note = f"【现状】在世（截至{llm.fmt_cn_date(facts['as_of'])}）"
     else:
         life_note = "【现状】在世（截至最后一份存档）"
-    profile_txt = _render_block("【人物档案】", _profile_lines(facts)) or "（无档案）"
+    profile_txt = _render_block("【人物档案】", _profile_lines(facts))
     # v20 (B3): 主角身份/驻地变化年表 — 无地冒险者→定居 的轨迹直给模型,
     # 本纪/刺客列传/朝局共用 (共享前缀), 防击杀地点被锚定到定居后的治所
     stations_txt = ""
@@ -1282,7 +1296,8 @@ def _shared_facts_block(facts):
     # 修复方案_汤利五问题.md 问题4 — 十年传记 89 行 → 约 10 行)。
     # 十年传记的 timeline 已按本十年窗口截断, 摘要随之只含本十年。
     pname = p.get("name") or ""
-    own = F._year_summary(facts.get("timeline") or [], pname)
+    own = F._year_summary(facts.get("timeline") or [], pname,
+                          plabel=p.get("label") or "")
     own_txt = _render_block("【主角大事摘要】", own) if own else ""
     out = [f"【传主】{name}\n【家族】{house}\n{life_note}\n\n", profile_txt]
     if stations_txt:
@@ -1300,7 +1315,6 @@ def build_intro_messages(facts, cfg, articles=None):
     name = p.get("name") or "主角"
     house = _house_text(facts)
     style = facts.get("bio_style") or "east"
-    rule = STYLE_RULES.get(style, STYLE_RULES["east"])
     birth = p.get("birth") or ""
     death = facts.get("player_death")
     if death:
@@ -1309,10 +1323,7 @@ def build_intro_messages(facts, cfg, articles=None):
         span_cn = f"生于{birth}" if birth else ""
     sys_msg = (
         "你是史官, 为一位乱世人物修传。\n\n"
-        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
-        f"{NARRATIVE_FOCUS_RULE}\n"
-        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n"
-        f"{SECRET_RULE}\n\n"
+        f"{_rule_block(style)}\n\n"
         "撰写传记「总纲」: 概括此人的一生大势, 预告以下各篇文章, "
         "点明其家族与身份。总纲正文控制在400–600字, 以「太史公曰」作结。"
     )
@@ -1352,14 +1363,10 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     sec = article["sections"][0]
     title = article["title"]
     style = facts.get("bio_style") or "east"
-    rule = STYLE_RULES.get(style, STYLE_RULES["east"])
     blocks = _article_facts(facts, cache, key, sec)
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
-        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
-        f"{NARRATIVE_FOCUS_RULE}\n"
-        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n"
-        f"{SECRET_RULE}"
+        f"{_rule_block(style, key in _SECRET_BOARDS)}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = ""
@@ -1403,14 +1410,10 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
     key = article["key"]
     title = article["title"]
     style = facts.get("bio_style") or "east"
-    rule = STYLE_RULES.get(style, STYLE_RULES["east"])
     blocks = _article_facts(facts, cache, key, section)
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
-        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
-        f"{NARRATIVE_FOCUS_RULE}\n"
-        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n"
-        f"{SECRET_RULE}"
+        f"{_rule_block(style, key in _SECRET_BOARDS)}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = ""
