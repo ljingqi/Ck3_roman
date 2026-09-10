@@ -4160,10 +4160,21 @@ def _timeline(f):
                     if s:
                         # v16: 死者出生年限定 — 区分同名/近名角色 (830年生的
                         # 里瓦朗 vs 869年生的里瓦尔, 一字之差模型易混)
+                        # v28: 并写族属与信仰 — 存档里 dead_unprunable 一直保留
+                        # (游戏中随时可读), 此前小传里完全没有这些信息。
                         drec = (cache.get("characters") or {}).get(str(dead)) or {}
                         by = str(drec.get("birth") or "").split(".")[0] or ""
+                        cul = f.culture(dead)
+                        fai = f.faith(dead)
+                        mark = []
                         if by:
-                            s = s.rstrip("。") + f"（{by}年生）。"
+                            mark.append(f"{by}年生")
+                        if cul and not cul.endswith("不详"):
+                            mark.append(cul)
+                        if fai and not fai.endswith("不详"):
+                            mark.append(f"信{fai}")
+                        if mark:
+                            s = s.rstrip("。") + f"（{'，'.join(mark)}）。"
                         # v24: 依谋杀发生日标受害者死前最近可知所在 (男爵领名;
                         # 数据无则省略) — 击杀无案发地点, 以受害者位置为锚,
                         # 不再用主角驻地 (主角驻地 ≠ 案发地)。
@@ -4827,6 +4838,8 @@ def _protagonist(f):
         f.kin_label(c) for c in child_ids if not f._is_female(c))
     p["children_daughters"] = "、".join(
         f.kin_label(c) for c in child_ids if f._is_female(c))
+    # v28: 主体性别 (配偶标签「妻室/夫婿」按此取, 见 biography._profile_lines)
+    p["female"] = f._is_female(pid)
     p["father"] = "、".join(
         f.kin_label(x) for x in (fam.get("father") or []) if f.name(x))
     p["mother"] = "、".join(
@@ -4881,6 +4894,20 @@ def _profile_needed_ids(f):
         for p in h.get("positions") or []:
             if isinstance(p.get("employee"), int):
                 out.setdefault(p["employee"], 2)
+    # v28: 主角的谋害对象与被害者 (成功谋杀记忆 ∪ 缓存死亡记录 killer==主角) —
+    # 这些人的族属/信仰在存档里一直可读 (dead_unprunable 保留对象字段),
+    # 此前只进《刺客列传》(击杀 >5 才生成), 陆氏这类小传里完全读不到。
+    prec = (f.cache.get("characters") or {}).get(str(pid)) or {}
+    for m in prec.get("memories") or []:
+        if m.get("type") == "successful_murder":
+            v = (m.get("participants") or {}).get("victim")
+            if isinstance(v, int) and v != pid:
+                out.setdefault(v, 2)
+    for _cid, _rec in (f.cache.get("characters") or {}).items():
+        if int(_cid) == pid:
+            continue
+        if (_rec.get("death") or {}).get("killer") == pid:
+            out.setdefault(int(_cid), 2)
     return out
 
 
@@ -4954,6 +4981,8 @@ def _character_profiles(f):
             f.kin_label(c) for c in child_ids if not f._is_female(c))
         prof["children_daughters"] = "、".join(
             f.kin_label(c) for c in child_ids if f._is_female(c))
+        # v28: 主体性别 — 配偶标签按此取 (女角色的丈夫不再写成「妻室」)
+        prof["female"] = f._is_female(cid)
         prof["father"] = "、".join(
             f.kin_label(x) for x in (fam.get("father") or []) if f.name(x))
         prof["mother"] = "、".join(
@@ -5874,22 +5903,37 @@ def _court_luminaries(f):
 
 
 def _genealogy(f):
-    """世系 (v5 终传附录): 主角 + 父母 + 妻妾 + 子女 + 兄弟姊妹 谱系行。"""
+    """世系 (v5 终传附录): 主角 + 父母 + 妻妾 + 子女 + 兄弟姊妹 谱系行。
+    v28: 「配偶」标签按主角性别取 (妻室/夫婿), 且 spouse 减去 primary_spouse —
+    CK3 同一位妻子同时存在于两个字段, 此前输出「正妻：亮」+「侧室：亮」两行。"""
     cache = f.cache
     pid = cache.get("player_id")
     if pid is None:
         return []
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
     fam = rec.get("family") or {}
+    fem = f._is_female(pid)
     lines = []
     pname = f.name_or(pid)
     lines.append(f"一世 {pname}（{f.date(rec.get('birth'))}生）")
-    for key, label in (("father", "父"), ("mother", "母"),
-                       ("primary_spouse", "正妻"), ("spouse", "侧室"),
-                       ("concubine", "妾"), ("former_concubines", "前妾"),
-                       ("child", "子女"), ("siblings", "兄弟姊妹"),
-                       ("former_spouses", "前妻")):
-        ids = fam.get(key) or []
+    spouses = [x for x in (fam.get("primary_spouse") or [])]
+    side = [x for x in (fam.get("spouse") or []) if x not in set(spouses)]
+    rows = [("father", "父"), ("mother", "母")]
+    if fem:
+        rows += [("primary_spouse_key", "正夫"), ("side_spouse_key", "侧夫")]
+    else:
+        rows += [("primary_spouse_key", "正妻"), ("side_spouse_key", "侧室")]
+    rows += [("concubine", "妾" if not fem else "男宠"),
+             ("former_concubines", "前妾" if not fem else "前男宠"),
+             ("child", "子女"), ("siblings", "兄弟姊妹"),
+             ("former_spouses", "前夫" if fem else "前妻")]
+    for key, label in rows:
+        if key == "primary_spouse_key":
+            ids = spouses
+        elif key == "side_spouse_key":
+            ids = side
+        else:
+            ids = fam.get(key) or []
         if not ids:
             continue
         bits = []
