@@ -672,15 +672,22 @@ def _profile_lines(facts, cid=None):
     if p.get("court_position"):
         lines.append(f"在主角处任{p['court_position']}。")
     # ---- 家庭句 ----
+    # v28: 配偶标签按**档案主体的性别**取 — 女性角色的丈夫此前被写成「妻室」
+    # (陆氏家室列传: 妻「亮」的档案出现「妻室商州刺史陆荣廷」)。
+    fem = bool(p.get("female"))
+    spouse_lbl = "夫婿" if fem else "妻室"
+    former_lbl = "前夫" if fem else "前妻"
+    conc_lbl = "男宠" if fem else "妾"
+    former_conc_lbl = "前男宠" if fem else "前妾"
     fam_bits = []
     if p.get("spouses"):
-        fam_bits.append(f"妻室{p['spouses']}")
+        fam_bits.append(f"{spouse_lbl}{p['spouses']}")
     if p.get("former_spouses"):
-        fam_bits.append(f"前妻{p['former_spouses']}")
+        fam_bits.append(f"{former_lbl}{p['former_spouses']}")
     if p.get("concubines"):
-        fam_bits.append(f"妾{p['concubines']}")
+        fam_bits.append(f"{conc_lbl}{p['concubines']}")
     if p.get("former_concubines"):
-        fam_bits.append(f"前妾{p['former_concubines']}")
+        fam_bits.append(f"{former_conc_lbl}{p['former_concubines']}")
     # v26: 子女按性别分列 (子A、B，女C、D) — 无性别混排会让模型把女儿写成儿子
     if p.get("children_sons"):
         fam_bits.append(f"子{p['children_sons']}")
@@ -703,7 +710,9 @@ def _profile_lines(facts, cid=None):
     if p.get("real_father") and p.get("real_father") != p.get("father"):
         kin_bits.append(f"实父{p['real_father']}")
     if p.get("custom_start"):
-        kin_bits.append("先世无考（出身自定，史无可考，无父母谱系）")
+        # v28: 只给史书口径的一句 — 不再出现「出身自定」等元信息,
+        # 也不再堆「史无可考/无父母谱系」(模型会照抄成满篇「无可考」)
+        kin_bits.append("先世资料未载")
     if p.get("siblings"):
         kin_bits.append(f"兄弟姊妹{p['siblings']}")
     if kin_bits:
