@@ -248,6 +248,35 @@ TITLE_LOSS_VERBS = {
     "destroyed": "毁弃",
 }
 
+# v28: 健康/压力档位 — 游戏数值属元信息, 提示词只给档位词 (现代白话)。
+# 阈值取自游戏 defines HEALTH_STATE_LEVELS_VALUES {0,1,3,5,7} 与
+# script_values (dying 0 / poor 1 / fine 3 / good 5 / excellent 7);
+# 压力按 game_concept_stress_level「每 100 压力升一级, 0–3 级」。
+_HEALTH_BANDS = ((7.0, "身体康健"), (5.0, "健康良好"), (3.0, "健康尚可"),
+                 (1.0, "身体抱恙"), (0.0, "病危"))
+_STRESS_BANDS = {1: "压力较轻", 2: "压力较重", 3: "压力极重"}
+
+
+def health_state_zh(value):
+    """健康值 → 档位词 (元信息不外泄); 无法解析返回 ''。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return ""
+    for lo, word in _HEALTH_BANDS:
+        if v >= lo:
+            return word
+    return "垂危"
+
+
+def stress_state_zh(value):
+    """压力值 → 档位词 (0 级 = 无压力, 不写); 无法解析返回 ''。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return ""
+    return _STRESS_BANDS.get(min(3, int(v // 100)), "")
+
 # 参与者槽位: 记忆类型 → participants 键 (缺失时取第一个 int 参与者)
 PARTICIPANT_SLOTS = {
     "became_rivals": "rival", "became_grudge": "grudge", "became_nemesis": "nemesis",
@@ -1917,6 +1946,15 @@ class Facts:
         "e_minister_of_works": "minister_works",           # 工部尚书
         "e_minister_censor": "minister_censor",            # 御史大夫
         "e_minister_grand_marshal": "minister_grand_marshal",  # 枢密使
+        "e_minister_chancellor": "minister_chancellor",    # 宰相 (政事堂)
+    }
+    # v28: 官职词候选链 (键缺失/未解析时的后备; 见 _minister_office)
+    _MINISTER_OFFICE_FALLBACKS = {
+        "minister_revenue": ("councillor_steward_celestial_government_imperial",),
+        "minister_rites": ("councillor_court_chaplain_celestial_government_imperial",),
+        "minister_censor": ("minister_censor_male",),
+        "minister_grand_marshal": ("minister_grand_marshal_male",),
+        "minister_chancellor": ("minister_chancellor_male",),
     }
 
     # v14: 恩怨史事件两端角色重渲染 (修复方案_菲利普2.md 问题3) —
@@ -2083,16 +2121,25 @@ class Facts:
 
 
     def _minister_office(self, tid):
-        """e_minister_* 头衔的职司官职词; 非职司头衔返回 ''。"""
+        """e_minister_* 头衔的职司官职词; 非职司头衔返回 ''。
+        v28: 本地化键按**候选链**取 — 实测 minister_revenue/minister_rites 不在
+        本地化表里 (户部/礼部此前取不到官职词), 游戏显示这两个职司用的是
+        天朝制御前会议职位键 (councillor_steward/court_chaplain_..._imperial)。"""
         if tid is None:
             return ""
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         if not key.startswith("e_minister_"):
             return ""
         loc_key = self._MINISTER_OFFICE_KEYS.get(key)
+        cands = []
         if loc_key:
-            v = L.loc(self.table, loc_key)
-            if v and not v.startswith("$") and not v.startswith("["):
+            cands.append(loc_key)
+            cands.extend(self._MINISTER_OFFICE_FALLBACKS.get(loc_key, ()))
+        for c in cands:
+            v = L.loc(self.table, c)
+            # 拒收未解析的引用 ($X$ / [X]) 与英文兜底 (纯 ASCII 词)
+            if v and not v.startswith("$") and not v.startswith("[") \
+                    and not re.search(r"[A-Za-z]{2,}", v):
                 return v
         return self.title_base_name(tid) or "尚书"
 
@@ -2117,7 +2164,9 @@ class Facts:
 
     def _current_ministers(self):
         """朝廷职司现任: e_minister_* 头衔的当前持有者 →
-        ['吏部：XXX（吏部尚书）', …] (朝局风云录·朝廷职司用)。"""
+        ['兵部尚书任清', …] (朝局风云录·朝廷职司用)。
+        v28: 输出形态改为「官职词+人名」— 此前「兵部：任清（兵部尚书）」把
+        「部名」与「官职词」写了两遍。官职词取不到时才退「部名：人名」。"""
         out = []
         for tid, t in self._lt.items():
             if not isinstance(t, dict):
@@ -2132,8 +2181,10 @@ class Facts:
             off = self._minister_office(int(tid))
             # v14: 职司名取不到时用「某职司」, 不直出 e_minister_ key
             base = self.title_base_name(int(tid)) or "某职司"
-            out.append(f"{base}：{nm}（{off}）" if off and off != base
-                       else f"{base}：{nm}")
+            if off and off != base:
+                out.append(f"{off}{nm}")
+            else:
+                out.append(f"{base}：{nm}")
         return out
 
     # v13: 戏剧性事实 — 短命帝国/皇朝在位 (≤30 日即失去/被毁)
@@ -4660,16 +4711,35 @@ def _protagonist(f):
             p["council"] = "御前会议六席" if ld.get("council") else ""
         # v26: 游牧牧群/口粮 — 与金钱同口径 (只给当前值), 且取 as_of 熔件的毡帐,
         # 不用缓存末档 (十年传记 as_of 早于末档时数值会穿越)。
+        # v28: 按 domicile 类型分派 — 牧群只在毡帐 (yurt) 有意义, 口粮只在无地
+        # 营地 (camp) 有意义, 庄园/领地两者皆无; 0 值一律省略 (此前天朝制世族
+        # 档案写出「牧群0」)。
         if not p.get("landless"):
             _pc = f._chars.get(str(pid)) or {}
             _pld = _pc.get("landed_data") or {}
             _dom = cl.player_domicile(f.melt, _pld.get("domain") or [], pid)
             if _dom is None:
                 _dom = ld if ld.get("herd") is not None else None
-            if _dom and _dom.get("herd") is not None:
-                p["herd"] = _dom.get("herd")
-            if _dom and _dom.get("provisions") is not None:
-                p["provisions"] = _dom.get("provisions")
+            _dtype = (_dom or {}).get("domicile_type") or ld.get("domicile_type") or ""
+            _is_nomad = _dtype == "yurt" or any(
+                f._is_nomad_camp(_t) for _t in (ld.get("domain") or []))
+            _is_camp = (not _is_nomad) and (
+                _dtype == "camp" or gov == "landless_adventurer_government")
+
+            def _pos(v):
+                try:
+                    return None if float(v) == 0 else v
+                except (TypeError, ValueError):
+                    return None
+
+            if _dom and _is_nomad and _dom.get("herd") is not None:
+                hv = _pos(_dom.get("herd"))
+                if hv is not None:
+                    p["herd"] = hv
+            if _dom and _is_camp and _dom.get("provisions") is not None:
+                pv = _pos(_dom.get("provisions"))
+                if pv is not None:
+                    p["provisions"] = pv
     # 现状 (仅在世时)
     if not cache.get("player_death"):
         def num(v, nd=1):
@@ -4689,12 +4759,13 @@ def _protagonist(f):
             pass
         if age is not None:
             bits.append(f"年{age}岁")
-        h = num(ad.get("health"))
-        if h is not None:
-            bits.append(f"健康{h}")
-        st = num(ad.get("stress"))
-        if st is not None:
-            bits.append(f"压力{st}")
+        # v28: 健康/压力只给游戏档位词 (现代白话), 不再直出 5.5/69 这类元信息数值
+        hs = health_state_zh(ad.get("health"))
+        if hs:
+            bits.append(hs)
+        ss = stress_state_zh(ad.get("stress"))
+        if ss:
+            bits.append(ss)
         g = num((ad.get("gold") or {}).get("value"))
         if g is not None:
             bits.append(f"国库金{g}")
