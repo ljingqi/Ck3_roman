@@ -182,9 +182,16 @@ def _enemy_types():
     return {"became_rivals", "became_grudge", "became_nemesis"}
 
 
-def _is_dead(cache, cid):
-    """该角色是否已死 (缓存有死亡记录)。"""
-    return bool((cache.get("characters") or {}).get(str(cid), {}).get("death"))
+def _is_dead(cache, cid, as_of=None):
+    """该角色是否已死 (缓存有死亡记录)。
+    v26: as_of 传入时, 卒于 as_of 之后者视为在世 (十年传记不把「后来才死的人」
+    当已死 — 旧实现让在世优先失效, 田所 890 年仇人池全被判死)。"""
+    d = ((cache.get("characters") or {}).get(str(cid), {}) or {}).get("death") or {}
+    if not d:
+        return False
+    if as_of and d.get("date") and cl.date_key(d["date"]) > cl.date_key(as_of):
+        return False
+    return True
 
 
 def _relation_dates(cache, types):
@@ -244,12 +251,13 @@ def _select_friend(cache, as_of=None):
                  if cl.date_key(d) <= cl.date_key(as_of)}
     if not dates:
         return None
-    alive = {c: d for c, d in dates.items() if not _is_dead(cache, c)}
+    alive = {c: d for c, d in dates.items()
+             if not _is_dead(cache, c, as_of=as_of)}
     pool = alive or dates  # 全部已死时回退最早结友者
     return min(pool, key=lambda c: cl.date_key(pool[c]))
 
 
-def _select_fallback_friend(cache):
+def _select_fallback_friend(cache, as_of=None):
     """无真好友时 (v13): 同朝共事者 (宫廷任官/朝局事件参与者) 中记忆最多者,
     在世优先; 提示词另行注明「无结友记录, 以同朝共事者代之」。"""
     pid = cache.get("player_id")
@@ -273,7 +281,7 @@ def _select_fallback_friend(cache):
         cid = int(cid)
         if cid == pid or cid in fam or cid in enemies:
             continue
-        if _is_dead(cache, cid):
+        if _is_dead(cache, cid, as_of=as_of):
             continue
         n = len((cache.get("characters") or {}).get(str(cid), {}).get("memories") or [])
         if n > best_score:
@@ -286,7 +294,7 @@ def _pick_friend(cache, as_of=None):
     f = _select_friend(cache, as_of=as_of)
     if f is not None:
         return f, False
-    return _select_fallback_friend(cache), True
+    return _select_fallback_friend(cache, as_of=as_of), True
 
 
 def _enemy_dates(cache):
@@ -299,28 +307,84 @@ def _select_enemies(cache):
     return set(_enemy_dates(cache))
 
 
-ENEMY_MIN_MEMORIES = 5  # v11: 仇人候选池记忆数门槛 (素材太少写不出列传)
+ENEMY_MIN_DEEDS = 2  # v26: 仇人候选池事迹分门槛 (素材太少写不出列传)
+
+# v26: 仇人候选的「事迹分」类型集 — 主动作为型记忆计 1 分 (登位/战争/谋杀/婚配/
+# 生育/结友/囚禁/受质/科考/朝觐/成人礼…); 丧亲/患病/失和等被动背景不计。
+# 旧门槛只数记忆条数, 菅原类子 (12 条全是被动) 因而压过秦皇帝崔慎由。
+_ENEMY_DEED_TYPES = {
+    "ascended_throne_memory", "lost_title_memory", "successful_murder",
+    "offensive_war", "defensive_war", "war_won", "war_lost",
+    "joined_allys_war", "battle_won_memory", "battle_lost_memory",
+    "married", "grand_wedding_completed_guest", "became_lovers",
+    "child_born", "first_born", "twins_born", "became_friends",
+    "became_soulmates", "became_blood_brother", "imprisoned_other",
+    "hostage_created_hostage", "hostage_created_warden", "torturer_memory",
+    "became_acclaimed", "witnessed_a_coronation_memory",
+    "held_a_coronation_memory", "passed_provincial_exam_memory",
+    "passed_metropolitan_exam_memory", "passed_palace_exam_memory",
+    "completed_hajj_memory", "ward_education_completed",
+    "completed_rites_of_passage", "completed_adult_education",
+    "faith_changed",
+}
 
 
-def _select_primary_enemy(cache, as_of=None):
-    """主仇人 (v11): 与主角结仇/结怨/死敌的对手中, 记忆数 >5 者才入候选池
-    (素材不足的早期路人仇人如卡托内只有 1 条记忆, 列传只能靠臆测充数);
-    池内按原规则 (在世优先、结怨最早); 池空时回退原逻辑。
-    as_of (v16): 十年传记只认该日期前结下的仇怨 (878.1.1 的十年不写
-    878.8.16 才结仇的阿纳斯塔西娅)。"""
+def _enemy_deeds(cache, cid, as_of=None, since=None):
+    """候选人事迹分 (v26): 只数 _ENEMY_DEED_TYPES 记忆, 可按 as_of/since 截断。"""
+    rec = (cache.get("characters") or {}).get(str(cid)) or {}
+    n = 0
+    for mem in rec.get("memories") or []:
+        if mem.get("type") not in _ENEMY_DEED_TYPES:
+            continue
+        d = mem.get("creation_date")
+        if as_of and d and cl.date_key(d) > cl.date_key(as_of):
+            continue
+        if since and d and cl.date_key(d) < cl.date_key(since):
+            continue
+        n += 1
+    return n
+
+
+def _select_primary_enemy(cache, as_of=None, since=None):
+    """主仇人 (v11/v26): 与主角结仇/结怨/死敌的对手, 先按「与本篇相关」筛 —
+    在世 (卒于 as_of 之后) 或 本十年内有作为 (since ≤ 事迹日 ≤ as_of); 再按
+    总事迹分降序, 同分在世优先、结怨最早。
+    v26: 原「记忆条数 >5 + 在世优先」让无事迹的在世路人胜出 (田所 890 年选中
+    只有丧亲记忆的菅原类子, 而非结怨更早且六次登位的秦皇帝崔慎由)。
+    since 为十年传记窗口下界 (终传为 None)。"""
     dates = _enemy_dates(cache)
     if as_of:
         dates = {c: d for c, d in dates.items()
                  if cl.date_key(d) <= cl.date_key(as_of)}
     if not dates:
         return None
-    rich = {c: d for c, d in dates.items()
-            if len((cache.get("characters") or {}).get(str(c), {}).get("memories") or [])
-            > ENEMY_MIN_MEMORIES}
-    pool = rich or dates  # 池空回退全部
-    alive = {c: d for c, d in pool.items() if not _is_dead(cache, c)}
-    pick = alive or pool
-    return min(pick, key=lambda c: cl.date_key(pick[c]))
+    relevant = {c: d for c, d in dates.items()
+                if not _is_dead(cache, c, as_of=as_of)
+                or _enemy_deeds(cache, c, as_of=as_of, since=since) > 0}
+    pool = relevant or dates
+    rich = {c: d for c, d in pool.items()
+            if _enemy_deeds(cache, c, as_of=as_of) >= ENEMY_MIN_DEEDS}
+    pool = rich or pool
+
+    def _key(c):
+        return (-_enemy_deeds(cache, c, as_of=as_of),
+                1 if _is_dead(cache, c, as_of=as_of) else 0,
+                cl.date_key(pool[c]))
+
+    return min(pool, key=_key)
+
+
+def _enemy_for_facts(facts, cache):
+    """仇人人选 — 文章标题与正文共用同一入口 (防标题/正文不一致)。
+    十年传记传窗口下界 since, 终传/在世传记不传。"""
+    as_of = facts.get("as_of")
+    since = None
+    if as_of and facts.get("decade"):
+        try:
+            since = f"{int(str(as_of).split('.')[0]) - 10}.1.1"
+        except Exception:
+            since = None
+    return _select_primary_enemy(cache, as_of=as_of, since=since)
 
 
 def _family_ids(cache):
@@ -382,6 +446,14 @@ def _house_text(facts, p=None):
     return h
 
 
+def _num1(v, nd=1):
+    """数值 → 一位小数短串 (去尾零), 与主角档案「国库金/月入」同口径 (v26)。"""
+    try:
+        return f"{float(v):.{nd}f}".rstrip("0").rstrip(".")
+    except Exception:
+        return ""
+
+
 def _profile_lines(facts, cid=None):
     """主角或某角色的档案 → 自然语言行列表 (v15: 字段表格改散文, 程序直出不改写)。
     首行为名号句: 官职+姓名 + 家族分家/族属/信仰/出生/家训;
@@ -417,6 +489,9 @@ def _profile_lines(facts, cid=None):
         lines.append(f"为人{p['traits']}。")
     if p.get("trait_history"):
         lines.append(f"特质履历：{p['trait_history']}。")
+    # v26: 信仰履历 (改信过程) — 姓名句只写当前信仰, 改信节点在此补出
+    if p.get("faith_history"):
+        lines.append(f"信仰履历：{p['faith_history']}。")
     # ---- 营/政体句 ----
     if p.get("landless"):
         camp_bits = []
@@ -450,6 +525,15 @@ def _profile_lines(facts, cid=None):
             gov = (gov + "，" if gov else "") + f"直辖{p.get('domain_count', '')}地：{p['domain']}{cap}"
         if p.get("vassal_count") is not None:
             gov = (gov + "，" if gov else "") + f"封臣{p['vassal_count']}人"
+        # v26: 游牧牧群 (与金钱同口径: 当前值, 一位小数); 口粮非 0 时并写
+        if p.get("herd") is not None:
+            hv = _num1(p["herd"])
+            if hv:
+                gov = (gov + "，" if gov else "") + f"牧群{hv}"
+        if p.get("provisions") is not None:
+            pv = _num1(p["provisions"])
+            if pv and pv != "0":
+                gov = (gov + "，" if gov else "") + f"口粮{pv}"
         if p.get("council"):
             gov = (gov + "，" if gov else "") + p["council"]
         if gov:
@@ -478,7 +562,13 @@ def _profile_lines(facts, cid=None):
         fam_bits.append(f"妾{p['concubines']}")
     if p.get("former_concubines"):
         fam_bits.append(f"前妾{p['former_concubines']}")
-    if p.get("children"):
+    # v26: 子女按性别分列 (子A、B，女C、D) — 无性别混排会让模型把女儿写成儿子
+    if p.get("children_sons"):
+        fam_bits.append(f"子{p['children_sons']}")
+    if p.get("children_daughters"):
+        fam_bits.append(f"女{p['children_daughters']}")
+    if p.get("children") and not (p.get("children_sons")
+                                  or p.get("children_daughters")):
         fam_bits.append(f"子女{p['children']}")
     if fam_bits:
         lines.append("，".join(fam_bits) + "。")
@@ -563,7 +653,8 @@ def _assassin_kill_lines(facts, cache, k):
     返回 ['死者：唐皇帝李漼（死于878年4月9日，被崔佛·菲利普处决。）', …]。
     v16: 死者行带出生日期 — 防止同名/近名角色被误认 (里瓦朗 vs 里瓦尔:
     生于830年的萨洛蒙亲生子不可能被当成869年私通所出之子)。
-    v24: 死因不详不再叠双层括号; 地点标注改受害者所在男爵领独立行。"""
+    v24: 死因不详不再叠双层括号; 地点标注改受害者所在男爵领独立行。
+    v27: 亲缘行改用头衔+姓名 (kin_label), 与家室列传同口径。"""
     lines = []
     nm = k["name"]
     off = k.get("office") or ""
@@ -585,18 +676,18 @@ def _assassin_kill_lines(facts, cache, k):
     vp = (k.get("victim_place") or "").strip()
     if vp:
         lines.append(f"{nm}死于{vp}。")
-    # 亲缘: 父/母/妻/妾 (从缓存 family 取)
+    # 亲缘: 父/母/妻/妾 (从缓存 family 取; v27 带前头衔/现头衔)
     fam = ((cache.get("characters") or {}).get(str(k.get("id"))) or {}).get("family") or {}
     bits = []
     seen_bits = set()
     for x in (fam.get("father") or []):
-        bits.append(f"父{_name_or(facts, cache, x)}")
+        bits.append(f"父{_kin_or(facts, cache, x)}")
     for x in (fam.get("mother") or []):
-        bits.append(f"母{_name_or(facts, cache, x)}")
+        bits.append(f"母{_kin_or(facts, cache, x)}")
     for key, label in (("primary_spouse", "妻"), ("spouse", "妻"),
                        ("former_spouses", "前妻"), ("concubine", "妾")):
         for x in (fam.get(key) or []):
-            b = f"{label}{_name_or(facts, cache, x)}"
+            b = f"{label}{_kin_or(facts, cache, x)}"
             if b not in seen_bits:
                 seen_bits.add(b)
                 bits.append(b)
@@ -609,6 +700,20 @@ def _assassin_kill_lines(facts, cache, k):
         lines.append("婚恋：")
         lines.extend("  " + e for e in mar)
     return lines
+
+
+def _kin_or(facts, cache, cid):
+    """亲属称谓 (v27): 优先 Facts.kin_label (前头衔/现头衔+姓名),
+    数据缺失时回退统一显示名链。"""
+    try:
+        fi = facts.get("_facts")
+        if fi is not None:
+            nm = fi.kin_label(cid)
+            if nm:
+                return nm
+    except Exception:
+        pass
+    return _name_or(facts, cache, cid)
 
 
 def _name_or(facts, cache, cid):
@@ -653,7 +758,7 @@ def _article_facts(facts, cache, key, section=None):
         blocks["大事年表"] = "\n".join(tl) if tl else "（无重大事件记录）"
     elif key in ("friend", "enemy"):
         cid = (_pick_friend(cache, as_of=facts.get("as_of"))[0] if key == "friend"
-               else _select_primary_enemy(cache, as_of=facts.get("as_of")))
+               else _enemy_for_facts(facts, cache))
         if cid is not None:
             lines, events = _subject_facts(facts, cid)
             subj_name = (facts["characters"].get(str(cid)) or {}).get("name") or ""
@@ -1240,8 +1345,10 @@ def _appendix_text(facts):
             y, mo, d = (int(x) for x in str(e.get("date")).split(".")[:3])
         except Exception:
             continue
-        # 事件文本已带「1070年4月9日，」前缀, 去掉日期前缀只留事件
+        # 事件文本已带「1070年4月9日，」前缀 (v26: 1月1日折叠为「1070年，」),
+        # 去掉日期前缀只留事件
         body = re.sub(r"^\d+年\d+月\d+日，?", "", e["text"])
+        body = re.sub(r"^\d+年，?", "", body)
         key = _timeline_event_key(body)
         if key is None:
             continue
@@ -1262,15 +1369,26 @@ def _appendix_text(facts):
         for (y, mo, d) in sorted(by_day):
             bodies = [b for _, b in sorted(by_day[(y, mo, d)].values(),
                                            key=lambda x: -x[0])]
+            # v26: 1月1日 = 年份级日期 (出生日期不详/年度快照), 只写年份
+            year_only = (mo == 1 and d == 1)
             if n_year[y] == 1:
                 # 全年仅 1 条: 年/月/日合为一行
                 for body in bodies:
-                    lines.append(f"- {y}年{mo}月{d}日 {body}")
+                    if year_only:
+                        lines.append(f"- {y}年 {body}")
+                    else:
+                        lines.append(f"- {y}年{mo}月{d}日 {body}")
                 continue
             if y != last_y:
                 lines.append(f"- {y}年")
                 last_y = y
                 last_mo = None
+            if year_only:
+                # 年标题已给出, 1月1日不再写月日
+                for body in bodies:
+                    lines.append(f"  - {body}")
+                last_mo = None
+                continue
             if n_month[(y, mo)] == 1:
                 # 当月仅 1 条: 月/日合为一行
                 for body in bodies:
@@ -1296,13 +1414,13 @@ def _timeline_event_key(body):
     m = re.match(r"^.+?的仇人(.+去世。)$", body)
     if m:
         return ("亡", m.group(1))
-    m = re.match(r"^(.+?)死于\d+年\d+月\d+日", body)
+    m = re.match(r"^(.+?)死于(?:\d+年\d+月\d+日|\d+年)", body)
     if m:
         return ("亡", m.group(1) + "去世。")
-    m = re.match(r"^.+?(?:得长子|添子)(.+。)$", body)
+    m = re.match(r"^.+?(?:得长子|得长女|添子|添女)(.+。)$", body)
     if m:
         return ("生", m.group(1))
-    if re.match(r"^.+?得孪生子。$", body):
+    if re.match(r"^.+?得孪生(?:子|女)。$", body):
         return ("生", "孪生子。")
     if re.match(r"^.+?幼子夭折。$", body):
         return ("生", "幼子夭折。")
@@ -1314,7 +1432,7 @@ def _timeline_event_key(body):
 def _timeline_event_priority(body, pname):
     """同一事件多视角并存时优先保留哪条: 死亡记录 (信息最全) > 去世记忆 > 其余;
     同层内主角视角 (文本以主角名开头) 优先。"""
-    if re.search(r"死于\d+年\d+月\d+日", body):
+    if re.search(r"死于(?:\d+年\d+月\d+日|\d+年)", body):
         tier = 2
     elif re.search(r"的(?:亲属|友人|仇人).+?去世。$", body):
         tier = 1
@@ -1357,7 +1475,7 @@ def build_articles(facts, cache, cfg):
     friend, friend_fallback = _pick_friend(cache, as_of=facts.get("as_of"))
     if friend is not None and friend_fallback:
         friend = None  # v16: 无真好友时列传删去 — 同朝共事者代打只是复述主角故事
-    enemy = _select_primary_enemy(cache, as_of=facts.get("as_of"))
+    enemy = _enemy_for_facts(facts, cache)
     fname = ""
     ename = ""
     if friend is not None:
