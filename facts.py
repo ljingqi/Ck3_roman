@@ -1090,6 +1090,10 @@ class Facts:
         gov = self._title_government(tid)
         independent = self._is_independent(cid) if cid is not None else False
         word = self._tier_word_at(tid, gov, independent)
+        # v28: 与 title() 同口径 — 中文建制地名 (州/府/京/郡/县收尾) 不叠层级词
+        # (此前历任写出「阶州州府」「商州州府」这类重复词)
+        if key.startswith("c_") and word and _CN_PLACE_SUFFIX_RE.search(nm):
+            return nm
         if word and not any(nm.endswith(w) for w in self._rank_words):
             return f"{nm}{word}"
         return nm
@@ -1168,6 +1172,51 @@ class Facts:
         return ((self._lt.get(str(tid)) or {}).get("key") or "") \
             .startswith("x_c_nomad_")
 
+    # v28: 无地/家业头衔三分 — 世族庄园 (_nf_) / 无地冒险者营地 (_laamp_ 等) /
+    # 游牧毡帐 (x_c_nomad_)。旧代码把一切 x_ 前缀当「无地冒险者营地」, 使
+    # 中国世族 (x_nf_552「陆家族」家族庄园) 被写成「无地冒险者营地」。
+    _ESTATE_KEY_MARK = "_nf_"
+    _CAMP_KEY_PREFIXES = ("x_mc_", "x_script_", "x_ho_")
+
+    def _is_estate_title(self, tid):
+        """家族庄园头衔? (x_nf_/c_nf_/d_nf_ — 中国世族、日本武家、家族地产)"""
+        if tid is None:
+            return False
+        return self._ESTATE_KEY_MARK in ((self._lt.get(str(tid)) or {}).get("key") or "")
+
+    def _is_adventurer_camp(self, tid):
+        """无地冒险者营地头衔? (x_d_laamp_* 等; 与游牧毡帐/家族庄园区分)"""
+        if tid is None:
+            return False
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        if self._is_nomad_camp(tid) or self._is_estate_title(tid):
+            return False
+        return "_laamp_" in key or key.startswith(self._CAMP_KEY_PREFIXES)
+
+    def title_kind(self, tid):
+        """无地/家业头衔语义: 'estate' 世族庄园 / 'nomad' 毡帐 / 'camp' 冒险者营地 /
+        '' 领地头衔 (含 c_/b_ 州府县堡)。"""
+        if tid is None:
+            return ""
+        if self._is_nomad_camp(tid):
+            return "nomad"
+        if self._is_estate_title(tid):
+            return "estate"
+        if self._is_adventurer_camp(tid):
+            return "camp"
+        return ""
+
+    def estate_kind_word(self, tid, cid=None):
+        """庄园的汉文类别词: 天朝制/中华文化 → 世族庄园; 日本 → 武家庄园;
+        其余 → 家族庄园 (按头衔政体 + 持有人文化模板判定)。"""
+        gov = self._title_government(tid)
+        tpl = self.culture_template(cid) if cid is not None else ""
+        if gov in self._CELESTIAL_LIKE_GOVS or tpl in ("han", "chinese", "bai", "yi"):
+            return "世族庄园"
+        if tpl == "japanese":
+            return "武家庄园"
+        return "家族庄园"
+
     def _primary_group(self, held):
         """按持有集计算「主要头衔组」[(gain_date, tid)] (v11): held = {tid: gain_date}
         - 州府/县/堡 (c_/b_) 不进组 (如 898-911 的登州伯爵领等);
@@ -1190,9 +1239,12 @@ class Facts:
             return []  # 仅持朝廷职司 (官职非领地)
         majors = [it for it in items
                   if (it[1] >= 3 or it[1] == 0)
-                  and not self._is_nomad_camp(it[0])]
+                  and not self._is_nomad_camp(it[0])
+                  and not self._is_estate_title(it[0])]
         if not majors:
-            # 仅州府/县/堡: 最高层级最早获得的一个
+            # 仅州府/县/堡 (或仅庄园/毡帐): 最高层级最早获得的一个
+            # (v28: 有领地时庄园不再占位, 领地阶段照常出现在历任里 —
+            #  陆氏 869 受任阶州此前被 x_nf_ 庄园挤掉, 历任只剩一行)
             t0 = sorted(items, key=lambda it: (-it[1], cl.date_key(it[2])))[0]
             return [(t0[2], t0[0])]
         max_tier = max(r for _t, r, _g in majors)
@@ -1276,12 +1328,21 @@ class Facts:
                     # v24: 营地阶段用游戏口径 (营地宗旨词: 头目/领袖/队长…);
                     # 词取不到时回退旧式「X之主」防失名。
                     # v26: 游牧毡帐 (x_c_nomad_*) 不给冒险者宗旨词, 只写毡帐名。
+                    # v28: 家族庄园 (x_nf_*) 是家业而非无地营帐, 用持有者词
+                    # (乡绅/当主/户长) 并标注庄园类别。
                     nm = self._name_in_span(t, d, end, cid) or ""
                     if self._is_nomad_camp(t):
                         parts.append(nm)
                         continue
+                    if self._is_estate_title(t):
+                        ew = self.estate_kind_word(t, cid)
+                        w = self._estate_holder_word(cid)
+                        base = f"{nm}{w}" if nm and w else (nm or "")
+                        parts.append(f"{base}（{ew}）" if base else "")
+                        continue
                     w = self._camp_holder_word(cid, d)
-                    parts.append(f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else ""))
+                    base = f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else "")
+                    parts.append(f"{base}（无地冒险者营地）" if base else "")
                 else:
                     # v24: 领地阶段用「头衔地名+统治者称呼词」(游戏口径,
                     # 文化/政体感知: 撒丁尼亚王/撒丁王/贝州侯…), 不再用「X之主」。
@@ -1293,13 +1354,6 @@ class Facts:
             if not parts:
                 continue
             line = f"{self.date(d)}任{'／'.join(parts)}"
-            # v20 (B3): 无地营地头衔 (x_, 冒险者营地/教团) 显式标注 —
-            # 防模型把「东邪头目」等营地身份当成有领地的普通头衔
-            if ids and all(
-                    (self._lt.get(str(t)) or {}).get("key", "").startswith("x_")
-                    and not self._is_nomad_camp(t)
-                    for t in ids):
-                line += "（无地冒险者营地）"
             # 真正失去 (不在持有集) 且此前在组内的头衔
             lost_names = []
             for t in prev_ids:
@@ -4460,10 +4514,12 @@ def _protagonist(f):
     # v11: 无地/有地分支按 as_of 首要头衔判定 (十年传记穿越时, 缓存 landed 是末档数据)
     ptier, ptid = f._primary_title_at(pid)
     pkey = ((f._lt.get(str(ptid)) or {}).get("key") or "") if ptid is not None else ""
-    if (ptid is not None and pkey.startswith("x_")) or gov == "landless_adventurer_government":
+    # v28: 只有**真·无地冒险者营地** (x_d_laamp_/雇佣团/教团) 才走营地分支;
+    # 世族庄园 (x_nf_) 与游牧毡帐 (x_c_nomad_) 是家业/驻地, 不走营地分支。
+    if f.title_kind(ptid) == "camp" or gov == "landless_adventurer_government":
         # ---- 无地冒险者: 营地 ----
         p["landless"] = True
-        camp_tid = ptid if (ptid is not None and pkey.startswith("x_")) \
+        camp_tid = ptid if f.title_kind(ptid) == "camp" \
             else (ld.get("domain") or [None])[0]
         if camp_tid is not None:
             p["camp_name"] = f._title_name_at(camp_tid, f.as_of) or "冒险者营地"
@@ -4508,7 +4564,15 @@ def _protagonist(f):
                 p["camp_top_liege"] = f"{f.title(top_tid)}（{f.name_or(top_holder)}）" \
                     if top_holder is not None else f.title(top_tid)
     else:
-        # ---- 有地领主 ----
+        # ---- 有地领主 / 世族 ----
+        # v28: 世族庄园 (x_nf_/c_nf_) — 家业身份, 与「无地冒险者营地」分列;
+        # 取 as_of 仍在持有的庄园 (十年传记不回退到末档数据)。
+        for _etid, _ivs in (f._hold_intervals(pid) or {}).items():
+            if _ivs and _ivs[-1][1] is None and f._is_estate_title(_etid):
+                p["estate_name"] = f._title_name_at(_etid, f.as_of) or "家族庄园"
+                p["estate_word"] = f.estate_kind_word(_etid, pid)
+                p["estate_holder"] = f._estate_holder_word(pid)
+                break
         if ld and not skip_detail:
             p["ruler_since"] = f.date(ld.get("became_ruler_date"))
             dom = []
