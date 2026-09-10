@@ -201,6 +201,37 @@ MEMORY_TEMPLATES = {
     "successful_murder": "{name}谋杀{other}。",
 }
 
+# v28: 隐事 (secrets) 主题短语 — 存档 secrets.secrets 的 type → 中文短语。
+# 类型名本地化 (L.loc(table, type)) 只是名词 (考试舞弊者/巫师/不信者), 提示词里
+# 需要可叙事的短语, 故按类型给模板; 未收录类型回退游戏本地化类型名。
+SECRET_TOPICS = {
+    "secret_murder": "谋害{target}",
+    "secret_murder_attempt": "行刺{target}未遂",
+    "secret_exam_cheater": "科举舞弊",
+    "secret_lover": "与{target}私通",
+    "secret_deviant": "性僻",
+    "secret_non_believer": "不信教",
+    "secret_crypto_religionist": "暗奉异教",
+    "secret_witch": "行巫",
+    "secret_embezzler": "侵吞库银",
+    "secret_siphoned_treasury": "挪用国库",
+    "secret_unmarried_illegitimate_child": "血脉存疑",
+    "secret_disputed_heritage": "血统有争",
+    "secret_incest": "乱伦",
+    "secret_homosexual": "断袖",
+    "secret_cannibal": "食人",
+    "secret_coup_plotter": "谋逆",
+    "secret_adultery": "通奸",
+}
+# 模板需要对象、而存档未给 target 时的简写
+SECRET_TOPICS_NO_TARGET = {
+    "secret_murder": "谋害人命",
+    "secret_murder_attempt": "行刺未遂",
+    "secret_lover": "私通",
+}
+# 谋杀类隐事: 正文归《刺客列传》, 篇内只计数 + 索引
+SECRET_MURDER_TYPES = {"secret_murder", "secret_murder_attempt"}
+
 # v28: 头衔得失动词 — 按 memory vars.reason (游戏给的缘由) 出词。
 # 旧口径一律「登位，得X」/「让出X」, 使天朝制/行政制的**官职任命轮转**
 # (reason=appointment_succession / stepped_down) 被读成「被人打败、又夺人领地」
@@ -2236,6 +2267,112 @@ class Facts:
             h = self.holder_at(int(tid), d)
             if isinstance(h, int) and h not in out:
                 out.append(h)
+        return out
+
+    # ---- v28: 隐事 (secrets) ----
+
+    def _secret_cut(self):
+        """隐事的时点截断: as_of 优先, 缺省用缓存末档日期。"""
+        return self.as_of or self.cache.get("last_date")
+
+    def secrets_owned_by(self, cid, date=None):
+        """某人在 date 时点握有的隐事记录列表 (按首见日期升序)。
+        过滤: owner 相符 + first_seen ≤ date + 尚未消失 (lost_at > date)。"""
+        if cid is None:
+            return []
+        cut = date or self._secret_cut()
+        ck = cl.date_key(cut) if cut else None
+        out = []
+        for sid, rec in (self.cache.get("secrets_history") or {}).items():
+            if not isinstance(rec, dict) or rec.get("owner") != cid:
+                continue
+            fs = rec.get("first_seen")
+            if ck is not None and fs and cl.date_key(fs) > ck:
+                continue
+            la = rec.get("lost_at")
+            if ck is not None and la and cl.date_key(la) <= ck:
+                continue
+            out.append(dict(rec, id=str(sid)))
+        out.sort(key=lambda r: cl.date_key(r.get("first_seen") or "9999.9.9"))
+        return out
+
+    def secret_topic(self, rec):
+        """隐事主题短语 (不含持有人): 「科举舞弊（涉及樊骥）」/「谋害叠溪寋」/「与阿足私通」;
+        未收录类型回退游戏本地化类型名 (取不到返回 '')。"""
+        if not isinstance(rec, dict):
+            return ""
+        tp = rec.get("type") or ""
+        tgt = rec.get("target")
+        tname = self.name_or(tgt, "") if isinstance(tgt, int) else ""
+        tpl = SECRET_TOPICS.get(tp)
+        if tpl:
+            if "{target}" in tpl:
+                if tname:
+                    return tpl.format(target=tname)
+                return SECRET_TOPICS_NO_TARGET.get(tp, "隐情")
+            # 模板未用对象 (科举舞弊/挪用国库…) 但有对象时并写, 便于区分同类隐事
+            return f"{tpl}（涉及{tname}）" if tname else tpl
+        z = L.loc(self.table, tp) or ""
+        if not z or re.search(r"[A-Za-z_]", z):
+            return ""
+        return f"{z}（涉及{tname}）" if tname else z
+
+    def secret_sentence(self, rec, owner_label=None):
+        """隐事记录 → 中文事实句: 「陆荣廷有隐事：科举舞弊（自873年见载）。」"""
+        if not isinstance(rec, dict):
+            return ""
+        topic = self.secret_topic(rec)
+        if not topic:
+            return ""
+        owner = owner_label if owner_label is not None \
+            else self.name_or(rec.get("owner"))
+        if not owner:
+            return ""
+        s = f"{owner}有隐事：{topic}"
+        fs = rec.get("first_seen")
+        if fs and not rec.get("first"):
+            note = f"自{self._year_only(fs)}见载"
+            # 主题自带括注时并入同一括号, 避免「（涉及X）（自Y年见载）」
+            s = s[:-1] + f"；{note}）" if s.endswith("）") else s + f"（{note}）"
+        return s + "。"
+
+    def secret_known_line(self, rec):
+        """该隐事的知情情形句: 「至今无人知晓」/「X、Y已知情（自Z年起）」;
+        无外人知情返回空串 (由调用方决定是否写「无人知晓」)。"""
+        owner = rec.get("owner")
+        names = []
+        for k in rec.get("known_by") or []:
+            kid = k.get("id")
+            if not isinstance(kid, int) or kid == owner:
+                continue
+            nm = self.name_or(kid, "")
+            if not nm:
+                continue
+            frm = k.get("from")
+            if frm and not k.get("first"):
+                names.append(f"{nm}（自{self._year_only(frm)}起）")
+            else:
+                names.append(nm)
+        if not names:
+            return ""
+        return "知情者：" + "、".join(names[:6]) + "。"
+
+    def secrets_known_by(self, cid, date=None):
+        """cid 知情、但主人不是他的隐事记录 (把柄维度)。"""
+        cut = date or self._secret_cut()
+        ck = cl.date_key(cut) if cut else None
+        out = []
+        for sid, rec in (self.cache.get("secrets_history") or {}).items():
+            if not isinstance(rec, dict) or rec.get("owner") == cid:
+                continue
+            for k in rec.get("known_by") or []:
+                if k.get("id") != cid:
+                    continue
+                fs = k.get("from")
+                if ck is not None and fs and cl.date_key(fs) > ck:
+                    continue
+                out.append(dict(rec, id=str(sid)))
+                break
         return out
 
     # v13: 戏剧性事实 — 短命帝国/皇朝在位 (≤30 日即失去/被毁)
@@ -5297,6 +5434,38 @@ def _realm_facts(f):
     min_off = f._current_ministers(f.as_of)
     if min_off:
         out["ministers"] = min_off
+    # v28: 要员隐事 — 最高领主链 (皇帝/路/王国) 与朝廷职司时任者的隐事
+    # (用户 2026-09-10 决策: 《朝局风云录》收录最高统治者的秘密)
+    out["secrets"] = _realm_secret_lines(f)
+    return out
+
+
+def _realm_secret_lines(f):
+    """要员隐事 (v28): 上位链持有人 (不含主角) + 朝廷职司时任者的隐事句,
+    上限 6 条; 无则返回 []。"""
+    pid = f.cache.get("player_id")
+    owners = []
+    try:
+        prov = f.character_location_province(pid)
+        county = f.county_at_province(prov)
+        for _tid, hid in (f.liege_chain(county) if county else []):
+            if isinstance(hid, int) and hid != pid:
+                owners.append(hid)
+    except Exception:
+        pass
+    for hid in f.minister_ids(f.as_of):
+        if hid != pid and hid not in owners:
+            owners.append(hid)
+    out = []
+    for oid in owners:
+        for rec in f.secrets_owned_by(oid, f.as_of):
+            s = f.secret_sentence(rec)
+            if not s:
+                continue
+            kl = f.secret_known_line(rec)
+            out.append(s + kl)
+            if len(out) >= 6:
+                return out
     return out
 
 
@@ -6063,6 +6232,92 @@ def _genealogy(f):
     return lines
 
 
+def _secrets_facts(f):
+    """隐事事实 (v28): 主角/家人近臣的隐事、知情情形、把柄、本十年见载事件。
+
+    返回 {held, held_murder, kinsmen, known, known_by_others, events, any};
+    无相关隐事时返回 {} (剧本不生成《阴私录》)。
+    """
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return {}
+    cut = f._secret_cut()
+    mine = f.secrets_owned_by(pid, cut)
+    held, murder = [], []
+    for rec in mine:
+        (murder if rec.get("type") in SECRET_MURDER_TYPES else held).append(rec)
+    out = {}
+    if held:
+        out["held"] = [f.secret_sentence(r) for r in held if f.secret_sentence(r)]
+        out["held_known"] = [f.secret_known_line(r) for r in held
+                             if f.secret_known_line(r)]
+        if not out["held_known"]:
+            out["held_unrevealed"] = True      # 至今无人知晓
+    if murder:
+        out["held_murder"] = len(murder)
+    # 家人与廷中僚属的隐事 (亲属 + court_positions 雇员)
+    prec = (cache.get("characters") or {}).get(str(pid)) or {}
+    fam = prec.get("family") or {}
+    kin = []
+    for key in ("primary_spouse", "spouse", "former_spouses", "concubine",
+                "former_concubines", "child", "father", "mother", "siblings"):
+        for x in fam.get(key) or []:
+            if isinstance(x, int) and x != pid:
+                kin.append(x)
+    for h in cache.get("court_positions") or []:
+        for p in h.get("positions") or []:
+            e = p.get("employee")
+            if isinstance(e, int) and e != pid:
+                kin.append(e)
+    kin_lines = []
+    for kid in dict.fromkeys(kin):
+        for rec in f.secrets_owned_by(kid, cut):
+            s = f.secret_sentence(rec, owner_label=f.kin_label(kid))
+            if s:
+                kin_lines.append(s)
+    if kin_lines:
+        out["kinsmen"] = kin_lines[:10]
+    # 主角握有的他人把柄
+    known = []
+    for rec in f.secrets_known_by(pid, cut):
+        topic = f.secret_topic(rec)
+        owner = f.name_or(rec.get("owner"))
+        if topic and owner:
+            known.append(f"{f.name_or(pid)}知悉{owner}的隐事：{topic}。")
+    if known:
+        out["known"] = known[:10]
+    # 本十年内首见的隐事 (纪事时间锚点); 终传/在世传记用全期
+    lo = _decade_lower_bound(f)
+    lok = cl.date_key(lo) if lo else None
+    ck = cl.date_key(cut) if cut else None
+    events = []
+    for sid, rec in (cache.get("secrets_history") or {}).items():
+        if not isinstance(rec, dict) or rec.get("first"):
+            continue
+        if rec.get("type") in SECRET_MURDER_TYPES:
+            continue          # 谋杀隐事只计数 (正文归《刺客列传》)
+        fs = rec.get("first_seen")
+        if not fs:
+            continue
+        dk = cl.date_key(fs)
+        if ck is not None and dk > ck:
+            continue
+        if lok is not None and dk < lok:
+            continue
+        owner = rec.get("owner")
+        if owner != pid and owner not in kin:
+            continue
+        s = f.secret_sentence(dict(rec, first=True))
+        if s:
+            # 事件行前缀已给日期, 句内不再重复「自X年见载」
+            events.append(f"{f.date(fs)}，{s}")
+    if events:
+        out["events"] = sorted(set(events))[:12]
+    out["any"] = bool(out.get("held") or out.get("kinsmen") or out.get("known"))
+    return out
+
+
 def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
                 nickname_override=None):
     """渲染干净事实集。melt 为 dict (已加载)。
@@ -6109,6 +6364,8 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "bio_style": f.bio_style(),
         "killed": _killed_by_player(f),
         "wandering": _wandering_trail(f),
+        # v28: 隐事 (主角/家人近臣的隐事、知情情形、把柄) — 《阴私录》数据源
+        "secrets": _secrets_facts(f),
         # v20 (B3): 主角身份/驻地变化年表 (共享前缀【主角处境】数据源)
         "protagonist_stations": _protagonist_stations(f),
         "luminaries": _court_luminaries(f),
