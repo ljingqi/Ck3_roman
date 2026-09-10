@@ -416,6 +416,100 @@ def _family_ids(cache):
     return out
 
 
+def _sec_key(section):
+    """板块 key (缺省视为开篇)。"""
+    return (section or {}).get("key") or "lead"
+
+
+def _murder_link_line(facts, key=None, section_key=None):
+    """v27: 本纪/朝局纪事已按用户决策排除「谋害人命」模块 (该模块在终传里
+    占 71/117 条, 且《刺客列传》整块承载), 由程序在**被排除的那个板块**补一行
+    索引 —— 一行三十字换掉七十余条重复素材。剧本未生成《刺客列传》时不排除,
+    本行也返回空。"""
+    if key is not None and (key, section_key) not in F.MODULE_EXCLUDE:
+        return ""
+    if not _has_assassins(facts):
+        return ""
+    n = F.murder_module_count(facts.get("timeline") or [])
+    if not n:
+        return ""
+    return f"（另有谋杀{n}人，详见《刺客列传·刀下诸魂》。）"
+
+
+def _has_assassins(facts):
+    """本剧是否会生成《刺客列传》(主角击杀 >5 人)。"""
+    return len(facts.get("killed") or []) > 5
+
+
+def _family_ids_by_kind(cache, kind):
+    """家室二分 (v27): kind='spouse' 取妻妾 (含前妻前妾),
+    kind='child' 取子女与同胞。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return set()
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    fam = rec.get("family") or {}
+    keys = (("primary_spouse", "spouse", "former_spouses",
+             "concubine", "former_concubines") if kind == "spouse"
+            else ("child", "siblings"))
+    return {int(x) for k in keys for x in (fam.get(k) or [])}
+
+
+def _split_span(items, part, total=2):
+    """把有序列表按段数二分 (v27): 开篇取前半, 纪事取后半。"""
+    n = len(items or [])
+    if n == 0:
+        return []
+    if total <= 1:
+        return list(items)
+    cut = (n + total - 1) // total
+    return list(items)[:cut] if part == 0 else list(items)[cut:]
+
+
+# v27: 注意力锚点 (Lost in the Middle: 上下文利用呈 U 型, 首尾最好) —
+# 从本板块切片里挑 4 条最该写出的日期, 放在消息尾部的要求之前。
+_ANCHOR_MODULES = ("起家发迹", "失位让土", "开战兴兵", "战和胜负",
+                   "囚禁入狱", "获释出狱", "拥戴加冕", "婚配联姻",
+                   "丧偶之痛", "夭折", "谋害人命")
+
+
+def _key_events_block(facts, key, section, limit=4):
+    """【本板块大事】卡片 (v27): 本板块切片里含主角名或高戏剧模块的前 N 条,
+    按日期升序排列, 置于消息尾部作取材锚点。无切片返回空串。"""
+    evs = F.slice_events(facts.get("timeline") or [], key, _sec_key(section),
+                         exclude=_has_assassins(facts))
+    if not evs:
+        return ""
+    pname = (facts.get("protagonist") or {}).get("name") or ""
+
+    def rank(e):
+        s = 0
+        if pname and pname in (e.get("text") or ""):
+            s -= 2
+        if (e.get("module") or "") in _ANCHOR_MODULES:
+            s -= 1
+        return s
+
+    picked = sorted(evs, key=rank)[:limit]
+    picked.sort(key=lambda e: e.get("date") or "")
+    return "【本板块大事】\n" + "\n".join(e["text"] for e in picked)
+
+
+def _lead_digest(text, limit=260, tail=180):
+    """开篇摘要 (v27, 移植 D:\\Journal magazine.py:1746): 「前缀 + …… + 结尾」。
+    中段不再回贴开篇全文 (实测每请求 1,000~1,800 字符); 保留结尾段,
+    防「纯前缀截断切掉案件/事件的结局与主线事实」。"""
+    t = re.sub(r"[#*_>`~\-]", " ", text or "")
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) <= limit + tail:
+        return t
+    head = t[:limit].rstrip("，。；：、 ")
+    tail_t = t[-tail:].lstrip("，。；、 ")
+    if len(head) + len(tail_t) + 3 >= len(t):
+        return t
+    return head + "……" + tail_t
+
+
 def _relation_reasons(facts, cache, cid, types):
     """结友/结仇缘由: 主角与该角色的关系记忆 → 干净中文句 (v13)。
     主角自身记忆为准, 对方记忆兜底, 去重。"""
@@ -774,26 +868,34 @@ def _article_facts(facts, cache, key, section=None):
     pname = (facts["protagonist"] or {}).get("name") or ""
     blocks = {}
     if key == "benji":
-        blocks["人物档案"] = "\n".join(_profile_lines(facts))
-        tl = _timeline_texts(facts)
-        blocks["大事年表"] = "\n".join(tl) if tl else "（无重大事件记录）"
+        # v27: 开篇与纪事按模块切片, 两块料不相交; 【人物档案】不再重复
+        # (共享前缀已有同一份), 且纪事排除「谋害人命」(由刺客列传承载)
+        sk = _sec_key(section)
+        tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
+                                 exclude=_has_assassins(facts))
+        blocks["大事年表"] = "\n".join(tl) if tl else "（本板块无年表记录）"
+        link = _murder_link_line(facts, key, sk)
+        if link:
+            blocks["说明"] = link
     elif key in ("friend", "enemy"):
+        sk = _sec_key(section)
         cid = (_pick_friend(cache, as_of=facts.get("as_of"))[0] if key == "friend"
                else _enemy_for_facts(facts, cache))
         if cid is not None:
             lines, events = _subject_facts(facts, cid)
-            subj_name = (facts["characters"].get(str(cid)) or {}).get("name") or ""
-            # 传主档案置顶: 本篇文章以传主为唯一叙述中心
-            blocks["传主档案"] = "\n".join(lines)
-            blocks["传主行迹"] = "\n".join(events) if events else "（无行迹记录）"
-            # v17: 相关年表只按传主名过滤 (传主自己的记忆 + 传主↔主角的交集事件),
-            # 不再整份复述主角年表 — 主角大事件已由共享前缀【主角大事摘要】承载
-            # (修复方案_汤利五问题.md 决策 4)。
-            tl = _timeline_texts(facts, names=[subj_name])
-            if tl:
-                blocks["相关年表"] = "\n".join(tl)
+            # v27: 开篇只给传主档案 + 关系缘由; 纪事给传主行迹 + 模块切片年表
+            # (此前开篇与纪事各拿一整套, 逐字节相同)
+            if sk == "lead":
+                blocks["传主档案"] = "\n".join(lines)
+            else:
+                blocks["传主行迹"] = "\n".join(events) if events else "（无行迹记录）"
+                tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
+                                 exclude=_has_assassins(facts))
+                if tl:
+                    blocks["相关年表"] = "\n".join(tl)
             # v13: 结友/结仇缘由 (双通道修复后必有记忆; 兜底同朝共事者给说明)
-            if key == "friend":
+            # v27: 缘由归开篇 (二人关系如何结成), 纪事不再复述
+            if sk == "lead" and key == "friend":
                 fcid, is_fallback = _pick_friend(cache, as_of=facts.get("as_of"))
                 if cid == fcid and is_fallback:
                     blocks["说明"] = ("（传主与主角无结友记忆，本传按同朝共事之谊立传，"
@@ -810,7 +912,7 @@ def _article_facts(facts, cache, key, section=None):
                     all_r = gr + [x for x in rs if x not in gr]
                     if all_r:
                         blocks["结友缘由"] = "；".join(all_r)
-            else:
+            elif sk == "lead":
                 rs = _relation_reasons(facts, cache, cid, _enemy_types())
                 # v16: 仇恨根源 — 游戏原因 (rival/grudge/nemesis) 优先,
                 # 程序直算因由 (亲属被谋杀/配偶私通/托卵) 补足死者/通用原因缺失
@@ -826,56 +928,67 @@ def _article_facts(facts, cache, key, section=None):
                 if all_r:
                     blocks["结仇缘由"] = "；".join(all_r)
     elif key == "jiashi":
-        blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        sk = _sec_key(section)
         fam_lines = []
-        fam_names = []
         # v20: 家室列传按 as_of 过滤家人 — 十年传记用新缓存重跑时,
         # 出生晚于十年末的子女不写入 (与人物档案子女行 _asof_ids 同口径)
         fam_ids = _family_ids(cache)
         fi = facts.get("_facts")
         if fi is not None:
             fam_ids = set(F._asof_ids(fi, sorted(fam_ids)))
-        for cid in sorted(fam_ids):
+        # v27: 开篇发妻妾 (结缡与离异), 纪事发子女与同胞 (门庭恩怨)
+        # (此前两块各拿全部家人档案, 家室档案 3,243 字符逐字节重复)
+        spouse_ids = _family_ids_by_kind(cache, "spouse")
+        pick = ([c for c in sorted(fam_ids) if c in spouse_ids] if sk == "lead"
+                else [c for c in sorted(fam_ids) if c not in spouse_ids])
+        for cid in pick:
             p = facts["characters"].get(str(cid))
             if not p or not p.get("name"):
                 continue
-            fam_names.append(p["name"])
             fam_lines.append("\n".join(_profile_lines(facts, cid)))
             ev = p.get("events") or []
             if ev:
                 fam_lines.append("  " + "\n  ".join(ev))
-        blocks["家室档案"] = "\n".join(fam_lines) if fam_lines else "（无家室档案）"
-        tl = _timeline_texts(facts, names=fam_names)
+        blocks["家室档案"] = "\n".join(fam_lines) if fam_lines else "（本板块无家人档案）"
+        tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
+                                 exclude=_has_assassins(facts))
         if tl:
             blocks["相关年表"] = "\n".join(tl)
     elif key == "chaoju":
-        blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        sk = _sec_key(section)
         realm = facts.get("realm") or {}
         dashi = []
         if realm.get("liege_chain"):
             dashi.append(f"主角所处疆域：{realm['liege_chain']}")
         # v13: 天下大势只收相关高位更替 (上位链 + 相关角色曾任), 已剔全球噪声;
-        # 上限 30 行防膨胀
-        for hc in (realm.get("holder_changes") or [])[:30]:
+        # 上限 30 行防膨胀。v27: 开篇取前半 (早期国号更替), 纪事取后半 (近期易主)
+        hcs = list(realm.get("holder_changes") or [])[:30]
+        seg = 0 if sk == "lead" else 1
+        for hc in _split_span(hcs, seg):
             dashi.append(hc)
         # v13: 朝廷职司现任 (尚书省六部/御史台/枢密院)
         if realm.get("ministers"):
             dashi.append("朝廷职司：" + "、".join(realm["ministers"]))
         blocks["天下大势"] = "\n".join(dashi) if dashi else "（无天下大势记录）"
-        tl = _timeline_texts(facts, types=POLITICAL_TYPES)
-        # 朝局动态: 政治类记忆时间线 + 高位头衔更替
-        dyn = list(tl)
-        blocks["朝局动态"] = "\n".join(dyn) if dyn else "（无朝局动态记录）"
+        # 朝局动态: 模块切片 (v27, 与《本纪》纪事同口径; 排除谋害人命)
+        dyn = F.slice_timeline(facts.get("timeline") or [], key, sk,
+                                   exclude=_has_assassins(facts))
+        blocks["朝局动态"] = "\n".join(dyn) if dyn else "（本板块无朝局动态记录）"
+        link = _murder_link_line(facts, key, sk)
+        if link:
+            blocks["说明"] = link
         # v7/v23: 玩家营/廷内僚属任免 (逐年数据驱动, 主语=任职者);
         # 块首标注归属, 防止被读成主角在别家朝堂的任免升沉
-        cp_ch = facts.get("court_position_changes") or []
-        if cp_ch:
+        # v27: 开篇发前半, 纪事发后半
+        cp_ch = list(facts.get("court_position_changes") or [])
+        cp_seg = _split_span(cp_ch, seg)
+        if cp_seg:
             pr = facts.get("protagonist") or {}
             tag = "营中" if pr.get("landless") else "廷中"
             blocks["官职任免"] = (f"（主角{tag}僚属任免）\n"
-                                  + "\n".join(cp_ch))
+                                  + "\n".join(cp_seg))
         # 要员名录: 主角相关角色 (家人/好友/仇人/宫廷任官) 中有政治类记忆或历任高位头衔者
-        # (剔除路人; 截断 60 名防提示词膨胀)
+        # (剔除路人; 截断 60 名防提示词膨胀; v27: 只放开篇)
         names = []
         related = set()
         for _fid in (_pick_friend(cache)[0], _select_primary_enemy(cache)):
@@ -885,25 +998,26 @@ def _article_facts(facts, cache, key, section=None):
             for p in h.get("positions") or []:
                 if isinstance(p.get("employee"), int):
                     related.add(p["employee"])
-        for cid, rec in (cache.get("characters") or {}).items():
-            if len(names) >= 60:
-                break
-            if int(cid) == pid or int(cid) not in related:
-                continue
-            prof = facts["characters"].get(cid) or {}
-            if not prof.get("name"):
-                continue
-            if any(m["type"] in POLITICAL_TYPES for m in rec.get("memories") or []) \
-                    or prof.get("titles_held"):
-                # v13: prof["name"] 已是统一显示名 (名·姓/姓+名/父名), 不再拼家族前缀
-                full = prof["name"]
-                if full not in names:
-                    names.append(full)
+        if sk == "lead":
+            for cid, rec in (cache.get("characters") or {}).items():
+                if len(names) >= 60:
+                    break
+                if int(cid) == pid or int(cid) not in related:
+                    continue
+                prof = facts["characters"].get(cid) or {}
+                if not prof.get("name"):
+                    continue
+                if any(m["type"] in POLITICAL_TYPES for m in rec.get("memories") or []) \
+                        or prof.get("titles_held"):
+                    # v13: prof["name"] 已是统一显示名 (名·姓/姓+名/父名), 不再拼家族前缀
+                    full = prof["name"]
+                    if full not in names:
+                        names.append(full)
         if names:
             blocks["朝中要员"] = "、".join(names)
     # ---- v5 新增文章 ----
     elif key == "assassins":
-        blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        # v27: 主角档案已在共享前缀, 不再重复
         killed = facts.get("killed") or []
         if killed:
             sec_key = (section or {}).get("key") or ""
@@ -930,14 +1044,12 @@ def _article_facts(facts, cache, key, section=None):
         else:
             blocks["刀下诸魂"] = "（无刀下诸魂记录）"
     elif key == "youxia":
-        blocks["人物档案"] = "\n".join(_profile_lines(facts))
-        wander = facts.get("wandering") or []
-        if wander:
-            blocks["行纪"] = "\n".join(wander)
-        else:
-            blocks["行纪"] = "（无行纪记录）"
+        # v27: 主角档案已在共享前缀; 行纪按前后二分 (开篇萍踪 / 纪事辗转)
+        wander = list(facts.get("wandering") or [])
+        seg = _split_span(wander, 0 if _sec_key(section) == "lead" else 1)
+        blocks["行纪"] = "\n".join(seg) if seg else "（本板块无行纪记录）"
     elif key == "qizu":
-        blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        # v27: 主角档案已在共享前缀
         imp = facts.get("imperial_spouses") or []
         if imp:
             parts = []
@@ -960,17 +1072,22 @@ def _article_facts(facts, cache, key, section=None):
         else:
             blocks["帝胄姻亲"] = "（无帝胄姻亲记录）"
     elif key == "qunying":
-        blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        # v27: 主角档案已在共享前缀; 朝局动态按模块切片 (排除谋害人命)
         lum = facts.get("luminaries") or []
         if lum:
             blocks["朝堂群英"] = "、".join(lum)
         else:
             blocks["朝堂群英"] = "（无要员名录）"
-        tl = _timeline_texts(facts, types=POLITICAL_TYPES)
-        blocks["朝局动态"] = "\n".join(tl) if tl else "（无朝局动态记录）"
+        tl = F.slice_timeline(facts.get("timeline") or [], key,
+                              _sec_key(section),
+                              exclude=_has_assassins(facts))
+        blocks["朝局动态"] = "\n".join(tl) if tl else "（本板块无朝局动态记录）"
+        link = _murder_link_line(facts, key, sk)
+        if link:
+            blocks["说明"] = link
     # ---- v9 新增文章 ----
     elif key == "feuds":
-        blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        # v27: 主角档案已在共享前缀
         feuds = facts.get("house_feuds") or []
         if feuds:
             parts = []
@@ -983,7 +1100,7 @@ def _article_facts(facts, cache, key, section=None):
         else:
             blocks["家族恩怨"] = "（无家族恩怨记录）"
     elif key == "artifacts":
-        blocks["人物档案"] = "\n".join(_profile_lines(facts))
+        # v27: 主角档案已在共享前缀
         arts = facts.get("family_artifacts") or []
         if arts:
             blocks["传家重宝"] = "\n\n".join(arts)
@@ -1144,6 +1261,7 @@ def build_lead_messages(article, facts, cache, intro, cfg):
             "开篇以「起于何时何地、如何发迹」为纲书写其出身，"
             "先世父母名姓与事迹以资料载明者为限，未载则省去、以「先世无考」带过。\n\n"
         )
+    events_block = _key_events_block(facts, key, sec)
     user_msg = (
         f"{_shared_facts_block(facts)}\n\n"
         f"{_decade_theme_note(facts)}"
@@ -1151,7 +1269,8 @@ def build_lead_messages(article, facts, cache, intro, cfg):
         + custom_note
         + subject_note
         + f"相关事实:\n{facts_txt}\n\n"
-        f"本篇文章标题已定为《{title}》。\n\n"
+        + (f"{events_block}\n\n" if events_block else "")
+        + f"本篇文章标题已定为《{title}》。\n\n"
         f"这是文章的开篇板块《{sec['title']}》。要求: {sec['req']}\n\n"
         f"篇幅要求: 开篇板块正文800–1200字, 立起人物与场景。\n\n"
         "输出格式: 直接输出正文, 正文使用 Markdown, "
@@ -1163,7 +1282,8 @@ def build_lead_messages(article, facts, cache, intro, cfg):
 
 def build_section_messages(article, section, facts, cache, lead_text, cfg):
     """中段提示词。v11: 不再注入【总纲】全文 (防止每篇复述总纲导致雷同);
-    承接开篇以正向表述推进新内容; 无尾段 (太史公曰只留总纲)。"""
+    承接开篇以正向表述推进新内容; 无尾段 (太史公曰只留总纲)。
+    v27: 开篇回贴改「前缀+结尾」摘要 (不再整篇回贴); 素材尾部加【本板块大事】锚点。"""
     key = article["key"]
     title = article["title"]
     style = facts.get("bio_style") or "east"
@@ -1182,16 +1302,18 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
             f"主角{(facts['protagonist'] or {}).get('name')}的事迹仅在{article['subject']}"
             "与主角交游或结仇的场合出现，传主生平以本篇资料为准。\n\n"
         )
+    events_block = _key_events_block(facts, key, section)
     user_msg = (
         f"{_shared_facts_block(facts)}\n\n"
         f"{_decade_theme_note(facts)}"
         + subject_note
         + f"相关事实:\n{facts_txt}\n\n"
-        f"本篇文章标题已定为《{title}》。\n\n"
+        + (f"{events_block}\n\n" if events_block else "")
+        + f"本篇文章标题已定为《{title}》。\n\n"
         f"请撰写板块《{section['title']}》。要求: {section['req']}\n\n"
         f"篇幅要求: 板块正文1200–1800字。\n\n"
-        f"本文开篇板块《{article['sections'][0]['title']}》内容(以下为开篇全文):\n"
-        f"{lead_text}\n\n"
+        f"本文开篇板块《{article['sections'][0]['title']}》内容(以下为开篇摘要):\n"
+        f"{_lead_digest(lead_text)}\n\n"
         f"承接开篇所立人物与场景，以本篇相关事实为素材推进新事件与新细节，"
         f"撰写板块《{section['title']}》。\n\n"
         "输出格式: 直接输出正文, 正文使用 Markdown。"

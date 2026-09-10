@@ -3649,6 +3649,86 @@ for _m, _ts in MODULE_TABLE.items():
         _TYPE2MODULE[_t] = _m
 
 
+# v27: 板块 → 戏剧模块白名单 (研究_戏剧模块化.md 的切片方案落地)。
+# 键 = (文章 key, 板块 key); 未列出的组合不收时间线 (该板块不看年表)。
+# 目的: 让同一篇的开篇与纪事拿到**不相交**的素材 (此前 6 篇里 5 篇事实块
+# 逐字节相同, 等于同一份料发两遍)。
+MODULE_SLICE = {
+    # 本纪: 开篇 = 家世/受学/婚姻/添丁; 纪事 = 权力线索 (起家/兵戈/刑狱/恩怨)
+    ("benji", "lead"): {"教化求学", "科考功名", "人质质任", "婚配联姻",
+                        "添丁进口", "信仰皈依", "拥戴加冕", "丧亲之恸",
+                        "夭折", "情变私通"},
+    ("benji", "mid"): {"起家发迹", "失位让土", "开战兴兵", "战和胜负",
+                       "战死负伤", "囚禁入狱", "获释出狱", "刑虐残暴",
+                       "受辱含冤", "拥戴加冕", "结仇结怨", "死敌之仇",
+                       "化仇解怨"},
+    # 家室: 开篇 = 结缡/情变/丧偶; 纪事 = 生育/夭亡/丧亲/丧友
+    ("jiashi", "lead"): {"婚配联姻", "情变私通", "丧偶之痛"},
+    ("jiashi", "mid"): {"添丁进口", "夭折", "丧亲之恸", "婚配联姻",
+                        "情变私通", "丧友之恸"},
+    # 朝局: 开篇 = 天下更替; 纪事 = 兵戈/刑狱/恩怨
+    ("chaoju", "lead"): {"起家发迹", "失位让土", "拥戴加冕"},
+    ("chaoju", "mid"): {"开战兴兵", "战和胜负", "战死负伤", "囚禁入狱",
+                        "获释出狱", "结仇结怨", "死敌之仇", "拥戴加冕",
+                        "丧亲之恸"},
+    # 群英录纪事: 同朝局纪事口径
+    ("qunying", "mid"): {"起家发迹", "失位让土", "开战兴兵", "战和胜负",
+                         "囚禁入狱", "获释出狱", "结仇结怨", "死敌之仇",
+                         "拥戴加冕"},
+    # 列传: 开篇只给传主档案与关系缘由 (不配年表); 纪事给传主行迹 + 模块切片
+    ("friend", "lead"): set(),
+    ("friend", "mid"): {"结友知交", "挚友血盟", "丧友之恸", "结仇结怨"},
+    ("enemy", "lead"): set(),
+    ("enemy", "mid"): {"结仇结怨", "死敌之仇", "化仇解怨", "仇人死亡",
+                       "情变私通", "结友知交"},
+}
+
+# v27: 板块排除模块 (用户决策 2026-09-10) — 本纪/朝局纪事不收「谋害人命」
+# (终传里该模块占 71/117 条), 由《刺客列传》整块承载, 程序在板块内补一行索引。
+MODULE_EXCLUDE = {
+    ("benji", "mid"): {"谋害人命"},
+    ("chaoju", "mid"): {"谋害人命"},
+    ("qunying", "mid"): {"谋害人命"},
+}
+
+
+def slice_timeline(timeline, key, section_key, names=None, exclude=True):
+    """按板块白名单切时间线 (v27), 返回事件文本列表。"""
+    return [e["text"] for e in slice_events(timeline, key, section_key,
+                                            names=names, exclude=exclude)]
+
+
+def slice_events(timeline, key, section_key, names=None, exclude=True):
+    """按板块白名单切时间线, 返回事件 dict 列表 (v27)。白名单 ∪ **未标注模块
+    的事件** (未标注 = 合并时丢字段的历史事件, 一律保留, 保证零丢失)。
+    未列入 MODULE_SLICE 的组合返回空 (该板块不以年表为素材)。
+    exclude=False 时忽略 MODULE_EXCLUDE (例如剧本未生成《刺客列传》时,
+    「谋害人命」必须留在本纪/朝局里, 否则这些事件无处可写)。"""
+    mods = MODULE_SLICE.get((key, section_key))
+    if mods is None:
+        return []
+    blocked = MODULE_EXCLUDE.get((key, section_key)) or set()
+    # exclude=False 时把被排除的模块并回白名单 (剧本没有《刺客列传》时,
+    # 「谋害人命」必须留在本纪/朝局里, 否则这些事件无处可写)
+    effective = set(mods) if exclude else (set(mods) | set(blocked))
+    out = []
+    for e in timeline or []:
+        mod = e.get("module") or ""
+        if mod and mod not in effective:
+            continue
+        if names and not any(n and n in e.get("text", "") for n in names):
+            continue
+        out.append(e)
+    return out
+
+
+def murder_module_count(timeline):
+    """时间线里「谋害人命」条数 (供板块索引行)。"""
+    return sum(1 for e in (timeline or [])
+               if (e.get("module") or "") == "谋害人命")
+
+
+
 def _related_ids(f):
     """主角相关角色 id 分级集 (时间线过滤用), 口径 (用户定稿 v14):
     级别1: 主角本人; 级别2: 直系相关 (父母/妻妾/前妻前妾/子女/孙辈/儿媳女婿);
@@ -4120,7 +4200,10 @@ def _merge_same_day_events(events, f=None):
                     else:
                         merged = prefix + comb(names)
         if merged:
-            out.append({"date": d, "type": typ, "text": merged})
+            # v27: 合并必须携带 module —— 此前只写 date/type/text, 合并后的
+            # 事件模块为空, 模块切片会把「被囚」等集体事件整体漏掉。
+            out.append({"date": d, "type": typ, "text": merged,
+                        "module": entries[0].get("module", "")})
         else:
             out.extend(entries)
     return out
