@@ -79,6 +79,8 @@ def main():
     out = {
         "schema": 2,
         "source": melt.get("date"),
+        # v28: 战役号 — 角色 id 只在同一战役内有意义, 跨战役表会被 display_name 弃用
+        "playthrough_id": melt.get("playthrough_id"),
         "total": len(names),
         "names": names,
     }

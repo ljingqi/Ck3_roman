@@ -642,16 +642,31 @@ def char_record(cache, cid):
 # ---------------------------------------------------------------------------
 
 _NAMES = None
+_NAMES_META = {}
 
 
-def _load_names(names_path):
-    global _NAMES
+def _load_names(names_path, melt=None):
+    """全档人名表 {角色id: {name_zh, house_name, dynasty_name}}。
+
+    v28: 角色 id 只在**同一存档/战役内**有意义 —— 该表是「某一次 build_names
+    时那一份 melt」的快照 (payload.source), 跨战役复用同名 id 会给出别人的名字
+    (实测: 陆氏战役 16293 本名「郑良士」, 表里同名 id 是另一战役的「藤原利仁」)。
+    故表内 playthrough_id 与当前熔件不一致时返回空表; 两边都有战役号才校验。"""
+    global _NAMES, _NAMES_META
     if _NAMES is None:
+        payload = {}
         try:
             with open(names_path, encoding="utf-8") as fp:
-                _NAMES = json.load(fp).get("names") or {}
+                payload = json.load(fp) or {}
         except Exception:
-            _NAMES = {}
+            payload = {}
+        _NAMES = payload.get("names") or {}
+        _NAMES_META = payload
+    tbl_pt = _NAMES_META.get("playthrough_id")
+    if tbl_pt and melt is not None:
+        m_pt = melt.get("playthrough_id")
+        if m_pt and str(m_pt) != str(tbl_pt):
+            return {}
     return _NAMES
 
 
@@ -865,7 +880,7 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
 
 
 def _father_name_of(cache, cid, melt, names_path, chars=None):
-    """角色父的给定名 (父名拼接用): 缓存 family.father → 熔件 family_data.father。"""
+    """角色父的给定名 (父名拼接用): 缓存 → 熔件 → names.json (v28 顺序)。"""
     if melt is None:
         return ""
     key = str(cid)
@@ -881,8 +896,12 @@ def _father_name_of(cache, cid, melt, names_path, chars=None):
     fid = int(fathers[0])
     fr = (cache.get("characters") or {}).get(str(fid)) or {}
     fn = fr.get("name_zh") or ""
+    if not fn:
+        # v28: 熔件角色优先于跨战役的 names.json
+        fc = (chars if chars is not None else all_characters(melt)).get(str(fid)) or {}
+        fn = name_zh(fc) if fc else ""
     if not fn and names_path:
-        fn = (_load_names(names_path).get(str(fid)) or {}).get("name_zh") or ""
+        fn = (_load_names(names_path, melt).get(str(fid)) or {}).get("name_zh") or ""
     return fn
 
 
@@ -928,6 +947,7 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
       西方仍用**家族名** ($HOUSE$ 模板);
     - 文化缺失时沿 父系线→同胞→宗族→母→语言 推断 (玩家/死者均覆盖);
     - 推断失败: 只返回给定名, 绝不输出错序的「姓+名」拼接。
+    v28: 名字取值链 = 缓存 → **熔件角色** → names.json (跨战役兜底, 战役不符即弃用)。
     chars: 预构建的全角色索引 (Facts 已持有), memo: 跨调用共享推断缓存
     (同一次 build_facts 内复用, 避免重复全量宗族扫描)。"""
     if cid is None:
@@ -937,21 +957,27 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
     nm = rec.get("name_zh") or ""
     h = rec.get("house_name") or ""
     dn = rec.get("dynasty_name") or ""
+    # v28: **熔件角色优先于 names.json** —— 该表按角色 id 索引且可能来自另一场
+    # 战役 (角色 id 只在同一存档内有意义), 熔件里明明有这个人时以本人为准
+    # (实测: 陆氏档 16293 本人是汉人「郑良士」, names.json 里同名 id 是
+    # 另一战役的「藤原利仁」, 旧顺序会把他写成日本关内路领主)。
+    if not nm:
+        c = (chars or {}).get(key) or {}
+        if c:
+            nm = name_zh(c)
+            hid = c.get("dynasty_house")
+            if hid is not None:
+                # v28: 熔件同源补齐家族/宗族名 (旧代码只补家族名且不补宗族名)
+                h = h or (house_name_zh(melt, hid) or "")
+                if not dn:
+                    did = dynasty_id_of(melt, hid)
+                    dn = (dynasty_name_zh(melt, did) or "") if did is not None else ""
     if not nm and names_path:
-        n = _load_names(names_path).get(key)
+        n = _load_names(names_path, melt).get(key)
         if n:
             nm = n.get("name_zh") or ""
             h = h or n.get("house_name") or ""
             dn = dn or n.get("dynasty_name") or ""
-    if not nm and chars is not None:
-        # v13: 兜底从熔件角色对象解码 (击杀受害者等不在缓存/names 的角色,
-        # 如 first_name='Zhenya_8D1E_96C5' → 镇雅; 此前漏此兜底输出「一位人物」)
-        c = chars.get(key) or {}
-        nm = name_zh(c)
-        if nm and not h:
-            hid = c.get("dynasty_house")
-            if hid is not None:
-                h = house_name_zh(melt, hid) or ""
     if not nm:
         return rec.get("name_full") or ""
     memo = memo if memo is not None else {}
