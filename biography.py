@@ -17,7 +17,6 @@
 
 铁律: 提示词只含 facts.py 渲染的**干净中文事实**, 不含任何内部 id/键/英文枚举。
 """
-import datetime
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -58,9 +57,17 @@ NONFICTION_RULE = (
     "资料未提供的内容简写或略去。"
 )
 
+# v28: 资料未载处「径入下一事」— 旧表述「资料未提供的视为不存在或未知」把模型
+# 推向写「史无可考/史料不详」这类考据按语 (陆氏两篇 16/21 处, 密度是田所的 3–10 倍)。
 WORLD_FRAME_RULE = (
     "「平行世界规则」: 本传所写世界完全由本提示词资料构成, 与任何真实历史无关; "
-    "所有人物、家族、官职、事件、日期、数字一律以资料为准, 资料未提供的视为不存在或未知。"
+    "所有人物、家族、官职、事件、日期、数字一律以资料为准, 资料未载之处行文径入下一事。"
+)
+
+# v28: 行文落笔 — 正向要求「每句都落在具体人事时地」, 替代考据式按语。
+NARRATIVE_FOCUS_RULE = (
+    "「行文落笔」: 每一句都落在具体的人、时、地、事上, 由资料可据之处依次推进; "
+    "叙述连贯、史笔简劲, 与所写人物的处境相称。"
 )
 
 # v24: 平实用词 (用户决策) — 死亡一律现代平实词, 不用文言等级词 (崩/薨/殁/殒/卒等)。
@@ -81,10 +88,13 @@ TITLE_CONSISTENCY_RULE = (
 )
 
 # v27: 语言风味 (用户决策 2026-09-10) — 依资料给出的语言落笔, 正向表述。
+# v28: 资料侧已由程序判定每对人的言语关系 (Facts.language_relation_line:
+# 「共通X，言语相通」/「无共通语，交谈须借通译」), 提示词不再要求模型自行判断
+# 语言相同还是不同 — 只要求照资料写明的情形落笔。
 LANGUAGE_FLAVOR_RULE = (
-    "「语言风味」: 资料给出各人语言者, 写其交谈、书信、结盟、婚配、拜谒时"
-    "依语言相同或不同落笔——同语者直接对谈; 异语者借通译、笔谈、手势或习语往来; "
-    "兼通数语者写出其游历与学识。"
+    "「语言事实」: 资料已写明各人所操语言, 并写明何人之间言语相通、"
+    "何人之间须借通译或以手势、习语往来; 凡写交谈、书信、结盟、婚配、拜谒, "
+    "一律照资料写明的情形落笔。"
 )
 
 # 各篇文章的板块名 (首段/中段/尾段) — tail 按文风取
@@ -120,17 +130,17 @@ SECTION_REQ = {
     },
     "friend": {
         "lead": "写传主与主角的交游渊源: 二人如何相识、同处何朝何地, 传主的家世与出身。",
-        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散; 二人的言语同异 (同语对谈、异语借通译或笔谈往来) 一并落笔。",
+        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散; 二人的言语相通情形 (资料已写明) 一并落笔。",
         "tail": None,
     },
     "enemy": {
         "lead": "写仇家身世与结仇之由: 传主何许人也, 与主角因何成仇。",
-        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发; 双方言语同异对往来的影响 (同语对谈、异语借通译或笔谈) 一并落笔。",
+        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发; 双方言语相通情形 (资料已写明) 一并落笔。",
         "tail": None,
     },
     "jiashi": {
         "lead": "写主角婚配始末: 结缡、离异、前妻之死、再娶, 立起门庭画卷; 妻族门第 (妻之父兄等显贵亲眷) 若有资料一并铺陈。",
-        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境; 家人与主角的言语同异 (同语对谈、异语借通译、习语学话) 一并落笔。",
+        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境; 家人与主角的言语相通情形 (资料已写明) 一并落笔。",
         "tail": None,
     },
     "chaoju": {
@@ -698,8 +708,12 @@ def _profile_lines(facts, cid=None):
         fam_bits.append(f"子女{p['children']}")
     if fam_bits:
         lines.append("，".join(fam_bits) + "。")
-    # ---- v27: 与妻室子女的言语异同 (仅主角有该字段) ----
-    if p.get("language_bridge"):
+    # ---- v27/v28: 言语关系句 (程序已判定相通或须通译, 模型照写) ----
+    if p.get("language_relation"):
+        lines.append(p["language_relation"])
+    if p.get("language_relations"):
+        lines.extend(p["language_relations"])
+    elif p.get("language_bridge"):
         lines.append(p["language_bridge"])
     # ---- 家世句 ----
     kin_bits = []
@@ -1133,6 +1147,7 @@ def _system_msg(style="east", extra=""):
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
     return ("你是史官, 撰写传记。\n\n"
             f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
+            f"{NARRATIVE_FOCUS_RULE}\n"
             f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}")
 
 
@@ -1243,6 +1258,7 @@ def build_intro_messages(facts, cfg, articles=None):
     sys_msg = (
         "你是史官, 为一位乱世人物修传。\n\n"
         f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
+        f"{NARRATIVE_FOCUS_RULE}\n"
         f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n\n"
         "撰写传记「总纲」: 概括此人的一生大势, 预告以下各篇文章, "
         "点明其家族与身份。总纲正文控制在400–600字, 以「太史公曰」作结。"
@@ -1288,6 +1304,7 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
         f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
+        f"{NARRATIVE_FOCUS_RULE}\n"
         f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
@@ -1300,10 +1317,11 @@ def build_lead_messages(article, facts, cache, intro, cfg):
         )
     custom_note = ""
     if key == "benji" and (facts["protagonist"] or {}).get("custom_start"):
+        # v28: 不透露「自定义出身」这一元信息, 也不再指示模型写「先世无考」
+        # (该指示范文会被照抄成满篇「无可考」)
         custom_note = (
-            "本篇传主为自定义出身，先世无考：资料未载其父母名姓与家世谱系，"
-            "开篇以「起于何时何地、如何发迹」为纲书写其出身，"
-            "先世父母名姓与事迹以资料载明者为限，未载则省去、以「先世无考」带过。\n\n"
+            "本篇传主的先世资料未载: 开篇以「起于何时何地、如何发迹」为纲书写其出身，"
+            "父母名姓与祖上事迹以资料载明者为限。\n\n"
         )
     events_block = _key_events_block(facts, key, sec)
     user_msg = (
@@ -1336,6 +1354,7 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
         f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
+        f"{NARRATIVE_FOCUS_RULE}\n"
         f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
@@ -1470,13 +1489,7 @@ def _assemble(facts, intro, leads, sections, articles):
         cutoff = facts.get("as_of") or facts.get("last_date")
         span = f"截至{llm.fmt_cn_date(cutoff or '?')}"
     parts.append(f"> 家族：{house}｜人物：{p.get('name')}｜{span}")
-    # v20: 十年传记的存档来源按 as_of 截断 — 用新缓存重跑旧十年时,
-    # 不列出十年末之后的快照 (「截至878年」不出现 879–888 的档)
-    srcs = list(facts.get("sources") or [])
-    if facts.get("as_of"):
-        aok = cl.date_key(facts["as_of"])
-        srcs = [s for s in srcs if cl.date_key(s) <= aok]
-    parts.append(f"> 存档来源：{' / '.join(srcs)}（共{len(srcs)}份快照）")
+    # v28: 不再向读者列出「存档来源：868.1.1 / …（共10份快照）」— 元信息无用
     parts.append("")
     parts.append(intro.strip())
     for i, a in enumerate(articles, 1):
@@ -1815,7 +1828,9 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
                 sections[(ak, sk)] = body
 
     md = _assemble(facts, intro, leads, sections, articles)
-    # v8: 头部注释带 人物/出生/篇目/十年, 供 htmlview 分组与十年标注
+    # v8: 头部注释带 人物/出生/篇目/十年, 供 htmlview 分组与十年标注。
+    # v28: 只留 htmlview 真正要用的字段 (人物/人物ID/战役ID/出生/篇目/十年) —
+    # 「数据来源: CK3 年度存档快照」与「生成时间」这类元信息不再写入文档。
     pp = facts["protagonist"] or {}
     person = pp.get("name") or facts.get("player_name") or ""
     birth = pp.get("birth") or ""
@@ -1825,14 +1840,13 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
         piece = "终传"
     else:
         piece = "传记"
-    header = (f"<!-- 数据来源: CK3 年度存档快照 | 家族: {facts.get('house', '')} | "
-              f"人物: {person} | 人物ID: {facts.get('player_id')}"
+    header = (f"<!-- 人物: {person} | 人物ID: {facts.get('player_id')}"
               + (f" | 战役ID: {cache.get('playthrough_id')}"
                  if cache.get("playthrough_id") else "")
               + (f" | 出生: {birth}" if birth else "")
               + f" | 篇目: {piece}"
               + (f" | 十年: {decade}" if decade else "")
-              + f" | 生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} -->\n\n")
+              + " -->\n\n")
     if out_path:
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as fp:

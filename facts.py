@@ -3110,10 +3110,66 @@ class Facts:
             return f"母语{ml}。"
         return f"通{'、'.join(langs)}。"
 
+    def language_relation_line(self, a, b):
+        """两人言语关系句 (v28): 程序直接给出「相通 / 须借通译」的结论,
+        模型不必自行判断语言相同或不同。任一方无语言记录返回 ''。
+
+        例: 「陆荣廷与陆裕光共通泰语，言语相通。」
+            「亮通氐羌语，与陆荣廷（泰语、汉语）无共通语，交谈须借通译往来。」"""
+        la = self.languages(a)
+        lb = self.languages(b)
+        if not la or not lb:
+            return ""
+        na = self.name_or(a)
+        nb = self.name_or(b)
+        if not na or not nb:
+            return ""
+        common = [x for x in la if x in lb]
+        if common:
+            return f"{na}与{nb}共通{'、'.join(common)}，言语相通。"
+        return (f"{na}通{'、'.join(la)}，与{nb}（{'、'.join(lb)}）无共通语，"
+                f"交谈须借通译或以手势、习语往来。")
+
+    def language_relation_lines(self, cid):
+        """主角与妻室/子女的言语关系句 (v28): 同语者并成一句, 无共通语者按
+        语言分组各成一句; 无语言记录者不列。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fam = rec.get("family") or {}
+        ids = list(dict.fromkeys(
+            (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])
+            + (fam.get("child") or [])))
+        pl = self.languages(cid)
+        if not pl:
+            return []
+        na = self.name_or(cid)
+        groups = {}   # (是否相通, 语言组) -> [id]
+        for x in ids:
+            try:
+                x = int(x)
+            except Exception:
+                continue
+            lx = self.languages(x)
+            if not lx:
+                continue
+            common = tuple(sorted(set(pl) & set(lx)))
+            key = ("same", common) if common else ("diff", tuple(lx))
+            groups.setdefault(key, []).append(x)
+        out = []
+        for key, members in groups.items():
+            names = "、".join(self.name_or(m) for m in members)
+            if not names:
+                continue
+            if key[0] == "same":
+                out.append(f"{na}与{names}共通{'、'.join(key[1])}，言语相通。")
+            else:
+                out.append(f"{na}通{'、'.join(pl)}，与{names}（{'、'.join(key[1])}）"
+                           f"无共通语，交谈须借通译或以手势、习语往来。")
+        return out[:4]
+
     def language_bridge_line(self, cid):
         """主角与妻室/子女的言语异同 (v27): 只列与主角无共通语者 —
         「家中言语：毗伽伊尔盖通共同突厥语。」; 无此情形返回 ''。
-        供 L3 语言风味取材 (异语需借通译/笔谈往来)。"""
+        v28: 保留为兼容出口; 提示词改用 language_relation_lines (含同语结论)。"""
         pl = set(self.languages(cid))
         if not pl:
             return ""
@@ -4613,6 +4669,10 @@ def _protagonist(f):
     # v27: 语言风味 — 母语/兼通 + 与妻室子女的言语异同
     p["language_line"] = f.language_sentence(pid)
     p["language_bridge"] = f.language_bridge_line(pid)
+    # v28: 与妻室子女的逐人言语关系句 (程序直给「相通/须通译」结论)
+    _lrel = f.language_relation_lines(pid)
+    if _lrel:
+        p["language_relations"] = _lrel
     # v9: 主角官职名 (v11: 按 as_of 截断日期取)
     poff = f.official_title(pid)
     if poff:
@@ -4939,6 +4999,13 @@ def _character_profiles(f):
             prof["languages"] = "、".join(langs)
         # v27: 语言事实句 (母语/兼通), 供传记渲染「语言」行
         prof["language_line"] = f.language_sentence(cid)
+        # v28: 该角色与主角的言语关系句 (程序直给「相通/须借通译」结论) —
+        # 《列传·好友/仇人》《家室列传》写二人交谈时照此落笔
+        _pid = f.cache.get("player_id")
+        if _pid is not None and int(cid) != int(_pid):
+            _ln = f.language_relation_line(_pid, cid)
+            if _ln:
+                prof["language_relation"] = _ln
         # v9: 官职名 (首要头衔+官职词) / 王子称号 (无头衔的王国/帝国/霸权子女)
         off = f.official_title(cid)
         if off:

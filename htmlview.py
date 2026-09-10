@@ -342,11 +342,14 @@ show(0, 0);
 
 
 def _parse_header(text):
-    """从 md 头部注释解析 人物/人物ID/出生/篇目/十年 (v8, v20)。"""
+    """从 md 头部注释解析 人物/人物ID/出生/篇目/十年 (v8, v20)。
+    v28: 先剥 `-->` 结尾标记 — 头注释末字段 (篇目/十年) 不再有后续字段兜底,
+    否则 `[^|]+` 会把 ` -->` 一起吞进篇目名。"""
     out = {}
     for ln in (text or "").split("\n"):
         if not ln.strip().startswith("<!--"):
             continue
+        ln = ln.replace("-->", " ")
         m = re.search(r"人物:\s*([^|]+)", ln)
         p = re.search(r"篇目:\s*([^|]+)", ln)
         d = re.search(r"十年:\s*(\d+)", ln)
