@@ -4076,7 +4076,9 @@ def _timeline(f):
             "type": t,
             # v14: 戏剧性模块标注 (纯数据层, 十年主题抽取/文章切片用)
             "module": mod or _TYPE2MODULE.get(t, ""),
-            "text": (f"{f.date(d)}，{s}" if d else s),
+            # v27: 死亡句自带的日期已在句内 (「X死于YYYY年M月D日，…」),
+            # 不再在句首重复一遍日期 (「893年4月28日，塔坦尼·布兰死于893年4月28日…」)
+            "text": (s if (t == "death" or not d) else f"{f.date(d)}，{s}"),
         })
     # v11: 同日同型集体事件合并 (见证加冕/出席大婚/被囚/囚禁)
     out = _merge_same_day_events(out, f)
