@@ -531,6 +531,9 @@ EMPTY_CACHE = {
     "house_motto": None,         # 玩家家族家训 (dynasty_house.motto, 字符串或模板 dict) (v7)
     "characters": {},
     "relations": {},
+    # v28b: 叛乱派系 (农民/民粹/游牧 起义) 领袖逐档差分 — 称谓用
+    # (「农民起义领袖叠溪寋」; 存档只存当前派系, 无起止日期)
+    "factions": {},
 }
 
 
@@ -1600,6 +1603,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # 「首次见于记载」的年份, 供《阴私录》写时间锚点。只收与相关集/朝廷要员
     # 有关的秘密以控体积 (实测每档相关 4–30 条)。
     _diff_secrets(cache, melt, date_label)
+    # v28b: 叛乱派系领袖 (农民/民粹/游牧 起义) — 供人物称谓写
+    # 「农民起义领袖叠溪寋」(存档 faction_manager 只存当前派系, 逐档差分)
+    _diff_factions(cache, melt, date_label)
     return cache
 
 
@@ -1712,6 +1718,71 @@ def _diff_secrets(cache, melt, date_label):
         if sid in want or rec.get("lost_at"):
             continue
         rec["lost_at"] = date_label
+
+
+# v28b: 起义类派系 (领袖即叛军之首) — 游戏 faction_manager.type 的取值。
+# 其余 (independence/claimant/liberty/nation_fracturing/replace_regent) 是
+# 封臣派系, 其领袖本身有领地头衔, 不另给起义称谓。
+_UPRISING_TYPES = ("peasant_faction", "escalated_peasant_faction",
+                   "populist_faction", "nomadic_faction")
+
+
+def _diff_factions(cache, melt, date_label):
+    """把本档起义派系的**领袖**并入 cache["factions"] (逐档差分)。
+
+    记录形如::
+
+        {"43603": {"type": "peasant_faction", "first_seen": "870.1.1",
+                   "last_seen": "871.1.1", "first": false,
+                   "target": 10529, "counties": [14534, 14538],
+                   "faith": 136, "culture": 166}}
+
+    只收起义类派系 (其余封臣派系领袖本有领地头衔)。存档无派系起止日期,
+    首见档即记 first_seen, 最后一次出现记 last_seen。
+    领袖一律记录 (不按相关集过滤): 逐档差分是时序的, 叛乱领袖常在身故后才因
+    隐事/谋杀进入传主视野 (陆氏 43603 即 870–871 在党、872 才见于隐事档),
+    先按相关集过滤会漏掉其起义身份; 每档约 40–55 名领袖, 体积可忽略。
+    """
+    facs = (melt.get("faction_manager") or {}).get("factions") or {}
+    if not facs:
+        return
+    hist = cache.setdefault("factions", {})
+    first_snap = len(cache.get("sources") or []) <= 1
+    for _fid, rec in facs.items():
+        if not isinstance(rec, dict):
+            continue
+        ftype = rec.get("type") or ""
+        if ftype not in _UPRISING_TYPES:
+            continue
+        leader = rec.get("leader")
+        if not isinstance(leader, int):
+            leader = rec.get("special_character")
+        if not isinstance(leader, int):
+            continue
+        vars_ = {}
+        for v in (rec.get("variables") or {}).get("data") or []:
+            d = v.get("data") or {}
+            if v.get("flag") in ("faction_faith", "faction_culture") \
+                    and isinstance(d.get("identity"), int):
+                vars_[v["flag"]] = d["identity"]
+        counties = [m.get("county") for m in (rec.get("title_members") or [])
+                    if isinstance(m, dict) and isinstance(m.get("county"), int)]
+        r = hist.get(str(leader))
+        if r is None:
+            r = {"type": ftype, "first_seen": date_label,
+                 "last_seen": date_label, "first": first_snap}
+            hist[str(leader)] = r
+        else:
+            r["type"] = ftype
+            r["last_seen"] = date_label
+        if isinstance(rec.get("target"), int):
+            r["target"] = rec["target"]
+        if counties:
+            r["counties"] = counties
+        if "faction_faith" in vars_:
+            r["faith"] = vars_["faction_faith"]
+        if "faction_culture" in vars_:
+            r["culture"] = vars_["faction_culture"]
 
 
 # ---------------------------------------------------------------------------
