@@ -97,6 +97,12 @@ LANGUAGE_FLAVOR_RULE = (
     "一律照资料写明的情形落笔。"
 )
 
+# v28: 隐事笔法 (secrets) — 正向表述: 只给「怎么写」, 数据侧已给形态
+SECRET_RULE = (
+    "「隐事笔法」: 隐事一律按其记载形态书写——至今无人知晓者写其事隐秘、时人未觉; "
+    "已有知情者时写明知情之人与此后往来; 各处隐事按资料给出的见载年份落笔。"
+)
+
 # 各篇文章的板块名 (首段/中段/尾段) — tail 按文风取
 SECTION_TITLES = {
     "benji":   {"lead": "开篇·家世与出身", "mid": "纪事·一生大事", "tail": None},
@@ -117,6 +123,8 @@ SECTION_TITLES = {
     # v9 新增
     "feuds":   {"lead": "开篇·世仇渊薮",   "mid": "纪事·恩怨始末", "tail": None},
     "artifacts": {"lead": "开篇·传家重宝", "mid": "纪事·流转始末", "tail": None},
+    # v28 新增
+    "secrets": {"lead": "开篇·隐事之始",   "mid": "纪事·阴私秘辛", "tail": None},
 }
 
 # 板块要求 (按文章, 首段/中段/尾段) — 全部数据驱动, 无战役硬编码
@@ -181,6 +189,12 @@ SECTION_REQ = {
     "artifacts": {
         "lead": "写主角家族所藏重宝: 宝物名称、形制、稀有度, 立起传家重宝的画卷, 以资料为限。",
         "mid": "依流转史叙述每件宝物的来历与流转: 何人造、何时被何人夺得或继承、现藏何处, 以资料为限。",
+        "tail": None,
+    },
+    # v28 新增: 隐事 (secrets)
+    "secrets": {
+        "lead": "写主角身上的隐事: 何事、涉及何人、自何时见于记载、有谁知情, 以资料为限; 立起「其人其行之外另有隐情」的底色。",
+        "mid": "写家人与近臣的隐事、把柄的所属与流转: 谁藏何隐事、谁已知情、此后往来如何, 以资料为限。本篇写出各处隐事的见载年份与知情者的身份。",
         "tail": None,
     },
 }
@@ -1045,6 +1059,13 @@ def _article_facts(facts, cache, key, section=None):
                         names.append(full)
         if names:
             blocks["朝中要员"] = "、".join(names)
+        # v28: 要员隐事 — 最高领主链与朝廷职司时任者的隐事 (用户决策:
+        # 《朝局风云录》收录最高统治者的秘密); 开篇发前半, 纪事发后半
+        rs = list(realm.get("secrets") or [])
+        if rs:
+            seg_rs = _split_span(rs, seg)
+            if seg_rs:
+                blocks["要员隐事"] = "\n".join(seg_rs)
     # ---- v5 新增文章 ----
     elif key == "assassins":
         # v27: 主角档案已在共享前缀, 不再重复
@@ -1136,7 +1157,38 @@ def _article_facts(facts, cache, key, section=None):
             blocks["传家重宝"] = "\n\n".join(arts)
         else:
             blocks["传家重宝"] = "（无传家重宝记录）"
+    elif key == "secrets":
+        # v28《阴私录·隐事秘辛》: 主角隐事归开篇, 家人近臣隐事与把柄归纪事
+        sec = facts.get("secrets") or {}
+        sk = _sec_key(section)
+        if sk == "lead":
+            lines = list(sec.get("held") or [])
+            if sec.get("held_murder"):
+                lines.append(_murder_index_line(facts, sec))
+            if sec.get("held_unrevealed"):
+                lines.append("上述隐事至今无人知晓。")
+            lines.extend(sec.get("held_known") or [])
+            blocks["主角隐事"] = "\n".join(lines) if lines else "（无隐事记录）"
+        else:
+            mid_lines = list(sec.get("kinsmen") or [])
+            mid_lines.extend(sec.get("known") or [])
+            blocks["家人近臣隐事"] = ("\n".join(mid_lines)
+                                     if mid_lines else "（无家人近臣隐事记录）")
+            if sec.get("events"):
+                blocks["见载年表"] = "\n".join(sec["events"])
     return blocks
+
+
+def _murder_index_line(facts, sec):
+    """谋杀类隐事的索引行: 有《刺客列传》时指向该篇, 否则直出隐事所涉人名
+    (只用隐事记录里的人, 不把处决等非隐事击杀混进来)。"""
+    n = sec.get("held_murder") or 0
+    if _has_assassins(facts):
+        return f"另有谋杀隐事{n}桩，详见《刺客列传·刀下诸魂》。"
+    names = [x for x in (sec.get("held_murder_names") or []) if x]
+    if names:
+        return f"另有谋杀隐事{n}桩，涉及{'、'.join(names)}。"
+    return f"另有谋杀隐事{n}桩。"
 
 
 # ---------------------------------------------------------------------------
@@ -1148,7 +1200,8 @@ def _system_msg(style="east", extra=""):
     return ("你是史官, 撰写传记。\n\n"
             f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
             f"{NARRATIVE_FOCUS_RULE}\n"
-            f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}")
+            f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n"
+            f"{SECRET_RULE}")
 
 
 def _decade_theme_note(facts):
@@ -1259,7 +1312,8 @@ def build_intro_messages(facts, cfg, articles=None):
         "你是史官, 为一位乱世人物修传。\n\n"
         f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
         f"{NARRATIVE_FOCUS_RULE}\n"
-        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n\n"
+        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n"
+        f"{SECRET_RULE}\n\n"
         "撰写传记「总纲」: 概括此人的一生大势, 预告以下各篇文章, "
         "点明其家族与身份。总纲正文控制在400–600字, 以「太史公曰」作结。"
     )
@@ -1305,7 +1359,8 @@ def build_lead_messages(article, facts, cache, intro, cfg):
         "你是史官, 撰写传记。\n\n"
         f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
         f"{NARRATIVE_FOCUS_RULE}\n"
-        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}"
+        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n"
+        f"{SECRET_RULE}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = ""
@@ -1355,7 +1410,8 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
         "你是史官, 撰写传记。\n\n"
         f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
         f"{NARRATIVE_FOCUS_RULE}\n"
-        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}"
+        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n"
+        f"{SECRET_RULE}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = ""
@@ -1757,6 +1813,13 @@ def build_articles(facts, cache, cfg):
             "key": "qunying", "title": "群英录·朝堂要员",
             "subject": None, "theme": "同朝要员的群像",
             "sections": mk_sections("qunying")})
+    # v28: 阴私录 (条件生成 — 有非谋杀隐事 / 家人近臣隐事 / 把柄 才开篇,
+    # 避免「27 桩谋杀之秘」这类只与《刺客列传》重复的战役白付两次调用)
+    if (facts.get("secrets") or {}).get("any"):
+        articles.append({
+            "key": "secrets", "title": "阴私录·隐事秘辛",
+            "subject": None, "theme": "隐事与把柄 (主人公不为人知的一面)",
+            "sections": mk_sections("secrets")})
     return articles
 
 

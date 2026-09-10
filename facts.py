@@ -6256,6 +6256,14 @@ def _secrets_facts(f):
             out["held_unrevealed"] = True      # 至今无人知晓
     if murder:
         out["held_murder"] = len(murder)
+        names = []
+        for rec in murder:
+            t = rec.get("target")
+            nm = f.name_or(t, "") if isinstance(t, int) else ""
+            if nm:
+                names.append(nm)
+        if names:
+            out["held_murder_names"] = names[:6]
     # 家人与廷中僚属的隐事 (亲属 + court_positions 雇员)
     prec = (cache.get("characters") or {}).get(str(pid)) or {}
     fam = prec.get("family") or {}
@@ -6284,6 +6292,9 @@ def _secrets_facts(f):
         topic = f.secret_topic(rec)
         owner = f.name_or(rec.get("owner"))
         if topic and owner:
+            # 隐事对象就是主角本人时 (如「与X私通」), 换成「与自己」更顺
+            if rec.get("target") == pid:
+                topic = topic.replace(f"与{f.name_or(pid)}", "与自己")
             known.append(f"{f.name_or(pid)}知悉{owner}的隐事：{topic}。")
     if known:
         out["known"] = known[:10]
