@@ -1191,6 +1191,14 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         print(f"  [跳过] 档期 {date_label} 玩家 {player_id} 与缓存玩家 "
               f"{cache['player_id']} 不一致")
         return False
+    # v28: 战役校验 — 角色 id 跨战役复用 (867 自定义角色恒为 38701/38682),
+    # 仅凭玩家 id 无法拦住「另一场战役的熔件并进本缓存」。两边都有战役号
+    # 且不同即拒收 (调用方一律按 playthrough_id 选缓存, 这里是最后一道防线)。
+    _cpt = cache.get("playthrough_id")
+    _mpt = melt.get("playthrough_id")
+    if _cpt and _mpt and str(_cpt) != str(_mpt):
+        print(f"  [跳过] 档期 {date_label} 战役 {_mpt} 与缓存战役 {_cpt} 不一致")
+        return False
     if cache["player_id"] is None:
         cache["player_id"] = player_id
     cache["player_id"] = player_id or cache["player_id"]
