@@ -1166,8 +1166,7 @@ def _article_facts(facts, cache, key, section=None):
             if sec.get("held_murder"):
                 lines.append(_murder_index_line(facts, sec))
             if sec.get("held_unrevealed"):
-                lines.append("上述隐事至今无人知晓。")
-            lines.extend(sec.get("held_known") or [])
+                lines.append("这些隐事至今无人知晓。")
             blocks["主角隐事"] = "\n".join(lines) if lines else "（无隐事记录）"
         else:
             mid_lines = list(sec.get("kinsmen") or [])
@@ -1184,11 +1183,11 @@ def _murder_index_line(facts, sec):
     (只用隐事记录里的人, 不把处决等非隐事击杀混进来)。"""
     n = sec.get("held_murder") or 0
     if _has_assassins(facts):
-        return f"另有谋杀隐事{n}桩，详见《刺客列传·刀下诸魂》。"
+        return f"另有{n}桩谋杀隐事，详见《刺客列传·刀下诸魂》。"
     names = [x for x in (sec.get("held_murder_names") or []) if x]
     if names:
-        return f"另有谋杀隐事{n}桩，涉及{'、'.join(names)}。"
-    return f"另有谋杀隐事{n}桩。"
+        return f"另有{n}桩谋杀隐事，涉及{'、'.join(names)}。"
+    return f"另有{n}桩谋杀隐事。"
 
 
 # ---------------------------------------------------------------------------
