@@ -663,6 +663,15 @@ class Facts:
             _lg = _e.get("language")
             if _lg:
                 self._lang_to_tpl.setdefault(_lg, []).append(_e.get("culture_template") or "")
+        # v27: 文化模板 → 语言 反查 (角色 culture id 被清空时, 由模板回推母语)
+        self._tpl_to_lang = {}
+        for _cid, _e in ((melt.get("culture_manager") or {}).get("cultures") or {}).items():
+            if not isinstance(_e, dict):
+                continue
+            _tpl = _e.get("culture_template")
+            _lg = _e.get("language")
+            if _tpl and _lg:
+                self._tpl_to_lang.setdefault(_tpl, _lg)
         # v11: 独立性 O(1): 全量封臣 id 集 + 每角色缓存 (历任/官职大量调用)
         self._vassal_ids = set()
         for _k, _c in ((melt.get("vassal_contracts") or {}).get("database") or {}).items():
@@ -2890,6 +2899,83 @@ class Facts:
                 out.append(v)
         return out
 
+    # ---- v27: 语言风味 (母语 / 兼通 / 言语异同) ----
+    def _culture_language_id(self, cid):
+        """角色所属文化的语言 id (language_japonic…); 文化缺失时由文化模板回推。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        cul = rec.get("culture")
+        if cul is None:
+            cul = (self._chars.get(str(cid)) or {}).get("culture")
+        if cul is not None:
+            e = ((self.melt.get("culture_manager") or {}).get("cultures") or {}) \
+                .get(str(cul))
+            if isinstance(e, dict) and e.get("language"):
+                return str(e["language"])
+        # 文化 id 被清空 (玩家/死者): 由文化模板反查语言
+        tpl = self.culture_template(cid)
+        if tpl:
+            lg = self._tpl_to_lang.get(tpl)
+            if lg:
+                return str(lg)
+        return ""
+
+    def mother_language(self, cid):
+        """母语 (本族语) 中文名: 文化 → language → 本地化; 未知返回 ''。
+        CK3 的角色语言表必然含本族语, 其余为习得语言 (Royal Court 语言系统);
+        文化完全不可考而角色只通一语时, 该语即其母语。"""
+        lg = self._culture_language_id(cid)
+        if lg:
+            v = L.loc(self.table, f"{lg}_name") or L.loc(self.table, lg) or ""
+            if v:
+                return v
+        langs = self.languages(cid)
+        if len(langs) == 1:
+            return langs[0]
+        return ""
+
+    def language_sentence(self, cid):
+        """语言事实句 (v27): 「母语日琉语，兼通乌古尔语。」/
+        「通日琉语、乌古尔语。」(母语不可考时); 无语言记录返回 ''。"""
+        langs = self.languages(cid)
+        if not langs:
+            return ""
+        ml = self.mother_language(cid)
+        if ml and ml in langs:
+            others = [x for x in langs if x != ml]
+            if others:
+                return f"母语{ml}，兼通{'、'.join(others)}。"
+            return f"母语{ml}。"
+        return f"通{'、'.join(langs)}。"
+
+    def language_bridge_line(self, cid):
+        """主角与妻室/子女的言语异同 (v27): 只列与主角无共通语者 —
+        「家中言语：毗伽伊尔盖通共同突厥语。」; 无此情形返回 ''。
+        供 L3 语言风味取材 (异语需借通译/笔谈往来)。"""
+        pl = set(self.languages(cid))
+        if not pl:
+            return ""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fam = rec.get("family") or {}
+        ids = list(dict.fromkeys(
+            (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])
+            + (fam.get("child") or [])))
+        bits = []
+        for x in ids:
+            try:
+                x = int(x)
+            except Exception:
+                continue
+            lang = self.languages(x)
+            if not lang or set(lang) & pl:
+                continue
+            nm = self.kin_label(x)
+            bits.append(f"{nm}通{'、'.join(lang)}")
+            if len(bits) >= 5:
+                break
+        if not bits:
+            return ""
+        return "家中言语：" + "；".join(bits) + "。"
+
     def name_zh_of(self, cid):
         """角色名 (名, 不带家族/头衔) — 父名拼接用。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
@@ -4247,6 +4333,9 @@ def _protagonist(f):
     langs = f.languages(pid)
     if langs:
         p["languages"] = "、".join(langs)
+    # v27: 语言风味 — 母语/兼通 + 与妻室子女的言语异同
+    p["language_line"] = f.language_sentence(pid)
+    p["language_bridge"] = f.language_bridge_line(pid)
     # v9: 主角官职名 (v11: 按 as_of 截断日期取)
     poff = f.official_title(pid)
     if poff:
@@ -4523,6 +4612,8 @@ def _character_profiles(f):
         langs = f.languages(cid)
         if langs:
             prof["languages"] = "、".join(langs)
+        # v27: 语言事实句 (母语/兼通), 供传记渲染「语言」行
+        prof["language_line"] = f.language_sentence(cid)
         # v9: 官职名 (首要头衔+官职词) / 王子称号 (无头衔的王国/帝国/霸权子女)
         off = f.official_title(cid)
         if off:

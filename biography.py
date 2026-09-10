@@ -72,6 +72,21 @@ PLAIN_WORD_RULE = (
     "帝王、君主、贵胄与庶民一律用同一套词; 全文的死亡表达与这套词完全一致。"
 )
 
+# v27: 称谓一致 (用户决策 2026-09-10) — 亲属/相关人物一律「头衔+姓名」,
+# 与 facts.kin_label 的渲染口径一致 (前头衔仅在其层级更高时以「前X，」前置)。
+TITLE_CONSISTENCY_RULE = (
+    "「称谓一致」: 亲属与相关人物一律用资料给出的称谓书写"
+    "(高昌国王毗伽庞特勤、可萨布兰部可敦塔坦尼·布兰、楚国郡主苗映娘); "
+    "同一人在全篇各处用同一称谓。"
+)
+
+# v27: 语言风味 (用户决策 2026-09-10) — 依资料给出的语言落笔, 正向表述。
+LANGUAGE_FLAVOR_RULE = (
+    "「语言风味」: 资料给出各人语言者, 写其交谈、书信、结盟、婚配、拜谒时"
+    "依语言相同或不同落笔——同语者直接对谈; 异语者借通译、笔谈、手势或习语往来; "
+    "兼通数语者写出其游历与学识。"
+)
+
 # 各篇文章的板块名 (首段/中段/尾段) — tail 按文风取
 SECTION_TITLES = {
     "benji":   {"lead": "开篇·家世与出身", "mid": "纪事·一生大事", "tail": None},
@@ -105,17 +120,17 @@ SECTION_REQ = {
     },
     "friend": {
         "lead": "写传主与主角的交游渊源: 二人如何相识、同处何朝何地, 传主的家世与出身。",
-        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散。",
+        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散; 二人的言语同异 (同语对谈、异语借通译或笔谈往来) 一并落笔。",
         "tail": None,
     },
     "enemy": {
         "lead": "写仇家身世与结仇之由: 传主何许人也, 与主角因何成仇。",
-        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发。",
+        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发; 双方言语同异对往来的影响 (同语对谈、异语借通译或笔谈) 一并落笔。",
         "tail": None,
     },
     "jiashi": {
         "lead": "写主角婚配始末: 结缡、离异、前妻之死、再娶, 立起门庭画卷; 妻族门第 (妻之父兄等显贵亲眷) 若有资料一并铺陈。",
-        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境。",
+        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境; 家人与主角的言语同异 (同语对谈、异语借通译、习语学话) 一并落笔。",
         "tail": None,
     },
     "chaoju": {
@@ -484,6 +499,9 @@ def _profile_lines(facts, cid=None):
     if p.get("motto"):
         bits.append(f"家训「{p['motto']}」")
     lines.append(f"{head}，{'，'.join(bits)}。" if bits else f"{head}。")
+    # ---- v27: 语言句 (母语/兼通) ----
+    if p.get("language_line"):
+        lines.append(p["language_line"])
     # ---- 性情句 ----
     if p.get("traits"):
         lines.append(f"为人{p['traits']}。")
@@ -572,6 +590,9 @@ def _profile_lines(facts, cid=None):
         fam_bits.append(f"子女{p['children']}")
     if fam_bits:
         lines.append("，".join(fam_bits) + "。")
+    # ---- v27: 与妻室子女的言语异同 (仅主角有该字段) ----
+    if p.get("language_bridge"):
+        lines.append(p["language_bridge"])
     # ---- 家世句 ----
     kin_bits = []
     if p.get("father"):
@@ -978,7 +999,8 @@ def _article_facts(facts, cache, key, section=None):
 def _system_msg(style="east", extra=""):
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
     return ("你是史官, 撰写传记。\n\n"
-            f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n{PLAIN_WORD_RULE}")
+            f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
+            f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}")
 
 
 def _decade_theme_note(facts):
@@ -1059,7 +1081,8 @@ def build_intro_messages(facts, cfg, articles=None):
         span_cn = f"生于{birth}" if birth else ""
     sys_msg = (
         "你是史官, 为一位乱世人物修传。\n\n"
-        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n{PLAIN_WORD_RULE}\n\n"
+        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
+        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}\n\n"
         "撰写传记「总纲」: 概括此人的一生大势, 预告以下各篇文章, "
         "点明其家族与身份。总纲正文控制在400–600字, 以「太史公曰」作结。"
     )
@@ -1103,7 +1126,8 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     blocks = _article_facts(facts, cache, key, sec)
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
-        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n{PLAIN_WORD_RULE}"
+        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
+        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = ""
@@ -1147,7 +1171,8 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
     blocks = _article_facts(facts, cache, key, section)
     sys_msg = (
         "你是史官, 撰写传记。\n\n"
-        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n{PLAIN_WORD_RULE}"
+        f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
+        f"{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n{LANGUAGE_FLAVOR_RULE}"
     )
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = ""
