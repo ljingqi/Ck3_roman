@@ -196,6 +196,42 @@ CK3 自动存档 (.ck3)  —(watch/continue 只处理启动后写入的新存档
 - **编号史传化**（用户决策 2026-08-31）：无绰号角色的世系编号紧跟名、家名在后
   （鲁斯兰二世·克里维奇），不再把编号缀在姓上；东方人名（姓+名）与单段名不标编号。
 
+## v26 能力（性别 / 仇人权重 / 动态头衔 / 牧群 / 信仰履历 / 囚禁时长）
+
+排查与决策见 `docs/排查_田所2六问题.md`，确定性验证 `python experiments/verify_tadokoro2.py`。
+
+- **性别（女儿不再写成儿子）**：缓存 `char_record` 补 `female` 字段并在 `extract_snapshot`
+  持久化（熔件只在女性身上存 `female`）；`Facts._is_female` 统一入口（缓存优先、熔件兜底）。
+  出生记忆按孩子性别换模板（`child_born_female` 添女 / `first_born_female` 得长女 /
+  `twins_born_female` 得孪生女 / `twins_born_mixed` 得龙凤胎）；档案与家室档案的子女
+  按性别分列（「子A、B，女C、D」）；`_year_summary` 出生分「添子/添女」两组。
+- **动态头衔（游戏内显示名）**：`_name_at_date` / `title` / `title_base_name` /
+  `_title_name_at` 一律优先存档里游戏算好的 `title_name_data.specific_title_name`
+  （游牧「可萨田所部」、宗族命名「马扎尔」），无该字段时才走 `title_history_names`
+  更名史（h_china 唐→秦、k_guannei→秦 仍由更名史承担，v25 卒日国号口径不变）；
+  带动态名时不再叠层级词。实测 melt_900 全档 800 个动态名与 `Facts.title()` 逐条一致。
+- **游牧官职词**：`_office_word` 增游牧/牧民/部落分支，按游戏 flavorization 顺序取词
+  ——`<tier>_nomad_{male|female}_<heritage>`（突厥：叶护/颉利发）→
+  `<tier>_tribal_{male|female}`（count_tribal_male=酋长 / duke_tribal_male=大酋长）→
+  `<tier>_herder_*`（牧主）。游牧政体不适用伊斯兰动态国名（`realm_name` 加政体门）。
+  游牧毡帐 `x_c_nomad_*` 不再当作「无地冒险者营地」，也不挤掉领地头衔的历任阶段。
+- **牧群**：`domiciles.database` 的 `herd`/`provisions` 由 `extract_snapshot` 提取进
+  `landed`；档案政体句按金钱同口径写「牧群715.7」（只给当前值，取 as_of 熔件的毡帐）。
+- **信仰履历（改信过程）**：缓存增 `faith_history` 逐档差分（游戏不给改信留记忆），
+  档案增「信仰履历：法华宗（880–895年）；艾什尔里派（自896年起）」，时间线增
+  「896年，X改信艾什尔里派。」（归「信仰皈依」模块）。
+- **囚禁时长**：`Facts.imprison_duration`（受害者 `imprisoned` / `released_from_prison_memory`
+  记忆，主角 `imprisoned_other` 兜底）——卒时已囚满一年者，处决写「囚禁4年7个月后被X斩首」，
+  狱死写「…而死，囚禁5年1个月」；主角囚禁期间死亡者（凶手未必记为主角）也入刺客列传。
+- **日期折叠**：`llm.fmt_cn_date` 把 1月1日渲染为「NNNN年」——游戏「出生日期不详」与
+  年度快照日都是 1月1日，月/日无信息量（大事件年表同样只写年份）。
+- **仇人权重**：`_select_primary_enemy` 先按「与本篇相关」筛（在世，或本十年内有作为），
+  再按**事迹分**降序（`_ENEMY_DEED_TYPES`：登位/战争/谋杀/婚配/生育/结友/囚禁/科考…），
+  同分在世优先、结怨最早；`_is_dead` 支持 as_of（卒于十年末之后者视为在世）。
+  `_character_profiles` 修复 `prof.get("memories")` 取空导致的「传主行迹」恒空
+  （此前对所有人都是「（无行迹记录）」）。田所2：890 年仇人 → 秦皇帝崔慎由（原为无事迹的
+  菅原类子），900 年 → 尤拉特。
+
 ## 环境准备
 
 1. **Python 依赖**：`python -m pip install -r requirements.txt`（requests）。

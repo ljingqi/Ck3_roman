@@ -172,7 +172,9 @@ def clean_prompt_messages(messages):
 
 
 def fmt_cn_date(date_str):
-    """CK3 日期 '869.2.22' → '869年2月22日'; 非法输入返回原文。"""
+    """CK3 日期 '869.2.22' → '869年2月22日'; 非法输入返回原文。
+    v26: 1月1日只留年份 — 游戏把「出生日期不详」写成 1月1日 (只知道年份),
+    年度存档快照日也一律是 1月1日; 该日的月/日不含信息, 一律渲染成 'NNNN年'。"""
     if not date_str:
         return "未知"
     s = str(date_str).strip()
@@ -180,6 +182,8 @@ def fmt_cn_date(date_str):
     if len(parts) >= 3:
         try:
             y, mo, d = (int(x) for x in parts[:3])
+            if mo == 1 and d == 1:
+                return f"{y}年"
             return f"{y}年{mo}月{d}日"
         except Exception:
             return s
@@ -190,12 +194,28 @@ def fmt_cn_date(date_str):
 # DeepSeek 调用
 # ---------------------------------------------------------------------------
 
+def _usage_line(usage, messages):
+    """v27: 缓存用量单行 (口径见 DeepSeek 上下文硬盘缓存文档)。
+    命中 token 单价是未命中的 1/50, 因此「未命中」才是真实成本与验收指标。"""
+    u = usage if isinstance(usage, dict) else {}
+    hit = u.get("prompt_cache_hit_tokens") or 0
+    miss = u.get("prompt_cache_miss_tokens") or 0
+    inp = u.get("prompt_tokens") or (hit + miss)
+    out = u.get("completion_tokens")
+    chars = sum(len(m.get("content") or "") for m in (messages or [])
+                if isinstance(m, dict))
+    return (f"token: 输入{inp} = 命中{hit} + 未命中{miss}"
+            f" | 输出{out if out is not None else '?'} | 字符{chars}"
+            f" (命中率{hit * 100 // inp if inp else 0}%)")
+
+
 def call_deepseek(messages, cfg, retries=3):
     """调用 DeepSeek chat/completions, 返回正文文本。
 
     - max_tokens 截断时自动翻倍预算重试 (上限 16000);
     - llm_thinking_disabled 时发送 thinking:disabled 关闭思考模式;
-    - 失败退避重试 (3s / 6s ...)。
+    - 失败退避重试 (3s / 6s ...);
+    - v27: 每次调用把 usage (缓存命中/未命中 token) 落日志, 供上下文瘦身验收。
     """
     messages = clean_prompt_messages(messages)
     if cfg.get("prompt_log_enabled", True):
@@ -220,6 +240,7 @@ def call_deepseek(messages, cfg, retries=3):
             resp = requests.post(url, json=payload, headers=headers, timeout=180)
             resp.raise_for_status()
             data = resp.json()
+            log(_usage_line(data.get("usage"), messages))
             choice = data["choices"][0]
             content = (choice.get("message") or {}).get("content") or ""
             finish = choice.get("finish_reason")

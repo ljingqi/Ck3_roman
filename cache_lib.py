@@ -622,9 +622,11 @@ def char_record(cache, cid):
             "name_full": None,      # 姓+名 (边诚)
             "birth": None,
             "death": None,
+            "female": False,       # v26: 性别 (熔件 female 字段只在女性身上出现)
             "dynasty_house": None,
             "culture": None,
             "faith": None,
+            "faith_history": [],   # v26: [{from, faith}] 改信变化点 (首见即记)
             "traits": [],
             "trait_history": {},    # {特质key: [{from, to, first}]} 获得/消失区间 (v4)
             "family": {},
@@ -1124,6 +1126,24 @@ def real_father_of(melt, cid, chars=None, sec_candidates=None):
 # 单档提取 (v4: 每玩家缓存 + 姓名合并 + 亲属/特质/朝局)
 # ---------------------------------------------------------------------------
 
+def player_domicile(melt, domain, cid):
+    """玩家毡帐/庄园条目 (v26): 牧群(herd)/口粮(provisions) 只存于
+    domiciles.database, landed_data 里没有 — 按 owner_title 命中玩家领地
+    (或该头衔持有人即玩家) 取条目。返回 dict 或 None。"""
+    db = (melt.get("domiciles") or {}).get("database") or {}
+    domset = {x for x in (domain or []) if isinstance(x, int)}
+    lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
+    for v in db.values():
+        if not isinstance(v, dict):
+            continue
+        ot = v.get("owner_title")
+        if not isinstance(ot, int):
+            continue
+        if ot in domset or (lt.get(str(ot)) or {}).get("holder") == cid:
+            return v
+    return None
+
+
 def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     """把一个存档快照并入缓存。返回 False 表示玩家不一致被拒绝。
     _new_deaths: 可选列表, 本次并入「首次记录死亡」的角色 id (int) 会追加进来,
@@ -1304,7 +1324,10 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         if dom:
             t = lt.get(str(dom[0])) or {}
             tnd = t.get("title_name_data") or {}
-            tname = tnd.get("custom") or tnd.get("name") or ""
+            # v26: 游戏算好的动态头衔名 (游牧/宗族命名领域) 优先 —
+            # 「可萨田所部」而不是静态地名「也勒克河」
+            tname = (tnd.get("specific_title_name")
+                     or tnd.get("custom") or tnd.get("name") or "")
             thn = tnd.get("title_history_names") or []
         if not tname:
             tname = meta.get("meta_title_name") or ""
@@ -1361,8 +1384,15 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                                                 memo=_name_memo) \
                     or (rec.get("house_name", "") + rec["name_zh"])
             rec["birth"] = c.get("birth")
+            rec["female"] = bool(c.get("female"))
             rec["culture"] = c.get("culture")
             rec["faith"] = c.get("faith")
+            if rec["faith"] is not None:
+                rec["faith_history"] = [{"from": date_label,
+                                         "faith": rec["faith"]}]
+        # v26: 性别自愈 — 旧缓存无该字段时按熔件补 (女性才有 female 键, 男性补 False)
+        if rec.get("female") is None:
+            rec["female"] = bool(c.get("female"))
         # v14: 旧缓存自愈 — dynasty_name 缺失 (v14 前缓存) 时按当前 dynasty_house
         # 补解析 (东方名序的姓); 按 house 记忆化, 同宗族数千人只解析一次。
         if rec.get("dynasty_name") is None and rec.get("dynasty_house") is not None:
@@ -1376,8 +1406,15 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         # 缓存里存活期直接读到的 id 即为最直接的来源, facts 层缓存优先读取。
         if c.get("culture") is not None:
             rec["culture"] = c.get("culture")
-        if c.get("faith") is not None:
-            rec["faith"] = c.get("faith")
+        # v26: 改信记入 faith_history — 游戏不为玩家改信留任何记忆, 逐档差分是唯一
+        # 来源 (田所2: 法华宗→艾什尔里派); 快照日一律 1月1日, 渲染只取年份。
+        _fid = c.get("faith")
+        if _fid is not None:
+            if rec.get("faith") != _fid:
+                fh = rec.setdefault("faith_history", [])
+                if not fh or fh[-1].get("faith") != _fid:
+                    fh.append({"from": date_label, "faith": _fid})
+            rec["faith"] = _fid
         # v11: 语言 (alive_data.languages): 同 culture 处理 — 有值即更新,
         # 缺失 (死后 alive_data 被清) 保留最近已知值, 供父名/族属推断与「语言」行。
         langs = (c.get("alive_data") or {}).get("languages") or []
@@ -1451,6 +1488,13 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 "strength": ld.get("strength"),
                 "max_power": ld.get("max_power"),
             }
+            # v26: 毡帐/庄园 (游牧牧群与口粮) — domiciles.database 条目
+            _dom = player_domicile(melt, ld.get("domain"), cid)
+            if _dom:
+                rec["landed"]["herd"] = _dom.get("herd")
+                rec["landed"]["provisions"] = _dom.get("provisions")
+                rec["landed"]["domicile_type"] = _dom.get("domicile_type")
+                rec["landed"]["domicile_province"] = _dom.get("province")
             # 玩家所在地历史 (v5: 游侠列传·行纪用): 只记位置变化点
             loc = (c.get("alive_data") or {}).get("location") or {}
             prov = loc.get("location") if isinstance(loc, dict) else loc
