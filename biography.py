@@ -115,7 +115,7 @@ SECTION_TITLES = {
 SECTION_REQ = {
     "benji": {
         "lead": "从家世出身写起: 生于何年、家族渊源、族属信仰、性情特质, 立起人物一生基调。",
-        "mid": "按时间次序叙述一生大事: 执掌领地、经营营地或世族庄园、受任官职、去职、结仇、家变、再娶等, 以年表资料为限。本篇写出主角的受任与去职时刻(封建制写登位与失土)、战争与囚狱转折, 把每个关键日期写成戏剧场景。",
+        "mid": "按时间次序叙述一生大事: 执掌领地、经营营地或世族庄园、受任官职、让土、结仇、家变、再娶等, 以年表资料为限。本篇写出主角的登位与失土时刻、战争与囚狱转折, 把每个关键日期写成戏剧场景。",
         "tail": None,
     },
     "friend": {
@@ -1129,15 +1129,43 @@ def _system_msg(style="east", extra=""):
 def _decade_theme_note(facts):
     """戏剧主题预告 (v14): 数据驱动 Top5 (并列第5名全保留, facts.py
     decade_module_top)。十年传记 (有 as_of) 称「本十年」, 终传/在世称「一生」。
-    正向表述指引各篇围绕主题取材。无主题时返回空串。"""
+    正向表述指引各篇围绕主题取材。无主题时返回空串。
+    v28: 天朝制/行政制 (官职轮转) 的主题显示名按官制换词 (受任迁转/卸任调转),
+    内部模块键不变 (MODULE_SLICE 切片依赖原键)。"""
     dm = facts.get("decade_modules") or []
     if not dm:
         return ""
-    names = "、".join(m for m, _s in dm)
+    names = "、".join(_theme_label(m, facts) for m, _s in dm)
     label = "本十年" if facts.get("decade") else "一生"
     return (f"{label}戏剧主题: {names}。"
             "各篇正文围绕这些主题取材，主题相关的事件写出戏剧张力，"
             "资料不足的内容简写或略去。\n\n")
+
+
+# v28: 官职轮转政体 (天朝制/行政制/选贤/草原行政) 的主题显示名
+_CELESTIAL_THEME_LABELS = {"起家发迹": "受任迁转", "失位让土": "卸任调转"}
+
+
+def _celestial_like(facts):
+    """主角政体是否属官职轮转一类 (天朝制/行政制/选贤/草原行政)。"""
+    p = facts.get("protagonist") or {}
+    return (p.get("government_key") or "") in F.Facts._CELESTIAL_LIKE_GOVS
+
+
+def _theme_label(name, facts):
+    if name in _CELESTIAL_THEME_LABELS and _celestial_like(facts):
+        return _CELESTIAL_THEME_LABELS[name]
+    return name
+
+
+def _section_req(text, facts):
+    """板块要求在官职轮转政体下换词 (受任/卸任/调任), 其余政体原文不动。"""
+    if not text or not _celestial_like(facts):
+        return text
+    for a, b in (("登位与失土", "受任与卸任"), ("登位", "受任"),
+                 ("失土", "卸任"), ("让土", "去职")):
+        text = text.replace(a, b)
+    return text
 
 
 def _shared_facts_block(facts):
@@ -1645,8 +1673,9 @@ def build_articles(facts, cache, cfg):
         return [{
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
-            "req": (SECTION_REQ.get(key, {}).get(sk)
-                    or "按传记笔法写作, 以资料为限。")
+            "req": _section_req(
+                       SECTION_REQ.get(key, {}).get(sk)
+                       or "按传记笔法写作, 以资料为限。", facts)
                    + (mid_suffix if sk != "lead" else ""),
         } for sk in sec_keys]
     articles = [

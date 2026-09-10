@@ -201,6 +201,53 @@ MEMORY_TEMPLATES = {
     "successful_murder": "{name}谋杀{other}。",
 }
 
+# v28: 头衔得失动词 — 按 memory vars.reason (游戏给的缘由) 出词。
+# 旧口径一律「登位，得X」/「让出X」, 使天朝制/行政制的**官职任命轮转**
+# (reason=appointment_succession / stepped_down) 被读成「被人打败、又夺人领地」
+# (陆氏: 869 受任阶州、872 卸任阶州、875 受任商州 被写成 登位/让出)。
+# 政体无关: 封建的承袭/受封/攻取、行政制的受任/调任 一表覆盖; 未知 reason
+# 回退旧词 (登位/让出), 行为与旧版一致。
+TITLE_GAIN_VERBS = {
+    "created": "受封",                    # 起家/新封 (含世族受封家业)
+    "appointment": "受任",
+    "appointment_succession": "受任",
+    "inheritance": "承袭",
+    "granted": "受封",
+    "revoked": "夺得",
+    "usurped": "篡得",
+    "conquest": "攻取",
+    "conquest_claim": "攻取",
+    "conquest_populist": "攻取",
+    "conquest_holy_war": "攻取",
+    "migration": "迁得",
+    "swear_fealty": "归附得",
+    "faction_demand": "迫得",
+    "independency": "自立",
+    "abdication": "受禅",
+    "leased_out": "租得",
+    "negotiated": "议得",
+    "stepped_down": "接任",
+    "destroyed": "重建",
+}
+TITLE_LOSS_VERBS = {
+    "stepped_down": "卸任",
+    "appointment": "调任",
+    "appointment_succession": "调任",
+    "revoked": "被褫夺",
+    "usurped": "被篡",
+    "conquest": "失守",
+    "conquest_claim": "失守",
+    "conquest_populist": "失守",
+    "conquest_holy_war": "失守",
+    "granted": "转授他人",
+    "inheritance": "交出",
+    "migration": "迁离",
+    "abdication": "退位",
+    "faction_demand": "让出",
+    "swear_fealty": "归附",
+    "destroyed": "毁弃",
+}
+
 # 参与者槽位: 记忆类型 → participants 键 (缺失时取第一个 int 参与者)
 PARTICIPANT_SLOTS = {
     "became_rivals": "rival", "became_grudge": "grudge", "became_nemesis": "nemesis",
@@ -1363,7 +1410,11 @@ class Facts:
                 nm = self._title_name_at(t, d, cid)
                 if not nm:
                     continue
-                lost_names.append(("毁弃" if lt == "destroyed" else "让出") + nm)
+                # v28: 失去缘由按 title history 事件类型出词 (卸任/调任/被褫夺/
+                # 失守/转授…), 未知回退旧词「让出」; 毁弃单列。
+                verb = "毁弃" if lt == "destroyed" \
+                    else TITLE_LOSS_VERBS.get(lt or "", "让出")
+                lost_names.append(f"{verb}{nm}")
             prev_ids = ids
             if lost_names:
                 line += "（" + "、".join(lost_names) + "）"
@@ -3594,11 +3645,29 @@ def _mem_sentence(f, owner_id, mem):
             else (no_other.get(kind) or no_other.get("torture"))
         return tpl2.format(owner=owner, other=other)
     title = ""
+    title_tid = None
     if mem.get("type") in TITLE_VAR_TYPES:
         for v in mem.get("vars") or []:
             if v.get("flag") == "landed_title" and v.get("identity"):
-                title = f.title(v.get("identity"))
+                title_tid = v.get("identity")
+                title = f.title(title_tid)
                 break
+    # v28: 头衔得失按 reason 出词 (受任/承袭/受封/攻取…; 卸任/失守/被褫夺…),
+    # reason 缺失时回退旧模板 (登位，得X / 让出X)。
+    if mem.get("type") in TITLE_VAR_TYPES and title:
+        reason = ""
+        for v in mem.get("vars") or []:
+            if v.get("flag") == "reason":
+                reason = str(v.get("value") or "")
+                break
+        if mem.get("type") == "ascended_throne_memory":
+            verb = TITLE_GAIN_VERBS.get(reason)
+            if verb:
+                return f"{owner}{verb}{title}。"
+        else:
+            verb = TITLE_LOSS_VERBS.get(reason)
+            if verb:
+                return f"{owner}{verb}{title}。"
     s = tpl.format(name=owner, other=other, title=title)
     # 参与者/头衔缺失时清理悬空占位
     s = s.replace("与。", "。").replace("与，", "，").replace("与、", "、")
@@ -4511,6 +4580,8 @@ def _protagonist(f):
         cache.get("last_date") or f.as_of or "9999.9.9")
     ld = rec.get("landed") or {}
     gov = ld.get("government")
+    # v28: 政体原始键 (提示词侧按政体换措辞用: 天朝制/行政制=官职轮转)
+    p["government_key"] = gov or ""
     # v11: 无地/有地分支按 as_of 首要头衔判定 (十年传记穿越时, 缓存 landed 是末档数据)
     ptier, ptid = f._primary_title_at(pid)
     pkey = ((f._lt.get(str(ptid)) or {}).get("key") or "") if ptid is not None else ""
