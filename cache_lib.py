@@ -867,15 +867,26 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
         t = self_tpl(m)
         if t:
             return t
-    # 6) 语言反查
+    # 6) 语言反查 (亲属链全空时的最后一步)
     c = chars.get(str(cid)) or {}
     langs = rec.get("languages") or (c.get("alive_data") or {}).get("languages") or []
-    if langs:
-        for _cid2, _e in ((melt.get("culture_manager") or {}).get("cultures") or {}).items():
-            if not isinstance(_e, dict):
+    cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
+    rules = _patronym_rules_table()
+    for lg in langs:
+        fallback = ""
+        for _e in cultures.values():
+            if not isinstance(_e, dict) or _e.get("language") != lg:
                 continue
-            if _e.get("language") in langs and _e.get("culture_template"):
-                return _e["culture_template"]
+            tpl = _e.get("culture_template")
+            if not tpl:
+                continue
+            # v28: 多文化共享同一语言时优先有父名规则的模板 (language_norse → norse
+            # 而非 norman), 与 facts.culture_template 同口径。
+            if tpl in rules:
+                return tpl
+            fallback = fallback or tpl
+        if fallback:
+            return fallback
     return ""
 
 
