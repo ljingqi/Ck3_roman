@@ -758,6 +758,7 @@ class Facts:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
         self._regnal_cache = {}  # v17: 世系编号 (cid, tid, date) -> 序号
+        self._label_cache = {}   # v28b: 人物称谓 (cid, date, style) -> 文本
         # v16: 游戏关系原因 (opinions.active_opinions 索引, 惰性构建)
         self._opinion_index = None
         self._rel_reason_cache = {}
@@ -887,7 +888,9 @@ class Facts:
         self._name_cache[cid] = c
         return c
 
-    def name_or(self, cid, fallback="一位人物"):
+    def name_or(self, cid, fallback="某人"):
+        """角色显示名 (取不到时用史书式的「某人」占位 — v28b: 原「一位人物」口语且
+        偏现代; 称谓出口 person_label 对占位一律返回 '', 不把占位写进称谓)。"""
         n = self.name(cid)
         return n or fallback
 
@@ -1916,6 +1919,10 @@ class Facts:
             return b_nm
         return ""
 
+    # v28b: 派系领袖头衔 (无地名, 单用不成称谓「领袖」) — 称谓交起义分支出词
+    _FACTION_LEADER_FLAVORS = ("faction_leader", "faction_leader_male",
+                               "faction_leader_female")
+
     def official_title(self, cid, date=None):
         """角色官职名: 「头衔名+官职词」(交州刺史/淄青节度使/青徐路观察使)。
         已死角色优先读存档 dead_data.flavor (游戏算好的键, 最准)。
@@ -1937,6 +1944,10 @@ class Facts:
                 place = self._last_title_place(cid, fkey, date=anchor)
                 if place and not v.startswith(place):
                     return f"{place}{v}"
+                # v28b: 派系领袖头衔 (faction_leader_male/female「领袖」) 无地名,
+                # 单用不成称谓 — 交 person_label 的起义称谓分支出词
+                if not place and fkey in self._FACTION_LEADER_FLAVORS:
+                    return ""
                 return v
         tier, tid = self._primary_title_at(cid, as_of=anchor)
         if tid is None or tier is None:
@@ -1965,7 +1976,11 @@ class Facts:
         word = self._office_word(tier, gov, independent=self._is_independent(cid),
                                  female=self._is_female(cid),
                                  tid=tid, cid=cid)
-        return f"{name}{word}" if word else name
+        # v28b: 头衔无地名时 (营地/派系等 x_ 头衔) 官职词单用不成称谓 — 返回空串,
+        # 由 person_label / 档案层回退显示名 (此前写出裸词「领袖」)
+        if name and word:
+            return f"{name}{word}"
+        return name or ""
 
     # v13: 朝廷职司 (e_minister_*) → 官职词 (游戏本地化键, 六部+御史台+枢密院)
     _MINISTER_OFFICE_KEYS = {
@@ -2088,46 +2103,70 @@ class Facts:
 
     # ------------------------------------------------------------------
     # v28b: 「头衔+姓名」统一组装 — 全项目人物称谓只此一处出词
-    # (kin_label / 隐事句 / 要员隐事 / 恩怨事件 / 宫廷僚属行 都调 person_label)
+    # (kin_label / 隐事句 / 要员隐事 / 恩怨事件 / 宫廷僚属行 / 时间线 / 记忆句
+    #  都调 person_label, 别处一律不再拼「官职+姓名」)
     # ------------------------------------------------------------------
+    # 名不可考的占位串 (name_or / biography._name_or 的兜底) — 不进称谓
+    _PLACEHOLDER_NAMES = ("某人", "一位人物", "（名讳不详）")
+    # 起义派系 → 称谓词: 游戏本地化键 FACTION_PEASANT_TITLE_NAME「农民叛乱」/
+    # FACTION_POPULIST_REVOLT_TITLE_NAME「民粹暴动」/FACTION_NOMADIC_REVOLT_TITLE_NAME
+    # 「游牧民叛乱」; 用户定稿 2026-09-10 一律用「起义」(与 peasant_leader_title_name
+    # 「X巾起义」同词)。
+    _UPRISING_WORDS = {
+        "peasant_faction": "农民起义",
+        "escalated_peasant_faction": "农民起义",
+        "populist_faction": "民粹起义",
+        "nomadic_faction": "游牧民起义",
+    }
+
+    def faction_word(self, cid):
+        """角色为起义派系领袖时的起义名 (「农民起义」), 否则 ''。
+        数据来自 cache["factions"] (逐档差分; 旧缓存无此字段时返回 '')。"""
+        rec = (self.cache.get("factions") or {}).get(str(cid)) or {}
+        return self._UPRISING_WORDS.get(rec.get("type") or "", "")
+
     def person_label(self, cid, date=None, style="full"):
         """人物称谓统一入口 (v28b)。style:
         - "full": 家室/世系 (kin_label) — 「[前X，]现职Y 姓名」;
-        - "brief": 隐事/把柄/要员隐事 — 「现职Y 姓名」(前头衔不前置);
+        - "brief": 隐事/把柄/要员隐事/时间线 — 「现职Y 姓名」(前头衔不前置);
         - "event": 恩怨史事件 (v14) — 现职按**事件日期**取 (死者按事件时官职);
-        - "office": 宫廷僚属行 (v23) — 「现职Y 名」(去宗族姓, 免与主角同姓冗)。
+        - "office": 宫廷僚属行 — 与 brief 同形 (用户决策 2026-09-10:
+          姓在前的名一律保留宗族姓, 西方名保留家族姓)。
         ① 宗教领袖 → 「教宗X」; ② 天皇座子女称号已并入姓名, 不叠前缀;
-        ③ 无头衔者 → full 式按父/母头衔取王子/公主称号, 其余只给显示名。"""
+        ③ 起义领袖 (农民/民粹/游牧) 无领地头衔时 → 「农民起义领袖X」;
+        ④ 名不可考 (占位串) → 返回 '' 由调用方整条略去;
+        ⑤ 无头衔者 → full 式按父/母头衔取王子/公主称号, 其余只给显示名。"""
+        if cid is None:
+            return ""
+        key = (int(cid), date or "", style)
+        if key in self._label_cache:
+            return self._label_cache[key]
+        out = self._person_label_uncached(cid, date, style)
+        self._label_cache[key] = out
+        return out
+
+    def _person_label_uncached(self, cid, date, style):
         nm = self.name_with_regnal(cid, date)
-        if not nm:
+        if not nm or nm in self._PLACEHOLDER_NAMES:
             return ""
         if self._tenno_prince_word(cid, date):
             return nm
         rhw = self.religious_head_word(cid)
         if rhw:
             return f"{rhw}{nm}"
-        if style == "office":
-            off = self.official_title(cid, date)
-            if not off:
-                return self.name_or(cid, "")
-            return f"{off}{self._given_name(cid) or self.name_or(cid, '')}"
         off = self._event_office(cid, date) if style == "event" \
             else self.official_title(cid, date)
+        if not off:
+            # v28b: 无领地头衔者按父/母头衔取王子/公主称号 (与档案一致)
+            off = self.prince_title(cid, date) or ""
+        if not off:
+            # v28b: 起义领袖 (无领地头衔) — 以起义名为称谓
+            word = self.faction_word(cid)
+            if word:
+                off = f"{word}领袖"
         if style == "full":
             return self._full_label(cid, date, off, nm)
         return f"{off}{nm}" if off else nm
-
-    def _given_name(self, cid):
-        """角色名 (不含宗族/家族前缀): 熔件 name_zh → 显示名去宗族姓 (v14 口径)。"""
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        nm = rec.get("name_zh") or ""
-        if nm:
-            return nm
-        full = self.name_or(cid, "")
-        for h in (rec.get("dynasty_name"), rec.get("house_name")):
-            if h and full.startswith(h):
-                return full[len(h):]
-        return full
 
     def _event_office(self, cid, date):
         """恩怨史事件里的现职 (v14): 按事件日期取「头衔名+官职词」; 政体从头衔侧取
@@ -2181,8 +2220,6 @@ class Facts:
         """亲属/世系/妻族专用称谓 (v27) — person_label 的 full 式入口:
         「[前X，]现职Y 姓名」。"""
         return self.person_label(cid, date, "full")
-
-
 
     def _minister_office(self, tid):
         """e_minister_* 头衔的职司官职词; 非职司头衔返回 ''。
@@ -2413,6 +2450,8 @@ class Facts:
                 break
         if not groups:
             return ""
+        # v28b: 按年份升序 (无年份者居前) — 此前按出现次序, 会写出「自875年起、自873年起」
+        groups.sort(key=lambda g: (1, cl.date_key(g[0])) if g[0] else (0, (0,)))
         parts = []
         for yr, names in groups:
             who = "、".join(names)
@@ -2433,6 +2472,45 @@ class Facts:
         kl = self.secret_knowers(rec, self_cid=self_cid)
         return s[:-1] + "；" + kl + "。" if kl else s
 
+
+    def secret_lines(self, recs, owner_label=None, self_cid=None, with_knowers=True):
+        """同一持有人的隐事合并成一行 (v28b 省词元):
+
+            「陆荣廷有隐事二桩：科举舞弊（涉及樊骥）；会试舞弊
+              （涉及唐皇帝李漼，873年见载），知情者：卢从度（自875年起）。」
+
+        持有人只写一次, 每桩自带见载年与自己的知情者; 单桩时与 secret_line 同形
+        (「陆荣廷有隐事：…」)。返回 [str] (无可用主题时返回 [])。"""
+        items = [r for r in (recs or []) if isinstance(r, dict)]
+        if not items:
+            return []
+        owner = owner_label
+        if owner is None:
+            owner = self.name_or(items[0].get("owner"))
+        if not owner:
+            return []
+        if len(items) == 1:
+            ln = self.secret_line(items[0], owner_label=owner, self_cid=self_cid,
+                                  knowers=with_knowers)
+            return [ln] if ln else []
+        clauses = []
+        for r in items:
+            topic = self.secret_topic(r, self_cid=self_cid)
+            if not topic:
+                continue
+            note = self._first_seen_note(r)
+            if note:
+                # 主题自带括注 (科举舞弊（涉及X）) 时并入同一括号, 不叠两层
+                topic = topic[:-1] + f"，{note}）" if topic.endswith("）") \
+                    else topic + f"（{note}）"
+            kn = self.secret_knowers(r, self_cid=self_cid) if with_knowers else ""
+            if kn:
+                topic += "，" + kn
+            clauses.append(topic)
+        if not clauses:
+            return []
+        return [f"{owner}有隐事{_count_zh(len(clauses))}桩："
+                + "；".join(clauses) + "。"]
 
     def secrets_known_by(self, cid, date=None):
         """cid 知情、但主人不是他的隐事记录 (把柄维度)。"""
@@ -2949,7 +3027,9 @@ class Facts:
         tpl_v = (self.culture_template(victim_id) or "").lower()
         east = (tpl_k in _ASIAN_HERITAGE_TPL) or (tpl_v in _ASIAN_HERITAGE_TPL)
         sphere = "east" if east else "west"
-        kname = self.name_or(killer_id, "某人")
+        # v28b: 凶手/行刑者称谓与全篇一致 (官职/称号+名)
+        kname = self.person_label(killer_id, style="brief") \
+            or self.name_or(killer_id, "某人")
         age = self._age_at_death(victim_id, date)
         child = age is not None and age < 8
         high = self._is_high_rank_at(victim_id, date)
@@ -3079,7 +3159,9 @@ class Facts:
         if killer is None:
             out = _death_clause(self.table, reason, None, lambda k: "")
         else:
-            kname = self.name_or(killer, "某人")
+            # v28b: 施事者用统一称谓 (官职/称号+名), 与全篇称谓一致
+            kname = self.person_label(killer, style="brief") \
+                or self.name_or(killer, "某人")
             if reason == "death_execution":
                 _k, zh = self.execution_method(killer, cid, date)
                 if zh:
@@ -3090,7 +3172,8 @@ class Facts:
                     out = mzh
             if not out:
                 out = _death_clause(self.table, reason, killer,
-                                    lambda k: self.name_or(k, "某人"))
+                                    lambda k: self.person_label(k, style="brief")
+                                    or self.name_or(k, "某人"))
         if imprison and out:
             dur = self.imprison_duration(cid, date)
             if dur:
@@ -3385,8 +3468,9 @@ class Facts:
         lb = self.languages(b)
         if not la or not lb:
             return ""
-        na = self.name_or(a)
-        nb = self.name_or(b)
+        # v28b: 称谓与全篇一致 (person_label, 官职/称号+名)
+        na = self.person_label(a, style="brief") or self.name_or(a)
+        nb = self.person_label(b, style="brief") or self.name_or(b)
         if not na or not nb:
             return ""
         common = [x for x in la if x in lb]
@@ -3406,7 +3490,8 @@ class Facts:
         pl = self.languages(cid)
         if not pl:
             return []
-        na = self.name_or(cid)
+        # v28b: 主角与家人称谓与全篇一致 (person_label / kin_label)
+        na = self.person_label(cid, style="brief") or self.name_or(cid)
         groups = {}   # (是否相通, 语言组) -> [id]
         for x in ids:
             try:
@@ -3421,7 +3506,8 @@ class Facts:
             groups.setdefault(key, []).append(x)
         out = []
         for key, members in groups.items():
-            names = "、".join(self.name_or(m) for m in members)
+            names = "、".join(self.person_label(m, style="brief") or self.name_or(m)
+                             for m in members)
             if not names:
                 continue
             if key[0] == "same":
@@ -3963,7 +4049,8 @@ def _mem_sentence(f, owner_id, mem):
     tpl = MEMORY_TEMPLATES.get(mem.get("type"))
     if not tpl:
         return None
-    owner = f.name_with_regnal(owner_id, date=mem.get("creation_date"))
+    owner = f.person_label(owner_id, style="brief") or f.name_with_regnal(
+        owner_id, date=mem.get("creation_date"))
     parts = mem.get("participants") or {}
     slot = PARTICIPANT_SLOTS.get(mem.get("type"))
     other_id = None
@@ -3974,8 +4061,10 @@ def _mem_sentence(f, owner_id, mem):
             if isinstance(v, int):
                 other_id = v
                 break
-    other = (f.name_with_regnal(other_id, date=mem.get("creation_date"))
-             if other_id is not None else "")
+    other = ""
+    if other_id is not None:
+        other = (f.person_label(other_id, style="brief")
+                 or f.name_with_regnal(other_id, date=mem.get("creation_date")))
     # v26: 出生记忆按孩子性别换模板 — 女儿此前一律被写成「添子/得长子」
     # (田所2: 睦、立希均为女儿, 模型据「添子」写成儿子)。
     if mem.get("type") in ("child_born", "first_born", "twins_born"):
@@ -4078,7 +4167,8 @@ def _death_sentence(f, cid):
     d = rec.get("death") or {}
     if not d:
         return None
-    name = f.name_with_regnal(cid, date=d.get("date"))
+    name = f.person_label(cid, date=d.get("date"), style="brief") \
+        or f.name_with_regnal(cid, date=d.get("date"))
     killer = d.get("killer")
     # 施事者名字缺失时用「某人」 (比默认「一位人物」更像自然语言)
     clause = f.death_clause(cid, date=d.get("date"), imprison=True)
@@ -4303,6 +4393,21 @@ def _death_module(f, dead_cid):
     return "丧亲之恸"
 
 
+def _count_zh(n):
+    """事物计数中文 (v28b): 一两桩/三桩…十桩/十二桩 (与世系编号 _ordinal_zh 区分)。"""
+    digits = "零一二三四五六七八九"
+    if n == 2:
+        return "两"
+    if n < 10:
+        return digits[n]
+    if n < 20:
+        return "十" + (digits[n - 10] if n > 10 else "")
+    if n < 100:
+        t, r = divmod(n, 10)
+        return digits[t] + "十" + (digits[r] if r else "")
+    return str(n)
+
+
 def _ordinal_zh(n):
     """世系编号中文 (v17): 二世…九世带「世」, 十起不带 (路易十一/路易十四)。
     n ≥ 2 才调用。"""
@@ -4337,7 +4442,7 @@ def _decade_lower_bound(f):
     return f"{lo}.1.1"
 
 
-def _year_summary(timeline, pname):
+def _year_summary(timeline, pname, plabel=""):
     """【主角大事摘要】按年聚合 (v17, 修复方案_汤利五问题.md 问题4):
     一年一行 — 同型事件 (谋杀/添子/添女) 合并人名 (≤3 全列 + 等N人),
     其余关键事件 (结怨/结仇/结友/私通/成婚/登位/去世/囚禁…) 去月日保留动词原句;
@@ -4345,6 +4450,8 @@ def _year_summary(timeline, pname):
     v26: 主语改用实际主角名 — 此前两条正则写死「麦克·汤利」, 其它主角的摘要
     退化成「添子色鬼田所浩二添子田所睦」「谋杀色鬼田所浩二谋杀X」; 出生按
     孩子性别分「添子/添女」。
+    v28b: plabel 为主角带官职的称谓 (「商州刺史陆荣廷」) — 匹配前先剥去,
+    合并句照旧 (行首前缀不再影响谋杀/添丁的解析)。
     返回 [str] (每行 'NNNN年，…。')。"""
     by_year = {}
     for e in timeline or []:
@@ -4359,6 +4466,11 @@ def _year_summary(timeline, pname):
     if not by_year:
         return []
     pn = re.escape(pname or "")
+    # v28b: 时间线主语带官职称谓 (「商州刺史陆荣廷」) — 解析前先剥去称谓前缀中
+    # 姓名之前的部分, 两条正则仍以「姓名+动词」开头
+    pprefix = ""
+    if plabel and pname and plabel != pname and plabel.endswith(pname):
+        pprefix = plabel[:-len(pname)]
     kill_re = re.compile(
         r"^" + pn + r"谋杀(.+?)(?:（\d+年生）)?(?:（死于([^）]*)）)?。$") if pn else None
     birth_re = re.compile(
@@ -4372,8 +4484,12 @@ def _year_summary(timeline, pname):
             b = re.sub(r"^\d+年\d+月\d+日，?", "", body)
             b = re.sub(r"^\d+年\d+月，?", "", b)
             b = re.sub(r"^\d+年，?", "", b)
+            # v28b: 匹配用正文 — 剥去姓名之前的官职称谓 (「商州刺史」), 合并口径不变
+            bm = b
+            if pprefix and bm.startswith(pprefix):
+                bm = bm[len(pprefix):]
             typ = e.get("type") or ""
-            m = kill_re.match(b) if kill_re else None
+            m = kill_re.match(bm) if kill_re else None
             if typ == "successful_murder" or m:
                 if m:
                     kills.append(m.group(1) + (f"（死于{m.group(2)}）"
@@ -4382,7 +4498,7 @@ def _year_summary(timeline, pname):
                     kills.append(b.rstrip("。"))
                 continue
             if typ in ("child_born", "first_born", "twins_born"):
-                m = birth_re.match(b) if birth_re else None
+                m = birth_re.match(bm) if birth_re else None
                 if m:
                     verb = "添女" if "女" in m.group(1) else "添子"
                     births.append((verb, m.group(2)))
@@ -4408,6 +4524,19 @@ def _year_summary(timeline, pname):
                 parts.append(s)
         # 其余事件: 去句末句号, 由行末统一收句 (防「。；」连接)
         parts.extend(r.rstrip("。") for r in rest)
+        # v28b: 同一行内主角称谓只在首次出现处写出 (「…田所浩二主动开战；囚禁X；…」),
+        # 一年一行的摘要里同一全称不再重复五遍
+        if plabel:
+            seen_label = False
+            norm = []
+            for _p in parts:
+                if _p.startswith(plabel):
+                    if seen_label:
+                        _p = _p[len(plabel):]
+                    else:
+                        seen_label = True
+                norm.append(_p)
+            parts = norm
         body = "；".join(parts)
         lines.append(f"{y}年，{body}。")
     return lines
@@ -4535,7 +4664,8 @@ def _timeline(f):
             d = ch.get("from")
             if not d:
                 continue
-            nm = f.name_with_regnal(cid, date=d)
+            nm = f.person_label(cid, date=d, style="brief") \
+                or f.name_with_regnal(cid, date=d)
             fn = f._faith_name(ch.get("faith"))
             if nm and fn:
                 events.append((d, "faith_changed", f"{nm}改信{fn}。", "信仰皈依"))
@@ -4927,6 +5057,8 @@ def _protagonist(f):
     poff = f.official_title(pid)
     if poff:
         p["office"] = poff
+    # v28b: 称谓统一 — 档案名号句由 facts 一次组好 (biography 不再拼 office+name)
+    p["label"] = f.person_label(pid, style="brief") or p["name"]
     # v9.1: 主角父名 (先世无考则无)
     pptn = f.patronym(pid)
     if pptn:
@@ -5262,6 +5394,8 @@ def _character_profiles(f):
         pt = f.prince_title(cid)
         if pt:
             prof["prince"] = pt
+        # v28b: 称谓统一 — 档案名号句由 facts 一次组好
+        prof["label"] = f.person_label(cid, style="brief") or name
         # v9.1: 父名 (诺斯等父名制文化: 崔佛松/崔佛斯多蒂尔)
         ptn = f.patronym(cid)
         if ptn:
@@ -5771,8 +5905,8 @@ def _villain_chains(f):
                         mdate = m.get("creation_date") or ""
                         break
             sname = "其妻" if not is_female(victim) else "其夫"
-            off = f.official_title(victim)
-            disp = f"{off}{vname}" if off else vname
+            # v28b: 受害者称谓统一 (官职/称号+名, 按卒日锚点)
+            disp = f.person_label(victim, style="brief") or vname
             remarry = f"，并于{f.date(mdate)}嫁于{pname}" \
                 if mdate and in_span(mdate) else ""
             # v16: 受害者家人也先遭毒手 → 补注 (父子同刃: 萨洛蒙之子
@@ -5785,7 +5919,7 @@ def _villain_chains(f):
                 kd = murders[kid]
                 if cl.date_key(kd) >= cl.date_key(vdate):
                     continue
-                kname = f.name_or(kid)
+                kname = f.person_label(kid, style="brief") or f.name_or(kid)
                 if kname:
                     ksex = "女" if is_female(kid) else "子"
                     kin_note = (f"；其{ksex}{kname}"
@@ -6035,6 +6169,7 @@ def _killed_by_player(f):
                     vp = f.victim_place(cid)
                     if vp:
                         ds = ds.rstrip("。") + f"（死于{vp}）。"
+        _ddate = (prof.get("death") or {}).get("date")
         entry = {
             "id": cid,
             # v17: 死者名带世系编号 (以死期首要头衔计算, 鲁斯兰·克里维奇二世)
@@ -6061,6 +6196,10 @@ def _killed_by_player(f):
             "events": [],
             "role": "",   # 与主角的关系 (子/友/敌...) 由 biography 侧根据记忆推断
         }
+        # v28b: 称谓统一 — 死者标签 (官职/称号+名) 由 facts 一次组好,
+        # biography._assassin_kill_lines / 开篇名录不再自行拼 office+name
+        entry["label"] = (f.person_label(cid, date=_ddate, style="brief")
+                          or entry["name"])
         for mem in prof.get("memories") or []:
             s = _mem_sentence(f, cid, mem)
             if s:
@@ -6300,7 +6439,8 @@ def _secrets_facts(f):
 
     返回 {held, held_murder, held_unrevealed, kinsmen, known, events, any};
     无相关隐事时返回 {} (剧本不生成《阴私录》)。
-    v28b: 每条隐事一行 (隐事 + 其知情者同句), 见载年与知情年同年时只写一次年份。
+    v28b: 同一持有人的多桩隐事并成一行 (持有人只写一次), 知情者并入同句,
+    见载年与知情年同年时只写一次年份; 把柄按对方持有人归并。
     """
     cache = f.cache
     pid = cache.get("player_id")
@@ -6312,14 +6452,11 @@ def _secrets_facts(f):
     for rec in mine:
         (murder if rec.get("type") in SECRET_MURDER_TYPES else held).append(rec)
     out = {}
+    plabel = f.person_label(pid, style="brief") or f.name_or(pid)
     if held:
-        lines, revealed = [], False
-        for r in held:
-            ln = f.secret_line(r, self_cid=pid)
-            if not ln:
-                continue
-            lines.append(ln)
-            revealed = revealed or bool(f.secret_knowers(r, self_cid=pid))
+        # 主角称谓与全篇一致 (时间线/档案同为 person_label)
+        lines = f.secret_lines(held, owner_label=plabel, self_cid=pid)
+        revealed = any(f.secret_knowers(r, self_cid=pid) for r in held)
         if lines:
             out["held"] = lines
         if not revealed:
@@ -6350,19 +6487,28 @@ def _secrets_facts(f):
                 kin.append(e)
     kin_lines = []
     for kid in dict.fromkeys(kin):
-        for rec in f.secrets_owned_by(kid, cut):
-            s = f.secret_line(rec, owner_label=f.kin_label(kid), self_cid=pid)
-            if s:
-                kin_lines.append(s)
+        recs = f.secrets_owned_by(kid, cut)
+        if recs:
+            # v28b: 同一家人的多桩隐事并成一行
+            kin_lines.extend(f.secret_lines(recs, owner_label=f.kin_label(kid),
+                                            self_cid=pid))
     if kin_lines:
         out["kinsmen"] = kin_lines[:10]
-    # 主角握有的他人把柄
-    known = []
+    # 主角握有的他人把柄 (v28b: 按对方持有人归并, 主角名只写一次)
+    groups = {}
     for rec in f.secrets_known_by(pid, cut):
-        topic = f.secret_topic(rec, self_cid=pid)
-        owner = f.person_label(rec.get("owner"), style="brief")
-        if topic and owner:
-            known.append(f"{f.name_or(pid)}握有{owner}的把柄：{topic}。")
+        o = rec.get("owner")
+        if isinstance(o, int):
+            groups.setdefault(o, []).append(rec)
+    known = []
+    for oid, recs in groups.items():
+        owner = f.person_label(oid, style="brief")
+        if not owner:
+            continue
+        topics = [t for t in (f.secret_topic(r, self_cid=pid) for r in recs) if t]
+        if not topics:
+            continue
+        known.append(f"{plabel}握有{owner}的把柄：" + "；".join(topics) + "。")
     if known:
         out["known"] = known[:10]
     # 本十年内首见的隐事 (纪事时间锚点); 终传/在世传记用全期
@@ -6386,7 +6532,10 @@ def _secrets_facts(f):
         owner = rec.get("owner")
         if owner != pid and owner not in kin:
             continue
-        s = f.secret_line(dict(rec, first=True), knowers=False, self_cid=pid)
+        # v28b: 事件行同样用统一称谓 (主角/家人)
+        olabel = plabel if owner == pid else f.kin_label(owner)
+        s = f.secret_line(dict(rec, first=True), owner_label=olabel,
+                          knowers=False, self_cid=pid)
         if s:
             # 事件行前缀已给日期, 句内不再重复「自X年见载」
             events.append(f"{f.date(fs)}，{s}")
