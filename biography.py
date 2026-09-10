@@ -1766,13 +1766,25 @@ def _is_admin(facts):
     return gov in ("行政官制", "administrative_government")
 
 
+def _names_path(cfg, cache):
+    """人名表路径 (v28): 优先**本战役文件夹**内的一份 (output/<家族>/data/names.json),
+    没有才用全局 data/names.json。全局表按角色 id 索引、可能来自另一场战役
+    (id 只在同一存档内有意义), 战役内表由 `build_names.py <melt>` 生成。"""
+    folder = (cache or {}).get("output_folder") or ""
+    if folder:
+        p = os.path.join(cfg.get("output_dir", ""), folder, "data", "names.json")
+        if os.path.isfile(p):
+            return p
+    return os.path.join(cfg.get("data_dir", ""), "names.json")
+
+
 def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
                        nickname_override=None):
     """生成传记 Markdown 并写入 out_path。返回 (md_text, facts, articles)。
     decade: 十年传记序号 (第N个十年), None 表示终传或普通在世传记。
     as_of (v11): 数据截止日期 — 十年传记传十年末, 官职/历任/时间线/朝局按此截断。
     nickname_override (v20): {cid: 绰号} — 十年传记按时代取绰号, 防重跑漂移。"""
-    names_path = os.path.join(cfg.get("data_dir", ""), "names.json")
+    names_path = _names_path(cfg, cache)
     facts = F.build_facts(cache, melt, names_path, as_of=as_of, decade=decade,
                           nickname_override=nickname_override)
     articles = build_articles(facts, cache, cfg)

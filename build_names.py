@@ -24,7 +24,9 @@ OUT = os.path.join(HERE, "data", "names.json")
 
 
 def _latest_melt():
-    """取日期最新的一份熔件: 战役文件夹 output/<家族>/data/ 优先, 兼容旧根目录。"""
+    """取日期最新的一份熔件: 战役文件夹 output/<家族>/data/ 优先, 兼容旧根目录。
+    v28: 本表按角色 id 索引, **只在同一战役内有效** — 默认选最新日期仅为兜底,
+    推荐显式传本战役熔件: `python build_names.py output/<家族>/data/melt_<日期>.json`。"""
     pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json$")
     best, best_path = None, None
     dirs = []
@@ -45,6 +47,17 @@ def _latest_melt():
             if best is None or cl.date_key(date) > cl.date_key(best):
                 best, best_path = date, os.path.join(d, fn)
     return best_path
+
+
+def _campaign_folder(melt_path):
+    """melt 所在战役文件夹名 (output/<家族>/data/x.json → <家族>); 非该布局返回 ''。"""
+    d = os.path.dirname(os.path.abspath(melt_path))
+    if os.path.basename(d) != "data":
+        return ""
+    folder = os.path.dirname(d)
+    if os.path.dirname(folder) != os.path.abspath(os.path.join(HERE, "output")):
+        return ""
+    return os.path.basename(folder)
 
 
 def main():
@@ -86,6 +99,17 @@ def main():
     }
     with open(OUT, "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False)
+    # v28: 同时写一份**战役内**副本 — 传记优先读 output/<家族>/data/names.json,
+    # 全局 data/names.json 只作跨战役兜底 (角色 id 跨战役复用)。
+    folder = _campaign_folder(melt_path)
+    if folder:
+        local = os.path.join(HERE, "output", folder, "data", "names.json")
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        with open(local, "w", encoding="utf-8") as fp:
+            json.dump(out, fp, ensure_ascii=False)
+        print(f"已生成战役内人名表 {local} (战役 {out['playthrough_id']})")
+    elif not out["playthrough_id"]:
+        print("提示: 本熔件无战役号, 全局表可能跨战役错配 — 建议传本战役熔件路径")
     print(f"已生成 {OUT}: {len(names)} 个角色 (来源 {out['source']})")
     for cid in ("11368", "10692", "13386", "39250", "10818", "10798", "9455", "11990"):
         n = names.get(cid)

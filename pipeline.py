@@ -169,31 +169,63 @@ def _move_melt_into(cfg, folder, date, player_id, tmp_path):
 
 
 def melt_path_for_cache(cfg, cache, date):
-    """缓存战役文件夹内的熔件路径 (优先战役文件夹, 兼容旧根目录布局)。"""
+    """缓存战役文件夹内的熔件路径 (优先战役文件夹, 兼容旧根目录布局)。
+    v28: 根目录兜底前先验战役 — 根 data/ 下遗留的其它战役熔件不再被本缓存取用。"""
     folder = cache.get("output_folder")
     if folder:
         p = melt_file_in(cfg, folder, date, cache.get("player_id"))
         if os.path.isfile(p):
             return p
-    return melt_path(cfg, date)
+    p = melt_path(cfg, date)
+    if cache.get("playthrough_id") and os.path.isfile(p):
+        try:
+            pt = cl.load_melt(p).get("playthrough_id")
+        except Exception:
+            pt = None
+        if pt and str(pt) != str(cache["playthrough_id"]):
+            llm.log(f"  [跳过] 根目录熔件 {os.path.basename(p)} 属其它战役 "
+                    f"({pt}), 不用于本战役 ({cache['playthrough_id']})")
+            return ""
+    return p
 
 
 def load_latest_melt(cfg, cache):
     """取缓存最后一份存档的 melt (dict); 缺失返回 None。
     优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。
     最后日期熔件缺失 (损坏/被清理) 时, 按 sources 降序回退到该会话文件夹
-    最近一份现存熔件 (保证传记/十年传记仍可生成), 全无则返回 None。"""
+    最近一份现存熔件 (保证传记/十年传记仍可生成), 全无则返回 None。
+    v28: 载入后再验战役 — 熔件 playthrough_id 与缓存不一致即弃用 (不进 facts)。"""
     last = cache.get("last_date")
     if not last:
         return None
+
+    def _load(path, label=""):
+        try:
+            melt = cl.load_melt(path)
+        except Exception as e:
+            llm.log(f"  熔件读取失败 ({path}): {e}")
+            return None
+        cpt = cache.get("playthrough_id")
+        mpt = melt.get("playthrough_id")
+        if cpt and mpt and str(cpt) != str(mpt):
+            llm.log(f"  [跳过] {label or os.path.basename(path)} 属其它战役 "
+                    f"({mpt}), 本缓存战役为 {cpt}")
+            return None
+        return melt
+
     p = melt_path_for_cache(cfg, cache, last)
     if os.path.isfile(p):
-        return cl.load_melt(p)
+        melt = _load(p, last)
+        if melt is not None:
+            return melt
     for d in sorted(cache.get("sources") or [], key=cl.date_key, reverse=True):
         p2 = melt_path_for_cache(cfg, cache, d)
         if os.path.isfile(p2):
+            melt = _load(p2, d)
+            if melt is None:
+                continue
             llm.log(f"  [回退] {last} 熔件缺失, 用最近现存熔件 {d} 生成")
-            return cl.load_melt(p2)
+            return melt
     return None
 
 
@@ -1016,6 +1048,11 @@ def _cross_check_deaths(cfg, melt, current_player):
             continue
         hits.sort(key=lambda hv: hv[1].get("playthrough_id") != melt_pt)
         for path, prev in hits:
+            # v28: 不同战役的缓存绝不接收本战役的死亡记录 (角色 id 跨战役复用;
+            # 同战役缓存因上面的排序优先命中, 走到这里说明只剩它战役的缓存)。
+            prev_pt = prev.get("playthrough_id")
+            if melt_pt and prev_pt and str(prev_pt) != str(melt_pt):
+                continue
             dd = c.get("dead_data") or {}
             if not dd.get("date"):
                 continue
