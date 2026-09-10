@@ -4170,7 +4170,7 @@ def _death_sentence(f, cid):
     name = f.person_label(cid, date=d.get("date"), style="brief") \
         or f.name_with_regnal(cid, date=d.get("date"))
     killer = d.get("killer")
-    # 施事者名字缺失时用「某人」 (比默认「一位人物」更像自然语言)
+    # 施事者名字缺失时用「某人」 (v28b: 统一占位词, 与 name_or 兜底同源)
     clause = f.death_clause(cid, date=d.get("date"), imprison=True)
     s = f"{name}死于{f.date(d.get('date'))}，{clause}。"
     pid = f.cache.get("player_id")
