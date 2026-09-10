@@ -638,9 +638,10 @@ def _profile_lines(facts, cid=None):
         if p.get("vassal_count") is not None:
             gov = (gov + "，" if gov else "") + f"封臣{p['vassal_count']}人"
         # v26: 游牧牧群 (与金钱同口径: 当前值, 一位小数); 口粮非 0 时并写
+        # v28: facts 侧已按 domicile 类型门控并去掉 0 值, 此处只做渲染
         if p.get("herd") is not None:
             hv = _num1(p["herd"])
-            if hv:
+            if hv and hv != "0":
                 gov = (gov + "，" if gov else "") + f"牧群{hv}"
         if p.get("provisions") is not None:
             pv = _num1(p["provisions"])
