@@ -2162,11 +2162,48 @@ class Facts:
             return v
         return "夫人" if female else "乡绅"
 
-    def _current_ministers(self):
-        """朝廷职司现任: e_minister_* 头衔的当前持有者 →
+    def holder_at(self, tid, date=None):
+        """头衔在 date 的持有者 id (title history 最后一条 ≤ date 的持有人;
+        无记录/已毁弃返回 None)。date 为 None 时取熔件当前 holder。"""
+        if tid is None:
+            return None
+        if date is None:
+            h = (self._lt.get(str(tid)) or {}).get("holder")
+            return int(h) if isinstance(h, int) else None
+        seq = self._title_seqs.get(int(tid)) or []
+        if not seq:
+            return self.holder_at(tid)
+        dk = cl.date_key(date)
+        holder = None
+        for d, ev in seq:
+            if cl.date_key(d) > dk:
+                break
+            entries = ev if isinstance(ev, list) else [ev]
+            for e in entries:
+                if isinstance(e, dict):
+                    h, typ = e.get("holder"), e.get("type") or ""
+                else:
+                    h, typ = e, ""
+                if typ == "destroyed":
+                    holder = None
+                    continue
+                if h is None:
+                    holder = None
+                    continue
+                try:
+                    holder = int(h)
+                except (TypeError, ValueError):
+                    continue
+        return holder
+
+    def _current_ministers(self, date=None):
+        """朝廷职司在 date (缺省熔件当前) 的持有者 →
         ['兵部尚书任清', …] (朝局风云录·朝廷职司用)。
         v28: 输出形态改为「官职词+人名」— 此前「兵部：任清（兵部尚书）」把
-        「部名」与「官职词」写了两遍。官职词取不到时才退「部名：人名」。"""
+        「部名」与「官职词」写了两遍。官职词取不到时才退「部名：人名」。
+        v28b: **按 as_of 取时任者** — 此前一律取熔件当前 holder, 十年传记会把
+        后来的任命写进早期十年 (田所2 @878 写出 883 年才上任的宰相)。"""
+        d = date if date is not None else self.as_of
         out = []
         for tid, t in self._lt.items():
             if not isinstance(t, dict):
@@ -2174,7 +2211,7 @@ class Facts:
             key = t.get("key") or ""
             if not key.startswith("e_minister_"):
                 continue
-            holder = t.get("holder")
+            holder = self.holder_at(int(tid), d)
             if not isinstance(holder, int):
                 continue
             nm = self.name_or(holder)
@@ -2185,6 +2222,20 @@ class Facts:
                 out.append(f"{off}{nm}")
             else:
                 out.append(f"{base}：{nm}")
+        return out
+
+    def minister_ids(self, date=None):
+        """朝廷职司 (e_minister_*) 在 date 的持有者 id 列表 (要员隐事取材用)。"""
+        d = date if date is not None else self.as_of
+        out = []
+        for tid, t in self._lt.items():
+            if not isinstance(t, dict):
+                continue
+            if not (t.get("key") or "").startswith("e_minister_"):
+                continue
+            h = self.holder_at(int(tid), d)
+            if isinstance(h, int) and h not in out:
+                out.append(h)
         return out
 
     # v13: 戏剧性事实 — 短命帝国/皇朝在位 (≤30 日即失去/被毁)
@@ -5242,8 +5293,8 @@ def _realm_facts(f):
     changes.sort(key=_sort_key)
     if changes:
         out["holder_changes"] = changes
-    # v13: 朝廷职司现任 (尚书省六部/御史台/枢密院 — 当前持有者 + 职司官职)
-    min_off = f._current_ministers()
+    # v13: 朝廷职司 (尚书省六部/御史台/枢密院 — as_of 时点的时任者 + 职司官职)
+    min_off = f._current_ministers(f.as_of)
     if min_off:
         out["ministers"] = min_off
     return out
