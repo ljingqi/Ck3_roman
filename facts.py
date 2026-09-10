@@ -4706,7 +4706,6 @@ def _protagonist(f):
     p["government_key"] = gov or ""
     # v11: 无地/有地分支按 as_of 首要头衔判定 (十年传记穿越时, 缓存 landed 是末档数据)
     ptier, ptid = f._primary_title_at(pid)
-    pkey = ((f._lt.get(str(ptid)) or {}).get("key") or "") if ptid is not None else ""
     # v28: 只有**真·无地冒险者营地** (x_d_laamp_/雇佣团/教团) 才走营地分支;
     # 世族庄园 (x_nf_) 与游牧毡帐 (x_c_nomad_) 是家业/驻地, 不走营地分支。
     if f.title_kind(ptid) == "camp" or gov == "landless_adventurer_government":
