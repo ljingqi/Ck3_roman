@@ -232,6 +232,14 @@ CK3 自动存档 (.ck3)  —(watch/continue 只处理启动后写入的新存档
   （此前对所有人都是「（无行迹记录）」）。田所2：890 年仇人 → 秦皇帝崔慎由（原为无事迹的
   菅原类子），900 年 → 尤拉特。
 
+## 代码纪律（2026-09-10 用户定规）
+
+- **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
+  `pipeline.py` / `llm.py` 等生产代码之前，先把当前工作树提交为一个检查点，
+  保证任何一步都能干净回退。改动分步进行，每步一个提交。
+- **提示词正向表述**：写给模型的每一句都用「要做什么」表述（见技能 `no-negative-prompts`）。
+- **编码**：Python / JSON / 日志 / output 产物一律 UTF-8，`.bat` 用 GBK（见技能 `utf8-gbk-encoding`）。
+
 ## 环境准备
 
 1. **Python 依赖**：`python -m pip install -r requirements.txt`（requests）。
