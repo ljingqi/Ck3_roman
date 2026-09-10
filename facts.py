@@ -1900,7 +1900,10 @@ class Facts:
         return best_tid
 
     def _former_title_text(self, cid, tid, date=None):
-        """前头衔中文文本 (地名 + 统治者称呼词, 与前缀日期口径一致)。"""
+        """前头衔中文文本 — 与 held_titles (v24) 同口径: 取任期区间中点的
+        头衔地名 + 文化/政体感知的统治者称呼词 (「高昌」+「国王」= 高昌国王),
+        不用 title_history_names 的显示名 (那是「高昌王国」, 会叠成
+        「高昌王国国王」)。"""
         if tid is None:
             return ""
         gain = None
@@ -1908,11 +1911,13 @@ class Facts:
             gain = g
             break
         end = date or self.as_of
-        nm = self._name_in_span(tid, gain, end, cid) \
-            or self._name_at_date(tid, end) \
-            or self.title_base_name(tid)
+        mid = self._span_mid(gain, end)
+        nm = self._name_at_date(tid, mid) or self._name_at_date(
+            tid, end) or self.title_base_name(tid)
         w = self._ruler_word_at(cid, tid, gain)
-        return f"{nm}{w}" if nm and w else nm
+        if nm and w and not nm.endswith(w):
+            return f"{nm}{w}"
+        return nm
 
     def kin_label(self, cid, date=None):
         """亲属/世系/妻族专用称谓 (v27): 「[前X，]现职Y 姓名」。
@@ -1932,7 +1937,11 @@ class Facts:
         if rhw:
             return f"{rhw}{nm}"
         cur = self.official_title(cid, date)
-        cur_tid = self._current_title_tid(cid, date)
+        # 现职为空时不存在「现头衔」, 不能把「最近一段最高位持有」当成现职排除掉
+        # (否则 毗伽庞特勤 的 高昌 会被自己挤掉, 只剩更低的 喀喇沙尔公国)。
+        cur_tid = None
+        if cur:
+            cur_tid = self._current_title_tid(cid, date)
         cur_rank = 0
         if cur_tid is not None:
             key = (self._lt.get(str(cur_tid)) or {}).get("key") or ""
