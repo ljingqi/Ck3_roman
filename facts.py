@@ -150,6 +150,34 @@ PARTICIPANT_SLOTS = {
     "successful_murder": "victim",
 }
 
+# v31 (问题3): 同伴槽位型记忆 — 参与槽与持有者同一人时该记录退化。
+# 存档实测: 妻子的 6 条 had_sex 的 `sex_partner` 就是她自己 (游戏未记对方是谁),
+# 旧渲染直接取名成句 → 「公主与公主有私情」。这类记录整条丢弃。
+_PEER_SLOT_TYPES = {
+    "had_sex", "became_lovers", "became_soulmates", "became_friends",
+    "became_rivals", "became_grudge", "became_nemesis", "became_blood_brother",
+    "broke_up_lovers", "married",
+}
+
+# v31 (问题1): 体况瞬时特质 — 得而复失只是状态回摆 (妻子怀孕三段: 868→869 /
+# 872→876 / 878→), 不进「特质履历」; **当前持有仍写入「为人」**,
+# 「878年公主怀孕」是有用事实, 只有履历噪声要去掉。
+_TRANSIENT_TRAITS = {"pregnant", "ill", "wounded_1", "wounded_2", "wounded_3"}
+
+# v31 (问题1): 「为人」句的类别顺序与每类上限 (超限加「等」)
+_TRAIT_GROUP_ORDER = ("personality", "education", "lifestyle", "commander",
+                      "fame", "health", "childhood", "court_type", "")
+_TRAIT_GROUP_LIMIT = 5
+
+# v31 (问题4): 妻室情事脉络的取材类型 → 对方所在参与槽
+_AFFAIR_SLOTS = {
+    "had_sex": "sex_partner",
+    "became_lovers": "new_relation",
+    "became_soulmates": "new_soulmate",
+    "broke_up_lovers": "old_lover",
+    "lover_died": "dead_relation",
+}
+
 # 记忆类型 → 取 vars 中的 landed_title (头衔 id)
 TITLE_VAR_TYPES = {"lost_title_memory", "ascended_throne_memory"}
 
@@ -1486,6 +1514,27 @@ class Facts:
             return bool(v)
         return bool((self._chars.get(str(cid)) or {}).get("female"))
 
+    def is_spouse_pair(self, a, b):
+        """a、b 是否为夫妻 (v31, 问题2): b 属于 a 的配偶集 (含前配偶与妾)。
+
+        口径: 缓存累积的 `family.ever_spouses` (跨快照并集, 离异/丧偶后仍算) 优先,
+        旧缓存无该字段时回退当前 family 的配偶键。ID 非法返回 False。"""
+        try:
+            a, b = int(a), int(b)
+        except (TypeError, ValueError):
+            return False
+        if a == b:
+            return False
+        rec = (self.cache.get("characters") or {}).get(str(a)) or {}
+        fam = rec.get("family") or {}
+        ids = fam.get("ever_spouses")
+        if not ids:
+            ids = []
+            for k in ("primary_spouse", "spouse", "former_spouses",
+                      "concubine", "former_concubines"):
+                ids += [x for x in (fam.get(k) or []) if isinstance(x, int)]
+        return b in {int(x) for x in ids if isinstance(x, int)}
+
     def _office_word(self, tier, government, independent=False, female=False, tid=None,
                      cid=None):
         """官职词: (层级, 政体) → 词。天朝/行政/草原行政共用同一套 (刺史/节度使/
@@ -2544,17 +2593,22 @@ class Facts:
 
     def secret_knowers(self, rec, self_cid=None):
         """知情者短语 (无句末句号): 「知情者：卢从度、从谠（同年）、孙元忠（自873年起）」;
-        无人知情返回 ''。同年知情者并列共用一个年份 (省词元)。"""
+        无第三方知情者返回 ''。同年知情者并列共用一个年份 (省词元)。
+
+        v31 (问题7): 当事人不算知情者 — 参与者 (做下此事的人) 与持有人本就知道,
+        把他们写成「知情者」只能引出同义反复 (「安乔为二子生父, 则其必知情」)。
+        知情者 = known_by − 持有人 − 当事人; 为空则不发行 (由「至今无人知晓」承载)。"""
         if not isinstance(rec, dict):
             return ""
         owner = rec.get("owner")
+        parties = {x for x in (rec.get("participants") or []) if isinstance(x, int)}
         seen = self._year_only(rec.get("first_seen")) if self._first_seen_note(rec) else ""
         groups = []            # [(年份文本 or '', [名, ...])] — 同一年并列
         index = {}
         total = 0
         for k in rec.get("known_by") or []:
             kid = k.get("id")
-            if not isinstance(kid, int) or kid == owner:
+            if not isinstance(kid, int) or kid == owner or kid in parties:
                 continue
             nm = self.name_with_regnal(kid) if kid == self_cid \
                 else self.person_label(kid, style="brief")
@@ -2652,6 +2706,207 @@ class Facts:
                 out.append(dict(rec, id=str(sid)))
                 break
         return out
+
+    # ------------------------------------------------------------------
+    # v31 (问题4/5/6/8): 宫廷身份 / 妻室情事脉络 / 牵制 / 直辖折叠
+    # ------------------------------------------------------------------
+
+    def court_service_phrase(self, cid, actor_label=None):
+        """宫廷身份短语 (v31, 问题6): 「主角廷中骑士，自869年6月4日在廷」。
+
+        数据源 `court_data` (缓存 `court`): 雇主为玩家时给出, 否则返回 ''。
+        「配偶的情人是主角自己的廷臣/骑士」此前完全读不到, 乔乔因此只剩一个名字。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        ct = rec.get("court") or {}
+        pid = self.cache.get("player_id")
+        if not ct or pid is None or ct.get("employer") != pid:
+            return ""
+        who = actor_label or "主角"
+        key = "court_knight" if ct.get("knight") else "court_member"
+        word = _FACT_WORDING[key].format(actor=who)
+        jd = ct.get("join_court_date")
+        if jd:
+            since = _FACT_WORDING["affair_joined_court"].format(date=self.date(jd))
+            return f"{word}，{since}"
+        return word
+
+    def domain_titles(self, dom):
+        """直辖头衔折叠 (v31, 问题8): 返回 (保留 id 列表, 被折叠的首府男爵领集)。
+
+        伯爵领的首府男爵领 (存档 `capital_barony = true`, 且其 `capital` 即所辖
+        伯爵领) 由所辖伯爵领自然蕴含 — 与伯爵领并列会把一处领地写成两处
+        (「贝阿恩伯爵领、波城男爵领」)。首府另由「治所」句写一次。"""
+        ids = [int(t) for t in (dom or []) if isinstance(t, int)]
+        held = set(ids)
+        keep, folded = [], set()
+        for tid in ids:
+            t = self._lt.get(str(tid)) or {}
+            cap = t.get("capital")
+            if t.get("capital_barony") and isinstance(cap, int) \
+                    and cap != tid and cap in held:
+                folded.add(tid)
+                continue
+            keep.append(tid)
+        return keep, folded
+
+    def consort_affairs(self, cid, spouses=None):
+        """妻室情事脉络 (v31, 问题4): [{spouse, spouse_label, partner, identity, arc}]。
+
+        逐情人一条: 关系弧由缓存记忆按人聚合 (私通→相恋→灵魂伴侣→分手/情人去世),
+        身份短语取 `court_service_phrase` (主角廷中骑士 / 廷臣 + 入宫日)。
+        「妻子怎么交到情人和灵魂伴侣」此前无脉络可写, 只有一条条孤立日期。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fam = rec.get("family") or {}
+        pid = self.cache.get("player_id")
+        if spouses is None:
+            spouses = []
+            for k in ("primary_spouse", "spouse", "former_spouses",
+                      "concubine", "former_concubines"):
+                spouses += [x for x in (fam.get(k) or []) if isinstance(x, int)]
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        out = []
+        for sid in dict.fromkeys(spouses):
+            if sid == cid:
+                continue
+            srec = (self.cache.get("characters") or {}).get(str(sid)) or {}
+            groups = {}
+            for mem in srec.get("memories") or []:
+                tp = mem.get("type")
+                slot = _AFFAIR_SLOTS.get(tp)
+                if not slot:
+                    continue
+                d = mem.get("creation_date")
+                if ao is not None and d and cl.date_key(d) > ao:
+                    continue
+                other = (mem.get("participants") or {}).get(slot)
+                if not isinstance(other, int) or other in (sid, pid, cid):
+                    continue
+                groups.setdefault(other, []).append((str(d or ""), tp))
+            for partner, mems in groups.items():
+                mems.sort(key=lambda x: cl.date_key(x[0]))
+                parts = []
+                seen_first = set()
+                repeats = []
+                for d, tp in mems:
+                    if tp == "had_sex" and "had_sex" in seen_first:
+                        repeats.append(str(d).split(".")[0])
+                        continue
+                    seen_first.add(tp)
+                    key = {"had_sex": "affair_entry",
+                           "became_lovers": "affair_lovers",
+                           "became_soulmates": "affair_soulmates",
+                           "broke_up_lovers": "affair_broke_up",
+                           "lover_died": "affair_lover_died"}.get(tp)
+                    if not key:
+                        continue
+                    parts.append(_FACT_WORDING[key].format(date=self.date(d)))
+                if repeats:
+                    yrs = "、".join(f"{y}年" for y in repeats[:4])
+                    parts.append(_FACT_WORDING["affair_repeat"].format(years=yrs))
+                if not parts:
+                    continue
+                out.append({
+                    "spouse": sid,
+                    "spouse_label": self.person_label(sid, style="brief")
+                                    or self.name_or(sid),
+                    "partner": partner,
+                    "identity": self.court_service_phrase(partner),
+                    "arc": "，".join(parts),
+                })
+        out.sort(key=lambda e: (e["spouse"], str(e["arc"])))
+        return out
+
+    def _hook_meta(self, tp):
+        return (L.hook_type_table().get("hook_types") or {}).get(tp or "") or {}
+
+    def _hook_name(self, tp):
+        """牵制名的引号形态:「干了我老婆」; 本地化查不到时返回 ''。"""
+        nm = L.hook_type(self.table, tp or "")
+        return f"「{nm}」" if nm else ""
+
+    def _hook_since(self, rec):
+        if rec.get("first") or not rec.get("first_seen"):
+            return ""
+        return _FACT_WORDING["hook_since"].format(
+            year=self._year_only(rec["first_seen"]))
+
+    def hook_lines(self):
+        """牵制事实 (v31, 问题5): {"held": [主角握有的], "over": [他人对主角的]}。
+
+        方向: 存档 `relations.active_relations` 的 `first` 为持有者。强弱取游戏
+        `common/hook_types` 的 `strong`; 同型多条归并成一行 (家主牵制对诸子 8 条)。
+        只出 as_of 之前已见、且 as_of 时仍持有者 (逐档差分记录 lost_at)。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return {}
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        recs = []
+        for rec in (self.cache.get("hooks") or {}).values():
+            if not isinstance(rec, dict):
+                continue
+            fs, la = rec.get("first_seen"), rec.get("lost_at")
+            if ao is not None and fs and cl.date_key(fs) > ao:
+                continue
+            if ao is not None and la and cl.date_key(la) <= ao:
+                continue
+            if not isinstance(rec.get("holder"), int) \
+                    or not isinstance(rec.get("target"), int):
+                continue
+            recs.append(rec)
+        out = {}
+        for direction, mine in (("held", True), ("over", False)):
+            sel = [r for r in recs if (r["holder"] == pid) == mine]
+            groups = {}
+            for r in sel:
+                groups.setdefault(
+                    (r.get("type"), bool(self._hook_meta(r.get("type")).get("strong"))),
+                    []).append(r)
+            lines = []
+            for (tp, strong), rs in groups.items():
+                name = self._hook_name(tp)
+                word = _FACT_WORDING["hook_strong_word"] if strong else ""
+                if len(rs) > 1:
+                    names = "、".join(
+                        (self.person_label(r["target"], style="brief") or "某人")
+                        for r in rs[:3])
+                    tpl = _FACT_WORDING["hook_group"]
+                    lines.append(tpl.format(actor="主角", names=names, strength=word,
+                                            name=name, n=len(rs)))
+                    continue
+                r = rs[0]
+                other = self.person_label(r["target"], style="brief") or "某人"
+                tpl = _FACT_WORDING[
+                    "hook_held_strong" if (mine and strong) else
+                    "hook_held_weak" if mine else
+                    "hook_over_actor_strong" if strong else
+                    "hook_over_actor_weak"]
+                since = self._hook_since(r)
+                exp = r.get("expiration")
+                if exp and str(exp) not in ("9999.1.1", "none"):
+                    since = _FACT_WORDING["hook_expires"].format(date=self.date(exp))
+                if mine:
+                    lines.append(tpl.format(actor="主角", target=other,
+                                            name=name, since=since))
+                else:
+                    holder = self.person_label(r["holder"], style="brief") or "某人"
+                    lines.append(tpl.format(actor="主角", holder=holder,
+                                            name=name, since=since))
+            if lines:
+                out[direction] = lines
+        return out
+
+    def hook_notable(self):
+        """有「非家主牵制」的牵制 (v31): 《阴私录》的门槛 — 仅对子女的家主牵制
+        是家主身份自带, 不足以单开一篇隐事。"""
+        pid = self.cache.get("player_id")
+        for rec in (self.cache.get("hooks") or {}).values():
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("type") == "house_head_hook":
+                continue
+            if pid in (rec.get("holder"), rec.get("target")):
+                return True
+        return False
 
     # v13: 戏剧性事实 — 短命帝国/皇朝在位 (≤30 日即失去/被毁)
     DRAMATIC_TENURE_DAYS = 30
@@ -3679,8 +3934,10 @@ class Facts:
 
     def language_bridge_line(self, cid):
         """主角与妻室/子女的言语异同 (v27): 只列与主角无共通语者 —
-        「家中言语：毗伽伊尔盖通共同突厥语。」; 无此情形返回 ''。
-        v28: 保留为兼容出口; 提示词改用 language_relation_lines (含同语结论)。"""
+        「妻室子女言语：毗伽伊尔盖通共同突厥语。」; 无此情形返回 ''。
+        v28: 保留为兼容出口; 提示词改用 language_relation_lines (含同语结论)。
+        v31 (附带问题): 旧标签「家中言语」易被读成家世出身 (实测模型据此把妻子
+        写成主角之母), 改为「妻室子女言语」点明是姻亲与子嗣的语言。"""
         pl = set(self.languages(cid))
         if not pl:
             return ""
@@ -3704,7 +3961,7 @@ class Facts:
                 break
         if not bits:
             return ""
-        return "家中言语：" + "；".join(bits) + "。"
+        return "妻室子女言语：" + "；".join(bits) + "。"
 
     def name_zh_of(self, cid):
         """角色名 (名, 不带家族/头衔) — 父名拼接用。"""
@@ -3861,17 +4118,72 @@ class Facts:
                     out.append(z)
         return out
 
+    def trait_groups(self, cid):
+        """「为人」句的特质分组 (v31, 问题1): [(类别词, [特质名, …]), …]。
+
+        类别取游戏 `common/traits` 的 `category` (localization.py 建表), 不靠提示词;
+        每组超 `_TRAIT_GROUP_LIMIT` 项取前若干并加「等」— 旧文本把 12 项特质连成
+        一顿号串, 模型只能照抄成「报菜名」。顺序见 `_TRAIT_GROUP_ORDER`。"""
+        cats = (L.trait_names().get("categories") or {})
+        buckets = {}
+        for z in self.traits(cid):
+            key = self._trait_key_of(z)
+            buckets.setdefault(cats.get(key, ""), []).append(z)
+        out = []
+        for cat in _TRAIT_GROUP_ORDER:
+            names = buckets.get(cat) or []
+            if not names:
+                continue
+            word = _TRAIT_GROUP_WORDS.get(cat, "")
+            if len(names) > _TRAIT_GROUP_LIMIT:
+                names = names[:_TRAIT_GROUP_LIMIT]
+                out.append((word, names, True))
+            else:
+                out.append((word, names, False))
+        # 未列入顺序表的类别 (Mod 自造) 兜底附在末尾
+        for cat in sorted(set(buckets) - set(_TRAIT_GROUP_ORDER)):
+            names = buckets[cat]
+            if names:
+                out.append((_TRAIT_GROUP_WORDS.get(cat, ""), names, False))
+        return out
+
+    def _trait_key_of(self, zh):
+        """特质中文名 → 特质 key (反向查, 供类别归属)。查不到返回 ''。"""
+        memo = getattr(self, "_trait_rev", None)
+        if memo is None:
+            memo = {}
+            for t in (self._tl or []):
+                z = _trait_name(self.table, t)
+                if z and z not in memo:
+                    memo[z] = t
+            self._trait_rev = memo
+        return memo.get(zh, "")
+
+    def traits_sentence(self, cid):
+        """「为人」句的按类文本 (v31): 「性情野心勃勃、专断；禀赋眉清目秀」;
+        无特质返回 ''。类别词为空者直列 (如 Mod 自造类别)。"""
+        parts = []
+        for word, names, truncated in self.trait_groups(cid):
+            body = "、".join(names) + ("等" if truncated else "")
+            parts.append(f"{word}{body}" if word else body)
+        return "；".join(parts)
+
     def trait_history_lines(self, cid):
         """特质履历 (v4): 每条 = 「<特质>（自X年起获得 / 自X年后消失…）」
         v11: as_of 截断 — 丢弃 as_of 之后才获得的区间。
         v24: 首见即具的区间 (first=True, 数据起点前已存在, 无获得起点) 不再
         渲染「至晚自X年起已具」— 该类特质仍在「为人」列表出现, 信息不丢。
+        v31 (问题1): 体况瞬时特质 (怀孕/患病/受伤) 的得而复失只是状态回摆,
+        不进履历 — 生育事实由「添丁进口」记忆承载, 这里只留性情/才具/名声等
+        真正构成「履历」的特质。
         日期只保留年 (快照差分日期全是 1月1日, 日内粒度无意义)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
         ao = cl.date_key(self.as_of) if self.as_of else None
         lines = []
         for key in sorted(th):
+            if key in _TRANSIENT_TRAITS:
+                continue
             z = _trait_name(self.table, key)
             if not z or z == key:
                 continue
@@ -4355,14 +4667,18 @@ def _torture_kind(f, mem):
 
 
 def _mem_sentence(f, owner_id, mem):
-    """一条记忆 → 干净中文句。"""
-    tpl = MEMORY_TEMPLATES.get(mem.get("type"))
+    """一条记忆 → 干净中文句。
+
+    v31: 同伴槽位型记忆的参与槽与持有者同一人时返回 None (退化记录, 见
+    `_PEER_SLOT_TYPES`); 配偶之间的 had_sex 改用「同房」模板 (问题2/3)。"""
+    mtype = mem.get("type")
+    tpl = MEMORY_TEMPLATES.get(mtype)
     if not tpl:
         return None
     owner = f.person_label(owner_id, style="brief") or f.name_with_regnal(
         owner_id, date=mem.get("creation_date"))
     parts = mem.get("participants") or {}
-    slot = PARTICIPANT_SLOTS.get(mem.get("type"))
+    slot = PARTICIPANT_SLOTS.get(mtype)
     other_id = None
     if slot and slot in parts and isinstance(parts[slot], int):
         other_id = parts[slot]
@@ -4371,6 +4687,15 @@ def _mem_sentence(f, owner_id, mem):
             if isinstance(v, int):
                 other_id = v
                 break
+    # v31 (问题3): 「对象 = 自己」的同伴记忆是存档退化记录 (实测妻子 6 条 had_sex
+    # 的 sex_partner 即其本人), 整条丢弃 — 不写「公主与公主有私情」。
+    if other_id is not None and other_id == owner_id \
+            and mtype in _PEER_SLOT_TYPES:
+        return None
+    # v31 (问题2): 配偶之间的床笫之事不写作「私通」
+    if mtype == "had_sex" and other_id is not None \
+            and f.is_spouse_pair(owner_id, other_id):
+        tpl = MEMORY_TEMPLATES.get("had_sex_spouse") or tpl
     other = ""
     if other_id is not None:
         other = (f.person_label(other_id, style="brief")
@@ -4576,7 +4901,8 @@ MODULE_TABLE = {
     "结友知交":   {"became_friends"},
     "挚友血盟":   {"became_soulmates", "became_blood_brother"},
     "丧友之恸":   {"friend_died"},
-    "婚配联姻":   {"married", "grand_wedding_completed_guest"},
+    "婚配联姻":   {"married", "grand_wedding_completed_guest",
+                   "had_sex_spouse", "became_lovers_spouse"},
     "情变私通":   {"became_lovers", "had_sex", "broke_up_lovers"},
     "丧偶之痛":   {"spouse_died"},
     "添丁进口":   {"child_born", "first_born", "twins_born"},
@@ -5273,8 +5599,15 @@ def _timeline(f):
             if mtype in _IDENT_TYPES:
                 idents[(mem.get("creation_date"), mtype, s)] = {
                     "owner": cid, "parts": dict(parts)}
-            events.append((mem.get("creation_date"), mtype, s,
-                           _TYPE2MODULE.get(mtype, "")))
+            # v31 (问题2): 配偶之间的情事换档 — 概览记「夫妻之情」, 模块归「婚配联姻」
+            ev_type = mtype
+            if mtype in ("had_sex", "became_lovers"):
+                _oth = (parts or {}).get(PARTICIPANT_SLOTS.get(mtype) or "")
+                if isinstance(_oth, int) and _oth != cid \
+                        and f.is_spouse_pair(cid, _oth):
+                    ev_type = mtype + "_spouse"
+            events.append((mem.get("creation_date"), ev_type, s,
+                           _TYPE2MODULE.get(ev_type, "")))
     # 合并 死亡记录 + 去世记忆 + 出生事件
     for cid, (_prio, _d, t, s) in deaths.items():
         # v14: death 记录按死者关系标模块 (仇人死亡/丧友之恸/丧偶之痛/丧亲之恸)
@@ -5484,9 +5817,12 @@ _AGG_SPEC = {
 }
 
 # v15: 「私情+相恋」成对合并 (同月同对象的 had_sex 与 became_lovers)
+# v31 (问题2): 配偶对另用「同房」句形, 合并为「夫妻情笃」(非配偶仍是「私通相恋」)
 _PAIR_MERGE = {
-    "had_sex":        r"^(.+?)与(.+?)有私情。$",
-    "became_lovers":  r"^(.+?)与(.+?)相恋。$",
+    "had_sex":            r"^(.+?)与(.+?)有私情。$",
+    "had_sex_spouse":     r"^(.+?)与(.+?)同房。$",
+    "became_lovers":      r"^(.+?)与(.+?)相恋。$",
+    "became_lovers_spouse": r"^(.+?)与(.+?)相恋。$",
 }
 
 
@@ -5568,7 +5904,10 @@ def _merge_same_month_events(events, f=None):
 def _merge_affair_pairs(events, f=None):
     """「私情+相恋」成对合并 (v15): 同一月内同一对的 had_sex 与 became_lovers
     并成一行: '869年1月，麦克·汤利与吉塞勒·加洛林私通相恋。' (成对事件
-    拆两行浪费模型注意力, 且两行日期只差一天)。"""
+    拆两行浪费模型注意力, 且两行日期只差一天)。
+
+    v31 (问题2): 配偶对按 `had_sex_spouse` / `became_lovers_spouse` 句形识别,
+    并作「夫妻情笃」一行, 事件类型也换成 `_spouse` 变体 (概览/模块随之改档)。"""
     slots = {}   # (ym, 对象对) -> {type: (去日期前缀正文, 完整原文)}
     for e in events:
         typ = e.get("type")
@@ -5586,30 +5925,40 @@ def _merge_affair_pairs(events, f=None):
         m = re.match(pat, body)
         if not m:
             continue
+        base = typ[:-len("_spouse")] if typ.endswith("_spouse") else typ
         key = (ym, frozenset((m.group(1), m.group(2))))
-        slots.setdefault(key, {})[typ] = (body, full)
+        slots.setdefault(key, {})[base] = (body, full, typ.endswith("_spouse"))
     drop = set()
-    merged = []   # (ym, text)
+    merged = []   # (ym, text, type)
     for (ym, _pair), got in slots.items():
         hx = got.get("had_sex")
         lv = got.get("became_lovers")
         if not hx or not lv:
             continue
-        hx_body, hx_full = hx
-        lv_body, lv_full = lv
-        m = re.match(r"^(.+?)与(.+?)有私情。$", hx_body)
+        hx_body, hx_full, hx_spouse = hx
+        lv_body, lv_full, lv_spouse = lv
+        spouse = hx_spouse and lv_spouse
+        pat = _PAIR_MERGE["had_sex_spouse" if spouse else "had_sex"]
+        m = re.match(pat, hx_body)
         if not m:
             continue
         y, _, mm = ym.partition(".")
-        merged.append((ym, f"{y}年{int(mm)}月，{m.group(1)}与{m.group(2)}私通相恋。"))
+        if spouse:
+            text = _FACT_WORDING["affair_pair_spouse"].format(
+                y=y, m=int(mm), a=m.group(1), b=m.group(2))
+            typ_out = "became_lovers_spouse"
+        else:
+            text = f"{y}年{int(mm)}月，{m.group(1)}与{m.group(2)}私通相恋。"
+            typ_out = "became_lovers"
+        merged.append((ym, text, typ_out))
         drop.add(hx_full)
         drop.add(lv_full)
     if not merged:
         return events
     out = [e for e in events if e["text"] not in drop]
-    for ym, text in merged:
-        out.append({"date": ym, "type": "became_lovers", "text": text,
-                    "module": "情变私通"})
+    for ym, text, typ_out in merged:
+        out.append({"date": ym, "type": typ_out, "text": text,
+                    "module": _TYPE2MODULE.get(typ_out, "情变私通")})
     out.sort(key=lambda e: cl.date_key(e.get("date") or ""))
     return out
 
@@ -5651,7 +6000,8 @@ def _protagonist(f):
         "birth": f.date(rec.get("birth")),
         "culture": f.culture(pid),
         "faith": f.faith(pid),
-        "traits": "、".join(f.traits(pid)),
+        # v31 (问题1): 「为人」按类别分句 (性情/才具/阅历…), 不再一顿号串
+        "traits": f.traits_sentence(pid),
         "government": f.government(pid),
     }
     # v11: 角色语言 (语言：诺斯语、阿拉伯语)
@@ -5766,13 +6116,15 @@ def _protagonist(f):
                 break
         if ld and not skip_detail:
             p["ruler_since"] = f.date(ld.get("became_ruler_date"))
+            # v31 (问题8): 首府男爵领由所辖伯爵领蕴含, 折叠后再出「直辖N地」
+            keep, _folded = f.domain_titles(ld.get("domain") or [])
             dom = []
-            for tid in (ld.get("domain") or []):
+            for tid in keep:
                 t = f.title(tid)
                 if t:
                     dom.append(t)
             p["domain"] = "、".join(dom)
-            p["domain_count"] = len(ld.get("domain") or [])
+            p["domain_count"] = len(keep)
             cap = f.title(ld.get("realm_capital"))
             if cap:
                 p["capital"] = cap
@@ -5944,6 +6296,24 @@ def _profile_needed_ids(f):
         for p in h.get("positions") or []:
             if isinstance(p.get("employee"), int):
                 out.setdefault(p["employee"], 2)
+    # v31 (问题4/6): 主角配偶的情人/灵魂伴侣 — 妻室情事脉络与情人档案的取材对象
+    # (乔乔/佩拉约此前完全不在档案集, 模型只能写「其职衔、族属，仅存其名」)。
+    prec = (f.cache.get("characters") or {}).get(str(pid)) or {}
+    pfam = prec.get("family") or {}
+    for sid in dict.fromkeys(
+            [x for x in (pfam.get("primary_spouse") or [])
+             + (pfam.get("spouse") or [])
+             + (pfam.get("former_spouses") or [])
+             + (pfam.get("concubine") or [])
+             + (pfam.get("former_concubines") or []) if isinstance(x, int)]):
+        srec = (f.cache.get("characters") or {}).get(str(sid)) or {}
+        for m in srec.get("memories") or []:
+            slot = _AFFAIR_SLOTS.get(m.get("type"))
+            if not slot:
+                continue
+            other = (m.get("participants") or {}).get(slot)
+            if isinstance(other, int) and other not in (pid, sid):
+                out.setdefault(other, 2)
     # v28: 主角的谋害对象与被害者 (成功谋杀记忆 ∪ 缓存死亡记录 killer==主角) —
     # 这些人的族属/信仰在存档里一直可读 (dead_unprunable 保留对象字段),
     # 此前只进《刺客列传》(击杀 >5 才生成), 陆氏这类小传里完全读不到。
@@ -5981,8 +6351,24 @@ def _character_profiles(f):
             "birth": f.date(rec.get("birth")),
             "culture": f.culture(cid),
             "faith": f.faith(cid),
-            "traits": "、".join(f.traits(cid)),
+            # v31 (问题1): 按类分句 (与主角档案同口径)
+            "traits": f.traits_sentence(cid),
         }
+        # v31 (问题6): 主角廷中身份 — 骑士/廷臣 + 入宫日 (乔乔/佩拉约等妻室情人
+        # 正是主角廷中骑士; 旧档案里这一身份完全缺席)。仅非家人者写入, 免得
+        # 妻室子女的档案行都挂一句「廷臣」。
+        _pid0 = f.cache.get("player_id")
+        if _pid0 is not None and int(cid) != int(_pid0):
+            _fam0 = rec.get("family") or {}
+            _kin = set()
+            for _k in ("primary_spouse", "spouse", "former_spouses", "child",
+                       "concubine", "former_concubines", "father", "mother",
+                       "siblings", "ever_spouses"):
+                _kin.update(x for x in (_fam0.get(_k) or []) if isinstance(x, int))
+            if int(cid) not in _kin:
+                _csp = f.court_service_phrase(cid)
+                if _csp:
+                    prof["court_service"] = _csp
         # v11: 角色语言
         langs = f.languages(cid)
         if langs:
@@ -7386,7 +7772,15 @@ def _secrets_facts(f):
             events.append(f"{f.date(fs)}，{s}")
     if events:
         out["events"] = sorted(set(events))[:12]
-    out["any"] = bool(out.get("held") or out.get("kinsmen") or out.get("known"))
+    # v31 (问题5): 牵制 (把柄维度) — 主角握有 / 他人握有对主角的。
+    # 用户决策: 牵制只随《阴私录》下发, 不进《本纪》。
+    hl = f.hook_lines()
+    if hl.get("held"):
+        out["hooks_held"] = hl["held"]
+    if hl.get("over"):
+        out["hooks_over"] = hl["over"]
+    out["any"] = bool(out.get("held") or out.get("kinsmen") or out.get("known")
+                      or f.hook_notable())
     return out
 
 
@@ -7486,8 +7880,11 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
             (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])
             + (fam.get("former_spouses") or [])))
         facts["imperial_spouses"] = _imperial_daughters_sisters(f, spouse_ids)
+        # v31 (问题4): 妻室情事脉络 (逐情人: 身份 + 私通→相恋→灵魂伴侣的关系弧)
+        facts["consort_affairs"] = f.consort_affairs(pid, spouses=spouse_ids)
     else:
         facts["imperial_spouses"] = []
+        facts["consort_affairs"] = []
     return facts
 
 
@@ -7527,3 +7924,5 @@ _EXECUTION_ORDER = _style.EXECUTION_ORDER
 _STATS_LABEL = _style.STATS_LABEL
 _DEATH_STAT_LABEL = _style.DEATH_STAT_LABEL
 _MERGE_VERB = _style.MERGE_VERB
+_TRAIT_GROUP_WORDS = _style.TRAIT_GROUP_WORDS
+_FACT_WORDING = _style.FACT_WORDING
