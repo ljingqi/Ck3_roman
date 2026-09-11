@@ -424,6 +424,18 @@ def _house_branch(dn, hn):
     return house_display(hn)
 
 
+# v30: 事实层「无据」占位词 — 族属不详/信仰不详/官制不详/（特质不详）/（死因不详）等
+# 一律视为无料, 由调用方整句略去 (修复方案_菲利普4.md 问题4: 缺料按语一律不进提示词,
+# 模型看不到「未载/不详」这类词, 也就无从照抄)。
+_UNKNOWN_MARKS = ("不详", "无考", "未载", "不可考", "无从", "失考")
+
+
+def is_unknown(word):
+    """无料判定: 空串或含「不详/无考/未载/不可考/无从/失考」者为无据。"""
+    s = str(word or "")
+    return (not s) or any(m in s for m in _UNKNOWN_MARKS)
+
+
 # v29 (问题4): 「传主行迹」句首传主称谓剥离 — 块内主语恒为传主, 名字重复无信息。
 # 「868年9月25日，勇敢者程岩的亲属安南经略使程士庸去世。」→「…，亲属安南经略使程士庸去世。」
 _SUBJ_DATE_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
@@ -1787,13 +1799,23 @@ class Facts:
         if w:
             return w
         prefix = re.sub(r"_government$", "", gov)
-        # v29: 政体前缀为空时不再试 «king__male» 这类空段候选
-        keys = ([f"{self._TIER_KEY[tier]}_{prefix}_male"] if prefix else []) \
-            + [f"{self._TIER_KEY[tier]}_feudal_male"]
-        for k in keys:
+        # v30: 性别入键 (修复方案_菲利普4.md 问题9) — 此前两条键都写死 _male,
+        # 女性持有者的官职词一律退化成男性词 (埃尔斯威思 id=15511 female=True
+        # 被写成「诺丁汉郡伯爵」, 游戏口径为「诺丁汉郡女伯爵」)。
+        # 候选顺序: 政体×性别 → 封建×性别 → 层级×性别 → 封建男性 (旧表兼容)。
+        g = "female" if female else "male"
+        keys = ([f"{self._TIER_KEY[tier]}_{prefix}_{g}"] if prefix else []) \
+            + [f"{self._TIER_KEY[tier]}_feudal_{g}",
+               f"{self._TIER_KEY[tier]}_{g}",
+               f"{self._TIER_KEY[tier]}_feudal_male"]
+        for k in dict.fromkeys(keys):
             v = L.loc(self.table, k)
             if v and not v.startswith("$") and not v.startswith("["):
                 return v
+        # v30: 通用兜底改查男女分列的官职词表 (GENERIC_TIER_ZH 是头衔名后缀, 不混用)
+        pair = L.GENERIC_OFFICE_ZH.get(tier)
+        if pair:
+            return pair[1] if female else pair[0]
         return L.GENERIC_TIER_ZH.get(tier, "")
 
     # v24: CK3 culture_titles 词族 (dlc_tgp_cultural_titles 的 chinese 族键;
@@ -3084,7 +3106,9 @@ class Facts:
                 elif t == "conquest":
                     entries.append(f"{d}，克定所得")
                 elif t == "created_before_history":
-                    entries.append("年代久远，创制无考")
+                    # v30: 曾写「年代久远，创制无考」— 属考据按语, 整条略去
+                    # (修复方案_菲利普4.md 问题4: 缺料不成句)
+                    pass
                 # v21: 窃得 (玩家/他人盗取) — actor=失主, recipient=得宝者
                 elif t == "stolen" and actor and rec2:
                     entries.append(f"{d}，{rec2}自{actor}处窃得")
@@ -3802,13 +3826,14 @@ class Facts:
                                chars=self._chars)
 
     def culture(self, cid):
-        """角色文化 (v11): 缓存/熔件 culture id → 语言推断 → 本地化 → 'X人'。"""
+        """角色文化 (v11): 缓存/熔件 culture id → 语言推断 → 本地化 → 'X人'。
+        v30: 无据返回 '' — 由调用方整句略去, 不写「族属不详」这类考语。"""
         tpl = self.culture_template(cid) or ""
         name = L.loc(self.table, tpl) or CULTURE_TEMPLATE_ZH.get(tpl) or ""
         if name:
             # v11: 族属用「X人」(诺斯人/汉人), 不再用「X族」; 名已以「人」结尾不再追加
             return name if name.endswith("人") else f"{name}人"
-        return "族属不详"
+        return ""
 
     def _faith_name(self, fid):
         """信仰 id → 中文名 (未知返回 '')。"""
@@ -3822,13 +3847,14 @@ class Facts:
         return L.loc(self.table, ft) or FAITH_TYPE_ZH.get(ft) or ""
 
     def faith(self, cid):
-        """角色信仰 (v7 缓存优先): 同 culture, id → religion.faiths → 本地化。"""
+        """角色信仰 (v7 缓存优先): 同 culture, id → religion.faiths → 本地化。
+        v30: 无据返回 '' (曾返回「信仰不详」)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         fid = rec.get("faith")
         if fid is None:
             c = self._chars.get(str(cid)) or {}
             fid = c.get("faith")
-        return self._faith_name(fid) or "信仰不详"
+        return self._faith_name(fid) or ""
 
     def faith_history_lines(self, cid):
         """信仰履历 (v26): [{'from','faith'}] → ['法华宗（880–895年）',
@@ -3932,12 +3958,13 @@ class Facts:
         return s.split(".")[0] + "年"
 
     def government(self, cid):
+        """政体显示名; v30: 无据返回 '' (曾返回「官制不详」)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         g = (rec.get("landed") or {}).get("government")
         if not g:
             c = self._chars.get(str(cid)) or {}
             g = (c.get("landed_data") or {}).get("government")
-        return L.loc(self.table, g) or GOVERNMENT_ZH.get(g, "官制不详")
+        return L.loc(self.table, g) or GOVERNMENT_ZH.get(g, "")
 
     def motto(self):
         """玩家家族家训 (v7) → 中文。"""
@@ -5000,9 +5027,9 @@ def _timeline(f):
                         mark = []
                         if by:
                             mark.append(f"{by}年生")
-                        if cul and not cul.endswith("不详"):
+                        if not is_unknown(cul):
                             mark.append(cul)
-                        if fai and not fai.endswith("不详"):
+                        if not is_unknown(fai):
                             mark.append(f"信{fai}")
                         if mark:
                             s = s.rstrip("。") + f"（{'，'.join(mark)}）。"
@@ -5435,7 +5462,7 @@ def _protagonist(f):
         "birth": f.date(rec.get("birth")),
         "culture": f.culture(pid),
         "faith": f.faith(pid),
-        "traits": "、".join(f.traits(pid)) or "（特质不详）",
+        "traits": "、".join(f.traits(pid)),
         "government": f.government(pid),
     }
     # v11: 角色语言 (语言：诺斯语、阿拉伯语)

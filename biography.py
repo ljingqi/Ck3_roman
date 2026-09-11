@@ -54,14 +54,17 @@ STYLE_RULES = {
 NONFICTION_RULE = (
     "「非虚构铁律」: 资料给出的人名、地名、日期、数字、事件一律按资料原样书写; "
     "人物的心理、对话、场景、细节在资料允许的范围内合情演绎; "
-    "资料未提供的内容简写或略去。"
+    "叙述依资料可据之处依次推进, 以已知的人事时地把场面写足。"
 )
 
-# v28: 资料未载处「径入下一事」— 旧表述「资料未提供的视为不存在或未知」把模型
-# 推向写「史无可考/史料不详」这类考据按语 (陆氏两篇 16/21 处, 密度是田所的 3–10 倍)。
+# v30: 「缺料按语」全部撤出提示词与事实层 (修复方案_菲利普4.md 问题4)。
+# 历史: v28 曾以「资料未载之处行文径入下一事」替掉「视为不存在或未知」, 但两个版本
+# 都把「资料未载/未提供/不足」这几个字教给了模型 — 实测菲利普 10 条请求里出现 44 次
+# 「资料未载」、16 次「资料未提供」、16 次「资料不足」, 正文随之写出 33 处考据按语。
+# 现改为只写「怎么写」, 缺料一律由程序端省略 (无料不成句), 提示词不再提「缺」字。
 WORLD_FRAME_RULE = (
     "「平行世界规则」: 本传所写世界完全由本提示词资料构成, 与任何真实历史无关; "
-    "所有人物、家族、官职、事件、日期、数字一律以资料为准, 资料未载之处行文径入下一事。"
+    "所有人物、家族、官职、事件、日期、数字一律按资料给出的写法书写。"
 )
 
 # v28: 行文落笔 — 正向要求「每句都落在具体人事时地」, 替代考据式按语。
@@ -87,14 +90,12 @@ TITLE_CONSISTENCY_RULE = (
     "同一人在全篇各处用同一称谓。"
 )
 
-# v27: 语言风味 (用户决策 2026-09-10) — 依资料给出的语言落笔, 正向表述。
-# v28: 资料侧已由程序判定每对人的言语关系。
-# v29 (用户决策 2026-09-11): 家人/同族之间言语相通属常识, 资料侧只下发
-# 「无共通语, 须借通译」这一种情形; 提示词随之只要求照该情形落笔。
-LANGUAGE_FLAVOR_RULE = (
-    "「语言事实」: 资料写明某人之间无共通语时, 写其交谈须借通译; "
-    "其余交谈、书信、结盟、婚配、拜谒一律以言语无碍落笔。"
-)
+# v30: 「语言事实」规则整条撤除 (修复方案_菲利普4.md 问题10)。
+# 历史: v27–v29 在提示词里留了「资料写明某人之间无共通语时…」这一条件句, 但程序侧
+# (facts.language_relation_line) 只在**真有**不通语时才下发一行自带指令的事实
+# (「…无共通语，交谈须借通译往来。」)。实测菲利普 10 条请求的事实块里「无共通语」
+# 出现 0 次, 提示词里却有 3 处 — 模型据此自行补出「二人无共通语」又当场自我否定。
+# 现改为程序单侧判定 + 事实行自带写法, 提示词中不再出现这一条件词。
 
 # v28: 隐事笔法 (secrets) — 正向表述: 只给「怎么写」, 数据侧已给形态
 SECRET_RULE = (
@@ -137,17 +138,17 @@ SECTION_REQ = {
     },
     "friend": {
         "lead": "写传主与主角的交游渊源: 二人如何相识、同处何朝何地, 传主的家世与出身。",
-        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散; 资料写明二人无共通语时, 写出交谈须借通译。",
+        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散。",
         "tail": None,
     },
     "enemy": {
         "lead": "写仇家身世与结仇之由: 传主何许人也, 与主角因何成仇。",
-        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发; 资料写明双方无共通语时, 写出交谈须借通译。",
+        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发。",
         "tail": None,
     },
     "jiashi": {
         "lead": "写主角婚配始末: 结缡、离异、前妻之死、再娶, 立起门庭画卷; 妻族门第 (妻之父兄等显贵亲眷) 若有资料一并铺陈。",
-        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境; 资料写明家人与主角无共通语时, 写出交谈须借通译。",
+        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境。",
         "tail": None,
     },
     "chaoju": {
@@ -614,7 +615,7 @@ def _profile_lines(facts, cid=None):
         bits.append(h)
     if p.get("culture"):
         bits.append(p["culture"])
-    if p.get("faith") and not str(p["faith"]).endswith("不详"):
+    if p.get("faith"):
         bits.append(f"信{p['faith']}")
     if p.get("birth"):
         bits.append(f"生于{p['birth']}")
@@ -741,10 +742,9 @@ def _profile_lines(facts, cid=None):
         kin_bits.append(f"母{p['mother']}")
     if p.get("real_father") and p.get("real_father") != p.get("father"):
         kin_bits.append(f"实父{p['real_father']}")
-    if p.get("custom_start"):
-        # v28: 只给史书口径的一句 — 不再出现「出身自定」等元信息,
-        # 也不再堆「史无可考/无父母谱系」(模型会照抄成满篇「无可考」)
-        kin_bits.append("先世资料未载")
+    # v30: 自定义开局曾下发「先世资料未载」一行, 模型逐字照抄成满篇考据按语;
+    # 现整行撤除 — 无父母谱系即无料, 无料不下发, 家世写法由《本纪》板块要求
+    # 与 custom_note 的正向指引承担 (修复方案_菲利普4.md 问题4)。
     if p.get("siblings"):
         kin_bits.append(f"兄弟姊妹{p['siblings']}")
     if kin_bits:
@@ -837,7 +837,7 @@ def _assassin_kill_lines(facts, cache, k):
             db = "死于" + db[len(_p) + 2:]
             break
     db = _strip_station(db)  # v20/v24: 地点标注改独立行呈现
-    if db and db != "（死因不详）":
+    if db and not F.is_unknown(db):
         bd = k.get("birth") or ""
         head = f"（生于{bd}，" if bd else "（"
         lines.append(f"死者：{disp}{head}{db}）")
@@ -1105,7 +1105,7 @@ def _article_facts(facts, cache, key, section=None):
                             db = "死于" + db[len(_p) + 2:]  # 去掉「称谓+死于」前缀
                             break
                     db = _strip_station(db)  # v20: 开篇压缩名录不带驻地标注
-                    parts.append(f"死者：{disp}（{db}）" if db and db != "（死因不详）"
+                    parts.append(f"死者：{disp}（{db}）" if db and not F.is_unknown(db)
                                  else f"死者：{disp}")
                 _set_block(blocks, "刀下诸魂", "\n".join(parts))
             else:
@@ -1210,8 +1210,7 @@ def _rule_block(style, secret=False):
     《阴私录·隐事秘辛》与《朝局风云录》(要员隐事), 其余板块不再逐次携带。"""
     rule = STYLE_RULES.get(style, STYLE_RULES["east"])
     out = (f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
-           f"{NARRATIVE_FOCUS_RULE}\n{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}\n"
-           f"{LANGUAGE_FLAVOR_RULE}")
+           f"{NARRATIVE_FOCUS_RULE}\n{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}")
     if secret:
         out += f"\n{SECRET_RULE}"
     return out
@@ -1239,7 +1238,7 @@ def _decade_theme_note(facts):
     label = "本十年" if facts.get("decade") else "一生"
     return (f"{label}戏剧主题: {names}。"
             "各篇正文围绕这些主题取材，主题相关的事件写出戏剧张力，"
-            "资料不足的内容简写或略去。\n\n")
+            "把每个主题写成具体的场景。\n\n")
 
 
 # v28: 官职轮转政体 (天朝制/行政制/选贤/草原行政) 的主题显示名
@@ -1395,11 +1394,12 @@ def build_lead_messages(article, facts, cache, intro, cfg):
         )
     custom_note = ""
     if key == "benji" and (facts["protagonist"] or {}).get("custom_start"):
-        # v28: 不透露「自定义出身」这一元信息, 也不再指示模型写「先世无考」
-        # (该指示范文会被照抄成满篇「无可考」)
+        # v30: 曾写「本篇传主的先世资料未载」+「以资料载明者为限」, 前者被逐字照抄;
+        # 现只写「怎么写」——自定义开局的谱系在档案里本就没有父/母行, 程序端已是无料,
+        # 无据可写的部分由「起于何时何地、如何发迹」这条正向纲目自然覆盖。
         custom_note = (
-            "本篇传主的先世资料未载: 开篇以「起于何时何地、如何发迹」为纲书写其出身，"
-            "父母名姓与祖上事迹以资料载明者为限。\n\n"
+            "开篇以「起于何时何地、如何发迹」为纲书写其出身，"
+            "从其事业之始依次写来。\n\n"
         )
     events_block = _key_events_block(facts, key, sec)
     user_msg = (
