@@ -145,10 +145,22 @@ PARTICIPANT_SLOTS = {
     "became_soulmates": "new_soulmate", "became_blood_brother": "blood_brother",
     "imprisoned_other": "imprisoned", "imprisoned": "imprisoner",
     "released_from_prison_memory": "imprisoner", "lost_title_memory": "new_holder",
+    # v32 (马克龙问题1): 越狱记忆同带 imprisoner 槽, 此前未登记 → 监禁者丢失
+    "escaped_from_prison_memory": "imprisoner",
+    # v32 (马克龙问题3): 夭折/早产记忆的参与者是**生母** (游戏定义 participants={mother}),
+    # 此前未登记 → 「未知其母, 只知为某人之血脉」
+    "child_stillborn": "mother", "child_premature": "mother",
     "child_born": "child", "first_born": "child",
     "childhood_education_guardian": "guardian",
     "successful_murder": "victim",
 }
+
+# v32 (问题3): 生母本人持有该记忆时 particip[mother] == 持有人 → 视为无对手方,
+# 用 `<type>_no_other` 模板 (不出「A之妻A」)。
+_SELF_NO_OTHER_TYPES = {"child_stillborn", "child_premature"}
+
+# v32 (问题3): 需带配偶称谓 ({rel}) 的记忆型
+_CONSORT_MEM_TYPES = {"child_stillborn", "child_premature"}
 
 # v31 (问题3): 同伴槽位型记忆 — 参与槽与持有者同一人时该记录退化。
 # 存档实测: 妻子的 6 条 had_sex 的 `sex_partner` 就是她自己 (游戏未记对方是谁),
@@ -188,7 +200,8 @@ TITLE_VAR_TYPES = {"lost_title_memory", "ascended_throne_memory"}
 # 朝局类记忆类型 (群英录/朝局风云录用, 与 biography.POLITICAL_TYPES 同步)
 POLITICAL_TYPES_KEYS = {
     "ascended_throne_memory", "lost_title_memory", "imprisoned",
-    "released_from_prison_memory", "became_rivals", "became_grudge",
+    "released_from_prison_memory", "escaped_from_prison_memory",
+    "became_rivals", "became_grudge",
     "became_nemesis", "stopped_being_rivals", "offensive_war",
     "defensive_war", "war_won", "war_lost", "joined_allys_war",
     "battle_won_memory", "battle_lost_memory",
@@ -296,16 +309,55 @@ def _strip_subject_prefix(text, label):
     return head + rest
 
 
-def _trait_name(table, key):
-    """特质 key → 中文: 特质定义 name 键 (v29) → trait_<key> → <key> → 兜底表;
-    未知返回 '' (跳过, 不外泄 key)。
+# v32 (马克龙问题2): 轨道档位词 (进第 N 档 = 已过第 N 个阈值)
+_LEVEL_WORDS = ("", "一阶", "二阶", "三阶", "四阶", "五阶", "六阶", "七阶")
+
+
+def _trait_level_name(key, xp):
+    """按角色在该特质各轨道上的 XP 求**当前档名** (v32)。
+
+    条件表来自 `localization.build_trait_names` 的 `level_names` (逐 `triggered_desc`
+    把 trigger 的 has_trait_xp 条款与 desc 配对)。条款未写 `track` 时按该特质的轨道
+    推定 (单轨简写 `track = {}` 的轨名＝特质键)。求不到返回 `''` (上层回退基础名)。
+
+    起因: 旧实现取 name 块里第一个 desc, 而游戏把**最高档**名写在最前 —— 54 个按 XP
+    换名的特质全部显示顶档名 (马克龙主角 reveler XP=0 却写成「传奇的狂欢者」)。"""
+    rows = (L.trait_names().get("level_names") or {}).get(key)
+    if not rows or not isinstance(xp, dict):
+        return ""
+    tracks = [r.get("track") for r in
+              ((L.trait_track_table().get("tracks") or {}).get(key) or [])]
+    for row in rows:
+        vals = []
+        for c in row.get("clauses") or []:
+            tk = c.get("track") or (tracks[0] if len(tracks) == 1 else key)
+            try:
+                v = float(xp.get(tk) or 0)
+            except (TypeError, ValueError):
+                v = 0.0
+            n = float(c.get("value") or 0)
+            op = c.get("op")
+            vals.append({">=": v >= n, "<=": v <= n, "=": v == n,
+                         "!=": v != n, ">": v > n, "<": v < n}.get(op, False))
+        if vals and (any(vals) if row.get("any") else all(vals)):
+            return row.get("key") or ""
+    return ""
+
+
+def _trait_name(table, key, xp=None):
+    """特质 key → 中文: **当前档名** (v32) → 基础名键 (v29) → trait_<key> → <key> →
+    兜底表; 未知返回 '' (跳过, 不外泄 key)。
 
     v29: 旅行者 (lifestyle_traveler) 等特质的显示名由 common/traits 的 name 块指定
-    (desc = trait_traveler_1), 不再因 `trait_<key>` 缺键而整条丢失。"""
+    (desc = trait_traveler_1), 不再因 `trait_<key>` 缺键而整条丢失。
+    v32: 有 XP 轨道者先按角色实际 XP 取档名 (无 XP 数据时用基础名, 不再固定顶档名)。"""
     if not key:
         return ""
     mapped = (L.trait_names().get("traits") or {}).get(key)
     cands = []
+    lv = _trait_level_name(key, xp)
+    if lv:
+        cands.append(lv)
     if mapped:
         cands.append(mapped)
     cands += [f"trait_{key}", key]
@@ -1538,6 +1590,28 @@ class Facts:
                       "concubine", "former_concubines"):
                 ids += [x for x in (fam.get(k) or []) if isinstance(x, int)]
         return b in {int(x) for x in ids if isinstance(x, int)}
+
+    def _consort_word(self, owner, other):
+        """owner 对 other 的配偶称谓 (v32, 问题3): 妻 / 夫 / 妾 / 情人。
+
+        夭折句要写「X之妻Y产下死婴」—— 侧室不能写成妻、情人不能写成妻, 故按
+        缓存亲属集判定: 妾集 (concubine/former_concubines) 优先, 其次配偶对
+        (`is_spouse_pair` 含 ever_spouses), 其余为情人。持有人为女性时取「夫」。"""
+        try:
+            owner, other = int(owner), int(other)
+        except (TypeError, ValueError):
+            return ""
+        fem = self._is_female(owner)
+        rec = (self.cache.get("characters") or {}).get(str(owner)) or {}
+        fam = rec.get("family") or {}
+        conc = set()
+        for k in ("concubine", "former_concubines"):
+            conc |= {int(x) for x in (fam.get(k) or []) if isinstance(x, int)}
+        if other in conc:
+            return "夫" if fem else "妾"
+        if self.is_spouse_pair(owner, other):
+            return "夫" if fem else "妻"
+        return "情人"
 
     def _office_word(self, tier, government, independent=False, female=False, tid=None,
                      cid=None):
@@ -2907,6 +2981,58 @@ class Facts:
                 out[direction] = lines
         return out
 
+    def forced_concubine_lines(self):
+        """强纳为妾事实 (v32, 问题1): 逐条 = 「880年1月1日，主角强纳戈迪娜·迭戈斯为妾。」。
+
+        数据源 = `cache["opinions"]` 里 `forced_me_concubine_marriage_opinion` 的
+        `start_date` (存档 `opinions.active_opinions`: owner=被纳者, target=施为者)。
+        游戏脚本 `concubine_on_accept_effect` 在该人**身陷囹圄或守贞**时给这条好感,
+        同一段落紧接着 `release_from_prison = yes` —— 故若同人同日有
+        `released_from_prison_memory` 且监禁者同为施为者, 句尾补「同日自狱中释出」,
+        「掳人 → 囚 → 强纳为妾」的次序即由程序坐实 (旧文本只能写
+        「嫁入年份未见于簿册」, 模型遂默认先婚后囚)。只出 as_of 之前已见者。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return []
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        W = _FACT_WORDING
+        out = []
+        for rec in (self.cache.get("opinions") or {}).values():
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("modifier") != "forced_me_concubine_marriage_opinion":
+                continue
+            owner, target = rec.get("owner"), rec.get("target")
+            if not isinstance(owner, int) or not isinstance(target, int):
+                continue
+            fs, la = rec.get("first_seen"), rec.get("lost_at")
+            if ao is not None and fs and cl.date_key(fs) > ao:
+                continue
+            if ao is not None and la and cl.date_key(la) <= ao:
+                continue
+            start = rec.get("start") or fs
+            if not start:
+                continue
+            name = self.person_label(owner, style="brief") or ""
+            if not name:
+                continue
+            actor = "主角" if target == pid \
+                else (self.person_label(target, style="brief") or "某人")
+            # 同日释放 (脚本 release_from_prison = yes) → 出狱缘由即此
+            paroled = False
+            for m in (((self.cache.get("characters") or {}).get(str(owner))
+                       or {}).get("memories") or []):
+                if m.get("type") != "released_from_prison_memory":
+                    continue
+                if str(m.get("creation_date")) != str(start):
+                    continue
+                if (m.get("participants") or {}).get("imprisoner") == target:
+                    paroled = True
+                    break
+            tpl = W["concubine_forced_paroled"] if paroled else W["concubine_forced"]
+            out.append(tpl.format(date=self.date(start), actor=actor, name=name))
+        return sorted(set(out))
+
     def hook_notable(self):
         """有「非家主牵制」的牵制 (v31): 《阴私录》的门槛 — 仅对子女的家主牵制
         是家主身份自带, 不足以单开一篇隐事。"""
@@ -3538,8 +3664,9 @@ class Facts:
                 continue
             if t == "imprisoned":
                 ins.append(d)
-            elif t == "released_from_prison_memory":
-                outs.append(d)
+            elif t in ("released_from_prison_memory",
+                       "escaped_from_prison_memory"):
+                outs.append(d)  # v32: 越狱亦为出狱, 不再把逃脱者算作仍在囚
         if not ins and pid is not None:
             # 受害者记忆被剪除时, 用主角的「囚禁他人」记忆兜底
             for m in _prison_mems(pid):
@@ -4101,6 +4228,75 @@ class Facts:
         v11: as_of 截断 — 只取 as_of 前已具且未消失的特质 (十年传记不泄漏后期疾病)。"""
         return [z for _k, z in self.trait_pairs(cid)]
 
+    def trait_xp_map(self, cid):
+        """as_of 时点该角色各轨道的 XP: `{特质key: {轨道key: 数值}}` (v32, 问题2)。
+
+        数据源 = 缓存 `rec["trait_xp"]` 样本 (`[{from, traits, xp}]`, 与同档 traits
+        顺序对齐); 取 `from ≤ as_of` 的最后一份。旧缓存无样本 → `{}` (渲染层回退
+        基础名)。轨道划分查 `data/trait_tracks.json`。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        samples = rec.get("trait_xp") or []
+        if not samples:
+            return {}
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        pick = None
+        for s in samples:
+            if not isinstance(s, dict):
+                continue
+            if ao is not None and cl.date_key(str(s.get("from"))) > ao:
+                break
+            pick = s
+        if pick is None:
+            return {}
+        tracks = (L.trait_track_table().get("tracks") or {})
+        traits = pick.get("traits") or []
+        xp = pick.get("xp") or []
+        out, cur = {}, 0
+        for t in traits:
+            if not isinstance(t, int) or t < 0 or t >= len(self._tl):
+                continue
+            key = self._tl[t]
+            rows = tracks.get(key)
+            if not rows:
+                continue
+            m = {}
+            for r in rows:
+                if cur < len(xp):
+                    m[r["track"]] = xp[cur]
+                cur += 1
+            if m:
+                out[key] = m
+        return out
+
+    def _trait_display(self, key, z, xpmap):
+        """特质名 + 子轨道括注 (v32, 问题2): 「不法之徒（强盗一阶、窃贼一阶）」。
+
+        只列**已进档**的轨道 (XP ≥ 首个阈值); 一档未进的轨道不写 (否则每个持轨道
+        特质的人都拖一串「未入」)。无轨道/未进档时原样返回特质名。"""
+        if not z:
+            return z
+        m = (xpmap or {}).get(key) or {}
+        rows = (L.trait_track_table().get("tracks") or {}).get(key) or []
+        bits = []
+        for r in rows:
+            v = m.get(r["track"])
+            if v is None:
+                continue
+            lv = 0
+            for th in (r.get("levels") or []):
+                if v >= th:
+                    lv += 1
+            if lv <= 0:
+                continue
+            nm = L.loc(self.table, "trait_track_" + str(r["track"])) or ""
+            if not nm:
+                continue
+            word = _LEVEL_WORDS[lv] if lv < len(_LEVEL_WORDS) else f"{lv}阶"
+            bits.append(f"{nm}{word}")
+        if not bits:
+            return z
+        return f"{z}（{'、'.join(bits)}）"
+
     def trait_pairs(self, cid):
         """[(特质 key, 中文名)] — 当前持有特质 (as_of 截断口径同 traits)。
         v31 (问题1): 「为人」分句要按游戏 `category` 归类, 故连 key 一起返回。"""
@@ -4108,21 +4304,24 @@ class Facts:
             return self._trait_pairs_at(cid)
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         ids = rec.get("traits") or []
+        xpmap = self.trait_xp_map(cid)
         out = []
         for t in ids:
             if not isinstance(t, int) or t < 0 or t >= len(self._tl):
                 continue
             key = self._tl[t]
-            z = _trait_name(self.table, key)
+            z = _trait_name(self.table, key, xp=(xpmap.get(key) or {}))
             if z:
                 out.append((key, z))
         return out
 
     def _trait_pairs_at(self, cid):
-        """as_of 时点持有的特质 [(key, 名)]: 依 trait_history 区间 (from ≤ as_of < to)。"""
+        """as_of 时点持有的特质 [(key, 名)]: 依 trait_history 区间 (from ≤ as_of < to)。
+        v32: 名称按该时点的轨道 XP 取档名 (旧缓存无 XP 样本时回退基础名)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
         ao = cl.date_key(self.as_of)
+        xpmap = self.trait_xp_map(cid)
         out = []
         seen = set()
         for key in sorted(th):
@@ -4133,7 +4332,7 @@ class Facts:
                     continue
                 if to and cl.date_key(to) <= ao:
                     continue
-                z = _trait_name(self.table, key)
+                z = _trait_name(self.table, key, xp=(xpmap.get(key) or {}))
                 if z and key not in seen:
                     seen.add(key)
                     out.append((key, z))
@@ -4148,11 +4347,14 @@ class Facts:
 
         类别取游戏 `common/traits` 的 `category` (localization.py 建表), 不靠提示词;
         每组超 `_TRAIT_GROUP_LIMIT` 项取前若干并加「等」— 旧文本把 12 项特质连成
-        一顿号串, 模型只能照抄成「报菜名」。顺序见 `_TRAIT_GROUP_ORDER`。"""
+        一顿号串, 模型只能照抄成「报菜名」。顺序见 `_TRAIT_GROUP_ORDER`。
+        v32 (问题2): 特质名后按需附子轨道括注 (「不法之徒（强盗一阶）」)。"""
         cats = (L.trait_names().get("categories") or {})
+        xpmap = self.trait_xp_map(cid)
         buckets = {}
         for key, z in self.trait_pairs(cid):
-            buckets.setdefault(cats.get(key, ""), []).append(z)
+            buckets.setdefault(cats.get(key, ""), []).append(
+                self._trait_display(key, z, xpmap))
         out = []
         for cat in list(_TRAIT_GROUP_ORDER) + sorted(
                 set(buckets) - set(_TRAIT_GROUP_ORDER)):
@@ -4210,6 +4412,71 @@ class Facts:
                     spans.append(f"至{d_to}后消失")
             if spans:
                 lines.append(f"{z}（{'；'.join(spans)}）")
+        # v32 (问题2): 轨道进档履历 — 「不法之徒·强盗（自872年起进至二阶）」
+        lines.extend(self.trait_level_history(cid))
+        return lines
+
+    def _trait_base_name(self, key):
+        """特质基础名 (不带档位) — 履历行用, 免与「为人」句的档位名混。"""
+        mapped = (L.trait_names().get("traits") or {}).get(key)
+        for cand in (mapped, f"trait_{key}", key):
+            if not cand:
+                continue
+            v = L.loc(self.table, cand)
+            if v and not v.startswith(("$", "[")):
+                return v
+        return TRAIT_ZH.get(key, "")
+
+    def trait_level_history(self, cid):
+        """轨道进档履历 (v32, 问题2): 「<特质>·<轨道>（自X年起进至N阶）」。
+
+        逐 `rec["trait_xp"]` 样本差分: 某轨道首次跨过下一个阈值即记一条 (as_of 截断)。
+        与特质履历同源 (都只到年 — 年度快照日内粒度无意义)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        samples = [s for s in (rec.get("trait_xp") or []) if isinstance(s, dict)]
+        if not samples:
+            return []
+        tracks = (L.trait_track_table().get("tracks") or {})
+        if not tracks:
+            return []
+        lv_of = {k: [r.get("levels") or [] for r in rows]
+                 for k, rows in tracks.items()}
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        prev = {}
+        out = []
+        for s in samples:
+            if ao is not None and cl.date_key(str(s.get("from"))) > ao:
+                break
+            xp = s.get("xp") or []
+            cur = 0
+            for t in (s.get("traits") or []):
+                if not isinstance(t, int) or t < 0 or t >= len(self._tl):
+                    continue
+                key = self._tl[t]
+                rows = tracks.get(key)
+                if not rows:
+                    continue
+                for ri, r in enumerate(rows):
+                    if cur >= len(xp):
+                        cur += 1
+                        continue
+                    v = xp[cur]
+                    cur += 1
+                    lv = 0
+                    for th in (lv_of.get(key) or [[]])[ri]:
+                        if v >= th:
+                            lv += 1
+                    if lv > prev.get((key, r["track"]), 0):
+                        out.append((key, r["track"], lv, s.get("from")))
+                    prev[(key, r["track"])] = lv
+        lines = []
+        for key, tk, lv, frm in out:
+            base = self._trait_base_name(key)
+            tn = L.loc(self.table, "trait_track_" + str(tk)) or ""
+            if not base or not tn:
+                continue
+            word = _LEVEL_WORDS[lv] if lv < len(_LEVEL_WORDS) else f"{lv}阶"
+            lines.append(f"{base}·{tn}（自{self._year_only(frm)}起进至{word}）")
         return lines
 
     @staticmethod
@@ -4699,6 +4966,11 @@ def _mem_sentence(f, owner_id, mem):
     if other_id is not None and other_id == owner_id \
             and mtype in _PEER_SLOT_TYPES:
         return None
+    # v32 (问题3): 夭折记忆的生母槽与持有人同一人 (生母自己的那条记忆) — 不是退化记录,
+    # 只是「无对手方」, 走 `_no_other` 模板写「X产下死婴。」。
+    if other_id is not None and other_id == owner_id \
+            and mtype in _SELF_NO_OTHER_TYPES:
+        other_id = None
     # v31 (问题2): 配偶之间的床笫之事不写作「私通」
     if mtype == "had_sex" and other_id is not None \
             and f.is_spouse_pair(owner_id, other_id):
@@ -4707,6 +4979,13 @@ def _mem_sentence(f, owner_id, mem):
     if other_id is not None:
         other = (f.person_label(other_id, style="brief")
                  or f.name_with_regnal(other_id, date=mem.get("creation_date")))
+    # v32: 无对手方 → 回退 `<type>_no_other` 模板 (被囚/逃脱/夭折三类都有)
+    if not other:
+        tpl = MEMORY_TEMPLATES.get(f"{mtype}_no_other") or tpl
+    # v32 (问题3): 夭折句的配偶称谓 (妻/夫/妾/情人) — 由关系数据判定, 不靠措辞猜
+    rel = ""
+    if mtype in _CONSORT_MEM_TYPES and other_id is not None:
+        rel = f._consort_word(owner_id, other_id)
     # v26: 出生记忆按孩子性别换模板 — 女儿此前一律被写成「添子/得长子」
     # (田所2: 睦、立希均为女儿, 模型据「添子」写成儿子)。
     if mem.get("type") in ("child_born", "first_born", "twins_born"):
@@ -4756,7 +5035,7 @@ def _mem_sentence(f, owner_id, mem):
             verb = TITLE_LOSS_VERBS.get(reason)
             if verb:
                 return f"{owner}{verb}{title}。"
-    s = tpl.format(name=owner, other=other, title=title)
+    s = tpl.format(name=owner, other=other, title=title, rel=rel)
     # 参与者/头衔缺失时清理悬空占位
     s = s.replace("与。", "。").replace("与，", "，").replace("与、", "、")
     s = s.replace("让出。", "让出领地。")
@@ -4899,6 +5178,9 @@ MODULE_TABLE = {
     "人质质任":   {"hostage_created_hostage", "hostage_created_warden", "hostage_created_home_court"},
     "囚禁入狱":   {"imprisoned", "imprisoned_other"},
     "获释出狱":   {"released_from_prison_memory"},
+    # v32 (马克龙问题1): 越狱单列一档 — 出狱方式二分 (被释放 / 逃脱), 语义不同
+    # (游戏 prison_on_actions.txt 与 00_prison_effects.txt 互斥建这两条记忆)
+    "越狱脱逃":   {"escaped_from_prison_memory"},
     "刑虐残暴":   {"tortured_memory", "torturer_memory"},
     "受辱含冤":   {"ignored_assault_memory"},
     "结仇结怨":   {"became_rivals", "became_grudge"},
@@ -4946,10 +5228,13 @@ MODULE_SLICE = {
                        "战死负伤", "囚禁入狱", "获释出狱", "刑虐残暴",
                        "受辱含冤", "拥戴加冕", "结仇结怨", "死敌之仇",
                        "化仇解怨"},
-    # 家室: 开篇 = 结缡/情变/丧偶; 纪事 = 生育/夭亡/丧亲/丧友
-    ("jiashi", "lead"): {"婚配联姻", "情变私通", "丧偶之痛"},
+    # 家室: 开篇 = 结缡/情变/丧偶; 纪事 = 生育/夭亡/丧亲/丧友 + 囚禁 (v32 问题1:
+    # 公主被囚的监禁者在旧稿里读不到, 模型只能写「后世皆指为伯爵本人」)
+    ("jiashi", "lead"): {"婚配联姻", "情变私通", "丧偶之痛", "囚禁入狱",
+                         "获释出狱", "越狱脱逃"},
     ("jiashi", "mid"): {"添丁进口", "夭折", "丧亲之恸", "婚配联姻",
-                        "情变私通", "丧友之恸"},
+                        "情变私通", "丧友之恸", "囚禁入狱", "获释出狱",
+                        "越狱脱逃"},
     # 朝局: 开篇 = 天下更替; 纪事 = 兵戈/刑狱/恩怨
     ("chaoju", "lead"): {"起家发迹", "失位让土", "拥戴加冕"},
     ("chaoju", "mid"): {"开战兴兵", "战和胜负", "战死负伤", "囚禁入狱",
@@ -5277,6 +5562,7 @@ _MIRROR_TYPE_PAIRS = (
 _IDENT_TYPES = frozenset(
     set(_MIRROR_KEEP)
     | {"imprisoned", "imprisoned_other", "released_from_prison_memory",
+       "escaped_from_prison_memory",
        "child_born", "first_born", "twins_born", "child_premature",
        "child_stillborn"}
 )
@@ -5419,11 +5705,14 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 ins.append({"idx": i, "victim": victim, "jailer": jailer,
                             "date": e.get("date"), "hero": owner == pid,
                             "actor": t == "imprisoned_other"})
-        elif t == "released_from_prison_memory":
+        elif t in ("released_from_prison_memory", "escaped_from_prison_memory"):
+            # v32 (问题1): 出狱方式二分 — 被释放 / 逃脱, 两者由引擎互斥建立
+            # (prison_on_actions.txt 未置逃狱旗标才建 released)
             if isinstance(owner, int):
                 outs.append({"idx": i, "victim": owner,
                              "jailer": parts.get("imprisoner"),
-                             "date": e.get("date")})
+                             "date": e.get("date"),
+                             "escape": t == "escaped_from_prison_memory"})
     if not ins:
         return events
     drop = set()
@@ -5476,9 +5765,17 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 used.add(out["idx"])
                 drop.add(out["idx"])
                 span = _prison_span(r["date"], out["date"])
-                body += W["prison_released"].format(span=span) if span \
-                    else W["prison_release_on"].format(
-                        date=f.date(out["date"]))
+                same = span == W["prison_same_day"]
+                if out.get("escape"):
+                    # v32: 越狱者不在「获释」之列 —— 出狱方式按记忆型分词
+                    body += W["prison_escape_same_day"] if same else (
+                        W["prison_escaped"].format(span=span) if span
+                        else W["prison_escape_on"].format(date=f.date(out["date"])))
+                else:
+                    body += W["prison_released_same_day"] if same else (
+                        W["prison_released"].format(span=span) if span
+                        else W["prison_release_on"].format(
+                            date=f.date(out["date"])))
             e = events[r["idx"]]
             e["text"] = f"{f.date(r['date'])}，{body}。"
             e["type"] = "imprisoned"
@@ -5741,8 +6038,9 @@ _MERGE_SLOT_RES = {
                                       lambda names: "、".join(names) + "见证加冕。"),
     "grand_wedding_completed_guest": (r"^(.+?)出席大婚。$",
                                       lambda names: "、".join(names) + "出席大婚。"),
-    "imprisoned": (r"^(.+?)被囚。$",
-                   lambda names: "、".join(names) + "被囚。"),
+    "imprisoned": (r"^(.+?)为(.+?)所囚。$",
+                   lambda pairs: "、".join(p[0] for p in pairs)
+                   + f"为{pairs[0][1]}所囚。"),
     "imprisoned_other": (r"^(.+?)囚禁(.+?)。$",
                          lambda pairs: pairs[0][0] + "囚禁" + "、".join(p[1] for p in pairs) + "。"),
 }
@@ -5791,6 +6089,18 @@ def _merge_same_day_events(events, f=None):
                             merged = (prefix + slots[0][0] + "囚禁"
                                       + "、".join(s[1] for s in slots[:_MERGE_CAP])
                                       + f"等{len(slots)}人。")
+                        else:
+                            merged = prefix + comb(slots)
+                elif typ == "imprisoned":
+                    # v32: 「A为X所囚」句式 — 只有同一监禁者 (槽1) 才并
+                    # (不同监禁者合并会张冠李戴, 各自成行)
+                    jailers = {s[1] for s in slots}
+                    if len(jailers) == 1:
+                        victims = [s[0] for s in slots]
+                        if len(victims) > _MERGE_CAP:
+                            merged = (prefix + "、".join(victims[:_MERGE_CAP])
+                                      + f"等{len(victims)}人"
+                                      + f"为{slots[0][1]}所囚。")
                         else:
                             merged = prefix + comb(slots)
                 else:
@@ -7894,9 +8204,12 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         facts["imperial_spouses"] = _imperial_daughters_sisters(f, spouse_ids)
         # v31 (问题4): 妻室情事脉络 (逐情人: 身份 + 私通→相恋→灵魂伴侣的关系弧)
         facts["consort_affairs"] = f.consort_affairs(pid, spouses=spouse_ids)
+        # v32 (问题1): 强纳为妾 (存档唯一带确切日期的纳妾记录)
+        facts["forced_concubines"] = f.forced_concubine_lines()
     else:
         facts["imperial_spouses"] = []
         facts["consort_affairs"] = []
+        facts["forced_concubines"] = []
     return facts
 
 

@@ -537,6 +537,10 @@ EMPTY_CACHE = {
     # v31: 牵制逐档差分 (relations.active_relations.active_hook_*) — 只收
     # 持有者或对象为玩家者; 存档不给创建日, 逐档差分即得「首次见于记载」。
     "hooks": {},
+    # v32: 纳妾类关系好感逐档差分 (opinions.active_opinions 的 temporary_opinion) —
+    # 存档里「强行纳为侧室」带确切 start_date (forced_me_concubine_marriage_opinion),
+    # 这是「劫掠掳人 → 强纳为妾」唯一带日期的记录 (纳妾本身不留记忆)。
+    "opinions": {},
 }
 
 
@@ -636,6 +640,7 @@ def char_record(cache, cid):
             "faith_history": [],   # v26: [{from, faith}] 改信变化点 (首见即记)
             "traits": [],
             "trait_history": {},    # {特质key: [{from, to, first}]} 获得/消失区间 (v4)
+            "trait_xp": [],         # v32: [{from, traits, xp}] 轨道 XP 样本 (与 traits 对齐)
             "family": {},           # 亲属 id 集; v31 另积 ever_spouses (历史上所有配偶)
             "court": {},            # v31: {employer, knight, join_court_date} 宫廷身份
             "landed": {},
@@ -1526,6 +1531,17 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                         if iv.get("to") is None:
                             iv["to"] = date_label
             rec["traits"] = new_traits
+        # v32: 特质 XP 轨道样本 — 存档 `trait_xp_amounts` 是与 traits **顺序对齐**的扁平
+        # 数组 (每条轨道一个数, 多轨特质按定义声明顺序占位; 实测马克龙档 3987/3987
+        # 角色全对), 故样本必须与同档 traits 成对保存, 否则轨道对不上号。
+        # 只在 (traits, xp) 之一变化时追加, 供 as_of 求当时档位名与进档履历。
+        new_xp = list(c.get("trait_xp_amounts") or [])
+        samples = rec.setdefault("trait_xp", [])
+        if new_xp and (not samples
+                       or samples[-1].get("traits") != list(new_traits)
+                       or samples[-1].get("xp") != new_xp):
+            samples.append({"from": date_label, "traits": list(new_traits),
+                            "xp": new_xp})
         # 家庭: 直接字段 + 反查亲属 (v4)
         fam = family_of(c)
         fathers, mothers = _parents_of(chars, cid, parent_map, fam)
@@ -1661,6 +1677,8 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     _diff_epidemics(cache, melt, date_label)
     # v31: 牵制 (hooks) 逐档差分 — 存档只存当前持有的牵制且无创建日
     _diff_hooks(cache, melt, date_label)
+    # v32: 纳妾类好感 (opinions) 逐档差分 — 「强行纳为侧室」是纳妾唯一带日期的记录
+    _diff_opinions(cache, melt, date_label)
     return cache
 
 
@@ -1708,6 +1726,91 @@ def _diff_hooks(cache, melt, date_label):
             want[f"{holder}>{target}>{tp}"] = {
                 "holder": holder, "target": target, "type": str(tp),
                 "expiration": v.get("expiration_date"),
+            }
+    for key, v in want.items():
+        rec = hist.get(key)
+        if rec is None:
+            hist[key] = dict(v, first_seen=date_label, first=first_snap)
+            continue
+        rec["expiration"] = v.get("expiration")
+        rec.pop("lost_at", None)
+        rec["last_seen"] = date_label
+    for key, rec in hist.items():
+        if key not in want and not rec.get("lost_at"):
+            rec["lost_at"] = date_label
+
+
+# v32: 纳妾类关系好感 — 存档里「强行纳为侧室」唯一带确切日期的记录
+# (本地化: forced_me_concubine=将我强行纳为侧室、concubine_with_monogamous_faith=
+#  身为侧室却信从一夫一妻、forced_spouse_concubine=将我的配偶强行纳为侧室、
+#  stole_concubine=偷走了我的侧室)
+_CONCUBINE_OPINIONS = {
+    "forced_me_concubine_marriage_opinion",
+    "concubine_with_monogamous_faith_opinion",
+    "forced_spouse_concubine_marriage_opinion",
+    "stole_concubine_opinion",
+}
+
+
+def _opinion_values(o):
+    """条目里的 temporary_opinion → 列表 (同键重复被 _merge_dup_pairs 并成 list)。"""
+    v = o.get("temporary_opinion")
+    if isinstance(v, dict):
+        return [v]
+    if isinstance(v, list):
+        return [x for x in v if isinstance(x, dict)]
+    return []
+
+
+def _diff_opinions(cache, melt, date_label):
+    """把本档纳妾类关系好感并入 cache["opinions"] (逐档差分)。
+
+    存档形如::
+
+        opinions.active_opinions = [
+            {"owner": 17039, "target": 38691,
+             "temporary_opinion": {"modifier": "forced_me_concubine_marriage_opinion",
+                                   "start_date": "880.1.1",
+                                   "expiration_date": "900.1.1", "days": 7300}}, …]
+
+    方向: `owner` = 持有该好感的当事人, `target` = 施加者 (实测菲利普档妾 17039
+    → 主角 38691)。`forced_me_concubine_marriage_opinion` 由脚本
+    `concubine_on_accept_effect` 在该人**身陷囹圄或守贞**时给予, 同一段脚本紧接着
+    `release_from_prison = yes` —— 即「强纳为妾当日即出狱」, 这是「劫掠掳人 →
+    强纳为妾」在存档里**唯一带确切日期**的记录 (纳妾本身不留记忆, family_data
+    只给当前状态)。只收涉主角者 (控体积)。
+
+    记录形如::
+
+        {"17039>38691>forced_me_concubine_marriage_opinion":
+            {"owner": 17039, "target": 38691,
+             "modifier": "forced_me_concubine_marriage_opinion",
+             "start": "880.1.1", "expiration": "900.1.1",
+             "first_seen": "881.1.1", "first": false}}
+
+    `first` = 首档即见 (数据起点前已有); 本档消失即记 `lost_at`。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return
+    acts = (melt.get("opinions") or {}).get("active_opinions") or []
+    hist = cache.setdefault("opinions", {})
+    first_snap = len(cache.get("sources") or []) <= 1
+    want = {}
+    for o in acts:
+        if not isinstance(o, dict):
+            continue
+        owner, target = o.get("owner"), o.get("target")
+        if not isinstance(owner, int) or not isinstance(target, int):
+            continue
+        if owner != pid and target != pid:
+            continue
+        for v in _opinion_values(o):
+            mod = v.get("modifier")
+            if mod not in _CONCUBINE_OPINIONS:
+                continue
+            want[f"{owner}>{target}>{mod}"] = {
+                "owner": owner, "target": target, "modifier": str(mod),
+                "start": v.get("start_date"), "expiration": v.get("expiration_date"),
             }
     for key, v in want.items():
         rec = hist.get(key)

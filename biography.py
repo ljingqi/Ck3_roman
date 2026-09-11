@@ -36,7 +36,8 @@ import style
 # 朝局类记忆类型 (朝局风云录用)
 POLITICAL_TYPES = {
     "ascended_throne_memory", "lost_title_memory", "imprisoned",
-    "released_from_prison_memory", "became_rivals", "became_grudge",
+    "released_from_prison_memory", "escaped_from_prison_memory",
+    "became_rivals", "became_grudge",
     "became_nemesis", "stopped_being_rivals", "offensive_war",
     "defensive_war", "war_won", "war_lost", "joined_allys_war",
     "battle_won_memory", "battle_lost_memory",
@@ -956,6 +957,10 @@ def _article_facts(facts, cache, key, section=None):
         if sk != "lead":
             _set_block(blocks, "妻室情事脉络",
                        "\n".join(_consort_affair_lines(facts, cache)))
+            # v32 (问题1): 强纳为妾 — 与监禁对并列即可读出「掳人→囚→强纳为妾」
+            # (旧稿无此日期, 模型写成「嫁入年份未见于簿册」而默认先婚后囚)
+            _set_block(blocks, "强纳为妾",
+                       "\n".join(facts.get("forced_concubines") or []))
         tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
                                  exclude=_has_assassins(facts))
         if tl:
@@ -1643,6 +1648,11 @@ def _timeline_event_key(body):
         return ("生", m.group(1))
     if re.match(r"^.+?得孪生(?:子|女)。$", body):
         return ("生", "孪生子。")
+    # v32: 夭折句改写为带生母的「X之妻Y产下死婴。」「X之妻Y孕期提前结束。」
+    if re.match(r"^.+?产下死婴。$", body):
+        return ("生", "产下死婴。")
+    if re.match(r"^.+?孕期提前结束。$", body):
+        return ("生", "孕期提前结束。")
     if re.match(r"^.+?幼子夭折。$", body):
         return ("生", "幼子夭折。")
     if re.match(r"^.+?婴儿夭折。$", body):
