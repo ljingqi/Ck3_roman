@@ -819,14 +819,40 @@ def _strip_station(s):
     return _STATION_RE.sub("", s or "")
 
 
+def _assassin_lead_line(k):
+    """刺客列传开篇名录的一行: 「死者：称谓（死于…，被其烧死。）」。
+    v30: 同组血亲并列一行 (问题7)。"""
+    nm = k.get("name") or ""
+    off = k.get("office") or ""
+    disp = k.get("label") or (f"{off}{nm}" if off else nm)
+    db = k.get("death") or ""
+    for _p in (disp, nm):
+        if _p and db.startswith(_p + "死于"):
+            db = "死于" + db[len(_p) + 2:]  # 去掉「称谓+死于」前缀
+            break
+    db = _strip_station(db)  # v20: 开篇压缩名录不带驻地标注
+    grp = list(k.get("group") or [])
+    if grp:
+        disps = [disp] + [g.get("label") or g.get("name") or "" for g in grp]
+        disps = [d for d in disps if d]
+        note = k.get("kin_note") or ""
+        tail = "；".join(x for x in (note, db) if x)
+        return f"死者：{'、'.join(disps)}（{tail}）" if tail \
+            else f"死者：{'、'.join(disps)}"
+    return f"死者：{disp}（{db}）" if db and not F.is_unknown(db) \
+        else f"死者：{disp}"
+
+
 def _assassin_kill_lines(facts, cache, k):
-    """一名死者的新口径档案行: 官职名 + 生卒 + 死句 + 亲缘 + 婚恋记忆。
-    返回 ['死者：唐皇帝李漼（死于878年4月9日，被崔佛·菲利普处决。）', …]。
+    """一名死者 (或一组同日而死的血亲) 的档案行: 官职名 + 生卒 + 死句 + 亲缘 + 婚恋。
+    返回 ['死者：唐皇帝李漼（死于878年4月9日，被其处决。）', …]。
     v16: 死者行带出生日期 — 防止同名/近名角色被误认 (里瓦朗 vs 里瓦尔:
     生于830年的萨洛蒙亲生子不可能被当成869年私通所出之子)。
     v24: 死因不详不再叠双层括号; 地点标注改受害者所在男爵领独立行。
-    v27: 亲缘行改用头衔+姓名 (kin_label), 与家室列传同口径。"""
+    v27: 亲缘行改用头衔+姓名 (kin_label), 与家室列传同口径。
+    v30: 血亲同组合为一行 (问题7); 凶手称谓由 facts 缩为「其」(问题8)。"""
     lines = []
+    grp = list(k.get("group") or [])
     nm = k["name"]
     off = k.get("office") or ""
     # v28b: 死者称谓用 facts 组好的 label (官职/称号+名), 旧缓存回退 office+name
@@ -837,7 +863,15 @@ def _assassin_kill_lines(facts, cache, k):
             db = "死于" + db[len(_p) + 2:]
             break
     db = _strip_station(db)  # v20/v24: 地点标注改独立行呈现
-    if db and not F.is_unknown(db):
+    if grp:
+        # v30: 同组血亲并列一行 — 「死者：A、B、C（俱为X之子女；死于…，被其烧死。）」
+        disps = [disp] + [g.get("label") or g.get("name") or "" for g in grp]
+        disps = [d for d in disps if d]
+        note = k.get("kin_note") or ""
+        tail = "；".join(x for x in (note, db) if x)
+        lines.append(f"死者：{'、'.join(disps)}（{tail}）" if tail
+                     else f"死者：{'、'.join(disps)}")
+    elif db and not F.is_unknown(db):
         bd = k.get("birth") or ""
         head = f"（生于{bd}，" if bd else "（"
         lines.append(f"死者：{disp}{head}{db}）")
@@ -847,29 +881,63 @@ def _assassin_kill_lines(facts, cache, k):
         lines.append(f"死者：{disp}")
     # v24: 受害者死前最近可知所在男爵领 — 击杀无案发地点, 以受害者位置为锚
     # 「某某死于X」(X 为男爵领名; 数据无则整行省略)
-    vp = (k.get("victim_place") or "").strip()
-    if vp:
-        lines.append(f"{nm}死于{vp}。")
+    for e in [k] + grp:
+        vp = (e.get("victim_place") or "").strip()
+        if vp:
+            lines.append(f"{e.get('name') or ''}死于{vp}。")
     # 亲缘: 父/母/妻/妾 (从缓存 family 取; v27 带前头衔/现头衔)
-    fam = ((cache.get("characters") or {}).get(str(k.get("id"))) or {}).get("family") or {}
+    # v30: 同组血亲只写**共同**父/母 (组内各人母亲可能不同 — 五位皇女各出其母,
+    # 若照抄组首的母亲会写成「全组同母」), 配偶另按人名分列。
+    def _fam_of(e):
+        return ((cache.get("characters") or {}).get(str(e.get("id"))) or {}) \
+            .get("family") or {}
+
+    def _fids(e, key):
+        out = set()
+        for x in (_fam_of(e).get(key) or []):
+            try:
+                out.add(int(x))
+            except (TypeError, ValueError):
+                continue
+        return out
+
     bits = []
     seen_bits = set()
-    for x in (fam.get("father") or []):
-        bits.append(f"父{_kin_or(facts, cache, x)}")
-    for x in (fam.get("mother") or []):
-        bits.append(f"母{_kin_or(facts, cache, x)}")
-    for key, label in (("primary_spouse", "妻"), ("spouse", "妻"),
-                       ("former_spouses", "前妻"), ("concubine", "妾")):
-        for x in (fam.get(key) or []):
-            b = f"{label}{_kin_or(facts, cache, x)}"
-            if b not in seen_bits:
-                seen_bits.add(b)
-                bits.append(b)
+    if grp:
+        for key, label in (("father", "父"), ("mother", "母")):
+            sets = [s for s in (_fids(e, key) for e in [k] + grp) if s]
+            common = set.intersection(*sets) if sets else set()
+            for x in sorted(common):
+                bits.append(f"{label}{_kin_or(facts, cache, x)}")
+        for e in [k] + grp:
+            for key, label in (("primary_spouse", "妻"), ("spouse", "妻"),
+                               ("former_spouses", "前妻"), ("concubine", "妾")):
+                for x in (_fam_of(e).get(key) or []):
+                    b = f"{e.get('name')}之{label}{_kin_or(facts, cache, x)}"
+                    if b not in seen_bits:
+                        seen_bits.add(b)
+                        bits.append(b)
+    else:
+        fam = _fam_of(k)
+        for x in (fam.get("father") or []):
+            bits.append(f"父{_kin_or(facts, cache, x)}")
+        for x in (fam.get("mother") or []):
+            bits.append(f"母{_kin_or(facts, cache, x)}")
+        for key, label in (("primary_spouse", "妻"), ("spouse", "妻"),
+                           ("former_spouses", "前妻"), ("concubine", "妾")):
+            for x in (fam.get(key) or []):
+                b = f"{label}{_kin_or(facts, cache, x)}"
+                if b not in seen_bits:
+                    seen_bits.add(b)
+                    bits.append(b)
     if bits:
         lines.append("亲缘：" + "、".join(bits))
     # 婚恋记忆: 只收婚恋类 (过滤 k["events"], 其文本带日期前缀)
-    mar = [e for e in (k.get("events") or [])
-           if any(m in e for m in ("成婚", "相恋", "私情", "分手", "丧偶", "离婚"))]
+    mar = []
+    for e in [k] + grp:
+        mar.extend(x for x in (e.get("events") or [])
+                   if any(m in x for m in ("成婚", "相恋", "私情", "分手",
+                                           "丧偶", "离婚")))
     if mar:
         lines.append("婚恋：")
         lines.extend("  " + e for e in mar)
@@ -1091,28 +1159,28 @@ def _article_facts(facts, cache, key, section=None):
         killed = facts.get("killed") or []
         if killed:
             sec_key = (section or {}).get("key") or ""
+            # v30: 篇内点名凶手一次 (问题8) — 各条死句已把凶手称谓缩为「其」,
+            # 此处给出唯一一次全称谓作先行词
+            plabel = ((facts.get("protagonist") or {}).get("label")
+                      or (facts.get("protagonist") or {}).get("name") or "")
+            n_victims = sum(1 for k in killed) + sum(len(k.get("group") or [])
+                                                     for k in killed)
+            head = (f"刀下之魂共{n_victims}人，皆死于{plabel}之手。"
+                    if plabel else "")
             if sec_key == "lead":
                 # v11 开篇: 压缩名录 (死者名 + 生卒死因), 供群像总览, 不再整块铺 168 人档案
-                parts = []
+                parts = [head] if head else []
                 for k in killed:
-                    nm = k["name"]
-                    off = k.get("office") or ""
-                    # v28b: 死者称谓用 facts 组好的 label (官职/称号+名)
-                    disp = k.get("label") or (f"{off}{nm}" if off else nm)
-                    db = k.get("death") or ""
-                    for _p in (disp, nm):
-                        if db.startswith(_p + "死于"):
-                            db = "死于" + db[len(_p) + 2:]  # 去掉「称谓+死于」前缀
-                            break
-                    db = _strip_station(db)  # v20: 开篇压缩名录不带驻地标注
-                    parts.append(f"死者：{disp}（{db}）" if db and not F.is_unknown(db)
-                                 else f"死者：{disp}")
+                    parts.append(_assassin_lead_line(k))
                 _set_block(blocks, "刀下诸魂", "\n".join(parts))
             else:
-                # 各纪事: 按时段切片给完整档案 (v14 新口径: 官职名+亲缘+婚恋)
+                # 各纪事: 按时段切片给完整档案 (v14 新口径: 官职名+亲缘+婚恋;
+                # v30: 同组血亲已是单条, 切片以组为单位)
                 sl = (section or {}).get("slice")
                 picked = killed[sl[0]:sl[1]] if sl else killed
-                parts = ["\n".join(_assassin_kill_lines(facts, cache, k)) for k in picked]
+                parts = [head] if head else []
+                parts += ["\n".join(_assassin_kill_lines(facts, cache, k))
+                          for k in picked]
                 _set_block(blocks, "刀下诸魂", "\n\n".join(parts))
     elif key == "youxia":
         # v27: 主角档案已在共享前缀; 行纪按前后二分 (开篇萍踪 / 纪事辗转)

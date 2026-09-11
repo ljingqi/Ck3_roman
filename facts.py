@@ -4618,14 +4618,16 @@ _FEUD_ROLE_RE = re.compile(
 )
 
 
-def _death_sentence(f, cid):
+def _death_sentence(f, cid, killer_pronoun=False):
     """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
     v22: death_execution 且行刑者已知时, 处决方式按当时可用选项稳定伪随机
     (斩首/做成神秘的肉/犬决/烧死/食人/献祭) — 存档只记「处决」, 不再千篇一律。
     v24: 凶手为主角时附「（死于X）」(X = 受害者死前最近可知男爵领, 数据无则省略);
     弃用 v20 的「时主角驻X」(主角驻地 ≠ 案发地, 误导模型把刺杀安在主角驻地)。
     v25: 死因句统一走 Facts.death_clause — 暗杀类死因按死法池取具体手法。
-    v26: imprison=True — 卒时已囚满一年者写「囚禁N年后…」(处决/狱死)。"""
+    v26: imprison=True — 卒时已囚满一年者写「囚禁N年后…」(处决/狱死)。
+    v30: killer_pronoun=True 时凶手称谓缩为「其」— 供《刺客列传》专用 (该篇凶手
+    恒为主角, 逐条重复全称谓 14 次; 见 修复方案_菲利普4.md 问题8)。"""
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     d = rec.get("death") or {}
     if not d:
@@ -4635,6 +4637,11 @@ def _death_sentence(f, cid):
     killer = d.get("killer")
     # 施事者名字缺失时用「某人」 (v28b: 统一占位词, 与 name_or 兜底同源)
     clause = f.death_clause(cid, date=d.get("date"), imprison=True)
+    if killer_pronoun and killer is not None:
+        klabel = f.person_label(killer, style="brief") \
+            or f.name_with_regnal(killer)
+        if klabel and klabel in clause:
+            clause = clause.replace(klabel, "其")
     s = f"{name}死于{f.date(d.get('date'))}，{clause}。"
     pid = f.cache.get("player_id")
     if pid is not None and killer == pid:
@@ -6829,6 +6836,94 @@ def _villain_chains(f):
     return chains
 
 
+def _kill_family(f, cid):
+    """被杀者的 family 字典 (缓存优先)。"""
+    return ((f.cache.get("characters") or {}).get(str(cid)) or {}).get("family") or {}
+
+
+def _kill_kin_ids(f, cid, key):
+    """被杀者 family[key] 的 id 集 (含父/母/同胞)。"""
+    out = set()
+    for x in (_kill_family(f, cid).get(key) or []):
+        try:
+            out.add(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _kill_kin_note(f, members):
+    """同组合并后的血缘按语: 「俱为唐皇帝李漼之子女」/「同胞兄弟姐妹」。"""
+    def _common(key):
+        sets = [_kill_kin_ids(f, m.get("id"), key) for m in members]
+        sets = [s for s in sets if s]
+        if not sets:
+            return set()
+        return set.intersection(*sets)
+
+    for key in ("father", "mother"):
+        ids = _common(key)
+        if ids:
+            pid = sorted(ids)[0]
+            nm = f.kin_label(pid) or f.name_with_regnal(pid)
+            if nm:
+                return f"俱为{nm}之子女"
+    return "同胞兄弟姐妹"
+
+
+def _group_killed_by_kin(entries, f):
+    """同日而死的血亲合并为一传 (修复方案_菲利普4.md 问题7)。
+
+    判据: 共父 / 共母 / 一方在另一方 siblings 内 — 同日死者按血缘做并查集,
+    组内只留组首条, 组首带 group=[其余成员…] 与 kin_note。组内成员不再单列,
+    故《刺客列传》的纪事切片以「组」为单位, 不会把同胞劈到两个板块。"""
+    by_date = {}
+    for e in entries:
+        by_date.setdefault(e.get("death_date"), []).append(e)
+    out = []
+    for d, group in by_date.items():
+        if len(group) < 2 or d == "9999.9.9":
+            out.extend(group)
+            continue
+        n = len(group)
+        parent = list(range(n))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                a, b = group[i], group[j]
+                kin = bool(_kill_kin_ids(f, a.get("id"), "father")
+                           & _kill_kin_ids(f, b.get("id"), "father")) \
+                    or bool(_kill_kin_ids(f, a.get("id"), "mother")
+                            & _kill_kin_ids(f, b.get("id"), "mother")) \
+                    or b.get("id") in _kill_kin_ids(f, a.get("id"), "siblings") \
+                    or a.get("id") in _kill_kin_ids(f, b.get("id"), "siblings")
+                if kin:
+                    ra, rb = find(i), find(j)
+                    if ra != rb:
+                        parent[rb] = ra
+        comps = {}
+        for i in range(n):
+            comps.setdefault(find(i), []).append(i)
+        for _root, idxs in sorted(comps.items()):
+            members = [group[i] for i in idxs]
+            if len(members) < 2:
+                out.extend(members)
+                continue
+            members.sort(key=lambda e: e.get("death_date") or "")
+            head = members[0]
+            head["group"] = members[1:]
+            head["kin_note"] = _kill_kin_note(f, members)
+            out.append(head)
+    out.sort(key=lambda e: cl.date_key(e["death_date"]))
+    return out
+
+
 def _killed_by_player(f):
     """主角所杀之人 (v8): 五源合一, 去重。
     源: 1) 主角缓存 kills (alive_data.kills ∪ dead_data.kills 跨年累积)
@@ -6887,7 +6982,8 @@ def _killed_by_player(f):
     for cid in killed:
         prof = (f.cache.get("characters") or {}).get(str(cid)) or {}
         # 受害者不在缓存时, 从最新熔件 dead_data 补死句
-        ds = _death_sentence(f, cid)
+        # v30: 凶手称谓缩为「其」— 刺客列传凶手恒为主角 (问题8)
+        ds = _death_sentence(f, cid, killer_pronoun=True)
         if not ds:
             mc = f._chars.get(str(cid)) or {}
             mdd = (mc or {}).get("dead_data") or {}
@@ -6895,6 +6991,13 @@ def _killed_by_player(f):
                 clause = f.death_clause(cid, date=mdd.get("date"),
                                         reason=mdd.get("reason"),
                                         killer=mdd.get("killer"), imprison=True)
+                # v30: 与主路径同口径 — 凶手为主角时称谓缩为「其」(问题8)
+                kk = mdd.get("killer")
+                if kk is not None:
+                    klabel = f.person_label(kk, style="brief") \
+                        or f.name_with_regnal(kk)
+                    if klabel and klabel in clause:
+                        clause = clause.replace(klabel, "其")
                 ds = f"{f.name_or(cid)}死于{f.date(mdd.get('date'))}，{clause}。"
                 # v24: 熔件反查兜底同样附受害者所在地 (男爵领; 无则省略)
                 if mdd.get("killer") == pid:
@@ -6958,7 +7061,9 @@ def _killed_by_player(f):
     if len(out) > KILL_LOWBORN_THRESHOLD:
         keep = _kill_keep_ids(cache, pid)
         out = [e for e in out if e["house"] or e["id"] in keep]
-    return out
+    # v30: 同日而死的血亲合并为一传 (问题7) — 放在窗口/低贱者过滤之后,
+    # 组内成员此后不再单列 (纪事切片以组为单位)
+    return _group_killed_by_kin(out, f)
 
 
 def _imperial_daughters_sisters(f, spouses):
