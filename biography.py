@@ -1342,6 +1342,40 @@ def _strip_markdown_tables(text):
     return "\n".join(out)
 
 
+# ---------------------------------------------------------------------------
+# 考据按语清洗 (v30 问题4 收尾)
+# ---------------------------------------------------------------------------
+# 提示词与事实层已不含「资料未载/未提供/不足」这类字样 (见 style.py 的 RULES 注释),
+# 但模型仍会自行写出「父祖之事，资料不载，唯知其所出为菲利普家族」式的按语 —
+# 且开篇正文会作为「开篇摘要」回灌给后续请求, 于是一句按语在整份提示词里出现
+# 六次 (菲利普第 2 个十年实测)。此处按「程序端收尾」处理: 只删按语本身及其
+# 紧邻逗号, 句子其余成分保留, 提示词不动。
+_META_NOTE_RE = re.compile(
+    r"[，,]?\s*(?:据)?(?:资料|史料|史书|文献|典籍|史)?\s*"
+    r"(?:亦|也|俱|皆|均|并)?\s*"
+    r"(?:未载|不载|未详|无可考|无考|不可考|阙如|失考|未记|缺载|不详)"
+    r"(?:其详|其始末|其原委|其由来|始末|先后|前后|缘由|由来|究竟)?\s*[，,]?")
+# 清洗后可能残留的连接符 (，，/，。/、，/ 句首逗号)
+_META_FIXUPS = ((re.compile(r"[，,]{2,}"), "，"),
+                (re.compile(r"[，,]+([。；;！？\n])"), r"\1"),
+                (re.compile(r"([。；;！？\n])[，,]+"), r"\1"),
+                (re.compile(r"^[，,]+"), ""),
+                (re.compile(r"、[，,]"), "，"))
+
+
+def _strip_meta_notes(text):
+    """删去「资料不载/史无可考/…」这类考据按语 (程序端收尾, 不改提示词)。
+
+    按语删去后原位补一个逗号, 再由 _META_FIXUPS 收拢多余连接符 —
+    这样「父祖之事，资料不载，唯知…」变成「父祖之事，唯知…」而不是粘连句。"""
+    if not text:
+        return text
+    out = _META_NOTE_RE.sub("，", text)
+    for pat, rep in _META_FIXUPS:
+        out = pat.sub(rep, out)
+    return out
+
+
 def _normalize_section(text, sec_title, article_title=""):
     """板块正文规范化: 标题统一为 ###, 表格转自然语言, 无标题补 ### 板块名。
     v11: 剥离板块内的「太史公曰/史家按」评点段 (只留总纲的评点, 板块均为客观叙事)。
@@ -1388,6 +1422,7 @@ def _normalize_section(text, sec_title, article_title=""):
                 break
         out.append(s)
     body = _strip_markdown_tables("\n".join(out)).strip()
+    body = _strip_meta_notes(body)
     body = llm.clean_number_spaces(body)
     # 评点剥离后可能残留孤立空行, 压缩
     body = re.sub(r"\n{3,}", "\n\n", body)
@@ -1721,6 +1756,7 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     intro = llm.call_deepseek(build_intro_messages(facts, cfg, articles),
                               intro_cfg).strip()
     intro = llm.clean_number_spaces(intro)
+    intro = _strip_meta_notes(intro)
 
     sec_cfg = dict(cfg)
     sec_cfg["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)

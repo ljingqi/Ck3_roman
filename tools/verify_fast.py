@@ -177,6 +177,22 @@ def group_a():
     check("限定头衔条目 (titles) 不外泄", kb != "duke_feudal_brittany", kb)
     check("flavorization 表非空", bool(FZ.coverage()["counts"]))
 
+    print("[A8] 考据按语清洗 (问题4 收尾 — 程序端, 不改提示词)")
+    import biography as bio
+    cases = (
+        ("父祖之事，资料不载，唯知其所出为菲利普家族。", "父祖之事，唯知其所出为菲利普家族。"),
+        ("五年之事，资料不载其详。然观其行迹。", "五年之事。然观其行迹。"),
+        ("死地资料未载，然同日五人并焚。", "死地，然同日五人并焚。"),
+        ("或别有所图，资料不载，未敢深述。", "或别有所图，未敢深述。"),
+        ("祖上事迹，史无可考。", "祖上事迹。"),
+    )
+    bad = [(s, bio._strip_meta_notes(s), w) for s, w in cases
+           if bio._strip_meta_notes(s) != w]
+    check("按语句被删且不留粘连", not bad, bad[:2])
+    keep = "资料给出的人物一律按资料原样书写，叙述依次推进。"
+    check("正常句不被误改", bio._strip_meta_notes(keep) == keep,
+          bio._strip_meta_notes(keep))
+
 
 def group_b(snap_path):
     print(f"[B] 快照传输面 ({os.path.basename(snap_path)})")

@@ -2,9 +2,11 @@
 """facts 快照（提速基建）：载一次熔件，把「核对所需的一切」落成小 JSON。
 
 用法：
-    & D:\\Roman\\tools\\py.ps1 tools\\snap.py <家族文件夹> <玩家id> <as_of> [十年序号]
+    & D:\\Roman\\tools\\py.ps1 tools\\snap.py <家族文件夹> <玩家id> <as_of> [十年序号] [--assert]
     ｜ as_of 传 final 表示终传/在世传（as_of=None）
-    例：& tools\\py.ps1 tools\\snap.py 周氏 38673 888.1.1 2
+    ｜ --assert 顺手跑 tools/verify_fast.py — 一次熔件加载同时拿到快照与回归结论，
+      省掉「为看一眼结果再整载一次」的反覆（本会话最大的时间浪费）
+    例：& tools\\py.ps1 tools\\snap.py 周氏 38673 888.1.1 2 --assert
 
 产物（output/<家族>/data/，与 melt/cache 同目录，已被 .gitignore 覆盖）：
     snap_<pid>_<as_of>[_d<N>].json   事实 + 各篇 blocks + 逐请求 messages + 少量熔件小表
@@ -88,12 +90,14 @@ def _melt_tables(f, facts):
 
 
 def main():
-    if len(sys.argv) < 4:
+    argv = [a for a in sys.argv[1:] if a != "--assert"]
+    do_assert = "--assert" in sys.argv
+    if len(argv) < 3:
         print(__doc__)
         return 2
-    folder, pid = sys.argv[1], int(sys.argv[2])
-    as_of = None if sys.argv[3] in ("final", "none", "-") else sys.argv[3]
-    decade = int(sys.argv[4]) if len(sys.argv) > 4 else None
+    folder, pid = argv[0], int(argv[1])
+    as_of = None if argv[2] in ("final", "none", "-") else argv[2]
+    decade = int(argv[3]) if len(argv) > 3 else None
     data = os.path.join(ROOT, "output", folder, "data")
     cache_path = os.path.join(data, f"player_{pid}.json")
     melts = sorted(x for x in os.listdir(data)
@@ -150,6 +154,13 @@ def main():
     print(f"快照已写入: {out_path} ({size:,} 字节, {digest})")
     print(f"  请求 {len(messages)} 个; 共享前缀 {len(snap['shared'])} 字符; "
           f"blocks {len(blocks)} 块; 熔件 {melt_name}")
+    if do_assert:
+        import subprocess
+        print("  --assert: 跑 tools/verify_fast.py …", flush=True)
+        rc = subprocess.call([sys.executable,
+                              os.path.join(ROOT, "tools", "verify_fast.py"),
+                              out_path])
+        return rc
     return 0
 
 
