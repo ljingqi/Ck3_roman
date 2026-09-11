@@ -18,6 +18,8 @@ experiments/
 
 # 第三方工具 (README 已说明需自行下载到 tools/)
 tools/rakaly.exe
+# 排查用落盘产物 (脚本在 tools/ 内, 输出可随时重跑)
+tools/out_*/
 
 # Python
 __pycache__/
