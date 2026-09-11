@@ -337,11 +337,12 @@ def group_c(snap_path):
                     pass
     check("时间线无镜像成对行 (战争/战役/刑虐/头衔/出生)", not dup, dup[:4])
 
-    # 问题5: 同一被囚者的入狱与获释不得分立两行
+    # 问题5: 同一被囚者的入狱与获释不得分立两行 (v32: 被囚句已点名监禁者,
+    # 形态为「X为Y所囚。」; 旧形「X被囚。」保留兼容)
     inpr, rel = set(), set()
     for e in tl:
         t = e.get("text") or ""
-        m = re.search(r"，(.+?)被囚。$", t)
+        m = re.search(r"，(.+?)为.+?所囚。$", t) or re.search(r"，(.+?)被囚。$", t)
         if m:
             inpr.add(m.group(1))
         m = re.search(r"，(.+?)获释。$", t)

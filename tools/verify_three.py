@@ -69,10 +69,13 @@ def group_a():
           bool(S.MEMORY_TEMPLATES.get("escaped_from_prison_memory")))
     check("MODULE_TABLE 单列「越狱脱逃」",
           "escaped_from_prison_memory" in (F.MODULE_TABLE.get("越狱脱逃") or set()))
-    for sec in ("lead", "mid"):
+    for sec in ("mid",):
         sl = F.MODULE_SLICE.get(("jiashi", sec)) or set()
         check(f"家室列传 {sec} 切片含囚禁/获释/越狱",
               {"囚禁入狱", "获释出狱", "越狱脱逃"} <= sl, str(sorted(sl)))
+    lead = F.MODULE_SLICE.get(("jiashi", "lead")) or set()
+    check("家室列传开篇不重复囚禁模块 (v27 素材不相交)",
+          not ({"囚禁入狱", "获释出狱", "越狱脱逃"} & lead), str(sorted(lead)))
     check("_IDENT_TYPES 含越狱",
           "escaped_from_prison_memory" in F._IDENT_TYPES)
     check("FACT_WORDING 有越狱词条",
