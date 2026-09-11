@@ -243,6 +243,7 @@ def group_c(snap_path):
         return
     snap = json.load(open(snap_path, encoding="utf-8"))
     facts = snap["facts"]
+    meta = snap.get("meta") or {}
     fact_surface, instr = _surface(snap)
     surface = fact_surface + instr
 
@@ -298,6 +299,43 @@ def group_c(snap_path):
             rel.add(m.group(1))
     both = sorted(inpr & rel)
     check("入狱与获释已合并 (无同一人分列两行)", not both, both[:4])
+
+    # 问题7: 同日而死的血亲已合并为一条
+    killed = facts.get("killed") or []
+    cache_p = os.path.join(ROOT, "output", meta["folder"], "data",
+                           f"player_{meta['player_id']}.json")
+    pcache = json.load(open(cache_p, encoding="utf-8")) \
+        if os.path.isfile(cache_p) else {}
+    pchars = pcache.get("characters") or {}
+
+    def _kin(e, key):
+        fam = (pchars.get(str(e.get("id"))) or {}).get("family") or {}
+        return {int(x) for x in (fam.get(key) or [])
+                if isinstance(x, int) or str(x).isdigit()}
+
+    dup_kin = []
+    for i in range(len(killed)):
+        for j in range(i + 1, len(killed)):
+            a, b = killed[i], killed[j]
+            if a.get("death") and b.get("death") and \
+                    a.get("death_date") != b.get("death_date"):
+                continue
+            if _kin(a, "father") & _kin(b, "father") or \
+                    _kin(a, "mother") & _kin(b, "mother"):
+                dup_kin.append((a.get("name"), b.get("name")))
+    check("刺客列传同日血亲已合并", not dup_kin, dup_kin[:4])
+
+    # 问题8: 刺客列传每块内主角全称谓出现 ≤1 次 (仅篇首点名; 每块是一次独立请求)
+    plabel = ((facts.get("protagonist") or {}).get("label") or "").strip()
+    if plabel:
+        over = []
+        for key, val in (snap.get("blocks") or {}).items():
+            if not key.startswith("assassins"):
+                continue
+            txt = "\n".join(val.values()) if isinstance(val, dict) else str(val)
+            if txt.count(plabel) > 1:
+                over.append((key, txt.count(plabel)))
+        check("刺客列传每块凶手称谓 ≤1 次", not over, over[:3])
 
 
 def main():
