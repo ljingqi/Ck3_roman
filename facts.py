@@ -4477,13 +4477,19 @@ class Facts:
                         out.append((key, r["track"], lv, s.get("from")))
                     prev[(key, r["track"])] = lv
         lines = []
+        grouped = {}      # (trait, track) -> [(level, from), …] 保序
         for key, tk, lv, frm in out:
+            grouped.setdefault((key, tk), []).append((lv, frm))
+        for (key, tk), rows in grouped.items():
             base = self._trait_base_name(key)
             tn = L.loc(self.table, "trait_track_" + str(tk)) or ""
             if not base or not tn:
                 continue
-            word = _LEVEL_WORDS[lv] if lv < len(_LEVEL_WORDS) else f"{lv}阶"
-            lines.append(f"{base}·{tn}（自{self._year_only(frm)}起进至{word}）")
+            steps = []
+            for lv, frm in rows:
+                word = _LEVEL_WORDS[lv] if lv < len(_LEVEL_WORDS) else f"{lv}阶"
+                steps.append(f"自{self._year_only(frm)}起进至{word}")
+            lines.append(f"{base}·{tn}（{'，'.join(steps)}）")
         return lines
 
     @staticmethod
