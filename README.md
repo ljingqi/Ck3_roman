@@ -458,6 +458,22 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   「名在句中」会把主角囚人误计为被囚）；传主行迹与逐年摘要的称谓剥离统一走
   `_strip_subject_prefix`。
 
+## v33 修正（牵制方向）
+
+- **`first`/`second` 不是持有方向**：存档 `relations.active_relations` 把成对关系**按键
+  规范化**存储（实测全档 6950 条 `active_hook_*` 记录 `first < second` 恒成立，无一反例），
+  方向只由字段名 `active_hook_<N>` 承载：**N 偶 = `first` 持有对 `second`；N 奇 =
+  `second` 持有对 `first`**（`cache_lib.hook_slot_holder`）。
+  独立判据：`house_head_hook` 的持有者必为家主，槽 0 有 4919/4920 条 `first` 年长、
+  槽 1 有 44/55 条 `second` 年长；Mod `longju_exent` 的 8 处
+  `add_hook = {target = scope:npc_2}` 全在 `root`（＝丈夫；`npc_1` 为 `random_spouse`、
+  `npc_2` 为通奸者）作用域内，且与该档 opinions 的当事人标记
+  （通奸者→丈夫的 `xiangyongletadeqizi_opinion`）逐条吻合。
+- v31 曾据单例（玩家 id 恰好小于乔乔）推断「`first` 即持有者」，把主角**自己**的四条
+  「干了我老婆」里的三条读成了「他人握有对主角的牵制」；v33 起四条均正确读作主角握有。
+  回归：`tools/verify_three.py` [G1]＋`tools/verify_macron.py`（「干了我老婆」不得出现在
+  `hooks_over`）。
+
 ## 代码纪律（2026-09-10 用户定规）
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
