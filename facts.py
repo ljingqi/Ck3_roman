@@ -5526,13 +5526,15 @@ def _year_summary(timeline, pname, plabel=""):
         parts.extend(r.rstrip("。") for r in rest)
         # v28b: 同一行内主角称谓只在首次出现处写出 (「…田所浩二主动开战；囚禁X；…」),
         # 一年一行的摘要里同一全称不再重复五遍
+        # v32: 剥称谓走 _strip_subject_prefix —— 夭折句「<主角>之妻<生母>产下死婴。」
+        # 只删主角名会留下悬空的「之妻」, 该函数一并删去配偶称谓
         if plabel:
             seen_label = False
             norm = []
             for _p in parts:
                 if _p.startswith(plabel):
                     if seen_label:
-                        _p = _p[len(plabel):]
+                        _p = _strip_subject_prefix(_p, plabel)
                     else:
                         seen_label = True
                 norm.append(_p)
@@ -5961,6 +5963,12 @@ def _timeline(f):
     for _d, t, s, mod in events:
         if pname0 and pname0 not in s:
             continue
+        # v32 (问题1): 被囚统计只算**主角本人**被囚 —— 受害者侧的记忆句现在会点名
+        # 监禁者, 主角恰是那个监禁者时句中也含主角名, 「名在句中」不再等价于被囚
+        # (马克龙: 主角囚人四次被误计为「被囚5次」)。方向按记忆持有者判定。
+        if t == "imprisoned" and pid is not None:
+            if (idents.get((_d, t, s)) or {}).get("owner") != pid:
+                continue
         label = _DEATH_STAT_LABEL.get(mod) if t == "death" else _STATS_LABEL.get(t)
         if label:
             stats[label] = stats.get(label, 0) + 1
