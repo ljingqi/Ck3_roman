@@ -534,6 +534,9 @@ EMPTY_CACHE = {
     # v28b: 叛乱派系 (农民/民粹/游牧 起义) 领袖逐档差分 — 称谓用
     # (「农民起义领袖叠溪寋」; 存档只存当前派系, 无起止日期)
     "factions": {},
+    # v31: 牵制逐档差分 (relations.active_relations.active_hook_*) — 只收
+    # 持有者或对象为玩家者; 存档不给创建日, 逐档差分即得「首次见于记载」。
+    "hooks": {},
 }
 
 
@@ -633,7 +636,8 @@ def char_record(cache, cid):
             "faith_history": [],   # v26: [{from, faith}] 改信变化点 (首见即记)
             "traits": [],
             "trait_history": {},    # {特质key: [{from, to, first}]} 获得/消失区间 (v4)
-            "family": {},
+            "family": {},           # 亲属 id 集; v31 另积 ever_spouses (历史上所有配偶)
+            "court": {},            # v31: {employer, knight, join_court_date} 宫廷身份
             "landed": {},
             "memories": [],
             "kills": [],        # v8: 击杀 id 列表 (alive_data.kills ∪ dead_data.kills, 跨年累积)
@@ -1363,6 +1367,17 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
             he = dh_.get(str(pobj.get("dynasty_house"))) or {}
             if isinstance(he, dict) and he.get("motto"):
                 cache["house_motto"] = he.get("motto")
+        # v31: 牵制对手方 (holder/target) 入目标集, 保证姓名/档案可解析
+        # (牵制把柄常指向宫廷外角色: 「安乔握有对主角的强牵制」)。
+        for _e in (melt.get("relations") or {}).get("active_relations") or []:
+            if not isinstance(_e, dict):
+                continue
+            _h, _t = _e.get("first"), _e.get("second")
+            if not isinstance(_h, int) or not isinstance(_t, int):
+                continue
+            if player_id in (_h, _t):
+                targets.add(_h)
+                targets.add(_t)
 
     # 玩家主头衔名变化 (v4): 主头衔 title_name_data (custom → name) 或信封名
     if player_id is not None:
@@ -1531,6 +1546,28 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
             fam["concubine"] = list(dict.fromkeys(
                 (fam.get("concubine") or []) + rev_cons))
         rec["family"] = fam
+        # v31: 历史上所有配偶 (含离异/丧偶后被移出当前字段者) — 婚姻对判定用
+        # (「与配偶同房」不写私通; 妻子后来的情人身份对照也靠它)。
+        ever = set(rec["family"].get("ever_spouses") or [])
+        for _k in ("primary_spouse", "spouse", "former_spouses",
+                   "concubine", "former_concubines"):
+            ever.update(int(x) for x in (fam.get(_k) or []))
+        if ever:
+            rec["family"]["ever_spouses"] = sorted(ever)
+        # v31: 宫廷身份 (court_data) — 雇主/骑士/入宫日; 存档在角色身上给出,
+        # 此前完全未收 («配偶的情人是主角廷中骑士» 这一关键身份无处可取)。
+        cd = c.get("court_data") or {}
+        if isinstance(cd, dict) and cd:
+            cur = rec.get("court") or {}
+            emp = cd.get("employer")
+            if isinstance(emp, int):
+                cur["employer"] = emp
+            if cd.get("knight"):
+                cur["knight"] = True
+            jd = cd.get("join_court_date")
+            if jd:
+                cur["join_court_date"] = jd
+            rec["court"] = cur
         # v8: 击杀 (alive_data.kills / dead_data.kills, 跨年累积去重)
         kills = kills_of(c)
         if kills:
@@ -1622,7 +1659,67 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # v29: 瘟疫/疫病 (epidemics) 逐档差分 — 存档给的是**游戏算好的动态名**
     # (「李黯之火」「撒丁痘」「东罗马痘」), 供《本纪》《家室列传》写疫病风味
     _diff_epidemics(cache, melt, date_label)
+    # v31: 牵制 (hooks) 逐档差分 — 存档只存当前持有的牵制且无创建日
+    _diff_hooks(cache, melt, date_label)
     return cache
+
+
+def _diff_hooks(cache, melt, date_label):
+    """把本档牵制并入 cache["hooks"] (逐档差分)。
+
+    存档形如::
+
+        relations.active_relations = [
+            {"first": 38677, "second": 43961,
+             "active_hook_0": {"type": "ganlewodelaopo_hook",
+                               "expiration_date": "9999.1.1"}}, …]
+
+    方向: `first` 持有对 `second` 的牵制 (实测 — Mod 事件使受害方对通奸者
+    `add_hook`, 落在 first 侧; `house_head_hook` 亦全为 first=家主 second=诸子)。
+    只收「持有者或对象为玩家」的牵制 (控体积; 全档 6950 条 → 玩家相关 14 条)。
+    记录形如::
+
+        {"38677>43961>ganlewodelaopo_hook":
+            {"holder": 38677, "target": 43961, "type": "ganlewodelaopo_hook",
+             "expiration": "9999.1.1", "first_seen": "870.1.1", "first": false}}
+
+    `first` = 首档即见 (数据起点前已有); 本档消失即记 `lost_at`。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return
+    ar = (melt.get("relations") or {}).get("active_relations") or []
+    hist = cache.setdefault("hooks", {})
+    first_snap = len(cache.get("sources") or []) <= 1
+    want = {}
+    for e in ar:
+        if not isinstance(e, dict):
+            continue
+        holder, target = e.get("first"), e.get("second")
+        if not isinstance(holder, int) or not isinstance(target, int):
+            continue
+        if holder != pid and target != pid:
+            continue
+        for k, v in e.items():
+            if not str(k).startswith("active_hook") or not isinstance(v, dict):
+                continue
+            tp = v.get("type")
+            if not tp:
+                continue
+            want[f"{holder}>{target}>{tp}"] = {
+                "holder": holder, "target": target, "type": str(tp),
+                "expiration": v.get("expiration_date"),
+            }
+    for key, v in want.items():
+        rec = hist.get(key)
+        if rec is None:
+            hist[key] = dict(v, first_seen=date_label, first=first_snap)
+            continue
+        rec["expiration"] = v.get("expiration")
+        rec.pop("lost_at", None)
+        rec["last_seen"] = date_label
+    for key, rec in hist.items():
+        if key not in want and not rec.get("lost_at"):
+            rec["lost_at"] = date_label
 
 
 def _diff_epidemics(cache, melt, date_label):
