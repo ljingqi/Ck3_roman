@@ -287,7 +287,11 @@ FACT_WORDING = {
     "hook_held_weak": "{actor}握有对{target}的牵制{name}{since}。",
     "hook_over_actor_strong": "{holder}握有对{actor}的强牵制{name}{since}。",
     "hook_over_actor_weak": "{holder}握有对{actor}的牵制{name}{since}。",
-    "hook_group": "{actor}握有对{names}的{strength}牵制{name}（共{n}人）。",
+    # 归并行 (同类多对象/多持有者): 方向各自的句式, 名字取前三 + 总人数
+    "hook_group_held": "{actor}握有对{names}的{strength}牵制{name}（共{n}人）。",
+    "hook_group_over": "{names}握有对{actor}的{strength}牵制{name}（共{n}人）。",
+    "hook_head_held": "主角握有的牵制如下：",
+    "hook_head_over": "他人握有对主角的牵制如下：",
     "hook_strong_word": "强",
     "hook_since": "（自{year}见载）",
     "hook_expires": "（{date}届满）",

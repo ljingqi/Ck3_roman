@@ -178,6 +178,10 @@ _AFFAIR_SLOTS = {
     "lover_died": "dead_relation",
 }
 
+# v31 (问题7): 这些隐事的 target 即对方当事人 (存档 participants 只列持有人),
+# 算「当事人」而非第三方知情者
+_SECRET_PARTY_TARGET_TYPES = {"secret_lover", "secret_adultery"}
+
 # 记忆类型 → 取 vars 中的 landed_title (头衔 id)
 TITLE_VAR_TYPES = {"lost_title_memory", "ascended_throne_memory"}
 
@@ -2602,6 +2606,11 @@ class Facts:
             return ""
         owner = rec.get("owner")
         parties = {x for x in (rec.get("participants") or []) if isinstance(x, int)}
+        # v31 (问题7): 私通类隐事的 target 就是对方当事人 (存档 participants 只列
+        # 持有人) — 一并排除, 否则「公主与乔乔私通, 知情者：乔乔」又是同义反复。
+        if (rec.get("type") or "") in _SECRET_PARTY_TARGET_TYPES \
+                and isinstance(rec.get("target"), int):
+            parties.add(rec["target"])
         seen = self._year_only(rec.get("first_seen")) if self._first_seen_note(rec) else ""
         groups = []            # [(年份文本 or '', [名, ...])] — 同一年并列
         index = {}
@@ -2866,10 +2875,13 @@ class Facts:
                 name = self._hook_name(tp)
                 word = _FACT_WORDING["hook_strong_word"] if strong else ""
                 if len(rs) > 1:
+                    # 归并行: 对手方按方向取 (主角握有 → 对象; 他人对主角 → 持有者)
+                    ids = [(r["target"] if mine else r["holder"]) for r in rs]
                     names = "、".join(
-                        (self.person_label(r["target"], style="brief") or "某人")
-                        for r in rs[:3])
-                    tpl = _FACT_WORDING["hook_group"]
+                        (self.person_label(i, style="brief") or "某人")
+                        for i in list(dict.fromkeys(ids))[:3])
+                    tpl = _FACT_WORDING[
+                        "hook_group_held" if mine else "hook_group_over"]
                     lines.append(tpl.format(actor="主角", names=names, strength=word,
                                             name=name, n=len(rs)))
                     continue
@@ -3894,8 +3906,10 @@ class Facts:
             return ""
         if set(la) & set(lb):
             return ""            # v29: 相通即常识, 不下发
-        return (f"{na}通{'、'.join(la)}，与{nb}（{'、'.join(lb)}）无共通语，"
-                f"交谈须借通译或以手势、习语往来。")
+        # v31: 语言清单不用括注同位语 (「与X（奥伊通俗拉丁语）无共通语」违 v29b 判据),
+        # 改并列分句直陈双方所言
+        return (f"{na}通{'、'.join(la)}，{nb}通{'、'.join(lb)}，"
+                f"二者无共通语，交谈须借通译或以手势、习语往来。")
 
     def language_relation_lines(self, cid):
         """主角与妻室/子女的言语关系句 (v28/v29): **只列无共通语者**, 按对方语言
@@ -3928,8 +3942,8 @@ class Facts:
                              for m in members)
             if not names:
                 continue
-            out.append(f"{na}通{'、'.join(pl)}，与{names}（{'、'.join(key)}）"
-                       f"无共通语，交谈须借通译或以手势、习语往来。")
+            out.append(f"{na}通{'、'.join(pl)}，{names}通{'、'.join(key)}，"
+                       f"二者无共通语，交谈须借通译或以手势、习语往来。")
         return out[:4]
 
     def language_bridge_line(self, cid):
@@ -4083,10 +4097,15 @@ class Facts:
         return ["族属：" + "，".join(out) + "。"]
 
     def traits(self, cid):
-        """角色当前特质 id 列表 → 中文 (未知特质跳过)。
+        """角色当前特质中文名列表 (未知特质跳过)。
         v11: as_of 截断 — 只取 as_of 前已具且未消失的特质 (十年传记不泄漏后期疾病)。"""
+        return [z for _k, z in self.trait_pairs(cid)]
+
+    def trait_pairs(self, cid):
+        """[(特质 key, 中文名)] — 当前持有特质 (as_of 截断口径同 traits)。
+        v31 (问题1): 「为人」分句要按游戏 `category` 归类, 故连 key 一起返回。"""
         if self.as_of:
-            return self._traits_at(cid)
+            return self._trait_pairs_at(cid)
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         ids = rec.get("traits") or []
         out = []
@@ -4096,15 +4115,16 @@ class Facts:
             key = self._tl[t]
             z = _trait_name(self.table, key)
             if z:
-                out.append(z)
+                out.append((key, z))
         return out
 
-    def _traits_at(self, cid):
-        """as_of 时点持有的特质: 依 trait_history 区间判定 (from ≤ as_of < to)。"""
+    def _trait_pairs_at(self, cid):
+        """as_of 时点持有的特质 [(key, 名)]: 依 trait_history 区间 (from ≤ as_of < to)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
         ao = cl.date_key(self.as_of)
         out = []
+        seen = set()
         for key in sorted(th):
             for iv in th[key]:
                 frm = iv.get("from")
@@ -4114,54 +4134,41 @@ class Facts:
                 if to and cl.date_key(to) <= ao:
                     continue
                 z = _trait_name(self.table, key)
-                if z and z not in out:
-                    out.append(z)
+                if z and key not in seen:
+                    seen.add(key)
+                    out.append((key, z))
         return out
 
+    def _traits_at(self, cid):
+        """兼容出口: as_of 时点特质中文名列表 (旧调用点)。"""
+        return [z for _k, z in self._trait_pairs_at(cid)]
+
     def trait_groups(self, cid):
-        """「为人」句的特质分组 (v31, 问题1): [(类别词, [特质名, …]), …]。
+        """「为人」句的特质分组 (v31, 问题1): [(类别词, [特质名, …], 是否截断), …]。
 
         类别取游戏 `common/traits` 的 `category` (localization.py 建表), 不靠提示词;
         每组超 `_TRAIT_GROUP_LIMIT` 项取前若干并加「等」— 旧文本把 12 项特质连成
         一顿号串, 模型只能照抄成「报菜名」。顺序见 `_TRAIT_GROUP_ORDER`。"""
         cats = (L.trait_names().get("categories") or {})
         buckets = {}
-        for z in self.traits(cid):
-            key = self._trait_key_of(z)
+        for key, z in self.trait_pairs(cid):
             buckets.setdefault(cats.get(key, ""), []).append(z)
         out = []
-        for cat in _TRAIT_GROUP_ORDER:
+        for cat in list(_TRAIT_GROUP_ORDER) + sorted(
+                set(buckets) - set(_TRAIT_GROUP_ORDER)):
             names = buckets.get(cat) or []
             if not names:
                 continue
             word = _TRAIT_GROUP_WORDS.get(cat, "")
             if len(names) > _TRAIT_GROUP_LIMIT:
-                names = names[:_TRAIT_GROUP_LIMIT]
-                out.append((word, names, True))
+                out.append((word, names[:_TRAIT_GROUP_LIMIT], True))
             else:
                 out.append((word, names, False))
-        # 未列入顺序表的类别 (Mod 自造) 兜底附在末尾
-        for cat in sorted(set(buckets) - set(_TRAIT_GROUP_ORDER)):
-            names = buckets[cat]
-            if names:
-                out.append((_TRAIT_GROUP_WORDS.get(cat, ""), names, False))
         return out
-
-    def _trait_key_of(self, zh):
-        """特质中文名 → 特质 key (反向查, 供类别归属)。查不到返回 ''。"""
-        memo = getattr(self, "_trait_rev", None)
-        if memo is None:
-            memo = {}
-            for t in (self._tl or []):
-                z = _trait_name(self.table, t)
-                if z and z not in memo:
-                    memo[z] = t
-            self._trait_rev = memo
-        return memo.get(zh, "")
 
     def traits_sentence(self, cid):
         """「为人」句的按类文本 (v31): 「性情野心勃勃、专断；禀赋眉清目秀」;
-        无特质返回 ''。类别词为空者直列 (如 Mod 自造类别)。"""
+        无特质返回 ''。类别词为空者直列 (Mod 自造类别)。"""
         parts = []
         for word, names, truncated in self.trait_groups(cid):
             body = "、".join(names) + ("等" if truncated else "")
@@ -6355,16 +6362,17 @@ def _character_profiles(f):
             "traits": f.traits_sentence(cid),
         }
         # v31 (问题6): 主角廷中身份 — 骑士/廷臣 + 入宫日 (乔乔/佩拉约等妻室情人
-        # 正是主角廷中骑士; 旧档案里这一身份完全缺席)。仅非家人者写入, 免得
-        # 妻室子女的档案行都挂一句「廷臣」。
+        # 正是主角廷中骑士; 旧档案里这一身份完全缺席)。玩家**自家人**不写这一句
+        # (妻室子女的档案行不必都挂一句「廷臣」)。
         _pid0 = f.cache.get("player_id")
         if _pid0 is not None and int(cid) != int(_pid0):
-            _fam0 = rec.get("family") or {}
+            _prec0 = (f.cache.get("characters") or {}).get(str(_pid0)) or {}
+            _pfam0 = _prec0.get("family") or {}
             _kin = set()
             for _k in ("primary_spouse", "spouse", "former_spouses", "child",
                        "concubine", "former_concubines", "father", "mother",
                        "siblings", "ever_spouses"):
-                _kin.update(x for x in (_fam0.get(_k) or []) if isinstance(x, int))
+                _kin.update(x for x in (_pfam0.get(_k) or []) if isinstance(x, int))
             if int(cid) not in _kin:
                 _csp = f.court_service_phrase(cid)
                 if _csp:
@@ -6477,9 +6485,13 @@ def _character_profiles(f):
         # v29 (问题4): 「传主行迹」用省主语版 — 块内主语恒为传主, 重复姓名无信息
         _subj = prof.get("label") or name
         prof["events_subjectless"] = [_strip_subject_prefix(x, _subj) for x in mems]
-        ds = _death_sentence(f, cid)
-        if ds:
-            prof["death"] = ds
+        # v31: 死亡句按 as_of 截断 — 十年传记不写十年末之后的死 (旧文本把 878.3.17
+        # 的死写进截至 878.01.01 的十年传; 时间线本有截断, 只有档案漏了)
+        _dd = (rec.get("death") or {}).get("date")
+        if not (f.as_of and _dd and cl.date_key(_dd) > cl.date_key(f.as_of)):
+            ds = _death_sentence(f, cid)
+            if ds:
+                prof["death"] = ds
         out[str(cid)] = prof
     return out
 
