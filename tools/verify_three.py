@@ -200,6 +200,26 @@ def group_e():
     check("未进档不括注",
           f._trait_display("gallowsbait", "不法之徒",
                            {"gallowsbait": {"bandit": 0}}) == "不法之徒")
+    # 进档履历: 同一轨道多次进档并成一行
+    cache = {
+        "player_id": 1,
+        "characters": {"1": {
+            "id": 1, "name_zh": "阿甲",
+            "traits": [0], "trait_history": {},
+            "trait_xp": [
+                {"from": "870.1.1", "traits": [0], "xp": [0]},
+                {"from": "872.1.1", "traits": [0], "xp": [40]},
+                {"from": "874.1.1", "traits": [0], "xp": [70]},
+            ],
+            "memories": [], "family": {}, "landed": {}},
+        },
+    }
+    tl = ["gallowsbait"] + ["x"] * 200
+    f3 = F.Facts(cache, {"traits_lookup": tl}, None, as_of="875.1.1")
+    hist = f3.trait_level_history(1)
+    check("进档履历同轨道并为一行",
+          len(hist) == 1 and hist[0].count("进至") == 2
+          and hist[0].startswith("不法之徒·强盗"), str(hist))
 
 
 def group_f(snap_path):
