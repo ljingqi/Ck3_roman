@@ -22,6 +22,7 @@ import random
 
 import llm
 import cache_lib as cl
+import flavorization as FZ
 import localization as L
 
 # ---------------------------------------------------------------------------
@@ -815,6 +816,8 @@ class Facts:
         # v29: 数值档位表 (虔诚/威望/影响力/功勋的 defines 阈值) 与职位显示名变体表
         self._bands = (L.currency_levels() or {}).get("bands") or {}
         self._cp_variants = L.court_positions()
+        # v30: 游戏 flavorization 条目表 (统治者称呼/头衔名后缀的权威来源)
+        self._flavor = FZ.table()
         # v30: 授予人祭的教义键集 (处决方式「献祭」的可用门, 见 execution_method)
         try:
             self._sacrifice_doctrines = L.doctrines_granting("human_sacrifice_active")
@@ -1151,7 +1154,14 @@ class Facts:
                 break
         if tier:
             gov = self._title_government(tid)
-            word = L.tier_word(self.table, gov, tier)
+            # v30: 先查游戏 flavorization 的 type=title 词 (问题2) — 诺斯公国头衔名
+            # 后缀为「雅尔国」(county_feudal_norse, 块内 tier 同为 duchy) 而非「公国」
+            word = ""
+            if not (key.startswith("h_") and gov != "celestial_government"):
+                word = self._flavor_word("title", tier, t.get("holder"), tid=tid,
+                                         gov=gov)
+            if not word:
+                word = L.tier_word(self.table, gov, tier)
             # 霸权级 (h_): 仅天朝制启用「天朝」; 其它政体 h_ 不加后缀
             if key.startswith("h_") and gov != "celestial_government":
                 word = ""
@@ -1746,6 +1756,13 @@ class Facts:
         帝国=关白/王国=帅/郡县=国司/堡=郡司 (修复方案_汤利五问题.md 问题2);
         tid 传入时, 天皇座 (k_chrysanthemum_throne) 持有人直称「天皇」。"""
         gov = government or ""
+        # v30: 游戏 flavorization 优先 (修复方案_菲利普4.md 问题2) — 文化专属层级词
+        # 压过政体通用词: 诺斯公国 = 雅尔 (count_feudal_male_norse, tier=duchy,
+        # priority 30) 而非 duke_tribal_male 大酋长 (26)。未命中才走既有链。
+        fw = self._flavor_word("character", tier, cid, tid=tid,
+                               gender=("female" if female else "male"), gov=gov)
+        if fw:
+            return fw
         if gov == "japan_administrative_government":
             key = self._JAPAN_OFFICE_KEYS.get(tier)
             if tid is not None and \
@@ -1875,6 +1892,113 @@ class Facts:
     _NOMAD_TIER_KEY = {"hegemon": "emperor", "empire": "emperor",
                        "kingdom": "king", "duchy": "duke",
                        "county": "count", "barony": "baron"}
+
+    # ---- v30: 游戏 flavorization 取词 (统治者称呼 / 头衔名后缀) ----
+    # 见 flavorization.py 与 修复方案_菲利普4.md 问题2: 诺斯公国 = 雅尔
+    # (键名 count_feudal_male_norse, 块内 tier = duchy, priority 30) ——
+    # 文化专属词优先于政体通用词, 这是游戏的实际规则。
+
+    _FLAVOR_TIER = {"hegemon": "hegemony"}
+
+    def _culture_entry(self, cid):
+        """角色文化的 culture_manager 条目 (含 name_list / heritage)。"""
+        if cid is None:
+            return {}
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        cul = rec.get("culture")
+        if cul is None:
+            cul = (self._chars.get(str(cid)) or {}).get("culture")
+        if cul is None:
+            return {}
+        e = ((self.melt.get("culture_manager") or {}).get("cultures") or {}) \
+            .get(str(cul))
+        return e if isinstance(e, dict) else {}
+
+    def _faith_tags(self, cid):
+        """角色信仰 → (faith tag, religion tag)。"""
+        fid = self._faith_id(cid) if cid is not None else None
+        if fid is None:
+            return "", ""
+        rel = self.melt.get("religion") or {}
+        e = (rel.get("faiths") or {}).get(str(fid))
+        if not isinstance(e, dict):
+            return "", ""
+        ftag = str(e.get("faith_type") or e.get("tag") or "")
+        rtag = ""
+        rid = e.get("religion")
+        if rid is not None:
+            re_ = (rel.get("religions") or {}).get(str(rid))
+            if isinstance(re_, dict):
+                rtag = str(re_.get("tag") or re_.get("religion_type") or "")
+        return ftag, rtag
+
+    def _top_liege_of(self, cid, tid):
+        """角色沿 de_facto_liege 上溯的最高领主 (自身即最高时返回 (cid, tid))。"""
+        seen = set()
+        cur = str(tid) if tid is not None else ""
+        holder, top_tid = cid, tid
+        while cur and cur not in seen:
+            seen.add(cur)
+            t = self._lt.get(cur) or {}
+            if not t:
+                break
+            h = t.get("holder")
+            if isinstance(h, int):
+                holder = h
+            top_tid = t.get("title") or cur
+            liege = t.get("de_facto_liege")
+            cur = str(liege) if liege is not None else None
+        try:
+            top_tid = int(top_tid)
+        except (TypeError, ValueError):
+            top_tid = tid
+        return holder, top_tid
+
+    def _flavor_key(self, kind, tier, cid, tid=None, gender=None, gov=None):
+        """flavorization 取词的本地化键; 未命中/无表返回 ''。"""
+        if not self._flavor or tier is None or cid is None:
+            return ""
+        tkey = self._FLAVOR_TIER.get(tier, tier)
+        if gender is None:
+            gender = "female" if self._is_female(cid) else "male"
+        if gov is None:
+            gov = self._title_government(tid) if tid is not None else ""
+        ce = self._culture_entry(cid)
+        ftag, rtag = self._faith_tags(cid)
+        title_key = ""
+        if tid is not None:
+            title_key = ((self._lt.get(str(tid)) or {}).get("key") or "")
+        independent = self._is_independent(cid)
+        # 封臣: 未显式 top_liege = no 的条目按最高领主判定 (游戏默认行为)
+        top = None
+        if not independent and tid is not None:
+            lid, ltid = self._top_liege_of(cid, tid)
+            if lid is not None and int(lid) != int(cid):
+                lce = self._culture_entry(lid)
+                lft, lrt = self._faith_tags(lid)
+                top = {"government": self._title_government(ltid) if ltid else "",
+                       "name_list": lce.get("name_list") or "",
+                       "heritage": lce.get("heritage") or "",
+                       "faith": lft, "religion": lrt}
+        try:
+            return FZ.resolve(
+                kind, tkey, gender, government=gov or "",
+                name_list=ce.get("name_list") or "",
+                heritage=ce.get("heritage") or "",
+                faith=ftag, religion=rtag, title_key=title_key,
+                independent=independent, top=top)
+        except Exception:
+            return ""
+
+    def _flavor_word(self, kind, tier, cid, tid=None, gender=None, gov=None):
+        """flavorization 键 → 本地化词 (未命中/未解析返回 '')。"""
+        k = self._flavor_key(kind, tier, cid, tid=tid, gender=gender, gov=gov)
+        if not k:
+            return ""
+        v = L.loc(self.table, k)
+        if v and not v.startswith("$") and not v.startswith("["):
+            return v
+        return ""
 
     def _heritage_of(self, cid):
         """文化支柱 heritage (heritage_turkic 等), 供游牧官职词按游戏优先级取词。"""
@@ -3921,6 +4045,41 @@ class Facts:
                 rows.append(f"{nm}（自{start}年起）")
         return rows
 
+    def _culture_name_of_id(self, cul):
+        """文化 id → 「X人」(不经角色记录; 供族属变迁句用)。"""
+        if cul is None:
+            return ""
+        tpl = cl._template_of_culture(self.melt, cul)
+        name = L.loc(self.table, tpl) or CULTURE_TEMPLATE_ZH.get(tpl) or ""
+        if name:
+            return name if name.endswith("人") else f"{name}人"
+        return ""
+
+    def culture_history_lines(self, cid):
+        """族属变迁句 (v30, 修复方案_菲利普4.md 问题1)。
+
+        数据源 = 缓存 culture_history (cache_lib 逐档差分; 与 faith_history 同构)。
+        单条/无历史返回 []。as_of 截断后 ≥2 点才出句。
+        例: ['族属：原为哥特人，871年起为诺斯人。']"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        hist = [h for h in (rec.get("culture_history") or []) if h.get("from")]
+        if len(hist) < 2:
+            return []
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        pts = []
+        for h in hist:
+            if ao is not None and cl.date_key(h["from"]) > ao:
+                break
+            nm = self._culture_name_of_id(h.get("culture"))
+            if nm:
+                pts.append((int(str(h["from"]).split(".")[0]), nm))
+        if len(pts) < 2:
+            return []
+        out = [f"原为{pts[0][1]}"]
+        for y, nm in pts[1:]:
+            out.append(f"{y}年起为{nm}")
+        return ["族属：" + "，".join(out) + "。"]
+
     def traits(self, cid):
         """角色当前特质 id 列表 → 中文 (未知特质跳过)。
         v11: as_of 截断 — 只取 as_of 前已具且未消失的特质 (十年传记不泄漏后期疾病)。"""
@@ -5794,6 +5953,10 @@ def _protagonist(f):
     fhl = f.faith_history_lines(pid)
     if fhl:
         p["faith_history"] = "；".join(fhl)
+    # v30: 族属变迁 (问题1 — 游戏不为改宗留记忆, 逐档 culture 差分)
+    chl = f.culture_history_lines(pid)
+    if chl:
+        p["culture_history"] = "；".join(chl)
     # v7: 家族家训 + 宫廷/营地官职
     mot = f.motto()
     if mot:
@@ -6124,6 +6287,10 @@ def _character_profiles(f):
         fhl = f.faith_history_lines(cid)
         if fhl:
             prof["faith_history"] = "；".join(fhl)
+        # v30: 族属变迁 (问题1)
+        chl = f.culture_history_lines(cid)
+        if chl:
+            prof["culture_history"] = "；".join(chl)
         # v7: 该角色在玩家宫廷/营地中的官职 (最新快照, 反向取最后一年)
         # v29: 显示名按玩家宫廷的政体变体取 (私人医生 → 医学博士)
         for h in reversed(f.cache.get("court_positions") or []):

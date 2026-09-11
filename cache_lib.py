@@ -628,6 +628,7 @@ def char_record(cache, cid):
             "female": False,       # v26: 性别 (熔件 female 字段只在女性身上出现)
             "dynasty_house": None,
             "culture": None,
+            "culture_history": [],  # v30: [{from, culture}] 族属变更点 (首见即记)
             "faith": None,
             "faith_history": [],   # v26: [{from, faith}] 改信变化点 (首见即记)
             "traits": [],
@@ -1435,6 +1436,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
             rec["female"] = bool(c.get("female"))
             rec["culture"] = c.get("culture")
             rec["faith"] = c.get("faith")
+            if rec["culture"] is not None:
+                rec["culture_history"] = [{"from": date_label,
+                                           "culture": rec["culture"]}]
             if rec["faith"] is not None:
                 rec["faith_history"] = [{"from": date_label,
                                          "faith": rec["faith"]}]
@@ -1454,6 +1458,15 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         # 缓存里存活期直接读到的 id 即为最直接的来源, facts 层缓存优先读取。
         if c.get("culture") is not None:
             rec["culture"] = c.get("culture")
+        # v30: 族属变更记入 culture_history — 与 faith_history 同构 (游戏不为改宗留
+        # 记忆, 逐档差分是唯一来源; 菲利普: 868–870 哥特人 → 871 起诺斯人)
+        _cid_cul = c.get("culture")
+        if _cid_cul is not None:
+            if rec.get("culture") != _cid_cul:
+                ch = rec.setdefault("culture_history", [])
+                if not ch or ch[-1].get("culture") != _cid_cul:
+                    ch.append({"from": date_label, "culture": _cid_cul})
+            rec["culture"] = _cid_cul
         # v26: 改信记入 faith_history — 游戏不为玩家改信留任何记忆, 逐档差分是唯一
         # 来源 (田所2: 法华宗→艾什尔里派); 快照日一律 1月1日, 渲染只取年份。
         _fid = c.get("faith")

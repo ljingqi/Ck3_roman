@@ -622,6 +622,9 @@ def _profile_lines(facts, cid=None):
     if p.get("motto"):
         bits.append(f"家训「{p['motto']}」")
     lines.append(f"{head}，{'，'.join(bits)}。" if bits else f"{head}。")
+    # ---- v30: 族属变迁句 (问题1 — 「原为哥特人，871年起为诺斯人。」) ----
+    if p.get("culture_history"):
+        lines.append(p["culture_history"])
     # ---- v27: 语言句 (母语/兼通) ----
     if p.get("language_line"):
         lines.append(p["language_line"])
