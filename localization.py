@@ -1171,6 +1171,19 @@ TIER_KEY_OF_PREFIX = {"e_": "empire", "k_": "kingdom", "d_": "duchy",
 GENERIC_TIER_ZH = {"empire": "帝国", "kingdom": "王国", "duchy": "公国",
                    "county": "伯爵领", "barony": "堡", "hegemon": "皇朝"}
 
+# v30: 通用**官职词**兜底表 (男, 女) — 与上面的头衔名后缀表分列, 二者语义不同:
+# GENERIC_TIER_ZH 是「诺丁汉郡+伯爵领」这类头衔名后缀, GENERIC_OFFICE_ZH 是
+# 「诺丁汉郡+女伯爵」这类统治者称呼 (修复方案_菲利普4.md 问题9: 女性词此前无处可取,
+# 混用会让头衔名变成「诺丁汉郡女伯爵领」)。
+GENERIC_OFFICE_ZH = {
+    "hegemon": ("皇朝", "皇朝"),
+    "empire":  ("皇帝", "女皇"),
+    "kingdom": ("国王", "女王"),
+    "duchy":   ("公爵", "女公爵"),
+    "county":  ("伯爵", "女伯爵"),
+    "barony":  ("男爵", "女男爵"),
+}
+
 
 def government_prefix(government):
     """'celestial_government' → 'celestial'; 其它原样去 _government 后缀。"""
