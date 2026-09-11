@@ -295,7 +295,10 @@ _SUBJ_DATE_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
 
 
 def _strip_subject_prefix(text, label):
-    """删去句首传主称谓 (含其后的「的」); 无可删处原样返回。"""
+    """删去句首传主称谓 (含其后的「的」); 无可删处原样返回。
+
+    v32 (问题3): 夭折句形如「<传主>之妻<生母>产下死婴。」, 只删传主名会留下悬空的
+    「之妻…」; 故配偶称谓一并删去, 让生母自己作主语 (「<生母>产下死婴。」)。"""
     if not text or not label:
         return text
     m = _SUBJ_DATE_RE.match(text)
@@ -306,6 +309,10 @@ def _strip_subject_prefix(text, label):
     rest = rest[len(label):]
     if rest.startswith("的"):
         rest = rest[1:]
+    else:
+        rm = re.match(r"^之(?:妻|夫|妾|情人|男宠)", rest)
+        if rm:
+            rest = rest[rm.end():]
     return head + rest
 
 
