@@ -574,6 +574,413 @@ def load_dynasty_table(cfg, force=False):
 
 
 # ---------------------------------------------------------------------------
+# 数值档位 (v29): 游戏 defines 的 LEVELS_* + 本地化档位词
+# ---------------------------------------------------------------------------
+# 虔诚/威望/影响力/功勋在游戏里都有等级档位, 档位名就在本地化表
+# (modifiers_l_simp_chinese.yml: piety_level_0=戴罪之人、merit_level_3=七品…)。
+# 阈值取自 common/defines/00_defines.txt 的 LEVELS_*; 档 = 「≥阈值的个数」,
+# 与阈值个数正好对应档位词下标 (piety 8 档、prestige 5 档、influence 5 档、merit 9 档)。
+
+CURRENCY_KINDS = ("piety", "prestige", "influence", "merit")
+
+_DEFAULT_LEVELS = {
+    "piety": [1000, 1500, 2500, 4500, 8500, 13000, 17000, 22500],
+    "prestige": [1000, 2000, 5000, 10000, 25000],
+    "influence": [1000, 2000, 4000, 8000, 16000],
+    "merit": [100, 1000, 2000, 3500, 5500, 8500, 12000, 17000, 23000],
+}
+
+_DEFINE_LEVEL_RE = re.compile(r"^\s*(LEVELS_(?:PIETY|PRESTIGE|INFLUENCE|MERIT))\s*=\s*\{([^}]*)\}",
+                              re.M)
+_DEFINE_NAME_OF = {"LEVELS_PIETY": "piety", "LEVELS_PRESTIGE": "prestige",
+                   "LEVELS_INFLUENCE": "influence", "LEVELS_MERIT": "merit"}
+
+
+def _currency_levels_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "currency_levels.json")
+
+
+def build_currency_levels(cfg):
+    """游戏 + 启用 Mod 的 common/defines → {"bands": {kind: [阈值…]}}。
+
+    只取 **NCharacter 块**内的 LEVELS_* — 同名键在 NDynasty 块里另有定义
+    (宗族威望档, 10 档), 混用会让角色威望映射到不存在的档位词。
+    取不到 (文件缺失/被改写) 的币种回退内置默认值。"""
+    bands = {k: list(v) for k, v in _DEFAULT_LEVELS.items()}
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        d = os.path.join(root, "common", "defines")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = fp.read()
+            except OSError:
+                continue
+            for _key, body in _top_blocks(txt):
+                if _key != "NCharacter":
+                    continue
+                for m in _DEFINE_LEVEL_RE.finditer(body):
+                    kind = _DEFINE_NAME_OF.get(m.group(1))
+                    vals = []
+                    for tok in m.group(2).split():
+                        try:
+                            vals.append(float(tok))
+                        except ValueError:
+                            pass
+                    if kind and vals:
+                        bands[kind] = vals  # Mod 覆盖游戏 (后加载覆盖先加载)
+    return {"schema": 1, "bands": bands}
+
+
+def save_currency_levels(cfg, table):
+    path = _currency_levels_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_currency_levels(cfg=None, force=False):
+    """载入档位阈值表; 缺失或强制时重建。"""
+    cfg = cfg or llm.load_config()
+    path = _currency_levels_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("bands"):
+                return data
+        except Exception:
+            pass
+    data = build_currency_levels(cfg)
+    save_currency_levels(cfg, data)
+    return data
+
+
+def level_index(value, thresholds):
+    """数值 → 档位下标 (= 阈值中 ≤ value 的个数); 无法解析返回 None。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not thresholds:
+        return None
+    return sum(1 for t in thresholds if v >= t)
+
+
+def level_word(table, bands, kind, value):
+    """数值 → 游戏档位词 (如 虔诚 -865.8 → 「戴罪之人」); 查不到返回 ''。
+
+    档位词缺失时向下回退到最近一个已有词的档 (防 Mod 改阈值后档位词不配套,
+    宁可给略低的档位词, 也不整项不写)。"""
+    th = (bands or {}).get(kind) or []
+    n = level_index(value, th)
+    if n is None:
+        return ""
+    for i in range(n, -1, -1):
+        w = loc(table, f"{kind}_level_{i}")
+        if w:
+            return w
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# 职位显示名变体 (v29): court_position_asset.trigger → localization_key
+# ---------------------------------------------------------------------------
+# 存档只存职位**类型**键 (court_physician_court_position), 游戏按雇主政体/独立/
+# 层级/文化传承在其 court_position_asset 变体里择一 localization_key
+# (court_physician_celestial=医学博士 / _imperial=太医)。
+# 触发词实测只有 6 类: government_has_flag / is_independent_ruler /
+# highest_held_title_tier / has_cultural_pillar / culture_has_*_heritage_pillar_trigger
+# / OR·AND·NOT·NOR 组合; 未知条件一律视为不命中 → 回退职位类型键的默认名。
+
+_TIER_NUM = {"barony": 1, "county": 2, "duchy": 3, "kingdom": 4,
+             "empire": 5, "hegemony": 6}
+
+
+def _script_items(text):
+    """CK3 脚本块内容 → [(key, op, value|body)] (保序, 去注释)。"""
+    out = []
+    i, n = 0, len(text or "")
+    while i < n:
+        ch = text[i]
+        if ch in " \t\r\n,":
+            i += 1
+            continue
+        if ch == "#":
+            j = text.find("\n", i)
+            i = n if j < 0 else j + 1
+            continue
+        m = re.match(r"[A-Za-z_][A-Za-z0-9_.]*", text[i:])
+        if not m:
+            i += 1
+            continue
+        key = m.group(0)
+        i += len(key)
+        m2 = re.match(r"\s*(>=|<=|!=|\?=|=|<|>)\s*", text[i:])
+        if not m2:
+            continue
+        op = m2.group(1)
+        i += m2.end()
+        if i < n and text[i] == "{":
+            depth, j = 0, i
+            while j < n:
+                if text[j] == "{":
+                    depth += 1
+                elif text[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            out.append((key, "block", text[i + 1:j]))
+            i = j + 1
+        else:
+            j = text.find("\n", i)
+            if j < 0:
+                j = n
+            out.append((key, op, text[i:j].split("#")[0].strip().strip('"')))
+            i = j + 1
+    return out
+
+
+def _blocks_of(text, key):
+    """取出所有 `<key> = { … }` 的块体 (保序)。"""
+    out = []
+    for m in re.finditer(r"(?<![A-Za-z0-9_])" + re.escape(key) + r"\s*=\s*\{", text or ""):
+        i = m.end() - 1
+        depth, j = 0, i
+        while j < len(text):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        out.append(text[i + 1:j])
+    return out
+
+
+def _top_blocks(text):
+    """顶层 `key = { … }` → [(key, body)] (保序)。"""
+    out = []
+    depth = 0
+    for m in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{|\{|\}", text or ""):
+        tok = m.group(0)
+        if tok == "{":
+            depth += 1
+        elif tok == "}":
+            depth = max(0, depth - 1)
+        elif depth == 0 and m.group(1):
+            i = m.end() - 1
+            d2, j = 0, i
+            while j < len(text):
+                if text[j] == "{":
+                    d2 += 1
+                elif text[j] == "}":
+                    d2 -= 1
+                    if d2 == 0:
+                        break
+                j += 1
+            out.append((m.group(1), text[i + 1:j]))
+    return out
+
+
+def _heritage_groups(cfg):
+    """scripted_triggers 里的 culture_has_*_heritage_pillar_trigger → {名: [heritage…]}。"""
+    out = {}
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        d = os.path.join(root, "common", "scripted_triggers")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = fp.read()
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                if "heritage_pillar_trigger" not in key:
+                    continue
+                hs = sorted(set(re.findall(r"has_cultural_pillar\s*=\s*(heritage_[A-Za-z0-9_]+)",
+                                           body)))
+                if hs:
+                    out[key] = hs
+    return out
+
+
+def _cond_block(items, groups, op="all"):
+    """触发项 → 条件树: {"op": all|any|none, "children": [叶子或子树]} (保序)。
+
+    空块返回 {} (调用方按「无条件 = 恒真」处理); 无法识别的叶子记 {"unknown": key},
+    求值恒不命中 → 该变体作废, 退化为职位类型键的默认名。"""
+    children = []
+    for key, kop, val in items:
+        k = (key or "").lower()
+        if kop == "block" and k in ("or", "any"):
+            children.append(_cond_block(_script_items(val), groups, "any"))
+        elif kop == "block" and k in ("and", "all", "culture", "root.culture"):
+            children.append(_cond_block(_script_items(val), groups, "all"))
+        elif kop == "block" and k in ("not", "nor", "none"):
+            children.append(_cond_block(_script_items(val), groups, "none"))
+        elif kop == "block":
+            children.append(_cond_block(_script_items(val), groups, "all"))
+        elif key == "exists" or kop == "?=":
+            children.append({"exists": val})
+        elif key.endswith("heritage_pillar_trigger"):
+            hs = groups.get(key)
+            children.append({"heritage_in": hs} if hs else {"unknown": key})
+        elif key == "has_cultural_pillar":
+            children.append({"heritage": val})
+        elif key == "government_has_flag":
+            children.append({"gov_flag": str(val).replace("government_is_", "")})
+        elif key == "is_independent_ruler":
+            children.append({"independent": str(val).lower() in ("yes", "true")})
+        elif key == "highest_held_title_tier":
+            t = _TIER_NUM.get(str(val).replace("tier_", "").lower())
+            if t is None:
+                children.append({"unknown": key})
+            elif kop in (">=", ">"):
+                children.append({"tier_min": t + (1 if kop == ">" else 0)})
+            elif kop in ("<=", "<"):
+                children.append({"tier_max": t - (1 if kop == "<" else 0)})
+            else:
+                children.append({"unknown": key})
+        else:
+            children.append({"unknown": key})
+    return {"op": op, "children": children} if children else {}
+
+
+def cond_match(cond, scope):
+    """条件树在 scope 上求值。空条件 = 恒真 (游戏里无 trigger 的变体即默认名);
+    未知条件恒不命中 (宁可用默认名, 不猜)。"""
+    if not isinstance(cond, dict):
+        return False
+    if not cond:
+        return True
+    if "unknown" in cond:
+        return False
+    if "exists" in cond:
+        return scope.get(str(cond["exists"])) not in (None, "")
+    if "gov_flag" in cond:
+        return scope.get("gov_flag") == cond["gov_flag"]
+    if "independent" in cond:
+        return bool(scope.get("independent")) == bool(cond["independent"])
+    if "tier_min" in cond:
+        return (scope.get("tier") or 0) >= cond["tier_min"]
+    if "tier_max" in cond:
+        return 0 < (scope.get("tier") or 0) <= cond["tier_max"]
+    if "heritage" in cond:
+        return scope.get("heritage") == cond["heritage"]
+    if "heritage_in" in cond:
+        return scope.get("heritage") in (cond["heritage_in"] or [])
+    op = cond.get("op")
+    ch = cond.get("children") or []
+    if not ch:
+        return True
+    if op == "any":
+        return any(cond_match(c, scope) for c in ch)
+    if op == "none":
+        return not any(cond_match(c, scope) for c in ch)
+    return all(cond_match(c, scope) for c in ch)
+
+
+def _court_positions_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "court_positions.json")
+
+
+def build_court_positions(cfg):
+    """游戏 + 启用 Mod 的 court_positions/types/*.txt → 职位显示名变体表:
+    {"positions": {type_key: [{"loc_key": …, "when": 条件}, …]}} (保序, 含无 loc_key 的默认变体)。"""
+    groups = _heritage_groups(cfg)
+    positions = {}
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        d = os.path.join(root, "common", "court_positions", "types")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = fp.read()
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                variants = []
+                for blk in _blocks_of(body, "court_position_asset"):
+                    lk = re.search(r"localization_key\s*=\s*([A-Za-z0-9_]+)", blk)
+                    tr = _blocks_of(blk, "trigger")
+                    cond = _cond_block(_script_items(tr[0]), groups) if tr else {}
+                    variants.append({"loc_key": lk.group(1) if lk else "",
+                                     "when": cond})
+                if variants:
+                    positions[key] = variants     # Mod 同名定义整体覆盖
+    return {"schema": 1, "heritage_groups": groups, "positions": positions}
+
+
+def save_court_positions(cfg, table):
+    path = _court_positions_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_court_positions(cfg=None, force=False):
+    """载入职位变体表; 缺失或强制时重建 (与本地化表同源的静态表)。"""
+    cfg = cfg or llm.load_config()
+    path = _court_positions_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("positions"):
+                return data
+        except Exception:
+            pass
+    data = build_court_positions(cfg)
+    save_court_positions(cfg, data)
+    return data
+
+
+def pick_court_position(table, positions, type_key, scope):
+    """按游戏 court_position_asset 顺序取首个命中变体的显示名。
+
+    返回 '' 表示「该变体无 localization_key」或「全不命中」→ 调用方用职位类型键
+    的默认名 (旧行为)。"""
+    variants = ((positions or {}).get("positions") or {}).get(type_key) or []
+    for v in variants:
+        if cond_match(v.get("when") or {}, scope or {}):
+            k = v.get("loc_key") or ""
+            return (loc(table, k) or "") if k else ""
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # 政体层级词 (动态)
 # ---------------------------------------------------------------------------
 
@@ -627,6 +1034,24 @@ _TABLE = None
 _PROVINCE_MAP = None
 _DYN_TABLE = None
 _REL_TPL = None
+_LEVELS = None
+_COURT_POSITIONS = None
+
+
+def currency_levels(cfg=None):
+    """虔诚/威望/影响力/功勋档位阈值表单例 (v29)。"""
+    global _LEVELS
+    if _LEVELS is None:
+        _LEVELS = load_currency_levels(cfg or llm.load_config())
+    return _LEVELS
+
+
+def court_positions(cfg=None):
+    """职位显示名变体表单例 (v29): {"heritage_groups": …, "positions": {type: [变体…]}}。"""
+    global _COURT_POSITIONS
+    if _COURT_POSITIONS is None:
+        _COURT_POSITIONS = load_court_positions(cfg or llm.load_config())
+    return _COURT_POSITIONS
 
 
 def table(cfg=None):
@@ -770,6 +1195,26 @@ def main():
                       f"{'一致' if same else '不一致 → 下次载入会自动重建'}")
             except Exception as e:
                 print(f"读取现有表失败: {e}")
+    elif cmd == "levels":
+        data = build_currency_levels(cfg)
+        p = save_currency_levels(cfg, data)
+        print(f"档位阈值表已重建: {p}")
+        for k in CURRENCY_KINDS:
+            print(f"  {k}: {data['bands'].get(k)}")
+    elif cmd == "positions":
+        data = build_court_positions(cfg)
+        p = save_court_positions(cfg, data)
+        pos = data.get("positions") or {}
+        print(f"职位变体表已重建: {p} ({len(pos)} 个职位, "
+              f"族属分组 {len(data.get('heritage_groups') or {})} 条)")
+        table = load_localization_table(cfg)
+        for key in ("court_physician_court_position",
+                    "travel_leader_court_position",
+                    "chronicler_court_position"):
+            for v in pos.get(key) or []:
+                print(f"  {key} → {v.get('loc_key') or '(默认名)'} "
+                      f"[{loc(table, v['loc_key']) if v.get('loc_key') else loc(table, key)}]"
+                      f" when={v.get('when')}")
     elif cmd == "province":
         m = build_province_map(cfg)
         p = save_province_map(cfg, m)
