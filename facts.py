@@ -16,6 +16,7 @@ v4 变更:
 import json
 import os
 import re
+import datetime
 import hashlib
 import random
 
@@ -5004,6 +5005,237 @@ def _year_summary(timeline, pname, plabel=""):
     return lines
 
 
+# ---------------------------------------------------------------------------
+# v30: 正反两方记忆的镜像对识别 (修复方案_菲利普4.md 问题6)
+# ---------------------------------------------------------------------------
+# 同一件事在存档里有两方各记一条 (甲主动开战/乙被迫应战、胜方赢得战争/败方战败、
+# 施刑者行刑/受刑者受刑、新主登位/旧主失位), 文本不同、类型不同, 既有去重键
+# (type, date, participants 集) 拦不住, 于是大事年表出现成对重复行。
+# 配对一律按**参与者身份**判定 — 菲利普实测 886.12.13 同日有两场互不相干的战斗
+# (崔佛↔王景崇 / 帕勒芒↔韦尔尼亚斯), 只按日期+类型会把两场混为一谈。
+
+# 镜像类型对 → 保留优先级 (高者胜, 即「动作发起方」)
+_MIRROR_KEEP = {
+    "offensive_war": 2, "defensive_war": 1,
+    "war_won": 2, "war_lost": 1,
+    "battle_won_memory": 2, "battle_lost_memory": 1,
+    "torturer_memory": 2, "tortured_memory": 1,
+    "ascended_throne_memory": 2, "lost_title_memory": 1,
+}
+_MIRROR_TYPE_PAIRS = (
+    frozenset({"offensive_war", "defensive_war"}),
+    frozenset({"war_won", "war_lost"}),
+    frozenset({"battle_won_memory", "battle_lost_memory"}),
+    frozenset({"torturer_memory", "tortured_memory"}),
+    frozenset({"ascended_throne_memory", "lost_title_memory"}),
+)
+# 需要带身份槽 (owner + participants) 才能配对/合并的记忆类型
+_IDENT_TYPES = frozenset(
+    set(_MIRROR_KEEP)
+    | {"imprisoned", "imprisoned_other", "released_from_prison_memory",
+       "child_born", "first_born", "twins_born", "child_premature",
+       "child_stillborn"}
+)
+
+_DATE_PREFIX_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
+
+
+def _mirror_partner(a, b):
+    """a/b 是否为同一事件的正反两方记忆 (按参与者身份互指判定)。"""
+    ta, tb = a.get("type"), b.get("type")
+    if frozenset({ta, tb}) not in _MIRROR_TYPE_PAIRS:
+        return False
+    pa = (a.get("ident") or {}).get("parts") or {}
+    pb = (b.get("ident") or {}).get("parts") or {}
+    oa = (a.get("ident") or {}).get("owner")
+    ob = (b.get("ident") or {}).get("owner")
+
+    def p(x, k):
+        v = x.get(k)
+        return int(v) if isinstance(v, int) else None
+
+    if {ta, tb} == {"offensive_war", "defensive_war"}:
+        return p(pa, "other_party") is not None \
+            and p(pa, "other_party") == ob and p(pb, "other_party") == oa
+    if {ta, tb} == {"war_won", "war_lost"}:
+        return p(pa, "winner") is not None and \
+            p(pa, "winner") == p(pb, "winner") and \
+            p(pa, "loser") == p(pb, "loser")
+    if {ta, tb} == {"battle_won_memory", "battle_lost_memory"}:
+        w, l = (a, b) if ta == "battle_won_memory" else (b, a)
+        pw = (w.get("ident") or {}).get("parts") or {}
+        pl = (l.get("ident") or {}).get("parts") or {}
+        ow = (w.get("ident") or {}).get("owner")
+        ol = (l.get("ident") or {}).get("owner")
+        return p(pw, "loser") is not None and p(pw, "loser") == ol \
+            and p(pl, "winner") == ow
+    if {ta, tb} == {"torturer_memory", "tortured_memory"}:
+        t, v = (a, b) if ta == "torturer_memory" else (b, a)
+        pt = (t.get("ident") or {}).get("parts") or {}
+        pv = (v.get("ident") or {}).get("parts") or {}
+        ot = (t.get("ident") or {}).get("owner")
+        ov = (v.get("ident") or {}).get("owner")
+        return p(pv, "torturer") is not None and p(pv, "torturer") == ot \
+            and p(pt, "victim") == ov
+    if {ta, tb} == {"ascended_throne_memory", "lost_title_memory"}:
+        g, l = (a, b) if ta == "ascended_throne_memory" else (b, a)
+        pg = (g.get("ident") or {}).get("parts") or {}
+        pl = (l.get("ident") or {}).get("parts") or {}
+        og = (g.get("ident") or {}).get("owner")
+        ol = (l.get("ident") or {}).get("owner")
+        return p(pg, "flavor_character") is not None and \
+            p(pg, "flavor_character") == ol and p(pl, "new_holder") == og
+    return False
+
+
+def _mirror_rank(e, pid, pname=""):
+    """保留优先级: 主角侧 +2, 其次按发起方 (offensive/won/torturer/登位)。"""
+    ident = e.get("ident") or {}
+    hero = 0
+    if pid is not None and ident.get("owner") == pid:
+        hero = 2
+    elif pname and _DATE_PREFIX_RE.sub("", e.get("text") or "").startswith(pname):
+        hero = 2
+    return hero * 10 + _MIRROR_KEEP.get(e.get("type"), 0)
+
+
+def _drop_mirror_pairs(events, pid, pname=""):
+    """删去同一事件的正反两方冗余行 (问题6), 保留主角侧/发起方那一条。"""
+    drop = set()
+    idx_by_date = {}
+    for i, e in enumerate(events):
+        if e.get("ident"):
+            idx_by_date.setdefault(e.get("date"), []).append(i)
+    for _d, idxs in idx_by_date.items():
+        for ii in range(len(idxs)):
+            i = idxs[ii]
+            if i in drop:
+                continue
+            for jj in range(ii + 1, len(idxs)):
+                j = idxs[jj]
+                if j in drop:
+                    continue
+                a, b = events[i], events[j]
+                if not _mirror_partner(a, b):
+                    continue
+                drop.add(i if _mirror_rank(a, pid, pname)
+                         < _mirror_rank(b, pid, pname) else j)
+                if i in drop:
+                    break
+    return [e for i, e in enumerate(events) if i not in drop]
+
+
+# ---------------------------------------------------------------------------
+# v30: 入狱与获释合并 (修复方案_菲利普4.md 问题5)
+# ---------------------------------------------------------------------------
+# 原状是一条监禁拆成两行: 「873年5月13日，埃里克尔·霍达兰被囚。」+
+# 「873年5月16日，埃里克尔·霍达兰获释出狱。」(菲利普本轮 7 对)。
+# 现按 被囚者 → 其后最近一次获释 配对, 合成为
+# 「873年5月13日，崔佛·菲利普囚禁埃里克尔·霍达兰，3日后获释。」
+# 双视角 (被囚者自身的 imprisoned / 施囚者的 imprisoned_other) 也只留一条。
+
+def _prison_span(d0, d1):
+    """两日期之间的时长词 («当日»/«3日»/«8个月»/«4年3个月»); 非法/逆序返回 ''。"""
+    try:
+        a = datetime.date(*(int(x) for x in str(d0).split(".")[:3]))
+        b = datetime.date(*(int(x) for x in str(d1).split(".")[:3]))
+    except Exception:
+        return ""
+    if b < a:
+        return ""
+    days = (b - a).days
+    if days == 0:
+        return "当日"
+    if days < 31:
+        return f"{days}日"
+    months = (b.year - a.year) * 12 + (b.month - a.month) \
+        - (1 if b.day < a.day else 0)
+    if months < 12:
+        return f"{months}个月"
+    y, m = divmod(months, 12)
+    return f"{y}年" + (f"{m}个月" if m else "")
+
+
+def _pair_imprisonments(events, f, pid, pname=""):
+    """同一被囚者的入狱与获释合成一行 (问题5); 双视角同一囚禁事件只留一条。"""
+    ins, outs = [], []
+    for i, e in enumerate(events):
+        t = e.get("type")
+        ident = e.get("ident") or {}
+        parts = ident.get("parts") or {}
+        owner = ident.get("owner")
+        if t in ("imprisoned", "imprisoned_other"):
+            victim = owner if t == "imprisoned" else parts.get("imprisoned")
+            jailer = parts.get("imprisoner") if t == "imprisoned" else owner
+            if isinstance(victim, int):
+                ins.append({"idx": i, "victim": victim, "jailer": jailer,
+                            "date": e.get("date"), "hero": owner == pid,
+                            "actor": t == "imprisoned_other"})
+        elif t == "released_from_prison_memory":
+            if isinstance(owner, int):
+                outs.append({"idx": i, "victim": owner,
+                             "jailer": parts.get("imprisoner"),
+                             "date": e.get("date")})
+    if not ins:
+        return events
+    drop = set()
+    by_victim = {}
+    for r in ins:
+        by_victim.setdefault(r["victim"], []).append(r)
+    for victim, rows in by_victim.items():
+        # 1) 同一囚禁事件的双视角合一 (主角侧优先, 其次施囚者视角带出囚禁者)
+        groups = {}
+        for r in rows:
+            groups.setdefault((r["date"], r["jailer"]), []).append(r)
+        kept = []
+        for _key, group in groups.items():
+            group.sort(key=lambda r: (0 if r["hero"] else 1,
+                                      0 if r["actor"] else 1))
+            kept.append(group[0])
+            for r in group[1:]:
+                drop.add(r["idx"])
+        # 2) 入狱 → 其后最近一次获释 (囚禁者两侧一致时更严)
+        kept.sort(key=lambda r: cl.date_key(str(r["date"])))
+        releases = sorted((o for o in outs if o["victim"] == victim),
+                          key=lambda o: cl.date_key(str(o["date"])))
+        used = set()
+        for r in kept:
+            out = None
+            for o in releases:
+                if o["idx"] in used:
+                    continue
+                if cl.date_key(str(o["date"])) < cl.date_key(str(r["date"])):
+                    continue
+                if r["jailer"] is not None and o["jailer"] is not None \
+                        and r["jailer"] != o["jailer"]:
+                    continue
+                out = o
+                break
+            # v30: 称谓口径与 _mem_sentence 一致 (person_label 不传日期) —
+            # 传日期会按事件当日头衔取词, 同篇内同一人出现两种称谓
+            vn = f.person_label(victim, style="brief") \
+                or f.name_with_regnal(victim)
+            if not vn:
+                continue
+            jn = ""
+            if r["jailer"] is not None:
+                jn = f.person_label(r["jailer"], style="brief") \
+                    or f.name_with_regnal(r["jailer"])
+            body = f"{jn}囚禁{vn}" if jn else f"{vn}被囚"
+            if out is not None:
+                used.add(out["idx"])
+                drop.add(out["idx"])
+                span = _prison_span(r["date"], out["date"])
+                body += f"，{span}后获释" if span \
+                    else f"，{f.date(out['date'])}获释"
+            e = events[r["idx"]]
+            e["text"] = f"{f.date(r['date'])}，{body}。"
+            e["type"] = "imprisoned"
+            e["module"] = "囚禁入狱"
+            e.pop("ident", None)
+    return [e for i, e in enumerate(events) if i not in drop]
+
+
 def _timeline(f):
     """主角相关时间线: 只收 宗族/父母妻儿/孙辈儿媳婿 相关事件 (口径见 _related_ids),
     按人按事去重, 按日期排序。
@@ -5011,11 +5243,14 @@ def _timeline(f):
     - 路人剔除: 记忆拥有者与参与者都不在相关集内的事件一律不收;
     - 死亡去重: 同一死者只留一条 (死亡记录 > 去世 > 丧偶), 消除「同一人不停地死」;
     - 出生去重: 同一出生只留一条 (玩家/家人视角优先);
-    - 成对事件 (双方各自的记忆, 如王铎娶玘/玘嫁王铎) 按 (类型, 日期, 参与者集) 去重。"""
+    - 成对事件 (双方各自的记忆, 如王铎娶玘/玘嫁王铎) 按 (类型, 日期, 参与者集) 去重;
+    - v30 镜像对: 战争/战役/刑虐/头衔更替的正反两方记忆按参与者身份配对, 只留一方;
+    - v30 监禁对: 同一被囚者的入狱与获释合为一行 (见 _pair_imprisonments)。"""
     cache = f.cache
     pid = cache.get("player_id")
     related = _related_ids(f)
     events = []        # (date, type, text)
+    idents = {}        # (date, type, text) -> {"owner", "parts"} — 镜像对/监禁对配对用
     seen_keys = set()  # 成对事件去重: (type, creation_date, participants 集)
     deaths = {}        # 死者id -> (优先级, date, type, text)
     births = {}        # (date, 出生键) -> (优先级, date, type, text)
@@ -5084,11 +5319,19 @@ def _timeline(f):
                                             "successful_murder", s)
                 continue
             # 出生类记忆: 同一出生按 (日期, 出生键) 去重 (玩家/家人视角优先)
+            # v30: 出生键改为「孩子 id」(忽略记忆类型), 孩子槽缺失时退化为母亲 id —
+            # 修复「崔佛添子富兰克林」/「戈迪娜得长子富兰克林」同日双写, 以及
+            # 「崔佛幼子夭折」/「戈迪娜幼子夭折」(child_premature 无 child 槽) 双写
+            # (修复方案_菲利普4.md 问题6)。
             if mtype in ("child_born", "first_born", "child_premature",
                          "child_stillborn", "twins_born"):
                 child = parts.get("child")
-                child_key = (mtype, int(child)) if isinstance(child, int) \
-                    else (mtype, cid)
+                if isinstance(child, int):
+                    child_key = ("生", child)
+                else:
+                    mother = parts.get("mother")
+                    child_key = ("生", int(mother)) if isinstance(mother, int) \
+                        else ("生", cid)
                 bkey = (mem.get("creation_date"), child_key)
                 prio = 2 if cid == pid else (1 if owner_rel else 0)
                 s = _mem_sentence(f, cid, mem)
@@ -5108,6 +5351,10 @@ def _timeline(f):
             if key in seen_keys:
                 continue
             seen_keys.add(key)
+            # v30: 镜像对/监禁对需要参与者身份 → 随事件登记 (见 _drop_mirror_pairs)
+            if mtype in _IDENT_TYPES:
+                idents[(mem.get("creation_date"), mtype, s)] = {
+                    "owner": cid, "parts": dict(parts)}
             events.append((mem.get("creation_date"), mtype, s,
                            _TYPE2MODULE.get(mtype, "")))
     # 合并 死亡记录 + 去世记忆 + 出生事件
@@ -5161,7 +5408,7 @@ def _timeline(f):
         if s in seen:
             continue
         seen.add(s)
-        out.append({
+        rec = {
             "date": d,
             "type": t,
             # v14: 戏剧性模块标注 (纯数据层, 十年主题抽取/文章切片用)
@@ -5169,7 +5416,15 @@ def _timeline(f):
             # v27: 死亡句自带的日期已在句内 (「X死于YYYY年M月D日，…」),
             # 不再在句首重复一遍日期 (「893年4月28日，塔坦尼·布兰死于893年4月28日…」)
             "text": (s if (t == "death" or not d) else f"{f.date(d)}，{s}"),
-        })
+        }
+        ident = idents.get((d, t, s))
+        if ident:
+            rec["ident"] = ident
+        out.append(rec)
+    # v30: 镜像对去重 (问题6) — 同一事件的正反两方记忆只留一条
+    out = _drop_mirror_pairs(out, pid, pname0)
+    # v30: 入狱与获释合并 (问题5) — 双视角与进出狱各自成行的问题一并解决
+    out = _pair_imprisonments(out, f, pid, pname0)
     # v11: 同日同型集体事件合并 (见证加冕/出席大婚/被囚/囚禁)
     out = _merge_same_day_events(out, f)
     # v15: 同月同型流水事件聚合 (结怨/结仇/助战…), 聚合后再限量
