@@ -16,7 +16,9 @@
   - data/localization.json   : {key: 中文} 合并表
   - data/province_map.json   : {省份id: {"county": 伯爵领key, "barony": 男爵领key}}
     (v24: 值由单一伯爵领 key 升级为 county+barony 两键 — 受害者所在地标注用男爵领)
-  - data/trait_names.json    : {traits: {trait_key: 显示名键}, categories: {trait_key: 类别}} (v31)
+  - data/trait_names.json    : {traits: {trait_key: 基础名键}, categories: {trait_key: 类别},
+                                level_names: {trait_key: [按 XP 换名的条件与键]}} (v31/v32)
+  - data/trait_tracks.json   : {tracks: {trait_key: [{track, levels}, …]}} (v32)
   - data/hook_types.json     : {hook_types: {类型键: {strong, perpetual, expiration_days}}} (v31)
 
 用法:
@@ -24,7 +26,8 @@
   python localization.py mods         # 列启用 Mod 的本地化覆盖与来源指纹 (v29)
   python localization.py province     # 重建省份映射
   python localization.py dynasties    # 重建宗族/家族定义表 (v14)
-  python localization.py traits       # 重建特质显示名/类别表 (v29/v31)
+  python localization.py traits       # 重建特质显示名/类别表 + 轨道表 (v29/v31/v32)
+  python localization.py tracks       # 只重建特质 XP 轨道表 (v32)
   python localization.py hooks        # 重建牵制类型表 (v31)
   python localization.py check        # 抽查关键键 (Daria/岭西/层级词/桂州)
 """
@@ -1101,20 +1104,79 @@ def _trait_names_path(cfg):
     return os.path.join(cfg.get("data_dir", ""), "trait_names.json")
 
 
-def build_trait_names(cfg):
-    """游戏 + 启用 Mod 的 common/traits → 特质显示名键表 + 特质类别表。
+def _body_at(text, i):
+    """i 指向 '{' → 返回配平块体 (不含外层花括号); 未闭合返回余下全文。"""
+    depth = 0
+    for j in range(i, len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[i + 1:j]
+    return text[i + 1:]
 
-    返回::
 
-        {"schema": 2,
-         "traits":     {trait_key: loc_key},       # 显示名 (v29)
-         "categories": {trait_key: category}}      # 游戏 category (v31)
+def _strip_blocks(text, key):
+    """删去所有 `<key> = { … }` 块 (留着其余文本), 供取区块里的裸 desc 用。"""
+    out = text
+    while True:
+        m = re.search(r"(?<![A-Za-z0-9_])" + re.escape(key) + r"\s*=\s*\{", out)
+        if not m:
+            return out
+        i = m.end() - 1
+        j = i
+        depth = 0
+        while j < len(out):
+            if out[j] == "{":
+                depth += 1
+            elif out[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        out = out[:m.start()] + out[j + 1:]
 
-    v31: 同一次解析顺带取 `category = personality|education|lifestyle|fame|health|
-    commander|childhood|court_type` —— 「为人」句按类分句、体况瞬时特质不进履历都靠它
-    (先天特质 (beauty_*/intellect_*/physique_* 等) 游戏未给 category, 归空串)。"""
-    out = {}
-    cats = {}
+
+def _xp_clauses(trigger):
+    """trigger 块 → {"any": bool, "clauses": [{track, op, value}, …]}; 无 XP 条件 → None。
+
+    只认 `has_trait_xp = { track=… value <op> N }`; `OR = { … }` 内的条款按「任一」求值
+    (实测 lifestyle_traveler 的 travel<50 / danger<50 为 AND、travel=100 / danger=100 为 OR)。
+    `track` 缺省时由渲染层按该特质的轨道推定 (单轨特质即轨名=特质名)。"""
+    spans = []
+    for m in re.finditer(r"(?<![A-Za-z0-9_])has_trait_xp\s*=\s*\{", trigger or ""):
+        i = m.end() - 1
+        clause = _body_at(trigger, i)
+        tr = re.search(r"(?<![A-Za-z0-9_])track\s*=\s*([A-Za-z0-9_]+)", clause)
+        vm = re.search(r"(?<![A-Za-z0-9_])(value)\s*(>=|<=|!=|=|<|>)\s*(\d+)",
+                       clause)
+        if not vm:
+            continue
+        spans.append((m.start(), {"track": tr.group(1) if tr else None,
+                                  "op": vm.group(2), "value": int(vm.group(3))}))
+    if not spans:
+        return None
+    or_ranges = []
+    for m in re.finditer(r"(?<![A-Za-z0-9_])OR\s*=\s*\{", trigger or ""):
+        i = m.end() - 1
+        j = i
+        depth = 0
+        while j < len(trigger):
+            if trigger[j] == "{":
+                depth += 1
+            elif trigger[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        or_ranges.append((i, j))
+    any_of = any(any(a <= pos <= b for a, b in or_ranges) for pos, _c in spans)
+    return {"any": any_of, "clauses": [c for _p, c in spans]}
+
+
+def _iter_trait_files(cfg):
+    """游戏 + 启用 Mod 的 common/traits(+/tracks) 下的 .txt 路径。"""
     roots = []
     g = game_dir(cfg)
     if g:
@@ -1126,32 +1188,162 @@ def build_trait_names(cfg):
             if not os.path.isdir(d):
                 continue
             for fn in sorted(os.listdir(d)):
-                if not fn.endswith(".txt"):
+                if fn.endswith(".txt"):
+                    yield os.path.join(d, fn)
+
+
+def build_trait_names(cfg):
+    """游戏 + 启用 Mod 的 common/traits → 特质基础名 + 类别 + 档位名条件表。
+
+    返回::
+
+        {"schema": 3,
+         "traits":      {trait_key: loc_key},       # **基础名** (v29/v32)
+         "categories":  {trait_key: category},      # 游戏 category (v31)
+         "level_names": {trait_key: [{"any": bool,
+                                      "clauses": [{track, op, value}, …],
+                                      "key": loc_key}, …]}}   # 按 XP 换名 (v32)
+
+    v31: 同一次解析顺带取 `category = personality|education|lifestyle|fame|health|
+    commander|childhood|court_type` —— 「为人」句按类分句、体况瞬时特质不进履历都靠它
+    (先天特质 (beauty_*/intellect_*/physique_* 等) 游戏未给 category, 归空串)。
+
+    v32 (马克龙问题2): 旧实现取 `name` 块里**第一个** desc, 而游戏把**最高档**名写在最前
+    —— 实测 54 个按 XP 换名的特质 (lifestyle_reveler/aggressive_attacker/logistician…)
+    全部显示成顶档名 (玩家 reveler XP=0 却写作「传奇的狂欢者」)。现改为:
+    基础名取 `first_valid` 里**无 trigger 的裸 desc**, 各档名与其 XP 条件分开落 `level_names`,
+    由渲染层按角色实际 XP 求值。"""
+    out = {}
+    cats = {}
+    levels = {}
+    for path in _iter_trait_files(cfg):
+        try:
+            with open(path, encoding="utf-8-sig", errors="replace") as fp:
+                txt = fp.read()
+        except OSError:
+            continue
+        for key, body in _top_blocks(txt):
+            if key.startswith("@"):
+                continue
+            cb = re.search(r"(?<![A-Za-z_])category\s*=\s*([A-Za-z_]+)", body)
+            if cb:
+                cats[key] = cb.group(1)
+            nb = re.search(r"(?<![A-Za-z0-9_])name\s*=\s*\{", body)
+            if not nb:
+                m = re.search(r"(?<![A-Za-z_])name\s*=\s*([A-Za-z0-9_.]+)", body)
+                if m and not m.group(1).startswith(("$", "[")):
+                    out[key] = m.group(1)
+                continue
+            nbody = _body_at(body, nb.end() - 1)
+            fv = _blocks_of(nbody, "first_valid")
+            scope = fv[0] if fv else nbody
+            rows = []
+            for td in _blocks_of(scope, "triggered_desc"):
+                dm = re.search(r"(?<![A-Za-z0-9_])desc\s*=\s*([A-Za-z0-9_.]+)", td)
+                if not dm or dm.group(1).startswith(("$", "[")):
                     continue
-                try:
-                    with open(os.path.join(d, fn), encoding="utf-8-sig",
-                              errors="replace") as fp:
-                        txt = fp.read()
-                except OSError:
-                    continue
-                for key, body in _top_blocks(txt):
-                    if key.startswith("@"):
-                        continue
-                    cb = re.search(r"(?<![A-Za-z_])category\s*=\s*([A-Za-z_]+)", body)
-                    if cb:
-                        cats[key] = cb.group(1)
-                    nb = _blocks_of(body, "name")
-                    if nb:
-                        cands = re.findall(r"desc\s*=\s*([A-Za-z0-9_.]+)", nb[0])
-                    else:
-                        m = re.search(r"(?<![A-Za-z_])name\s*=\s*([A-Za-z0-9_.]+)",
-                                      body)
-                        cands = [m.group(1)] if m else []
-                    for c in cands:
-                        if c and not c.startswith(("$", "[")):
-                            out[key] = c
-                            break
-    return {"schema": 2, "traits": out, "categories": cats}
+                tm = re.search(r"(?<![A-Za-z0-9_])trigger\s*=\s*\{", td)
+                cond = _xp_clauses(_body_at(td, tm.end() - 1)) if tm else None
+                if cond:
+                    cond["key"] = dm.group(1)
+                    rows.append(cond)
+            base = re.search(r"(?<![A-Za-z0-9_])desc\s*=\s*([A-Za-z0-9_.]+)",
+                             _strip_blocks(scope, "triggered_desc"))
+            if base and not base.group(1).startswith(("$", "[")):
+                out[key] = base.group(1)
+            elif rows:
+                out[key] = rows[-1]["key"]
+            if rows:
+                levels[key] = rows
+    return {"schema": 3, "traits": out, "categories": cats, "level_names": levels}
+
+
+# ---------------------------------------------------------------------------
+# 特质 XP 轨道表 (v32): common/traits 的 track / tracks → 轨道名 + 档位阈值
+# ---------------------------------------------------------------------------
+# 存档里角色的 `trait_xp_amounts` 是与 `traits` 顺序对齐的扁平数组, 每条轨道一个数
+# (多轨特质按定义声明顺序占位; 实测马克龙档 3987/3987 角色 100% 命中)。本表给
+# 「哪段数值属于哪条轨道」以及该轨道的档位阈值, 轨道显示名走本地化 `trait_track_<key>`。
+
+def _trait_tracks_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "trait_tracks.json")
+
+
+# 命名档位键 → XP 阈值 (游戏里 scarred / lifestyle_traveler 等少数特质不用数字键;
+# 实证 scarred 的 name 块: value < 50 → 一级、= 100 → 三级)
+_NAMED_LEVELS = {"trait_first_level": 25, "trait_second_level": 50,
+                 "trait_third_level": 100, "trait_fourth_level": 150,
+                 "trait_fifth_level": 200}
+
+
+def _track_levels(sub):
+    """轨道内层块 → 阈值列表 (数字键直取; 命名档位键按 _NAMED_LEVELS 折算)。"""
+    lv = [int(x) for x in re.findall(r"^\s*(\d+)\s*=\s*\{", sub, re.M)]
+    lv += [_NAMED_LEVELS[k] for k in
+           re.findall(r"^\s*(trait_[a-z_]*level)\s*=\s*\{", sub, re.M)
+           if k in _NAMED_LEVELS]
+    return sorted(set(lv))
+
+
+def build_trait_tracks(cfg):
+    """游戏 + 启用 Mod 的 common/traits → {"tracks": {trait: [{track, levels}, …]}}。
+
+    多轨 `tracks = { … }` 按声明顺序保序; 单轨简写 `track = { … }` 的轨名 = 特质键
+    (`_traits.info`: "If only one track is needed then a short hand is provided which
+    creates one track named after the trait itself")。"""
+    out = {}
+    for path in _iter_trait_files(cfg):
+        try:
+            with open(path, encoding="utf-8-sig", errors="replace") as fp:
+                txt = fp.read()
+        except OSError:
+            continue
+        for key, body in _top_blocks(txt):
+            if key.startswith("@"):
+                continue
+            rows = []
+            mt = re.search(r"^\s*tracks\s*=\s*\{", body, re.M)
+            if mt:
+                tb = _body_at(body, mt.end() - 1)
+                for tm in re.finditer(
+                        r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{", tb, re.M):
+                    lv = _track_levels(_body_at(tb, tm.end() - 1))
+                    if lv:
+                        rows.append({"track": tm.group(1), "levels": lv})
+            else:
+                ms = re.search(r"^\s*track\s*=\s*\{", body, re.M)
+                if ms:
+                    lv = _track_levels(_body_at(body, ms.end() - 1))
+                    if lv:
+                        rows.append({"track": key, "levels": lv})
+            if rows:
+                out[key] = rows
+    return {"schema": 1, "tracks": out}
+
+
+def save_trait_tracks(cfg, table):
+    path = _trait_tracks_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_trait_tracks(cfg=None, force=False):
+    """载入特质轨道表; 缺失/旧版即重建。"""
+    cfg = cfg or llm.load_config()
+    path = _trait_tracks_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and "tracks" in data:
+                return data
+        except Exception:
+            pass
+    data = build_trait_tracks(cfg)
+    save_trait_tracks(cfg, data)
+    return data
 
 
 def save_trait_names(cfg, table):
@@ -1163,15 +1355,15 @@ def save_trait_names(cfg, table):
 
 
 def load_trait_names(cfg=None, force=False):
-    """载入特质显示名 + 类别表; 缺失、旧版 (无 categories) 或强制时重建。"""
+    """载入特质显示名 + 类别表; 缺失、旧版 (无 categories/level_names) 或强制时重建。"""
     cfg = cfg or llm.load_config()
     path = _trait_names_path(cfg)
     if not force and os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 2 and data.get("traits") \
-                    and "categories" in data:
+            if data.get("schema") == 3 and data.get("traits") \
+                    and "categories" in data and "level_names" in data:
                 return data
         except Exception:
             pass
@@ -1330,6 +1522,7 @@ _LEVELS = None
 _COURT_POSITIONS = None
 _COUNCIL_TASKS = None
 _TRAIT_NAMES = None
+_TRAIT_TRACKS = None
 _HOOK_TYPES = None
 
 
@@ -1358,12 +1551,21 @@ def council_tasks(cfg=None):
 
 
 def trait_names(cfg=None):
-    """特质显示名 + 类别表单例 (v29/v31):
-    {"traits": {trait_key: loc_key}, "categories": {trait_key: category}}。"""
+    """特质显示名 + 类别表单例 (v29/v31/v32):
+    {"traits": {trait_key: 基础名 loc_key}, "categories": {trait_key: category},
+     "level_names": {trait_key: [{any, clauses, key}, …]}}。"""
     global _TRAIT_NAMES
     if _TRAIT_NAMES is None:
         _TRAIT_NAMES = load_trait_names(cfg or llm.load_config())
     return _TRAIT_NAMES
+
+
+def trait_track_table(cfg=None):
+    """特质 XP 轨道表单例 (v32): {"tracks": {trait_key: [{track, levels}, …]}}。"""
+    global _TRAIT_TRACKS
+    if _TRAIT_TRACKS is None:
+        _TRAIT_TRACKS = load_trait_tracks(cfg or llm.load_config())
+    return _TRAIT_TRACKS
 
 
 def hook_type_table(cfg=None):
@@ -1650,15 +1852,43 @@ def main():
     elif cmd == "traits":
         data = build_trait_names(cfg)
         p = save_trait_names(cfg, data)
+        tr = build_trait_tracks(cfg)
+        p2 = save_trait_tracks(cfg, tr)
         t = data.get("traits") or {}
         cats = data.get("categories") or {}
-        print(f"特质显示名表已重建: {p} ({len(t)} 条, 类别 {len(cats)} 条)")
+        levels = data.get("level_names") or {}
+        tracks = tr.get("tracks") or {}
+        print(f"特质显示名表已重建: {p} ({len(t)} 条, 类别 {len(cats)} 条, "
+              f"按 XP 换名 {len(levels)} 条)")
+        print(f"特质轨道表已重建: {p2} ({len(tracks)} 个特质, "
+              f"{sum(len(v) for v in tracks.values())} 条轨道)")
         table = load_localization_table(cfg)
-        for k in ("lifestyle_traveler", "lifestyle_physician", "hunchback", "dwarf",
-                  "pregnant", "lustful"):
+        for k in ("lifestyle_reveler", "lifestyle_traveler", "gallowsbait",
+                  "lifestyle_physician", "hunchback", "pregnant", "lustful"):
             lk = t.get(k, "")
+            tt = tracks.get(k) or []
+            track_txt = "、".join(
+                f"{loc(table, 'trait_track_' + r['track']) or r['track']}"
+                f"{r['levels']}" for r in tt)
             print(f"  {k} [{cats.get(k) or '无类别'}] → "
-                  f"{lk or '(trait_<key>)'} = {loc(table, lk or f'trait_{k}')!r}")
+                  f"{loc(table, lk or f'trait_{k}')!r}"
+                  + (f"  轨道: {track_txt}" if track_txt else ""))
+    elif cmd == "tracks":
+        tr = build_trait_tracks(cfg)
+        p = save_trait_tracks(cfg, tr)
+        tracks = tr.get("tracks") or {}
+        table = load_localization_table(cfg)
+        print(f"特质轨道表已重建: {p} ({len(tracks)} 个特质, "
+              f"{sum(len(v) for v in tracks.values())} 条轨道)")
+        for k in ("gallowsbait", "lifestyle_hunter", "tourney_participant",
+                  "lifestyle_traveler", "logistician", "infirm"):
+            rows = tracks.get(k)
+            if not rows:
+                print(f"  {k} → （无轨道）")
+                continue
+            for r in rows:
+                nm = loc(table, "trait_track_" + r["track"]) or r["track"]
+                print(f"  {k} · {r['track']} = {nm}  档位 {r['levels']}")
     elif cmd == "hooks":
         data = build_hook_types(cfg)
         p = save_hook_types(cfg, data)
