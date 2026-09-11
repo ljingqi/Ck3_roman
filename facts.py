@@ -24,6 +24,7 @@ import llm
 import cache_lib as cl
 import flavorization as FZ
 import localization as L
+import style as _style   # v30: 措辞表 (死因/头衔/统计标签) 见 style.py
 
 # ---------------------------------------------------------------------------
 # 中文映射表 (本地化缺失时的兜底)
@@ -72,217 +73,19 @@ GOVERNMENT_ZH = {
     "administrative_government": "行政官制",
 }
 
-DEATH_REASON_ZH = {
-    "death_execution": "处决", "death_murder": "谋杀", "death_duel": "决斗",
-    "death_accident": "意外", "death_stress": "忧惧而亡", "death_wounds": "伤重不治",
-    "death_punishment": "刑罚", "death_poison": "毒杀", "death_snake": "蛇噬",
-    "death_dungeon": "囚毙", "death_fight": "斗殴", "death_old_age": "寿终",
-    "death_natural_causes": "寿终", "death_heart_attack": "心疾",
-    "death_broken_bones": "骨碎", "death_drinking_passive": "酗酒",
-    "death_disappearance": "失踪而亡", "death_plotting": "密谋致死",
-    "death_battle": "战死", "death_imprisonment": "囚毙",
-    "death_bubonic_plague": "黑死病", "death_physique_bad_2": "体弱不支",
-}
 
-# v11: 游戏 UI 腔/坏文本死因 → 传记雅化 (优先于本地化值, 本地化文案是游戏内
-# 通知腔, 如 blind = 「因绊倒坠落而失去的生命」, 直接进传记会读起来像抄游戏)。
-# v16: 病弱/疾病类死因的本地化是 [GetTrait(...)] 模板 (查不出中文), 原样进
-# 传记会退化成千篇一律的「去世」, 一并雅化为自然短句。
-FLAVOR_DEATH_ZH = {
-    "blind": "因绊倒坠落而亡",
-    "death_fall": "因坠落而亡",
-    "death_wounded_1": "伤重不治",
-    "death_wounded_2": "伤重不治",
-    "death_wounded_3": "伤重不治",
-    "death_maimed": "重伤不治",
-    "death_head_ripped_off": "身首异处",
-    "death_apoplexy": "中风而亡",
-    "death_drinking_passive": "酗酒而亡",
-    # 成功而未败露的谋杀: 游戏显示「神秘死亡」; v16 起点破为谋杀, 用
-    # 「被…秘密谋杀」与明面上败露的「被…谋杀」区分 (施事由 _death_clause 嵌入)
-    "death_mysterious": "被秘密谋杀",
-    # 病弱/疾病 (本地化为模板或缺失, 原会退化成「去世」)
-    "death_depressed": "忧郁而亡",
-    "death_ill": "染疾而亡",
-    "death_consumption": "染肺痨而亡",
-    "death_smallpox": "染天花而亡",
-    "death_measles": "染麻疹而亡",
-    "death_cancer": "染恶疾而亡",
-    "death_sickly": "体弱而亡",
-    "death_typhus": "染斑疹伤寒而亡",
-    "death_pneumonic": "染肺疾而亡",
-    "death_incapable": "瘫痪而亡",
-    "death_lunatic": "疯癫而亡",
-    "death_leper": "染麻风而亡",
-    "death_dysentery": "染痢疾而亡",
-    "death_camp_fever": "染疫而亡",
-    "death_choked": "窒息而亡",
-    "death_great_pox": "染花柳而亡",
-    "death_malnourishment": "饥馁而亡",
-    "death_starved": "饿死",
-    "death_weak": "衰竭而亡",
-    "death_gout_ridden": "痛风而亡",
-    "death_bubonic_plague": "染黑死病而亡",
-    "death_dungeon_passive": "囚毙",
-    "death_physique_bad_1": "体弱不支",
-    "death_physique_bad_2": "体弱不支",
-    "death_physique_bad_3": "体弱不支",
-    # 游戏 UI 长句 → 自然短句
-    "death_broken_bones": "摔折筋骨而亡",
-    "death_stress": "忧惧而亡",
-    "death_punishment": "处决",
-    "death_eradicated": "连同全族被处决",
-    "death_hunted_by_wild_beast": "为野兽所噬而亡",
-}
 
-# 记忆类型 → 中文 (模板: {name}=记忆拥有者, {other}=参与者, {title}=头衔)
-MEMORY_TEMPLATES = {
-    "became_rivals": "{name}与{other}结仇。",
-    "became_grudge": "{name}与{other}结怨。",
-    "became_nemesis": "{name}与{other}结为死敌。",
-    "stopped_being_rivals": "{name}与{other}化解仇怨。",
-    "rival_died": "{name}的仇人{other}去世。",
-    "friend_died": "{name}的友人{other}去世。",
-    "relative_died": "{name}的亲属{other}去世。",
-    "spouse_died": "{name}丧偶，{other}去世。",
-    "married": "{name}与{other}成婚。",
-    "broke_up_lovers": "{name}与{other}分手。",
-    "became_lovers": "{name}与{other}相恋。",
-    "had_sex": "{name}与{other}有私情。",
-    "became_friends": "{name}与{other}结为好友。",
-    "became_soulmates": "{name}与{other}结为灵魂伴侣。",
-    "became_blood_brother": "{name}与{other}结为血盟兄弟。",
-    "imprisoned_other": "{name}囚禁{other}。",
-    "imprisoned": "{name}被囚。",
-    "released_from_prison_memory": "{name}获释。",
-    "lost_title_memory": "{name}让出{title}。",
-    "ascended_throne_memory": "{name}登位，得{title}。",
-    "child_born": "{name}添子{other}。",
-    "first_born": "{name}得长子{other}。",
-    "child_premature": "{name}幼子夭折。",
-    "child_stillborn": "{name}婴儿夭折。",
-    "twins_born": "{name}得孪生子。",
-    # v26: 出生按孩子性别分版 (女儿此前一律被写成「添子」— 田所2 睦/立希)
-    "child_born_female": "{name}添女{other}。",
-    "first_born_female": "{name}得长女{other}。",
-    "twins_born_female": "{name}得孪生女。",
-    "twins_born_mixed": "{name}得龙凤胎。",
-    "passed_child_exam_memory": "{name}童子试及第。",
-    "failed_child_exam_memory": "{name}童子试落第。",
-    "passed_provincial_exam_memory": "{name}乡试及第。",
-    "failed_provincial_exam_memory": "{name}乡试落第。",
-    "passed_metropolitan_exam_memory": "{name}会试及第。",
-    "passed_palace_exam_memory": "{name}殿试及第。",
-    "tortured_memory": "{name}受刑。",
-    "torturer_memory": "{name}施刑于人。",
-    # v30: 战斗胜负改用史笔中性词 (修复方案_菲利普4.md 问题3) — 原「打了胜仗/吃了败仗」
-    # 是游戏 UI 口语, 模型逐字照抄进正文 (「他吃了败仗」「佛罗西吃了败仗」);
-    # 「主动开战/被迫应战」保留 (用户决策)。
-    "battle_won_memory": "{name}取胜。",
-    "battle_lost_memory": "{name}失利。",
-    "offensive_war": "{name}主动开战。",
-    "defensive_war": "{name}被迫应战。",
-    "war_won": "{name}赢得战争。",
-    "war_lost": "{name}战败。",
-    "joined_allys_war": "{name}助盟友作战。",
-    "witnessed_death_battle": "{name}目击战死。",
-    "became_incapable_due_to_battle_concussion": "{name}战伤致残。",
-    "completed_hajj_memory": "{name}朝觐归来。",
-    "hostage_created_hostage": "{name}为人质。",
-    "hostage_created_warden": "{name}看守人质。",
-    "hostage_created_home_court": "{name}交出人质。",
-    "picked_serenity_aspect_memory": "{name}皈依安详之道。",
-    "picked_creation_aspect_memory": "{name}皈依创世之道。",
-    "ward_education_completed": "{name}学业有成。",
-    "childhood_education_guardian": "{name}受业于{other}。",
-    "childhood_education_no_guardian": "{name}独自求学。",
-    "completed_rites_of_passage": "{name}完成成人礼。",
-    "completed_adult_education": "{name}完成深造。",
-    "became_acclaimed": "{name}获拥戴。",
-    "witnessed_a_coronation_memory": "{name}见证加冕。",
-    "grand_wedding_completed_guest": "{name}出席大婚。",
-    "ignored_assault_memory": "{name}受辱未报。",
-    # v15: 成功谋杀 (主角视角, 神秘死亡味由受害者死亡记录句负责)
-    "successful_murder": "{name}谋杀{other}。",
-}
 
-# v28: 隐事 (secrets) 主题短语 — 存档 secrets.secrets 的 type → 中文短语。
-# 类型名本地化 (L.loc(table, type)) 只是名词 (考试舞弊者/巫师/不信者), 提示词里
-# 需要可叙事的短语, 故按类型给模板; 未收录类型回退游戏本地化类型名。
-SECRET_TOPICS = {
-    "secret_murder": "谋害{target}",
-    "secret_murder_attempt": "行刺{target}未遂",
-    "secret_exam_cheater": "科举舞弊",
-    "secret_lover": "与{target}私通",
-    "secret_deviant": "性情怪僻",
-    "secret_non_believer": "不信神明",
-    "secret_crypto_religionist": "暗奉异教",
-    "secret_witch": "暗行巫术",
-    "secret_embezzler": "侵吞库银",
-    "secret_siphoned_treasury": "挪用国库",
-    "secret_unmarried_illegitimate_child": "血脉存疑",
-    "secret_disputed_heritage": "血统有争",
-    "secret_incest": "乱伦",
-    "secret_homosexual": "断袖",
-    "secret_cannibal": "食人",
-    "secret_coup_plotter": "谋逆",
-    "secret_adultery": "通奸",
-}
-# 模板需要对象、而存档未给 target 时的简写
-SECRET_TOPICS_NO_TARGET = {
-    "secret_murder": "谋害人命",
-    "secret_murder_attempt": "行刺未遂",
-    "secret_lover": "与人私通",
-}
+
+
+
+
+
 # 谋杀类隐事: 正文归《刺客列传》, 篇内只计数 + 索引
 SECRET_MURDER_TYPES = {"secret_murder", "secret_murder_attempt"}
 
-# v28: 头衔得失动词 — 按 memory vars.reason (游戏给的缘由) 出词。
-# 旧口径一律「登位，得X」/「让出X」, 使天朝制/行政制的**官职任命轮转**
-# (reason=appointment_succession / stepped_down) 被读成「被人打败、又夺人领地」
-# (陆氏: 869 受任阶州、872 卸任阶州、875 受任商州 被写成 登位/让出)。
-# 政体无关: 封建的承袭/受封/攻取、行政制的受任/调任 一表覆盖; 未知 reason
-# 回退旧词 (登位/让出), 行为与旧版一致。
-TITLE_GAIN_VERBS = {
-    "created": "受封",                    # 起家/新封 (含世族受封家业)
-    "appointment": "受任",
-    "appointment_succession": "受任",
-    "inheritance": "承袭",
-    "granted": "受封",
-    "revoked": "夺得",
-    "usurped": "篡得",
-    "conquest": "攻取",
-    "conquest_claim": "攻取",
-    "conquest_populist": "攻取",
-    "conquest_holy_war": "攻取",
-    "migration": "迁得",
-    "swear_fealty": "归附得",
-    "faction_demand": "迫得",
-    "independency": "自立",
-    "abdication": "受禅",
-    "leased_out": "租得",
-    "negotiated": "议得",
-    "stepped_down": "接任",
-    "destroyed": "重建",
-}
-TITLE_LOSS_VERBS = {
-    "stepped_down": "卸任",
-    "appointment": "调任",
-    "appointment_succession": "调任",
-    "revoked": "被褫夺",
-    "usurped": "被篡",
-    "conquest": "失守",
-    "conquest_claim": "失守",
-    "conquest_populist": "失守",
-    "conquest_holy_war": "失守",
-    "granted": "转授他人",
-    "inheritance": "交出",
-    "migration": "迁离",
-    "abdication": "退位",
-    "faction_demand": "让出",
-    "swear_fealty": "归附",
-    "destroyed": "毁弃",
-}
+
+
 
 # v28: 健康/压力档位 — 游戏数值属元信息, 提示词只给档位词 (现代白话)。
 # 阈值取自游戏 defines HEALTH_STATE_LEVELS_VALUES {0,1,3,5,7} 与
@@ -503,60 +306,11 @@ def _death_reason(table, reason):
     return DEATH_REASON_ZH.get(reason, "去世")
 
 
-# v16: 动作型死因 → 施事句式 (原始 reason key → 动词)。有凶手/行刑者/对手
-# 记录时, 把施事者直接嵌进句内 (被XXX谋杀 / 被XXX处决 / 与XXX决斗而亡),
-# 不再另起「凶手为…」尾巴 — 更短, 也更像自然语言; 战场/意外/病亡的击杀者
-# 不是「凶手」, 一律不点名。谋杀分两档: death_murder 是败露的谋杀 (被XXX
-# 谋杀), death_mysterious 是未败露的谋杀 (被XXX秘密谋杀)。
-_DEATH_KILLER_VERB = {  # 凶手: 被{凶手}{动词}
-    "death_murder": "谋杀",
-    "death_murder_known": "谋杀",
-    "death_mysterious": "秘密谋杀",
-    "death_assassination": "暗杀",
-    "death_poison": "毒杀",
-    "death_plotting": "谋害",
-    "death_court_intrigue": "谋害",
-    "death_strangled_with_own_intestines": "绞杀",
-    "death_smothered_by_downy_robe": "闷杀",
-    "death_skull_cracked_open": "打死",
-    "death_beaten": "打死",
-    "death_cloven_in_half": "劈杀",
-    "death_heart_ripped_out": "剖心",
-    "death_chopped_to_pieces": "砍成碎块",
-    "death_viciously_dismembered": "碎尸",
-    "death_ripped_apart_limb_by_limb": "分尸",
-    "death_decapitated": "斩首",
-    "death_ritually_hung": "缢杀",
-    "death_sacrificed_to_gods": "献祭",
-    "death_sacrificed_to_ancestor": "献祭",
-    "death_burned": "烧死",
-    "death_burned_by_mob": "烧死",
-}
-_DEATH_EXECUTOR_VERB = {  # 行刑者: 被{行刑者}{动词}
-    "death_execution": "处决",
-    "death_punishment": "处决",
-    "death_hostage_execution": "处决",
-    "death_execution_blood_eagle": "处决",
-    "death_crucified": "钉上十字架",
-    "death_crucified_by_mob": "钉上十字架",
-    "death_burned_witch": "烧死在火刑柱上",
-}
 
-# v22: 处决方式 (用户需求 2026-09-02) — 存档不记录行刑者实际选择的方式,
-# 受害死因键恒为 death_execution; 依 execute_prisoner_interaction 的
-# send_option 可用条件 (见游戏 common/character_interactions/00_prison_interactions.txt),
-# 用传记所用熔件/缓存的行刑者状态近似判定可用方式, 再按 (行刑者, 受害者,
-# 死亡日期) 稳定伪随机取一 — 不同处决有变化, 同一处决重跑不漂移。
-# (顺序即游戏界面顺序; 措辞按 EXECUTION_* 本地化与 death_* 死因雅化。)
-_EXECUTION_OPTIONS = (
-    ("beheaded",   "斩首"),                     # EXECUTION_BEHEADED 砍头
-    ("devour",     "砍头后吃掉"),               # EXECUTION_DEVOUR 砍头……然后吃掉!
-    ("burned",     "烧死"),                     # EXECUTION_BURNED 烧死在火刑柱上
-    ("sacrifice",  "献祭给神灵"),               # EXECUTION_SACRIFICE 献祭
-    ("kennel",     "处以犬决"),                 # EXECUTION_KENNEL 犬决
-    ("provisions", "做成神秘的肉充作口粮"),     # EXECUTION_PROVISIONS 做成神秘的肉
-)
-_EXECUTION_ORDER = {k: i for i, (k, _v) in enumerate(_EXECUTION_OPTIONS)}
+
+
+
+
 
 # 东亚系文化模板 (近似的 asian heritage 支柱 — 存档不存文化支柱, 用熔件
 # culture_manager 实测模板 + 周边族系近似; 实际数据中行刑者以玩家(汉)与
@@ -579,17 +333,8 @@ _ASIAN_HERITAGE_TPL = frozenset({
     # 中南半岛
     "burmese", "mon", "shan", "thai", "dai", "lao", "khmer",
 })
-_DEATH_OPPONENT_VERB = {  # 对手: 与{对手}{动词}而亡
-    "death_duel": "决斗",
-    "death_fight": "斗殴",
-    "death_fight_killer": "斗殴",
-    "death_contest_duel_accident": "决斗",
-    "death_contest_wrestling_accident": "角力",
-}
-_DEATH_AGENT_TAIL = {  # 死因自带惨状/情状, 施事者用「凶手/行刑者为…」点出
-    "death_head_ripped_off": "凶手",   # 身首异处，凶手为XXX
-    "death_eradicated": "行刑者",      # 连同全族被处决，行刑者为XXX
-}
+
+
 
 # v25: 暗杀死法池 (用户需求 2026-09-08) — 存档对暗杀只记四类泛化死因
 # (death_mysterious / death_murder / death_disappearance / death_poison), 传记
@@ -5301,7 +5046,9 @@ def _drop_mirror_pairs(events, pid, pname=""):
 # 双视角 (被囚者自身的 imprisoned / 施囚者的 imprisoned_other) 也只留一条。
 
 def _prison_span(d0, d1):
-    """两日期之间的时长词 («当日»/«3日»/«8个月»/«4年3个月»); 非法/逆序返回 ''。"""
+    """两日期之间的时长词 («当日»/«3日»/«8个月»/«4年3个月»); 非法/逆序返回 ''。
+    词形见 style.FACT_WORDING 的 prison_* 项。"""
+    W = _style.FACT_WORDING
     try:
         a = datetime.date(*(int(x) for x in str(d0).split(".")[:3]))
         b = datetime.date(*(int(x) for x in str(d1).split(".")[:3]))
@@ -5311,15 +5058,17 @@ def _prison_span(d0, d1):
         return ""
     days = (b - a).days
     if days == 0:
-        return "当日"
+        return W["prison_same_day"]
     if days < 31:
-        return f"{days}日"
+        return W["prison_days"].format(n=days)
     months = (b.year - a.year) * 12 + (b.month - a.month) \
         - (1 if b.day < a.day else 0)
     if months < 12:
-        return f"{months}个月"
+        return W["prison_months"].format(n=months)
     y, m = divmod(months, 12)
-    return f"{y}年" + (f"{m}个月" if m else "")
+    if m:
+        return W["prison_years_months"].format(y=y, m=m)
+    return W["prison_years"].format(y=y)
 
 
 def _pair_imprisonments(events, f, pid, pname=""):
@@ -5387,13 +5136,16 @@ def _pair_imprisonments(events, f, pid, pname=""):
             if r["jailer"] is not None:
                 jn = f.person_label(r["jailer"], style="brief") \
                     or f.name_with_regnal(r["jailer"])
-            body = f"{jn}囚禁{vn}" if jn else f"{vn}被囚"
+            W = _style.FACT_WORDING
+            body = W["prison_jailed"].format(jailer=jn, victim=vn) if jn \
+                else W["prison_held"].format(victim=vn)
             if out is not None:
                 used.add(out["idx"])
                 drop.add(out["idx"])
                 span = _prison_span(r["date"], out["date"])
-                body += f"，{span}后获释" if span \
-                    else f"，{f.date(out['date'])}获释"
+                body += W["prison_released"].format(span=span) if span \
+                    else W["prison_release_on"].format(
+                        date=f.date(out["date"]))
             e = events[r["idx"]]
             e["text"] = f"{f.date(r['date'])}，{body}。"
             e["type"] = "imprisoned"
@@ -5655,11 +5407,7 @@ _MERGE_SLOT_RES = {
                          lambda pairs: pairs[0][0] + "囚禁" + "、".join(p[1] for p in pairs) + "。"),
 }
 _MERGE_CAP = 10  # 合并人名上限, 超过收成「…等N人」
-_MERGE_VERB = {
-    "witnessed_a_coronation_memory": "见证加冕。",
-    "grand_wedding_completed_guest": "出席大婚。",
-    "imprisoned": "被囚。",
-}
+
 
 
 def _merge_same_day_events(events, f=None):
@@ -5722,27 +5470,8 @@ def _merge_same_day_events(events, f=None):
     return out
 
 
-# v15: 概览统计标签 (记忆类型 → 中文标签; death 记录按模块另表)。
-# 只统计有戏剧意义的类型, 供【概览】块程序直算「本十年结怨9次、谋杀5次…」。
-_STATS_LABEL = {
-    "became_rivals": "结仇", "became_grudge": "结怨", "became_nemesis": "结为死敌",
-    "child_born": "添丁", "first_born": "添丁", "twins_born": "添丁",
-    "child_premature": "夭折", "child_stillborn": "夭折",
-    "successful_murder": "谋杀",
-    "had_sex": "私通", "became_lovers": "私通",
-    "relative_died": "丧亲", "spouse_died": "丧偶", "friend_died": "丧友",
-    "rival_died": "仇人死亡",
-    "married": "成婚", "broke_up_lovers": "分手",
-    "imprisoned": "被囚", "imprisoned_other": "囚禁他人",
-    "offensive_war": "开战", "defensive_war": "应战",
-    "war_won": "获胜", "war_lost": "战败",
-    "battle_won_memory": "取胜", "battle_lost_memory": "失利",
-    "faith_changed": "改信",
-}
-_DEATH_STAT_LABEL = {
-    "谋害人命": "谋杀", "丧亲之恸": "丧亲", "丧偶之痛": "丧偶",
-    "丧友之恸": "丧友", "仇人死亡": "仇人死亡",
-}
+
+
 
 # v15: 同月同型流水事件聚合 — 只合并单槽可变、结构一致的流水 (结怨/结仇/助战等)。
 # style: duo = 「A与B结怨。」双槽; solo = 「A助盟友作战。」单槽。
@@ -7776,3 +7505,25 @@ def facts_to_text(facts, keys=None):
         if p.get(k):
             lines.append(f"{k}：{p[k]}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# v30 问题11: 事实层措辞表已迁至 style.py, 此处按原名别名, 调用点不变。
+# 改词请编辑 style.py 的「8. 事实层措辞表」一节。
+# ---------------------------------------------------------------------------
+DEATH_REASON_ZH = _style.DEATH_REASON_ZH
+FLAVOR_DEATH_ZH = _style.FLAVOR_DEATH_ZH
+TITLE_GAIN_VERBS = _style.TITLE_GAIN_VERBS
+TITLE_LOSS_VERBS = _style.TITLE_LOSS_VERBS
+MEMORY_TEMPLATES = _style.MEMORY_TEMPLATES
+SECRET_TOPICS = _style.SECRET_TOPICS
+SECRET_TOPICS_NO_TARGET = _style.SECRET_TOPICS_NO_TARGET
+_DEATH_KILLER_VERB = _style.DEATH_KILLER_VERB
+_DEATH_EXECUTOR_VERB = _style.DEATH_EXECUTOR_VERB
+_DEATH_OPPONENT_VERB = _style.DEATH_OPPONENT_VERB
+_DEATH_AGENT_TAIL = _style.DEATH_AGENT_TAIL
+_EXECUTION_OPTIONS = _style.EXECUTION_OPTIONS
+_EXECUTION_ORDER = _style.EXECUTION_ORDER
+_STATS_LABEL = _style.STATS_LABEL
+_DEATH_STAT_LABEL = _style.DEATH_STAT_LABEL
+_MERGE_VERB = _style.MERGE_VERB
