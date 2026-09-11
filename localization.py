@@ -16,12 +16,16 @@
   - data/localization.json   : {key: 中文} 合并表
   - data/province_map.json   : {省份id: {"county": 伯爵领key, "barony": 男爵领key}}
     (v24: 值由单一伯爵领 key 升级为 county+barony 两键 — 受害者所在地标注用男爵领)
+  - data/trait_names.json    : {traits: {trait_key: 显示名键}, categories: {trait_key: 类别}} (v31)
+  - data/hook_types.json     : {hook_types: {类型键: {strong, perpetual, expiration_days}}} (v31)
 
 用法:
   python localization.py build        # 重建本地化表
   python localization.py mods         # 列启用 Mod 的本地化覆盖与来源指纹 (v29)
   python localization.py province     # 重建省份映射
   python localization.py dynasties    # 重建宗族/家族定义表 (v14)
+  python localization.py traits       # 重建特质显示名/类别表 (v29/v31)
+  python localization.py hooks        # 重建牵制类型表 (v31)
   python localization.py check        # 抽查关键键 (Daria/岭西/层级词/桂州)
 """
 import hashlib
@@ -1098,8 +1102,19 @@ def _trait_names_path(cfg):
 
 
 def build_trait_names(cfg):
-    """游戏 + 启用 Mod 的 common/traits → {"traits": {trait_key: loc_key}}。"""
+    """游戏 + 启用 Mod 的 common/traits → 特质显示名键表 + 特质类别表。
+
+    返回::
+
+        {"schema": 2,
+         "traits":     {trait_key: loc_key},       # 显示名 (v29)
+         "categories": {trait_key: category}}      # 游戏 category (v31)
+
+    v31: 同一次解析顺带取 `category = personality|education|lifestyle|fame|health|
+    commander|childhood|court_type` —— 「为人」句按类分句、体况瞬时特质不进履历都靠它
+    (先天特质 (beauty_*/intellect_*/physique_* 等) 游戏未给 category, 归空串)。"""
     out = {}
+    cats = {}
     roots = []
     g = game_dir(cfg)
     if g:
@@ -1122,6 +1137,9 @@ def build_trait_names(cfg):
                 for key, body in _top_blocks(txt):
                     if key.startswith("@"):
                         continue
+                    cb = re.search(r"(?<![A-Za-z_])category\s*=\s*([A-Za-z_]+)", body)
+                    if cb:
+                        cats[key] = cb.group(1)
                     nb = _blocks_of(body, "name")
                     if nb:
                         cands = re.findall(r"desc\s*=\s*([A-Za-z0-9_.]+)", nb[0])
@@ -1133,7 +1151,7 @@ def build_trait_names(cfg):
                         if c and not c.startswith(("$", "[")):
                             out[key] = c
                             break
-    return {"schema": 1, "traits": out}
+    return {"schema": 2, "traits": out, "categories": cats}
 
 
 def save_trait_names(cfg, table):
@@ -1145,20 +1163,100 @@ def save_trait_names(cfg, table):
 
 
 def load_trait_names(cfg=None, force=False):
-    """载入特质显示名键表; 缺失或强制时重建。"""
+    """载入特质显示名 + 类别表; 缺失、旧版 (无 categories) 或强制时重建。"""
     cfg = cfg or llm.load_config()
     path = _trait_names_path(cfg)
     if not force and os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1 and data.get("traits"):
+            if data.get("schema") == 2 and data.get("traits") \
+                    and "categories" in data:
                 return data
         except Exception:
             pass
     data = build_trait_names(cfg)
     save_trait_names(cfg, data)
     return data
+
+
+# ---------------------------------------------------------------------------
+# 牵制类型表 (v31): common/hook_types/*.txt → 强弱 + 永久标志
+# ---------------------------------------------------------------------------
+# 存档 hooks 只给类型键 (favor_hook/house_head_hook/ganlewodelaopo_hook…), 显示名走
+# 本地化表同名键 (favor_hook=人情、house_head_hook=家主), 强弱须查类型定义:
+# `strong = yes` 为强牵制, `perpetual = yes` / `expiration_days = -1` 为永久。
+# Mod 定义 (longju_hook_types.txt 的 ganlewodelaopo_hook = {strong = yes}) 一并生效。
+
+def _hook_types_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "hook_types.json")
+
+
+def build_hook_types(cfg):
+    """游戏 + 启用 Mod 的 common/hook_types → {"hook_types": {key: {...}}}。"""
+    out = {}
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        d = os.path.join(root, "common", "hook_types")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = fp.read()
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                if key.startswith("@"):
+                    continue
+                strong = bool(re.search(r"(?<![A-Za-z_])strong\s*=\s*yes", body))
+                perpetual = bool(re.search(
+                    r"(?<![A-Za-z_])perpetual\s*=\s*yes", body))
+                m = re.search(r"(?<![A-Za-z_])expiration_days\s*=\s*(-?\d+)", body)
+                days = int(m.group(1)) if m else None
+                if days == -1:
+                    perpetual = True
+                out[key] = {"strong": strong, "perpetual": perpetual,
+                            "expiration_days": None if perpetual else days}
+    return {"schema": 1, "hook_types": out}
+
+
+def save_hook_types(cfg, table):
+    path = _hook_types_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_hook_types(cfg=None, force=False):
+    """载入牵制类型表; 缺失或强制时重建 (与本地化表同源静态表)。"""
+    cfg = cfg or llm.load_config()
+    path = _hook_types_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("hook_types"):
+                return data
+        except Exception:
+            pass
+    data = build_hook_types(cfg)
+    save_hook_types(cfg, data)
+    return data
+
+
+def hook_type(table, key):
+    """牵制类型键 → 显示名 (本地化同名键; 查不到返回 '')。"""
+    v = loc(table, key) or ""
+    return "" if (not v or re.search(r"[A-Za-z_]", v)) else v
 
 
 # ---------------------------------------------------------------------------
@@ -1232,6 +1330,7 @@ _LEVELS = None
 _COURT_POSITIONS = None
 _COUNCIL_TASKS = None
 _TRAIT_NAMES = None
+_HOOK_TYPES = None
 
 
 def currency_levels(cfg=None):
@@ -1259,11 +1358,20 @@ def council_tasks(cfg=None):
 
 
 def trait_names(cfg=None):
-    """特质显示名键表单例 (v29): {"traits": {trait_key: loc_key}}。"""
+    """特质显示名 + 类别表单例 (v29/v31):
+    {"traits": {trait_key: loc_key}, "categories": {trait_key: category}}。"""
     global _TRAIT_NAMES
     if _TRAIT_NAMES is None:
         _TRAIT_NAMES = load_trait_names(cfg or llm.load_config())
     return _TRAIT_NAMES
+
+
+def hook_type_table(cfg=None):
+    """牵制类型表单例 (v31): {"hook_types": {type: {strong, perpetual, …}}}。"""
+    global _HOOK_TYPES
+    if _HOOK_TYPES is None:
+        _HOOK_TYPES = load_hook_types(cfg or llm.load_config())
+    return _HOOK_TYPES
 
 
 def table(cfg=None):
@@ -1543,11 +1651,31 @@ def main():
         data = build_trait_names(cfg)
         p = save_trait_names(cfg, data)
         t = data.get("traits") or {}
-        print(f"特质显示名表已重建: {p} ({len(t)} 条)")
+        cats = data.get("categories") or {}
+        print(f"特质显示名表已重建: {p} ({len(t)} 条, 类别 {len(cats)} 条)")
         table = load_localization_table(cfg)
-        for k in ("lifestyle_traveler", "lifestyle_physician", "hunchback", "dwarf"):
+        for k in ("lifestyle_traveler", "lifestyle_physician", "hunchback", "dwarf",
+                  "pregnant", "lustful"):
             lk = t.get(k, "")
-            print(f"  {k} → {lk or '(trait_<key>)'} = {loc(table, lk or f'trait_{k}')!r}")
+            print(f"  {k} [{cats.get(k) or '无类别'}] → "
+                  f"{lk or '(trait_<key>)'} = {loc(table, lk or f'trait_{k}')!r}")
+    elif cmd == "hooks":
+        data = build_hook_types(cfg)
+        p = save_hook_types(cfg, data)
+        ht = data.get("hook_types") or {}
+        table = load_localization_table(cfg)
+        strong = sum(1 for v in ht.values() if v.get("strong"))
+        print(f"牵制类型表已重建: {p} ({len(ht)} 条, 其中强牵制 {strong} 条)")
+        for k in ("favor_hook", "house_head_hook", "indebted_hook",
+                  "weak_blackmail_hook", "strong_blackmail_hook",
+                  "ganlewodelaopo_hook", "ritual_best_friend_hook"):
+            v = ht.get(k)
+            if v is None:
+                print(f"  {k} → (本档未定义)")
+                continue
+            print(f"  {k} → {hook_type(table, k) or '(无名)'}"
+                  f" [{'强' if v.get('strong') else '弱'}"
+                  f"{'/永久' if v.get('perpetual') else ''}]")
     elif cmd == "province":
         m = build_province_map(cfg)
         p = save_province_map(cfg, m)
