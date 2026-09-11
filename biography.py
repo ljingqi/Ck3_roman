@@ -313,6 +313,35 @@ def _family_ids_by_kind(cache, kind):
     return {int(x) for k in keys for x in (fam.get(k) or [])}
 
 
+def _consort_affair_lines(facts, cache):
+    """妻室情事脉络块 (v31, 问题4): 逐情人给**完整档案** + 关系弧一行。
+
+    档案取 `_profile_lines` (姓名/族属/信仰/生年/廷中身份/为人/亲缘),
+    关系弧取 facts.consort_affairs (私通→相恋→灵魂伴侣→分手/去世)。
+    模块: 让「妻子怎么交到情人和灵魂伴侣」有脉络可写。"""
+    entries = facts.get("consort_affairs") or []
+    if not entries:
+        return []
+    grouped = {}
+    for e in entries:
+        grouped.setdefault(e.get("spouse_label") or "", []).append(e)
+    out = []
+    for slabel, items in grouped.items():
+        out.append(f"妻室情事脉络（{slabel}）：")
+        for e in items:
+            pid = e.get("partner")
+            if pid is not None:
+                for x in _profile_lines(facts, pid):
+                    out.append("　" + x)
+            arc = e.get("arc") or ""
+            if arc:
+                out.append(f"　与{slabel}之情：{arc}。")
+        out.append("")
+    while out and not out[-1]:
+        out.pop()
+    return out
+
+
 def _split_span(items, part, total=2):
     """把有序列表按段数二分 (v27): 开篇取前半, 纪事取后半。"""
     n = len(items or [])
@@ -453,6 +482,10 @@ def _profile_lines(facts, cid=None):
         bits.append(f"信{p['faith']}")
     if p.get("birth"):
         bits.append(f"生于{p['birth']}")
+    # v31 (问题6): 主角廷中身份 (骑士/廷臣 + 入宫日) — 妻室情人正是廷中骑士,
+    # 旧档案里这一身份完全缺席 («乔乔何人…仅存其名» 即由此而来)
+    if p.get("court_service"):
+        bits.append(p["court_service"])
     if p.get("motto"):
         bits.append(f"家训「{p['motto']}」")
     lines.append(f"{head}，{'，'.join(bits)}。" if bits else f"{head}。")
@@ -462,9 +495,9 @@ def _profile_lines(facts, cid=None):
     # ---- v27: 语言句 (母语/兼通) ----
     if p.get("language_line"):
         lines.append(p["language_line"])
-    # ---- 性情句 ----
+    # ---- 性情句 (v31 问题1: facts 已按类别分句 — 「性情…；才具…」) ----
     if p.get("traits"):
-        lines.append(f"为人{p['traits']}。")
+        lines.append(f"为人：{p['traits']}。")
     if p.get("trait_history"):
         lines.append(f"特质履历：{p['trait_history']}。")
     # v26: 信仰履历 (改信过程) — 姓名句只写当前信仰, 改信节点在此补出
@@ -917,6 +950,11 @@ def _article_facts(facts, cache, key, section=None):
             if ev:
                 fam_lines.append("  " + "\n  ".join(ev))
         _set_block(blocks, "家室档案", "\n".join(fam_lines))
+        # v31 (问题4): 妻室情事脉络 — 逐情人一行 (身份 + 私通→相恋→灵魂伴侣的关系弧),
+        # 让「妻子怎么交到情人和灵魂伴侣」有脉络可写 (此前只有孤立日期句)。
+        if sk != "lead":
+            _set_block(blocks, "妻室情事脉络",
+                       "\n".join(_consort_affair_lines(facts, cache)))
         tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
                                  exclude=_has_assassins(facts))
         if tl:
@@ -1078,16 +1116,26 @@ def _article_facts(facts, cache, key, section=None):
         # v28《阴私录·隐事秘辛》: 主角隐事归开篇, 家人近臣隐事与把柄归纪事
         sec = facts.get("secrets") or {}
         sk = _sec_key(section)
+        kin_lines = list(sec.get("kinsmen") or [])
         if sk == "lead":
             lines = list(sec.get("held") or [])
             if sec.get("held_murder"):
                 lines.append(_murder_index_line(facts, sec))
             if sec.get("held_unrevealed"):
                 lines.append("这些隐事至今无人知晓。")
+            # v31 (问题7): 主角无自有隐事时, 开篇改用家人近臣隐事 (后半留纪事) —
+            # 旧文本开篇块为空, 模型只能拿共享前缀一行「戏剧性事件」自问自答
+            # (「知情者何人？…则其必知情」)。
+            if not lines and kin_lines:
+                lines = _split_span(kin_lines, 0)
             _set_block(blocks, "主角隐事", "\n".join(lines))
         else:
-            mid_lines = list(sec.get("kinsmen") or [])
+            mid_lines = _split_span(kin_lines, 1) if sec.get("held") else kin_lines
+            mid_lines = list(mid_lines)
             mid_lines.extend(sec.get("known") or [])
+            # v31 (问题5): 牵制 (把柄维度) — 用户决策: 只随《阴私录》下发
+            mid_lines.extend(sec.get("hooks_held") or [])
+            mid_lines.extend(sec.get("hooks_over") or [])
             _set_block(blocks, "家人近臣隐事", "\n".join(mid_lines))
             if sec.get("events"):
                 blocks["见载年表"] = "\n".join(sec["events"])

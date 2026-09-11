@@ -233,7 +233,7 @@ PROMPTS = {
     ),
     "custom_start_note": (
         "开篇以「起于何时何地、如何发迹」为纲书写其出身，"
-        "从其事业之始依次写来。\n\n"
+        "从其事业之始依次写来；配偶与子女在婚配、家室诸事处出场。\n\n"
     ),
     "lead_user": (
         "{shared}\n\n{theme}【总纲】\n{intro}\n\n"
@@ -280,6 +280,30 @@ FACT_WORDING = {
     "prison_release_on": "，{date}获释",
     "prison_jailed": "{jailer}囚禁{victim}",
     "prison_held": "{victim}被囚",
+    # v31 (问题5): 牵制句 — 强牵制与普通牵制分档 (游戏 [strong_hook] / [hook] 同义);
+    # {name} 由 facts 传引号形态 (「干了我老婆」), 本地化查不到时为空串;
+    # {since} 为「（自X年见载）」或到期日, 对象只有一个时逐条写, 同类多条归并一行。
+    "hook_held_strong": "{actor}握有对{target}的强牵制{name}{since}。",
+    "hook_held_weak": "{actor}握有对{target}的牵制{name}{since}。",
+    "hook_over_actor_strong": "{holder}握有对{actor}的强牵制{name}{since}。",
+    "hook_over_actor_weak": "{holder}握有对{actor}的牵制{name}{since}。",
+    "hook_group": "{actor}握有对{names}的{strength}牵制{name}（共{n}人）。",
+    "hook_strong_word": "强",
+    "hook_since": "（自{year}见载）",
+    "hook_expires": "（{date}届满）",
+    # v31 (问题2): 配偶同月「同房＋相恋」并作一行
+    "affair_pair_spouse": "{y}年{m}月，{a}与{b}夫妻情笃。",
+    # v31 (问题4): 妻室情事脉络 — 逐情人一句的关系弧用词 (弧内已点明是「与公主」,
+    # 各段不再重复对象名)
+    "affair_entry": "{date}私通",
+    "affair_lovers": "{date}相恋",
+    "affair_soulmates": "{date}结为灵魂伴侣",
+    "affair_broke_up": "{date}分手",
+    "affair_lover_died": "{date}去世",
+    "affair_repeat": "其后{years}屡续私通",
+    "affair_joined_court": "自{date}在主角廷中",
+    "court_knight": "{actor}廷中骑士",
+    "court_member": "{actor}廷臣",
 }
 
 # ---------------------------------------------------------------------------
@@ -417,6 +441,9 @@ MEMORY_TEMPLATES = {
     "broke_up_lovers": "{name}与{other}分手。",
     "became_lovers": "{name}与{other}相恋。",
     "had_sex": "{name}与{other}有私情。",
+    # v31 (问题2): 配偶之间的床笫之事不写作「私通」——婚姻之内, 本无非分之义
+    # (旧文本把主角与公主的夫妻之实写成「私通四次」, 太史公曰亦随之失真)。
+    "had_sex_spouse": "{name}与{other}同房。",
     "became_friends": "{name}与{other}结为好友。",
     "became_soulmates": "{name}与{other}结为灵魂伴侣。",
     "became_blood_brother": "{name}与{other}结为血盟兄弟。",
@@ -489,8 +516,10 @@ SECRET_TOPICS = {
     "secret_witch": "暗行巫术",
     "secret_embezzler": "侵吞库银",
     "secret_siphoned_treasury": "挪用国库",
-    "secret_unmarried_illegitimate_child": "血脉存疑",
-    "secret_disputed_heritage": "血统有争",
+    # v31 (问题7): 血统类隐事指名所涉子女 — 旧文案「血统有争（涉及X）」是名词
+    # 括注同位语, 且与「见载年/知情者」的括注叠在一起, 读来含混。
+    "secret_unmarried_illegitimate_child": "所出{target}血脉存疑",
+    "secret_disputed_heritage": "所生{target}血统有争",
     "secret_incest": "乱伦",
     "secret_homosexual": "断袖",
     "secret_cannibal": "食人",
@@ -591,6 +620,8 @@ STATS_LABEL = {
     "child_premature": "夭折", "child_stillborn": "夭折",
     "successful_murder": "谋杀",
     "had_sex": "私通", "became_lovers": "私通",
+    # v31 (问题2): 配偶之间的情事另立一档 — 概览不再把夫妻之实计入「私通」
+    "had_sex_spouse": "夫妻之情", "became_lovers_spouse": "夫妻之情",
     "relative_died": "丧亲", "spouse_died": "丧偶", "friend_died": "丧友",
     "rival_died": "仇人死亡",
     "married": "成婚", "broke_up_lovers": "分手",
@@ -605,6 +636,14 @@ STATS_LABEL = {
 DEATH_STAT_LABEL = {
     "谋害人命": "谋杀", "丧亲之恸": "丧亲", "丧偶之痛": "丧偶",
     "丧友之恸": "丧友", "仇人死亡": "仇人死亡",
+}
+
+# v31 (问题1): 特质类别词 — 游戏 common/traits 的 `category` → 中文。
+# 空键 = 游戏未给 category 的先天特质 (beauty_*/intellect_*/physique_*/dwarf…)。
+TRAIT_GROUP_WORDS = {
+    "personality": "性情", "education": "才具", "lifestyle": "阅历",
+    "commander": "将略", "fame": "名声", "health": "体况",
+    "childhood": "幼性", "court_type": "宫廷", "": "禀赋",
 }
 
 
