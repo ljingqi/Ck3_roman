@@ -1682,6 +1682,34 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     return cache
 
 
+def hook_slot_holder(first, second, field):
+    """`relations.active_relations` 的一条牵制字段 → (持有者, 对象) (v33)。
+
+    **方向在槽号，不在 first/second**：引擎把成对关系按键规范化存储
+    （实测全档 6950 条 `active_hook_*` 记录 **first < second 恒成立**，
+    一条反例也没有），方向由字段名 `active_hook_<N>` 承载：
+    N 偶 → `first` 持有对 `second`；N 奇 → `second` 持有对 `first`。
+
+    实证（马克龙 879 档）：
+      · `house_head_hook`（家主权，持有者必为家主，而家主通常年长）——
+        槽 0：4919/4920 条 `first` 年长；槽 1：44/55 条 `second` 年长；
+      · Mod `longju_exent` 的 8 处 `add_hook = {target = scope:npc_2}` 全在
+        `root`（＝丈夫；`npc_1` 是 `random_spouse`、`npc_2` 是通奸者）作用域内，
+        即「干了我老婆」恒由丈夫持有 —— 与该档 opinions 的当事人标记
+        （通奸者→丈夫的 `xiangyongletadeqizi_opinion`）逐条吻合：
+        玩家(38677)对乔乔(43961)那条落在槽 0，对 15982/10851/12278（id 比玩家小、
+        故排在 first）三条落在槽 1，**四条都是玩家自己的牵制**。
+
+    v31 曾据单例推断「first 即持有者」——那只是玩家 id 恰好小于乔乔的巧合，
+    导致同一批双向可读的记录里把玩家自己的牵制读成了「他人握有对主角的牵制」。"""
+    slot = str(field).rsplit("_", 1)[-1]
+    try:
+        n = int(slot)
+    except ValueError:
+        n = 0
+    return (first, second) if n % 2 == 0 else (second, first)
+
+
 def _diff_hooks(cache, melt, date_label):
     """把本档牵制并入 cache["hooks"] (逐档差分)。
 
@@ -1692,8 +1720,9 @@ def _diff_hooks(cache, melt, date_label):
              "active_hook_0": {"type": "ganlewodelaopo_hook",
                                "expiration_date": "9999.1.1"}}, …]
 
-    方向: `first` 持有对 `second` 的牵制 (实测 — Mod 事件使受害方对通奸者
-    `add_hook`, 落在 first 侧; `house_head_hook` 亦全为 first=家主 second=诸子)。
+    方向由槽号定（见 `hook_slot_holder`）：槽 0 = first 持有对 second，
+    槽 1 = second 持有对 first；first/second 本身只是**按键规范化的成对编号**
+    （小 id 在前），不带方向义。
     只收「持有者或对象为玩家」的牵制 (控体积; 全档 6950 条 → 玩家相关 14 条)。
     记录形如::
 
@@ -1712,10 +1741,10 @@ def _diff_hooks(cache, melt, date_label):
     for e in ar:
         if not isinstance(e, dict):
             continue
-        holder, target = e.get("first"), e.get("second")
-        if not isinstance(holder, int) or not isinstance(target, int):
+        first, second = e.get("first"), e.get("second")
+        if not isinstance(first, int) or not isinstance(second, int):
             continue
-        if holder != pid and target != pid:
+        if first != pid and second != pid:
             continue
         for k, v in e.items():
             if not str(k).startswith("active_hook") or not isinstance(v, dict):
@@ -1723,6 +1752,7 @@ def _diff_hooks(cache, melt, date_label):
             tp = v.get("type")
             if not tp:
                 continue
+            holder, target = hook_slot_holder(first, second, k)
             want[f"{holder}>{target}>{tp}"] = {
                 "holder": holder, "target": target, "type": str(tp),
                 "expiration": v.get("expiration_date"),
