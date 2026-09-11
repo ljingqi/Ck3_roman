@@ -24,180 +24,14 @@ from concurrent.futures import ThreadPoolExecutor
 import llm
 import cache_lib as cl
 import facts as F
+import style
 
 # ---------------------------------------------------------------------------
-# 写作规则 (system 静态内容) — v5 双文风
+# 提示词与措辞一律取自 style.py (v30 问题11: 文风单独剥离, 便于修改)
+#   style.STYLE_PROFILES 两套笔法 / style.RULES 写作规则 /
+#   style.SECTION_TITLES + style.SECTION_REQ 篇目板块 /
+#   style.PROMPTS 请求包裹模板 / style.FACT_WORDING 事实层措辞
 # ---------------------------------------------------------------------------
-
-# 文风: east=中国式纪传体 (《史记》), west=西式传记 (普鲁塔克《名人传》体例)
-STYLE_RULES = {
-    "east": {
-        "jizhuanti": (
-            "「纪传体」笔法: 仿《史记》纪传体——以人物为中心, 按时间次序叙其一生, "
-            "客观叙事, 夹叙夹议, 善用细节、对话与场景铺陈; "
-            "文章末尾以「太史公曰」作史家评点收束。"
-        ),
-        "tail_title": "评曰·太史公曰",
-        "tail_req": "总评其一生的功过得失与性格命运, 以「太史公曰」收束。",
-    },
-    "west": {
-        "jizhuanti": (
-            "「传记体」笔法: 仿西方古典传记 (普鲁塔克《名人传》体例)——以人物一生为纲, "
-            "穿插轶事、对话与性格细节, 夹叙夹议, 兼作道德评点与命运省思; "
-            "文章末尾以「史家按」作评点收束。"
-        ),
-        "tail_title": "评曰·史家按",
-        "tail_req": "总评其一生的品性功过与命运沉浮, 以「史家按」作结。",
-    },
-}
-
-NONFICTION_RULE = (
-    "「非虚构铁律」: 资料给出的人名、地名、日期、数字、事件一律按资料原样书写; "
-    "人物的心理、对话、场景、细节在资料允许的范围内合情演绎; "
-    "叙述依资料可据之处依次推进, 以已知的人事时地把场面写足。"
-)
-
-# v30: 「缺料按语」全部撤出提示词与事实层 (修复方案_菲利普4.md 问题4)。
-# 历史: v28 曾以「资料未载之处行文径入下一事」替掉「视为不存在或未知」, 但两个版本
-# 都把「资料未载/未提供/不足」这几个字教给了模型 — 实测菲利普 10 条请求里出现 44 次
-# 「资料未载」、16 次「资料未提供」、16 次「资料不足」, 正文随之写出 33 处考据按语。
-# 现改为只写「怎么写」, 缺料一律由程序端省略 (无料不成句), 提示词不再提「缺」字。
-WORLD_FRAME_RULE = (
-    "「平行世界规则」: 本传所写世界完全由本提示词资料构成, 与任何真实历史无关; "
-    "所有人物、家族、官职、事件、日期、数字一律按资料给出的写法书写。"
-)
-
-# v28: 行文落笔 — 正向要求「每句都落在具体人事时地」, 替代考据式按语。
-NARRATIVE_FOCUS_RULE = (
-    "「行文落笔」: 每一句都落在具体的人、时、地、事上, 由资料可据之处依次推进; "
-    "叙述连贯、史笔简劲, 与所写人物的处境相称。"
-)
-
-# v24: 平实用词 (用户决策) — 死亡一律现代平实词, 不用文言等级词 (崩/薨/殁/殒/卒等)。
-# 正向锚点: 只列应写的词与例句, 让模型按这一套词汇表达全部死亡事件。
-PLAIN_WORD_RULE = (
-    "「平实用词」: 一切死亡事件一律用现代平实词表达——死于(某年某月某日)、"
-    "病逝、去世、逝世、战死、遇害、被杀、被处死。"
-    "例:「某年某月某日，某人死于某地」「某人病逝于某年」「某人战死/遇害/被杀」。"
-    "帝王、君主、贵胄与庶民一律用同一套词; 全文的死亡表达与这套词完全一致。"
-)
-
-# v27: 称谓一致 (用户决策 2026-09-10) — 亲属/相关人物一律「头衔+姓名」,
-# 与 facts.kin_label 的渲染口径一致 (前头衔仅在其层级更高时以「前X，」前置)。
-TITLE_CONSISTENCY_RULE = (
-    "「称谓一致」: 亲属与相关人物一律用资料给出的称谓书写"
-    "(高昌国王毗伽庞特勤、可萨布兰部可敦塔坦尼·布兰、楚国郡主苗映娘); "
-    "同一人在全篇各处用同一称谓。"
-)
-
-# v30: 「语言事实」规则整条撤除 (修复方案_菲利普4.md 问题10)。
-# 历史: v27–v29 在提示词里留了「资料写明某人之间无共通语时…」这一条件句, 但程序侧
-# (facts.language_relation_line) 只在**真有**不通语时才下发一行自带指令的事实
-# (「…无共通语，交谈须借通译往来。」)。实测菲利普 10 条请求的事实块里「无共通语」
-# 出现 0 次, 提示词里却有 3 处 — 模型据此自行补出「二人无共通语」又当场自我否定。
-# 现改为程序单侧判定 + 事实行自带写法, 提示词中不再出现这一条件词。
-
-# v28: 隐事笔法 (secrets) — 正向表述: 只给「怎么写」, 数据侧已给形态
-SECRET_RULE = (
-    "「隐事笔法」: 隐事一律按其记载形态书写——至今无人知晓者写其事隐秘、时人未觉; "
-    "已有知情者时写明知情之人与此后往来; 各处隐事按资料给出的见载年份落笔。"
-)
-
-# 各篇文章的板块名 (首段/中段/尾段) — tail 按文风取
-SECTION_TITLES = {
-    "benji":   {"lead": "开篇·家世与出身", "mid": "纪事·一生大事", "tail": None},
-    "friend":  {"lead": "开篇·家世与交游", "mid": "纪事·一生际遇", "tail": None},
-    "enemy":   {"lead": "开篇·仇家身世",   "mid": "纪事·一生行迹", "tail": None},
-    "jiashi":  {"lead": "开篇·结缡与离异", "mid": "纪事·门庭恩怨", "tail": None},
-    "chaoju":  {"lead": "开篇·天下大势",   "mid": "纪事·朝局浮沉", "tail": None},
-    # v5 新增
-    "assassins": {"lead": "开篇·刀下之魂",
-                  "mid": "纪事·诸魂行迹",
-                  "mid1": "纪事·诸魂行迹·上",
-                  "mid2": "纪事·诸魂行迹·中",
-                  "mid3": "纪事·诸魂行迹·下",
-                  "tail": None},
-    "youxia":  {"lead": "开篇·萍踪浪迹",   "mid": "纪事·辗转行迹", "tail": None},
-    "qizu":    {"lead": "开篇·帝胄姻亲",   "mid": "纪事·门第荣枯", "tail": None},
-    "qunying": {"lead": "开篇·朝堂群英",   "mid": "纪事·要员浮沉", "tail": None},
-    # v9 新增
-    "feuds":   {"lead": "开篇·世仇渊薮",   "mid": "纪事·恩怨始末", "tail": None},
-    "artifacts": {"lead": "开篇·传家重宝", "mid": "纪事·流转始末", "tail": None},
-    # v28 新增
-    "secrets": {"lead": "开篇·隐事之始",   "mid": "纪事·阴私秘辛", "tail": None},
-}
-
-# 板块要求 (按文章, 首段/中段/尾段) — 全部数据驱动, 无战役硬编码
-# v14: 各篇补「本篇须写出的核心场景/转折」戏剧引导 (修复方案_菲利普2.md 问题4 修复4,
-# 正向表述, 仿 D:\Journal 的 SECTION_DEFS)。
-SECTION_REQ = {
-    "benji": {
-        "lead": "从家世出身写起: 生于何年、家族渊源、族属信仰、性情特质, 立起人物一生基调。",
-        "mid": "按时间次序叙述一生大事: 执掌领地、经营营地或世族庄园、受任官职、让土、结仇、家变、再娶等, 以年表资料为限。本篇写出主角的登位与失土时刻、战争与囚狱转折, 把每个关键日期写成戏剧场景。",
-        "tail": None,
-    },
-    "friend": {
-        "lead": "写传主与主角的交游渊源: 二人如何相识、同处何朝何地, 传主的家世与出身。",
-        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散。",
-        "tail": None,
-    },
-    "enemy": {
-        "lead": "写仇家身世与结仇之由: 传主何许人也, 与主角因何成仇。",
-        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发。",
-        "tail": None,
-    },
-    "jiashi": {
-        "lead": "写主角婚配始末: 结缡、离异、前妻之死、再娶, 立起门庭画卷; 妻族门第 (妻之父兄等显贵亲眷) 若有资料一并铺陈。",
-        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境。",
-        "tail": None,
-    },
-    "chaoju": {
-        "lead": "写天下大势: 以最高领主或皇帝及其更替为纲, 铺陈本期朝局格局与主角所处疆域, 以资料为限。",
-        "mid": "写朝局浮沉: 依朝局动态与要员名录, 叙述登位、失土、囚狱、结仇、战争等朝局大事, 以资料为限。本篇写出帝位或最高领主的每次更替, 主角在朝局中的升沉。",
-        "tail": None,
-    },
-    # v5 新增
-    "assassins": {
-        "lead": "写被主角所杀诸人的群像: 各人身份、与主角的恩怨由、死时情状, 以资料为限, 客观平实。死法按资料所写的具体手法 (毒杀、缢杀、溺毙、失踪等) 写出。",
-        "mid": "依死亡先后为序, 为每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。本篇写出死者生前的家世亲缘与婚恋际遇, 再写其死时情状, 死法按资料所写的具体手法 (毒杀、缢杀、溺毙、失踪等) 写出。",
-        "mid1": "依死亡先后为序, 为这一时期 (最早所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。本篇写出死者生前的家世亲缘与婚恋际遇, 再写其死时情状, 死法按资料所写的具体手法 (毒杀、缢杀、溺毙、失踪等) 写出。",
-        "mid2": "依死亡先后为序, 为这一时期 (中期所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。本篇写出死者生前的家世亲缘与婚恋际遇, 再写其死时情状, 死法按资料所写的具体手法 (毒杀、缢杀、溺毙、失踪等) 写出。",
-        "mid3": "依死亡先后为序, 为这一时期 (暮年所诛) 的每名死者立一小传: 生平行迹、与主角的交集、死因, 以资料为限。本篇写出死者生前的家世亲缘与婚恋际遇, 再写其死时情状, 死法按资料所写的具体手法 (毒杀、缢杀、溺毙、失踪等) 写出。",
-        "tail": None,
-    },
-    "youxia": {
-        "lead": "写主角萍踪浪迹的游侠生涯: 起于何地、如何成营、一路辗转, 以行纪资料为限。",
-        "mid": "按行纪次序叙述漂泊行迹: 每至一地的时间、所驻之地、与当地势力的交集, 以资料为限。",
-        "tail": None,
-    },
-    "qizu": {
-        "lead": "写主角妻族门第: 妻妾中帝胄姻亲的身世 (公主头衔或中华皇帝之女/姐妹), 其父兄辈的显赫, 以资料为限。",
-        "mid": "写妻族与主角家室的牵连: 姻亲之荣、门第之变, 以资料为限。",
-        "tail": None,
-    },
-    "qunying": {
-        "lead": "写朝堂要员群像: 主角为行政制官员, 本篇铺陈同朝要员名录与身位, 以资料为限。",
-        "mid": "依朝局动态叙述要员浮沉: 登位、结仇、囚狱、战争等, 以资料为限。",
-        "tail": None,
-    },
-    # v9 新增
-    "feuds": {
-        "lead": "写与主角家族关系不和的各家族: 结怨之由、恩怨始末、当前关系档位 (世仇/敌对/争吵), 以资料为限。",
-        "mid": "依事件史叙述各家族的恩怨始末: 联姻、囚禁、处决、宣战、反目等, 以资料为限。本篇把每段恩怨的起点 (劫掠/囚禁/处决的日期与由头) 写到收束, 让恩怨链条完整可见。",
-        "tail": None,
-    },
-    "artifacts": {
-        "lead": "写主角家族所藏重宝: 宝物名称、形制、稀有度, 立起传家重宝的画卷, 以资料为限。",
-        "mid": "依流转史叙述每件宝物的来历与流转: 何人造、何时被何人夺得或继承、现藏何处, 以资料为限。",
-        "tail": None,
-    },
-    # v28 新增: 隐事 (secrets)
-    "secrets": {
-        "lead": "写主角身上的隐事: 何事、涉及何人、自何时见于记载、有谁知情, 以资料为限; 立起「其人其行之外另有隐情」的底色。",
-        "mid": "写家人与近臣的隐事、把柄的所属与流转: 谁藏何隐事、谁已知情、此后往来如何, 以资料为限。本篇写出各处隐事的见载年份与知情者的身份。",
-        "tail": None,
-    },
-}
 
 # 朝局类记忆类型 (朝局风云录用)
 POLITICAL_TYPES = {
@@ -1168,8 +1002,8 @@ def _article_facts(facts, cache, key, section=None):
                       or (facts.get("protagonist") or {}).get("name") or "")
             n_victims = sum(1 for k in killed) + sum(len(k.get("group") or [])
                                                      for k in killed)
-            head = (f"刀下之魂共{n_victims}人，皆死于{plabel}之手。"
-                    if plabel else "")
+            head = (style.FACT_WORDING["assassin_lead"].format(
+                n=n_victims, killer=plabel) if plabel else "")
             if sec_key == "lead":
                 # v11 开篇: 压缩名录 (死者名 + 生卒死因), 供群像总览, 不再整块铺 168 人档案
                 parts = [head] if head else []
@@ -1276,24 +1110,14 @@ def _murder_index_line(facts, sec):
 # 提示词
 # ---------------------------------------------------------------------------
 
-def _rule_block(style, secret=False):
-    """system 规则块 (v28b): 隐事笔法只发给确实携带隐事事实的板块 —
-    《阴私录·隐事秘辛》与《朝局风云录》(要员隐事), 其余板块不再逐次携带。"""
-    rule = STYLE_RULES.get(style, STYLE_RULES["east"])
-    out = (f"{rule['jizhuanti']}\n{NONFICTION_RULE}\n{WORLD_FRAME_RULE}\n"
-           f"{NARRATIVE_FOCUS_RULE}\n{PLAIN_WORD_RULE}\n{TITLE_CONSISTENCY_RULE}")
-    if secret:
-        out += f"\n{SECRET_RULE}"
-    return out
+def _rule_block(style_name, secret=False):
+    """system 规则块 (v30: 文本与顺序见 style.rule_block)。"""
+    return style.rule_block(style_name, secret)
 
 
-# v28b: 携带隐事事实的板块 (SECRET_RULE 只随这些板块下发)
-_SECRET_BOARDS = ("secrets", "chaoju")
-
-
-def _system_msg(style="east", extra="", secret=False):
-    return ("你是史官, 撰写传记。\n\n"
-            f"{_rule_block(style, secret)}{extra}")
+def _system_msg(style_name="east", extra="", secret=False):
+    return style.PROMPTS["system_head"].format(
+        rule_block=_rule_block(style_name, secret)) + extra
 
 
 def _decade_theme_note(facts):
@@ -1307,13 +1131,7 @@ def _decade_theme_note(facts):
         return ""
     names = "、".join(_theme_label(m, facts) for m, _s in dm)
     label = "本十年" if facts.get("decade") else "一生"
-    return (f"{label}戏剧主题: {names}。"
-            "各篇正文围绕这些主题取材，主题相关的事件写出戏剧张力，"
-            "把每个主题写成具体的场景。\n\n")
-
-
-# v28: 官职轮转政体 (天朝制/行政制/选贤/草原行政) 的主题显示名
-_CELESTIAL_THEME_LABELS = {"起家发迹": "受任迁转", "失位让土": "卸任调转"}
+    return style.PROMPTS["theme_note"].format(label=label, names=names)
 
 
 def _celestial_like(facts):
@@ -1323,8 +1141,8 @@ def _celestial_like(facts):
 
 
 def _theme_label(name, facts):
-    if name in _CELESTIAL_THEME_LABELS and _celestial_like(facts):
-        return _CELESTIAL_THEME_LABELS[name]
+    if name in style.THEME_LABELS and _celestial_like(facts):
+        return style.THEME_LABELS[name]
     return name
 
 
@@ -1332,8 +1150,7 @@ def _section_req(text, facts):
     """板块要求在官职轮转政体下换词 (受任/卸任/调任), 其余政体原文不动。"""
     if not text or not _celestial_like(facts):
         return text
-    for a, b in (("登位与失土", "受任与卸任"), ("登位", "受任"),
-                 ("失土", "卸任"), ("让土", "去职")):
+    for a, b in style.REQ_SWAPS:
         text = text.replace(a, b)
     return text
 
@@ -1401,19 +1218,15 @@ def build_intro_messages(facts, cfg, articles=None):
     p = facts["protagonist"]
     name = p.get("name") or "主角"
     house = _house_text(facts)
-    style = facts.get("bio_style") or "east"
+    style_name = facts.get("bio_style") or "east"
     birth = p.get("birth") or ""
     death = facts.get("player_death")
     if death:
         span_cn = f"生卒：{birth}–{llm.fmt_cn_date(death.get('date'))}"
     else:
         span_cn = f"生于{birth}" if birth else ""
-    sys_msg = (
-        "你是史官, 为一位乱世人物修传。\n\n"
-        f"{_rule_block(style)}\n\n"
-        "撰写传记「总纲」: 概括此人的一生大势, 预告以下各篇文章, "
-        "点明其家族与身份。总纲正文控制在400–600字, 以「太史公曰」作结。"
-    )
+    sys_msg = style.PROMPTS["intro_system"].format(
+        rule_block=_rule_block(style_name))
     shared = _shared_facts_block(facts)
     # 文章预告: 用实际文章标题 (好友/仇人姓名已定; v5 支持任意篇数)
     CN_NUMS = "一二三四五六七八九"
@@ -1423,23 +1236,11 @@ def build_intro_messages(facts, cfg, articles=None):
             for i, a in enumerate(articles))
         n_articles = len(articles)
     else:
-        preview = (
-            f"一、《本纪·{name}》——人物生平\n"
-            "二、《列传·好友》——最亲近同僚的一生\n"
-            "三、《列传·仇人》——一生劲敌的传记\n"
-            "四、《家室列传》——妻室子女的门庭画卷\n"
-            "五、《朝局风云录》——朝局官制沉浮"
-        )
+        preview = style.PROMPTS["preview_fallback"].format(name=name)
         n_articles = 5
-    user_msg = (
-        f"{shared}\n\n"
-        f"{_decade_theme_note(facts)}"
-        f"本传共{n_articles}篇, 篇目预告:\n{preview}\n\n"
-        "输出格式:\n"
-        f"# 《{name}传》\n"
-        f"家族：{house}｜人物：{name}｜{span_cn}\n\n"
-        "总纲正文…（一段至两段）\n\n请据此撰写总纲。"
-    )
+    user_msg = style.PROMPTS["intro_user"].format(
+        shared=shared, theme=_decade_theme_note(facts), n_articles=n_articles,
+        preview=preview, name=name, house=house, span_cn=span_cn)
     return [{"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg}]
 
@@ -1449,46 +1250,35 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     key = article["key"]
     sec = article["sections"][0]
     title = article["title"]
-    style = facts.get("bio_style") or "east"
+    style_name = facts.get("bio_style") or "east"
     blocks = _article_facts(facts, cache, key, sec)
-    sys_msg = (
-        "你是史官, 撰写传记。\n\n"
-        f"{_rule_block(style, key in _SECRET_BOARDS)}"
-    )
+    sys_msg = style.PROMPTS["system_head"].format(
+        rule_block=_rule_block(style_name, key in style.SECRET_BOARDS))
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
-    subject_note = ""
-    if article.get("subject"):
-        subject_note = (
-            f"本篇传主为{article['subject']}。全篇以{article['subject']}为唯一叙述中心；"
-            f"主角{(facts['protagonist'] or {}).get('name')}的事迹仅在{article['subject']}"
-            "与主角交游或结仇的场合出现，传主生平以本篇资料为准。\n\n"
-        )
+    subject_note = _subject_note(article, facts)
     custom_note = ""
     if key == "benji" and (facts["protagonist"] or {}).get("custom_start"):
         # v30: 曾写「本篇传主的先世资料未载」+「以资料载明者为限」, 前者被逐字照抄;
-        # 现只写「怎么写」——自定义开局的谱系在档案里本就没有父/母行, 程序端已是无料,
-        # 无据可写的部分由「起于何时何地、如何发迹」这条正向纲目自然覆盖。
-        custom_note = (
-            "开篇以「起于何时何地、如何发迹」为纲书写其出身，"
-            "从其事业之始依次写来。\n\n"
-        )
+        # 现只写「怎么写」——自定义开局的谱系在档案里本就没有父/母行, 程序端已是无料。
+        custom_note = style.PROMPTS["custom_start_note"]
     events_block = _key_events_block(facts, key, sec)
-    user_msg = (
-        f"{_shared_facts_block(facts)}\n\n"
-        f"{_decade_theme_note(facts)}"
-        f"【总纲】\n{intro}\n\n"
-        + custom_note
-        + subject_note
-        + f"相关事实:\n{facts_txt}\n\n"
-        + (f"{events_block}\n\n" if events_block else "")
-        + f"本篇文章标题已定为《{title}》。\n\n"
-        f"这是文章的开篇板块《{sec['title']}》。要求: {sec['req']}\n\n"
-        f"篇幅要求: 开篇板块正文800–1200字, 立起人物与场景。\n\n"
-        "输出格式: 直接输出正文, 正文使用 Markdown, "
-        "分2~4个自然段, 段与段之间以空行分隔; 板块标题行由组装侧统一添加。"
-    )
+    user_msg = style.PROMPTS["lead_user"].format(
+        shared=_shared_facts_block(facts), theme=_decade_theme_note(facts),
+        intro=intro, custom_note=custom_note, subject_note=subject_note,
+        facts=facts_txt,
+        events=(f"{events_block}\n\n" if events_block else ""),
+        title=title, sec_title=sec["title"], sec_req=sec["req"])
     return [{"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg}]
+
+
+def _subject_note(article, facts):
+    """传主类文章 (好友/仇人列传) 的叙述中心提示。"""
+    subj = article.get("subject")
+    if not subj:
+        return ""
+    return style.PROMPTS["subject_note"].format(
+        subject=subj, protagonist=(facts["protagonist"] or {}).get("name") or "")
 
 
 def build_section_messages(article, section, facts, cache, lead_text, cfg):
@@ -1497,36 +1287,20 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
     v27: 开篇回贴改「前缀+结尾」摘要 (不再整篇回贴); 素材尾部加【本板块大事】锚点。"""
     key = article["key"]
     title = article["title"]
-    style = facts.get("bio_style") or "east"
+    style_name = facts.get("bio_style") or "east"
     blocks = _article_facts(facts, cache, key, section)
-    sys_msg = (
-        "你是史官, 撰写传记。\n\n"
-        f"{_rule_block(style, key in _SECRET_BOARDS)}"
-    )
+    sys_msg = style.PROMPTS["system_head"].format(
+        rule_block=_rule_block(style_name, key in style.SECRET_BOARDS))
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
-    subject_note = ""
-    if article.get("subject"):
-        subject_note = (
-            f"本篇传主为{article['subject']}。全篇以{article['subject']}为唯一叙述中心；"
-            f"主角{(facts['protagonist'] or {}).get('name')}的事迹仅在{article['subject']}"
-            "与主角交游或结仇的场合出现，传主生平以本篇资料为准。\n\n"
-        )
+    subject_note = _subject_note(article, facts)
     events_block = _key_events_block(facts, key, section)
-    user_msg = (
-        f"{_shared_facts_block(facts)}\n\n"
-        f"{_decade_theme_note(facts)}"
-        + subject_note
-        + f"相关事实:\n{facts_txt}\n\n"
-        + (f"{events_block}\n\n" if events_block else "")
-        + f"本篇文章标题已定为《{title}》。\n\n"
-        f"请撰写板块《{section['title']}》。要求: {section['req']}\n\n"
-        f"篇幅要求: 板块正文1200–1800字。\n\n"
-        f"本文开篇板块《{article['sections'][0]['title']}》内容(以下为开篇摘要):\n"
-        f"{_lead_digest(lead_text)}\n\n"
-        f"承接开篇所立人物与场景，以本篇相关事实为素材推进新事件与新细节，"
-        f"撰写板块《{section['title']}》。\n\n"
-        "输出格式: 直接输出正文, 正文使用 Markdown。"
-    )
+    user_msg = style.PROMPTS["mid_user"].format(
+        shared=_shared_facts_block(facts), theme=_decade_theme_note(facts),
+        subject_note=subject_note, facts=facts_txt,
+        events=(f"{events_block}\n\n" if events_block else ""),
+        title=title, sec_title=section["title"], sec_req=section["req"],
+        lead_title=article["sections"][0]["title"],
+        lead_digest=_lead_digest(lead_text))
     return [{"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg}]
 
@@ -1804,14 +1578,14 @@ def _assassin_sections(n):
         mids = ["mid1", "mid2"]
     else:
         mids = ["mid"]
-    mid_suffix = "本篇正文均为客观叙事，史家评点集中于总纲。"
-    secs = [{"key": "lead", "title": SECTION_TITLES["assassins"]["lead"],
-             "req": SECTION_REQ["assassins"]["lead"]}]
+    mid_suffix = style.MID_TAIL_NOTE
+    secs = [{"key": "lead", "title": style.SECTION_TITLES["assassins"]["lead"],
+             "req": style.SECTION_REQ["assassins"]["lead"]}]
     chunk = (n + len(mids) - 1) // len(mids)
     for i, k in enumerate(mids):
         lo, hi = i * chunk, min((i + 1) * chunk, n)
-        secs.append({"key": k, "title": SECTION_TITLES["assassins"][k],
-                     "req": SECTION_REQ["assassins"][k] + mid_suffix,
+        secs.append({"key": k, "title": style.SECTION_TITLES["assassins"][k],
+                     "req": style.SECTION_REQ["assassins"][k] + mid_suffix,
                      "slice": (lo, hi)})
     return secs
 
@@ -1821,7 +1595,7 @@ def build_articles(facts, cache, cfg):
     v5: 动态追加 刺客列传/游侠列传/妻族传/群英录 (依数据条件)。"""
     pid = facts.get("player_id")
     pname = (facts["protagonist"] or {}).get("name") or "主角"
-    style = facts.get("bio_style") or "east"
+    style_name = facts.get("bio_style") or "east"
     friend, friend_fallback = _pick_friend(cache, as_of=facts.get("as_of"))
     if friend is not None and friend_fallback:
         friend = None  # v16: 无真好友时列传删去 — 同朝共事者代打只是复述主角故事
@@ -1836,14 +1610,14 @@ def build_articles(facts, cache, cfg):
         ename = ep.get("name") or ""
     sec_keys = [s for s in ("lead", "mid")]  # v11: 尾段 (评曰) 全部删去, 太史公曰只留总纲
     def mk_sections(key):
-        titles = SECTION_TITLES.get(key, {})
+        titles = style.SECTION_TITLES.get(key, {})
         defaults = {"lead": "开篇", "mid": "纪事"}
-        mid_suffix = "本篇正文均为客观叙事，史家评点集中于总纲。"
+        mid_suffix = style.MID_TAIL_NOTE
         return [{
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
             "req": _section_req(
-                       SECTION_REQ.get(key, {}).get(sk)
+                       style.SECTION_REQ.get(key, {}).get(sk)
                        or "按传记笔法写作, 以资料为限。", facts)
                    + (mid_suffix if sk != "lead" else ""),
         } for sk in sec_keys]

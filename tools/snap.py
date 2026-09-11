@@ -26,7 +26,8 @@ import facts as F        # noqa: E402
 import llm               # noqa: E402
 import localization as L  # noqa: E402
 
-_CODE_FILES = ("facts.py", "biography.py", "cache_lib.py", "localization.py", "llm.py")
+_CODE_FILES = ("facts.py", "biography.py", "cache_lib.py", "localization.py",
+               "llm.py", "style.py", "flavorization.py")
 
 
 def _code_meta():
