@@ -2,10 +2,12 @@
 """facts 快照（提速基建）：载一次熔件，把「核对所需的一切」落成小 JSON。
 
 用法：
-    & D:\\Roman\\tools\\py.ps1 tools\\snap.py <家族文件夹> <玩家id> <as_of> [十年序号] [--assert]
+    & D:\\Roman\\tools\\py.ps1 tools\\snap.py <家族文件夹> <玩家id> <as_of> [十年序号] [--assert] [--pin-last-date]
     ｜ as_of 传 final 表示终传/在世传（as_of=None）
     ｜ --assert 顺手跑 tools/verify_fast.py — 一次熔件加载同时拿到快照与回归结论，
       省掉「为看一眼结果再整载一次」的反覆（本会话最大的时间浪费）
+    ｜ --pin-last-date 把 cache.last_date 钉到 as_of（复现当初生成该篇时的提示词面：
+      facts 的 skip_detail 以 last_date 判定「as_of 早于末档」而略去直辖明细）
     例：& tools\\py.ps1 tools\\snap.py 周氏 38673 888.1.1 2 --assert
 
 产物（output/<家族>/data/，与 melt/cache 同目录，已被 .gitignore 覆盖）：
@@ -90,8 +92,9 @@ def _melt_tables(f, facts):
 
 
 def main():
-    argv = [a for a in sys.argv[1:] if a != "--assert"]
+    argv = [a for a in sys.argv[1:] if not a.startswith("--")]
     do_assert = "--assert" in sys.argv
+    pin_last = "--pin-last-date" in sys.argv
     if len(argv) < 3:
         print(__doc__)
         return 2
@@ -111,6 +114,12 @@ def main():
     if not os.path.exists(names):
         names = os.path.join(ROOT, "data", "names.json")
     cache = json.load(open(cache_path, encoding="utf-8"))
+    # --pin-last-date: 复现「当初生成这篇传记时的缓存状态」——facts 的 skip_detail
+    # 以 last_date 判定「as_of 早于末档」而丢掉直辖/封臣明细, 缓存推进后再跑旧 as_of
+    # 就看不到那几行了; 把 last_date 钉到 as_of 即可重现原始提示词面 (仅诊断用)。
+    if pin_last and as_of:
+        cache["last_date"] = as_of
+        print(f"  --pin-last-date: last_date → {as_of}", flush=True)
     print(f"载入熔件 {melt_name} …", flush=True)
     melt = cl.load_melt(melt_path)
     facts = F.build_facts(cache, melt, names, as_of=as_of, decade=decade)

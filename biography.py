@@ -327,7 +327,8 @@ def _consort_affair_lines(facts, cache):
         grouped.setdefault(e.get("spouse_label") or "", []).append(e)
     out = []
     for slabel, items in grouped.items():
-        out.append(f"妻室情事脉络（{slabel}）：")
+        # 块首用主语句 (v29b 口径: 不用「名词（名词）」式括注, 判据会判违规)
+        out.append(f"{slabel}情事脉络：")
         for e in items:
             pid = e.get("partner")
             if pid is not None:
@@ -1117,25 +1118,32 @@ def _article_facts(facts, cache, key, section=None):
         sec = facts.get("secrets") or {}
         sk = _sec_key(section)
         kin_lines = list(sec.get("kinsmen") or [])
+        has_held = bool(sec.get("held"))
         if sk == "lead":
             lines = list(sec.get("held") or [])
             if sec.get("held_murder"):
                 lines.append(_murder_index_line(facts, sec))
-            if sec.get("held_unrevealed"):
+            if has_held and sec.get("held_unrevealed"):
                 lines.append("这些隐事至今无人知晓。")
-            # v31 (问题7): 主角无自有隐事时, 开篇改用家人近臣隐事 (后半留纪事) —
+            # v31 (问题7): 主角无自有隐事时, 开篇改用家人近臣隐事前半 —
             # 旧文本开篇块为空, 模型只能拿共享前缀一行「戏剧性事件」自问自答
-            # (「知情者何人？…则其必知情」)。
+            # (「知情者何人？…则其亦必知情」)。
             if not lines and kin_lines:
                 lines = _split_span(kin_lines, 0)
             _set_block(blocks, "主角隐事", "\n".join(lines))
         else:
-            mid_lines = _split_span(kin_lines, 1) if sec.get("held") else kin_lines
-            mid_lines = list(mid_lines)
+            mid_lines = list(kin_lines if has_held else _split_span(kin_lines, 1))
             mid_lines.extend(sec.get("known") or [])
-            # v31 (问题5): 牵制 (把柄维度) — 用户决策: 只随《阴私录》下发
-            mid_lines.extend(sec.get("hooks_held") or [])
-            mid_lines.extend(sec.get("hooks_over") or [])
+            # v31 (问题5): 牵制 (把柄维度) — 用户决策: 只随《阴私录》下发;
+            # 两向各加一行归属语 (「主角握有的牵制如下：」「他人握有对主角的牵制如下：」)
+            hh = list(sec.get("hooks_held") or [])
+            ho = list(sec.get("hooks_over") or [])
+            if hh:
+                mid_lines.append(style.FACT_WORDING["hook_head_held"])
+                mid_lines.extend(hh)
+            if ho:
+                mid_lines.append(style.FACT_WORDING["hook_head_over"])
+                mid_lines.extend(ho)
             _set_block(blocks, "家人近臣隐事", "\n".join(mid_lines))
             if sec.get("events"):
                 blocks["见载年表"] = "\n".join(sec["events"])
