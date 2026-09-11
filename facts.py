@@ -1525,11 +1525,12 @@ class Facts:
                         ew = self.estate_kind_word(t, cid)
                         w = self._estate_holder_word(cid)
                         base = f"{nm}{w}" if nm and w else (nm or "")
-                        parts.append(f"{base}（{ew}）" if base else "")
+                        # v29b: 类别词改逗号同位语 (「周家族乡绅，世族庄园」)
+                        parts.append(f"{base}，{ew}" if base else "")
                         continue
                     w = self._camp_holder_word(cid, d)
                     base = f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else "")
-                    parts.append(f"{base}（无地冒险者营地）" if base else "")
+                    parts.append(f"{base}，无地冒险者营地" if base else "")
                 else:
                     # v24: 领地阶段用「头衔地名+统治者称呼词」(游戏口径,
                     # 文化/政体感知: 撒丁尼亚王/撒丁王/贝州侯…), 不再用「X之主」。
@@ -2999,6 +3000,8 @@ class Facts:
                 continue
             out.append({
                 "house": _hlabel_raw,
+                # v29b: 史书式家族称谓 (程氏), 供「家族：程氏，两族为世仇」式行使用
+                "house_label": _hlabel,
                 "level": _lvl,
                 "events": [f"{self.date(d)}，{t}" for d, t in events],
             })
@@ -3056,7 +3059,8 @@ class Facts:
                 continue
             name = a.get("name") or "一件宝物"  # v14: 无名宝物不泄露 id
             rarity = rarity_zh.get(a.get("rarity")) or a.get("rarity") or ""
-            lines = [f"宝物：{name}（{rarity}）"]
+            # v29b: 稀有度改逗号同位语 (「宝物：X，名望级」), 不用括注
+            lines = [f"宝物：{name}，{rarity}"]
             entries = []
             for e in reversed(hist):
                 # v11: as_of 截断 — 十年传记只列该时期前的流转
@@ -4002,9 +4006,11 @@ class Facts:
             who = e.get("owner")
             nm = self.person_label(who, style="brief") if isinstance(who, int) else ""
             if word and nm:
-                parts.append(f"{word}（{nm}）")
+                # v29b: 官职与大臣名直连 (「长史延寿」), 不再用「长史（延寿）」
+                # 这类括注同位语 — 现代汉语以「职+名」连写为正 (「宰相吴全略」)。
+                parts.append(f"{word}{nm}")
             elif word:
-                parts.append(f"{word}（虚位）")
+                parts.append(f"{word}虚悬")
             elif nm:
                 parts.append(nm)
         if not parts:
@@ -5522,10 +5528,11 @@ def _protagonist(f):
                     for tid, hid in mids:
                         tn = f.title(tid)
                         hn = f.name_or(hid, "") if hid is not None else ""
-                        parts.append(f"{tn}（{hn}）" if hn else tn)
+                        # v29b: 头衔与持有人直连 (「幽蓟路李黯」), 不用括注同位语
+                        parts.append(f"{tn}{hn}" if hn else tn)
                     p["camp_liege_chain"] = "、".join(parts)
                 top_tid, top_holder = chain[-1]
-                p["camp_top_liege"] = f"{f.title(top_tid)}（{f.name_or(top_holder)}）" \
+                p["camp_top_liege"] = f"{f.title(top_tid)}{f.name_or(top_holder)}" \
                     if top_holder is not None else f.title(top_tid)
     else:
         # ---- 有地领主 / 世族 ----
@@ -5882,7 +5889,8 @@ def _realm_facts(f):
             parts = []
             for tid, hid in chain:
                 hn = f.name_or(hid, "") if hid is not None else ""
-                parts.append(f"{f.title(tid)}（{hn}）" if hn else f.title(tid))
+                # v29b: 头衔与持有人直连 (「唐皇朝李漼」), 不用括注同位语
+                parts.append(f"{f.title(tid)}{hn}" if hn else f.title(tid))
             out["liege_chain"] = " → ".join(parts)
     # 高位头衔持有者变化 (h_/e_/k_): title history 精确日期为主, realm_history 快照兜底;
     # 头衔名按任期 (v11: 唐皇朝 → 周皇朝 更名可见, 882 的「周皇朝」错标即由此根除)。
@@ -6387,9 +6395,16 @@ def _villain_chains(f):
             if not tname:
                 continue
             if agents:
-                shown = []
+                # v29b: 角色词前置连写 (「同谋张三」), 不用「张三（同谋）」括注同位语;
+                # 同角色者并在一处 (同谋张三、李四), 角色不同才并列。
+                by_role = {}
+                order = []
                 for an, at in agents[:3]:
-                    shown.append(f"{an}（{at}）")
+                    if at not in by_role:
+                        by_role[at] = []
+                        order.append(at)
+                    by_role[at].append(an)
+                shown = [f"{at}{'、'.join(by_role[at])}" for at in order]
                 tail = f"等{len(agents)}人" if len(agents) > 3 else ""
                 chains.append(("共谋暗杀",
                     f"密谋刺杀{tname}者以{pname}为首，"
@@ -7158,11 +7173,12 @@ def facts_to_text(facts, keys=None):
     """把事实集拼成给模型的纯文本 (调试/日志用)。"""
     lines = []
     p = facts["protagonist"]
-    # v14: 家族名 + 分家 (自然语言, 无等号): 藤原氏（北家）
+    # v14: 家族名 + 分家 (自然语言, 无等号); v29b: 直连不用括注 (藤原氏 + 北家 → 藤原北家)
     fam = p.get("house") or ""
     if fam and p.get("house_branch"):
-        fam = f"{fam}（{p['house_branch']}）"
-    lines.append(f"主角：{p.get('name')}（{fam}）")
+        b = p["house_branch"]
+        fam = f"{fam[:-1]}{b}" if fam.endswith("氏") else f"{fam}，{b}"
+    lines.append(f"主角：{p.get('name')}，{fam}")
     for k in ("birth", "culture", "faith", "traits", "government"):
         if p.get(k):
             lines.append(f"{k}：{p[k]}")

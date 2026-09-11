@@ -456,7 +456,7 @@ def _murder_link_line(facts, key=None, section_key=None):
     n = F.murder_module_count(facts.get("timeline") or [])
     if not n:
         return ""
-    return f"（另有谋杀{n}人，详见《刺客列传·刀下诸魂》。）"
+    return f"另有谋杀{n}人，详见《刺客列传·刀下诸魂》。"
 
 
 def _has_assassins(facts):
@@ -568,13 +568,16 @@ def _relation_reasons(facts, cache, cid, types):
 # ---------------------------------------------------------------------------
 
 def _house_text(facts, p=None):
-    """家族文本 (v14 自然语言): 宗族名 + 分家 (藤原氏（北家）);
-    无分家时只给宗族名 (菲利普 / 边氏)。facts 缺失时回退 p。"""
+    """家族文本 (v14 自然语言): 宗族名 + 分家。
+    v29b: 不再用括注同位语 —— 宗族名以「氏」结尾时直连 (藤原氏 + 北家 → 藤原北家,
+    史书正体), 其余以逗号并列 (哈布斯堡，奥地利); 无分家时只给宗族名。"""
     p = p or {}
     h = (facts or {}).get("house") or p.get("house") or ""
     b = (facts or {}).get("house_branch") or p.get("house_branch") or ""
     if h and b:
-        return f"{h}（{b}）"
+        if h.endswith("氏"):
+            return f"{h[:-1]}{b}"
+        return f"{h}，{b}"
     return h
 
 
@@ -674,9 +677,14 @@ def _profile_lines(facts, cid=None):
         # ---- v28: 世族庄园身份 (中国世族/日本武家/家族地产) ----
         # 与「无地冒险者营地」分列: 营地是无地漂泊, 庄园是有家有业的世族根基
         if p.get("estate_name"):
-            holder = f"（{p['estate_holder']}）" if p.get("estate_holder") else ""
-            lines.append(f"{p.get('estate_word') or '家族庄园'}"
-                         f"「{p['estate_name']}」{holder}。")
+            # v29b: 持有者称谓改主语句 (「世族庄园「周家族」，主人称乡绅。」),
+            # 不用「世族庄园「周家族」（乡绅）」式括注同位语
+            if p.get("estate_holder"):
+                lines.append(f"{p.get('estate_word') or '家族庄园'}"
+                             f"「{p['estate_name']}」，主人称{p['estate_holder']}。")
+            else:
+                lines.append(f"{p.get('estate_word') or '家族庄园'}"
+                             f"「{p['estate_name']}」。")
     # ---- 官职句 ----
     # v23: p.court_positions 是主角营/廷内**他人任职**花名册 (雇主=主角,
     # 任职者已在 facts 层按人聚合: 「仲宣任丑角（自…任），又任盗贼大师…」),
@@ -1039,7 +1047,8 @@ def _article_facts(facts, cache, key, section=None):
         if cp_seg:
             pr = facts.get("protagonist") or {}
             tag = "营中" if pr.get("landless") else "廷中"
-            blocks["官职任免"] = (f"（主角{tag}僚属任免）\n"
+            # v29b: 归属说明改主语句 (「主角廷中僚属任免如下：」), 不用整句括注
+            blocks["官职任免"] = (f"主角{tag}僚属任免如下：\n"
                                   + "\n".join(cp_seg))
         # 要员名录: 主角相关角色 (家人/好友/仇人/宫廷任官) 中有政治类记忆或历任高位头衔者
         # (剔除路人; 截断 60 名防提示词膨胀; v27: 只放开篇)
@@ -1149,7 +1158,9 @@ def _article_facts(facts, cache, key, section=None):
         if feuds:
             parts = []
             for fd in feuds:
-                parts.append(f"家族：{fd['house']}（关系：{fd['level']}）")
+                # v29b: 「家族：程氏，两族为世仇」— 关系词不再放括注
+                parts.append(f"家族：{fd.get('house_label') or fd['house']}，"
+                             f"两族为{fd['level']}")
                 if fd.get("events"):
                     parts.append("恩怨史：")
                     parts.extend("  " + e for e in fd["events"])
