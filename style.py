@@ -278,6 +278,11 @@ FACT_WORDING = {
     "prison_years_months": "{y}年{m}个月",
     "prison_released": "，{span}后获释",
     "prison_release_on": "，{date}获释",
+    "prison_released_same_day": "，当日获释",
+    # v32 (马克龙问题1): 出狱方式二分的另一支 — 逃脱 (escaped_from_prison_memory)
+    "prison_escaped": "，{span}后越狱逃脱",
+    "prison_escape_on": "，{date}越狱脱身",
+    "prison_escape_same_day": "，当日越狱脱身",
     "prison_jailed": "{jailer}囚禁{victim}",
     "prison_held": "{victim}被囚",
     # v31 (问题5): 牵制句 — 强牵制与普通牵制分档 (游戏 [strong_hook] / [hook] 同义);
@@ -295,6 +300,11 @@ FACT_WORDING = {
     "hook_strong_word": "强",
     "hook_since": "（自{year}见载）",
     "hook_expires": "（{date}届满）",
+    # v32 (马克龙问题1): 强纳为妾 — 存档唯一带确切日期的纳妾记录
+    # (opinions.active_opinions 的 forced_me_concubine_marriage_opinion.start_date);
+    # 该脚本同一段落 `release_from_prison = yes`, 故「当日自狱中释出」是程序可断言的。
+    "concubine_forced": "{date}，{actor}强纳{name}为妾。",
+    "concubine_forced_paroled": "{date}，{actor}强纳{name}为妾，同日自狱中释出。",
     # v31 (问题2): 配偶同月「同房＋相恋」并作一行
     "affair_pair_spouse": "{y}年{m}月，{a}与{b}夫妻情笃。",
     # v31 (问题4): 妻室情事脉络 — 逐情人一句的关系弧用词 (弧内已点明是「与公主」,
@@ -452,14 +462,28 @@ MEMORY_TEMPLATES = {
     "became_soulmates": "{name}与{other}结为灵魂伴侣。",
     "became_blood_brother": "{name}与{other}结为血盟兄弟。",
     "imprisoned_other": "{name}囚禁{other}。",
-    "imprisoned": "{name}被囚。",
+    # v32 (马克龙问题1): 被囚的记忆带 imprisoner 槽 (participants), 旧句「{name}被囚。」
+    # 把监禁者丢掉 —— 家室档案行只写「公主被囚」, 模型只好自己猜是谁囚的。
+    # 无对手方槽时回退 `_no_other` 版 (见 facts._mem_sentence 的兜底规则)。
+    "imprisoned": "{name}为{other}所囚。",
+    "imprisoned_no_other": "{name}被囚。",
     "released_from_prison_memory": "{name}获释。",
+    # v32: 越狱 (escaped_from_prison_memory, participants=imprisoner) 此前无模板 →
+    # _mem_sentence 返回 None, 越狱整条不入事实面 (主角 869.10.16 即如此)。
+    "escaped_from_prison_memory": "{name}自{other}的监禁中逃脱。",
+    "escaped_from_prison_memory_no_other": "{name}越狱脱身。",
     "lost_title_memory": "{name}让出{title}。",
     "ascended_throne_memory": "{name}登位，得{title}。",
     "child_born": "{name}添子{other}。",
     "first_born": "{name}得长子{other}。",
-    "child_premature": "{name}幼子夭折。",
-    "child_stillborn": "{name}婴儿夭折。",
+    # v32 (马克龙问题3): 夭折记忆的 participants 是 **mother** —— 旧句只有父名,
+    # 模型据此写出「未知其母, 只知为某人之血脉」(主角只一位妻子, 母亲其实早有数据)。
+    # 配偶词按持有人性别与关系取 (妻/夫; 妾另表, 见 facts._consort_word);
+    # 生母本人持有该记忆 (自指) 时用 `_no_other` 版, 不出「A之妻A」。
+    "child_premature": "{name}之{rel}{other}孕期提前结束。",
+    "child_premature_no_other": "{name}孕期提前结束。",
+    "child_stillborn": "{name}之{rel}{other}产下死婴。",
+    "child_stillborn_no_other": "{name}产下死婴。",
     "twins_born": "{name}得孪生子。",
     # v26: 出生按孩子性别分版 (女儿此前一律被写成「添子」— 田所2 睦/立希)
     "child_born_female": "{name}添女{other}。",
@@ -630,6 +654,8 @@ STATS_LABEL = {
     "rival_died": "仇人死亡",
     "married": "成婚", "broke_up_lovers": "分手",
     "imprisoned": "被囚", "imprisoned_other": "囚禁他人",
+    # v32 (马克龙问题1): 越狱单列一档 — 与「被囚」不同, 它是主动脱身
+    "escaped_from_prison_memory": "越狱",
     "offensive_war": "开战", "defensive_war": "应战",
     "war_won": "获胜", "war_lost": "战败",
     "battle_won_memory": "取胜", "battle_lost_memory": "失利",
