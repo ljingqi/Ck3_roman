@@ -1606,7 +1606,54 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # v28b: 叛乱派系领袖 (农民/民粹/游牧 起义) — 供人物称谓写
     # 「农民起义领袖叠溪寋」(存档 faction_manager 只存当前派系, 逐档差分)
     _diff_factions(cache, melt, date_label)
+    # v29: 瘟疫/疫病 (epidemics) 逐档差分 — 存档给的是**游戏算好的动态名**
+    # (「李黯之火」「撒丁痘」「东罗马痘」), 供《本纪》《家室列传》写疫病风味
+    _diff_epidemics(cache, melt, date_label)
     return cache
+
+
+def _diff_epidemics(cache, melt, date_label):
+    """把本档 epidemics.database 并入 cache["epidemics"] (逐档差分)。
+
+    记录形如::
+
+        {"83886080": {"name": "卡利甫痢", "type": "dysentery", "intensity": "minor",
+                      "start_province": 4248, "provinces": 20,
+                      "first_seen": "888.1.1", "first": true, "lost_at": None}}
+
+    `first` = 首档即见 (数据起点前已存在, 因此其起年取游戏给的 creation_date)。"""
+    db = (melt.get("epidemics") or {}).get("database") or {}
+    hist = cache.setdefault("epidemics", {})
+    for eid, e in db.items():
+        if not isinstance(e, dict):
+            continue
+        rec = hist.get(str(eid))
+        if rec is None:
+            hist[str(eid)] = {
+                "name": e.get("name") or "",
+                "type": e.get("type") or "",
+                "intensity": e.get("intensity") or "",
+                "creation_date": e.get("creation_date") or date_label,
+                "start_province": e.get("start_province"),
+                "provinces": len(e.get("infections") or {}),
+                "first_seen": date_label,
+                "first": True,
+                "lost_at": None,
+            }
+            continue
+        # 逐档刷新: 名称/规模/强度可能变 (疫情蔓延), 名称按最新档
+        for k, v in (("name", e.get("name") or ""), ("intensity", e.get("intensity") or ""),
+                     ("provinces", len(e.get("infections") or {}))):
+            if v not in (None, ""):
+                rec[k] = v
+        rec["first"] = False
+        rec["last_seen"] = date_label
+        rec["lost_at"] = None
+    # 本档不再出现的疫情 → 记 lost_at (不再在传播)
+    ids = {str(k) for k, v in db.items() if isinstance(v, dict)}
+    for sid, rec in hist.items():
+        if isinstance(rec, dict) and sid not in ids and not rec.get("lost_at"):
+            rec["lost_at"] = date_label
 
 
 def _court_holder_ids(melt):

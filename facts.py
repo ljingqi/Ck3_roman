@@ -308,6 +308,24 @@ def stress_state_zh(value):
         return ""
     return _STRESS_BANDS.get(min(3, int(v // 100)), "")
 
+
+# v29: 无游戏档位的量 — 数值一律不下发, 只给档位词 (用户决策 2026-09-11:
+# 「其他数量用档位, 金币直接删去」)。国库金/月入/牧群属货币, 整项不写;
+# 口粮 (无地营地补给) 给档位词。
+_PROVISIONS_BANDS = ((100.0, "口粮充盈"), (30.0, "口粮尚足"), (0.0, "口粮将尽"))
+
+
+def provisions_band(value):
+    """营地口粮 → 档位词; 无法解析返回 ''。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return ""
+    for lo, word in _PROVISIONS_BANDS:
+        if v >= lo:
+            return word
+    return "口粮将尽"
+
 # 参与者槽位: 记忆类型 → participants 键 (缺失时取第一个 int 参与者)
 PARTICIPANT_SLOTS = {
     "became_rivals": "rival", "became_grudge": "grudge", "became_nemesis": "nemesis",
@@ -406,13 +424,42 @@ def _house_branch(dn, hn):
     return house_display(hn)
 
 
+# v29 (问题4): 「传主行迹」句首传主称谓剥离 — 块内主语恒为传主, 名字重复无信息。
+# 「868年9月25日，勇敢者程岩的亲属安南经略使程士庸去世。」→「…，亲属安南经略使程士庸去世。」
+_SUBJ_DATE_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
+
+
+def _strip_subject_prefix(text, label):
+    """删去句首传主称谓 (含其后的「的」); 无可删处原样返回。"""
+    if not text or not label:
+        return text
+    m = _SUBJ_DATE_RE.match(text)
+    head = m.group(0) if m else ""
+    rest = text[len(head):]
+    if not rest.startswith(label):
+        return text
+    rest = rest[len(label):]
+    if rest.startswith("的"):
+        rest = rest[1:]
+    return head + rest
+
+
 def _trait_name(table, key):
-    """特质 key → 中文: trait_<key> → <key> → 兜底表; 未知返回 '' (跳过, 不外泄 key)。"""
+    """特质 key → 中文: 特质定义 name 键 (v29) → trait_<key> → <key> → 兜底表;
+    未知返回 '' (跳过, 不外泄 key)。
+
+    v29: 旅行者 (lifestyle_traveler) 等特质的显示名由 common/traits 的 name 块指定
+    (desc = trait_traveler_1), 不再因 `trait_<key>` 缺键而整条丢失。"""
     if not key:
         return ""
-    for cand in (f"trait_{key}", key):
+    mapped = (L.trait_names().get("traits") or {}).get(key)
+    cands = []
+    if mapped:
+        cands.append(mapped)
+    cands += [f"trait_{key}", key]
+    for cand in cands:
         v = L.loc(table, cand)
-        if v:
+        if v and not v.startswith(("$", "[")):
             return v
     return TRAIT_ZH.get(key, "")
 
@@ -749,6 +796,10 @@ class Facts:
         self._chars = cl.all_characters(melt)
         self.table = L.table()
         self.provmap = L.province_map()
+        # v29: 数值档位表 (虔诚/威望/影响力/功勋的 defines 阈值) 与职位显示名变体表
+        self._bands = (L.currency_levels() or {}).get("bands") or {}
+        self._cp_variants = L.court_positions()
+        self._council_tasks = L.council_tasks()
         self._title_by_key = {}
         for tid, t in self._lt.items():
             if not isinstance(t, dict):  # v7: none 条目防护
@@ -1303,6 +1354,32 @@ class Facts:
             return False
         return "_laamp_" in key or key.startswith(self._CAMP_KEY_PREFIXES)
 
+    # v29 (问题2): 冒险者（营地）时期区间 — 【冒险者行踪】只记这段时期
+    def camp_intervals(self, cid=None):
+        """角色持有无地冒险者营地的区间 [(gain, loss|None)] (按起始日排序)。"""
+        pid = self.cache.get("player_id") if cid is None else cid
+        if pid is None:
+            return []
+        out = []
+        for tid, ivs in (self._hold_intervals(pid) or {}).items():
+            if self.title_kind(tid) != "camp":
+                continue
+            for iv in ivs:
+                if iv and iv[0]:
+                    out.append((iv[0], iv[1] if len(iv) > 1 else None))
+        out.sort(key=lambda x: cl.date_key(x[0]))
+        return out
+
+    def in_camp_period(self, date, cid=None):
+        """date 是否落在某个营地持有区间内 (含端点)。"""
+        dk = cl.date_key(date) if date else None
+        if dk is None:
+            return False
+        for g, l in self.camp_intervals(cid):
+            if cl.date_key(g) <= dk and (not l or dk <= cl.date_key(l)):
+                return True
+        return False
+
     def title_kind(self, tid):
         """无地/家业头衔语义: 'estate' 世族庄园 / 'nomad' 毡帐 / 'camp' 冒险者营地 /
         '' 领地头衔 (含 c_/b_ 州府县堡)。"""
@@ -1709,8 +1786,10 @@ class Facts:
         if w:
             return w
         prefix = re.sub(r"_government$", "", gov)
-        for k in (f"{self._TIER_KEY[tier]}_{prefix}_male",
-                  f"{self._TIER_KEY[tier]}_feudal_male"):
+        # v29: 政体前缀为空时不再试 «king__male» 这类空段候选
+        keys = ([f"{self._TIER_KEY[tier]}_{prefix}_male"] if prefix else []) \
+            + [f"{self._TIER_KEY[tier]}_feudal_male"]
+        for k in keys:
             v = L.loc(self.table, k)
             if v and not v.startswith("$") and not v.startswith("["):
                 return v
@@ -2015,7 +2094,8 @@ class Facts:
         """change_reason 原文 → 两端角色按日期重渲染的干净中文句。
         保留游戏动词 (劫掠了/囚禁了/处决了/成为朋友…), 只替换两端「称号+名」:
         '\x15ONCLICK:CHARACTER,38696 ... \x15high 国王\x15!，\x15high 崔佛...' →
-        '瑞典国王崔佛·菲利普劫掠了粤王范承宗'。"""
+        '瑞典国王崔佛·菲利普劫掠了粤王范承宗'。
+        v29: 结果不可读 (rakaly 哨兵串 'MAX_RECURSIVE_DEPTH' / 未解析键) 时返回 ''。"""
         s = str(raw or "")
         if "\x15" not in s or "ONCLICK" not in s:
             return _clean_ck3_loc(s)
@@ -2024,6 +2104,108 @@ class Facts:
             return self._feud_role_title(cid, date)
         s2 = _FEUD_ROLE_RE.sub(_repl, s)
         return _clean_ck3_loc(s2)
+
+    # v29: 恩怨史事件原文不可读时的程序重建 (缓存记忆 → 该日恩怨句)
+    _FEUD_MEMORY_TYPES = ("house_feud_started_memory", "house_feud_ended_memory")
+    _FEUD_START_TPL = {
+        "family_killed": "{other}因族人{victim}被杀，与{my}结为世仇。",
+        "family_executed": "{other}因族人{victim}被处决，与{my}结为世仇。",
+        "family_imprisoned": "{other}因族人{victim}被囚，与{my}结为世仇。",
+        "family_tortured": "{other}因族人{victim}受刑，与{my}结为世仇。",
+        "family_title_revoked": "{other}因族人{victim}被褫夺头衔，与{my}结为世仇。",
+        "family_land_seized": "{other}因族人{victim}领地见夺，与{my}结为世仇。",
+        "family_title_usurped": "{other}因族人{victim}头衔被篡，与{my}结为世仇。",
+    }
+
+    def _house_of_cid(self, cid):
+        """角色所属家族 id (缓存 → 熔件)。"""
+        if not isinstance(cid, int):
+            return None
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        h = rec.get("dynasty_house")
+        if isinstance(h, int):
+            return h
+        c = self._chars.get(str(cid)) or {}
+        h = c.get("dynasty_house")
+        return int(h) if isinstance(h, int) else None
+
+    def _house_label(self, house_id):
+        """家族名 → 史书式家族称谓 (程 → 程氏)。"""
+        nm = (cl.house_name_zh(self.melt, house_id) or "") if house_id is not None else ""
+        if not nm:
+            did = cl.dynasty_id_of(self.melt, house_id) if house_id is not None else None
+            nm = (cl.dynasty_name_zh(self.melt, did) or "") if did is not None else ""
+        if not nm:
+            return ""
+        return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
+
+    def _feud_event_fallback(self, my_houses, other_house, date, other_label):
+        """恩怨史事件原文不可读时, 由缓存记忆重建该日句 (程序优先) —
+        house_feud_started_memory 的 attacker/victim/house_feud_reason 给出
+        「谁对谁做了什么」, 加害者在我方、受害者在他方时即本段恩怨之始。"""
+        dk = str(date or "")
+        my_house = None
+        for h in my_houses:
+            my_house = h
+            break
+        my_label = self._house_label(my_house) or "主角家族"
+        other = other_label or self._house_label(other_house) or "对方家族"
+        for _cid, rec in (self.cache.get("characters") or {}).items():
+            if not isinstance(rec, dict):
+                continue
+            for mem in rec.get("memories") or []:
+                if str(mem.get("creation_date") or "") != dk:
+                    continue
+                t = mem.get("type") or ""
+                if t not in self._FEUD_MEMORY_TYPES:
+                    continue
+                parts = mem.get("participants") or {}
+                attacker, victim = parts.get("attacker"), parts.get("victim")
+                ah = self._house_of_cid(attacker)
+                vh = self._house_of_cid(victim)
+                if not ((ah in my_houses and vh == other_house)
+                        or (vh in my_houses and ah == other_house)):
+                    continue
+                if t == "house_feud_ended_memory":
+                    return f"{other}与{my_label}的世仇就此化解。"
+                if ah not in my_houses:
+                    continue                    # 只说本方视角的恩怨之始
+                an = self.person_label(attacker, dk, style="brief") if attacker else ""
+                vn = self.person_label(victim, dk, style="brief") if victim else ""
+                reason = ""
+                for v in mem.get("vars") or []:
+                    if v.get("flag") == "house_feud_reason":
+                        reason = str(v.get("value") or "")
+                        break
+                tpl = self._FEUD_START_TPL.get(reason)
+                if tpl and vn:
+                    return tpl.format(other=other, victim=vn, my=my_label,
+                                      attacker=an)
+                if vn:
+                    who = f"{vn}遭{an}加害" if an else f"族人{vn}受害"
+                    return f"{other}因{who}，与{my_label}结为世仇。"
+        # 退一步: 该日两家的结仇记忆
+        for _cid, rec in (self.cache.get("characters") or {}).items():
+            if not isinstance(rec, dict):
+                continue
+            for mem in rec.get("memories") or []:
+                if str(mem.get("creation_date") or "") != dk:
+                    continue
+                if mem.get("type") not in ("became_rivals", "became_grudge",
+                                           "became_nemesis"):
+                    continue
+                parts = mem.get("participants") or {}
+                ids = [v for v in parts.values() if isinstance(v, int)]
+                houses = [self._house_of_cid(v) for v in ids]
+                if any(h in my_houses for h in houses) \
+                        and any(h == other_house for h in houses):
+                    try:
+                        s = _mem_sentence(self, int(_cid), mem)
+                    except (TypeError, ValueError):
+                        s = ""
+                    if s and loc_text_ok(s):
+                        return s
+        return ""
 
     # ------------------------------------------------------------------
     # v27: 亲属标签 — 亲属/世系/妻族一律「头衔 + 姓名」
@@ -2374,9 +2556,13 @@ class Facts:
         return f"自{self._year_only(fs)}见载"
 
     def secret_topic(self, rec, self_cid=None):
-        """隐事主题短语 (不含持有人): 「科举舞弊（涉及唐皇帝李漼）」/「谋害叠溪寋」/
+        """隐事主题短语 (不含持有人): 「在张朴主持的乡试中舞弊」/「谋害叠溪寋」/
         「与阿足私通」; 未收录类型回退游戏本地化类型名 (取不到返回 '')。
-        v28b: 涉及对象带官职称谓, 主角本人写作「自己」。"""
+        v28b: 涉及对象带官职称谓, 主角本人写作「自己」。
+        v29 (问题6): 科举舞弊写明**方向与级别** — 存档的 target 是主考 (考试组织者),
+        主角是在他主持的考试上作弊; 级别由同一快照的考试记忆判定
+        (用户实测: 868.1.1 ↔ 乡试、873.1.1 ↔ 会试)。旧表述「科举舞弊（涉及X）」
+        会被读成「考官协助主角作弊」。"""
         if not isinstance(rec, dict):
             return ""
         tp = rec.get("type") or ""
@@ -2386,6 +2572,10 @@ class Facts:
                 else self.person_label(tgt, style="brief")
         else:
             tname = ""
+        if tp == "secret_exam_cheater":
+            lvl = self._exam_level_for_secret(rec.get("owner"), rec.get("first_seen"))
+            where = f"{tname}主持的{lvl}" if tname else (lvl or "科考")
+            return f"在{where or '科考'}中舞弊" if (tname or lvl) else "科考舞弊"
         tpl = SECRET_TOPICS.get(tp)
         if tpl:
             if "{target}" in tpl:
@@ -2399,6 +2589,38 @@ class Facts:
             return ""
         z = re.sub(r"者$", "", z)          # 类型名是名词 (考试舞弊者) — 去「者」成事
         return f"{z}（涉及{tname}）" if tname else z
+
+    def _exam_level_for_secret(self, owner, first_seen):
+        """科举隐事的考试级别 (v29, 问题6): 取该角色在**同一快照**首见的考试记忆。
+
+        存档的 secret 只有「owner + 主考 + 首次见于记载的快照日」, 级别靠考试记忆
+        对齐: 868.1.1 ↔ 乡试 (867.9.17)、873.1.1 ↔ 会试 (872.12.28)。同年未见
+        考试记忆时退一步取 ≤ 该年最近的考试记忆; 都取不到返回 ''。"""
+        if owner is None:
+            return ""
+        keys = {"passed_child_exam_memory": "童子试",
+                "passed_provincial_exam_memory": "乡试",
+                "passed_metropolitan_exam_memory": "会试",
+                "passed_palace_exam_memory": "殿试"}
+        rec = (self.cache.get("characters") or {}).get(str(owner)) or {}
+        exact, same_year, nearest = "", "", ""
+        fs = str(first_seen or "")
+        fs_year = fs.split(".")[0]
+        best_dk = None
+        for mem in rec.get("memories") or []:
+            lvl = keys.get(mem.get("type") or "")
+            if not lvl:
+                continue
+            seen = str(mem.get("first_seen") or "")
+            if fs and seen == fs:
+                exact = exact or lvl
+            if fs_year and seen.split(".")[0] == fs_year:
+                same_year = same_year or lvl
+            if fs and seen and cl.date_key(seen) <= cl.date_key(fs):
+                dk = cl.date_key(seen)
+                if best_dk is None or dk > best_dk:
+                    best_dk, nearest = dk, lvl
+        return exact or same_year or nearest
 
     def secret_sentence(self, rec, owner_label=None, self_cid=None):
         """隐事句: 「陆荣廷有一桩隐事：科举舞弊（涉及唐皇帝李漼，自873年见载）。」
@@ -2741,6 +2963,14 @@ class Facts:
             other = [h for h in hs if h not in my_houses]
             if not other:
                 continue
+            # v29: 家族名取不到时回退宗族名, 再不济「某家族」— 不泄露家族 id
+            _hname = cl.house_name_zh(self.melt, other[0]) or ""
+            if not _hname:
+                _did = cl.dynasty_id_of(self.melt, other[0])
+                if _did is not None:
+                    _hname = cl.dynasty_name_zh(self.melt, _did) or ""
+            _hlabel_raw = _hname or "某家族"
+            _hlabel = self._house_label(other[0]) or _hlabel_raw
             events = []
             for e in (r.get("history") or []):
                 d = str(e.get("date") or "")
@@ -2751,17 +2981,14 @@ class Facts:
                 # 修复方案_菲利普2.md 问题3: 游戏原文只写「国王/王」无国号)
                 txt = self._rerender_feud_event(e.get("change_reason") or "", d)
                 if not txt:
+                    # v29: 原文不可读 (rakaly 哨兵串/未解析键) → 缓存记忆重建
+                    txt = self._feud_event_fallback(my_houses, other[0], d, _hlabel)
+                if not txt:
                     continue
                 events.append((d, txt))
             if not events:
                 continue
             events.sort(key=lambda x: cl.date_key(x[0]))
-            # v14: 家族名取不到时回退宗族名, 再不济「某家族」— 不泄露家族 id
-            _hname = cl.house_name_zh(self.melt, other[0]) or ""
-            if not _hname:
-                _did = cl.dynasty_id_of(self.melt, other[0])
-                if _did is not None:
-                    _hname = cl.dynasty_name_zh(self.melt, _did) or ""
             # v14: 关系档位本地化缺失时用自然词, 不直出 key
             _lvl = L.loc(self.table, lvl) or {
                 "default_house_relation_level_feud": "世仇",
@@ -2771,7 +2998,7 @@ class Facts:
             if not _lvl:
                 continue
             out.append({
-                "house": _hname or "某家族",
+                "house": _hlabel_raw,
                 "level": _lvl,
                 "events": [f"{self.date(d)}，{t}" for d, t in events],
             })
@@ -3459,11 +3686,11 @@ class Facts:
         return f"通{'、'.join(langs)}。"
 
     def language_relation_line(self, a, b):
-        """两人言语关系句 (v28): 程序直接给出「相通 / 须借通译」的结论,
-        模型不必自行判断语言相同或不同。任一方无语言记录返回 ''。
+        """两人言语关系句 (v28/v29): **只说「不通」** — 无共通语时给双方语言清单与
+        「须借通译」结论 (用户决策 2026-09-11: 家人之间言语相通属常识, 一律不写)。
 
-        例: 「陆荣廷与陆裕光共通泰语，言语相通。」
-            「亮通氐羌语，与陆荣廷（泰语、汉语）无共通语，交谈须借通译往来。」"""
+        例:「亮通氐羌语，与陆荣廷（泰语、汉语）无共通语，交谈须借通译往来。」
+        有共通语时返回 ''; 任一方无语言记录返回 ''。"""
         la = self.languages(a)
         lb = self.languages(b)
         if not la or not lb:
@@ -3473,15 +3700,14 @@ class Facts:
         nb = self.person_label(b, style="brief") or self.name_or(b)
         if not na or not nb:
             return ""
-        common = [x for x in la if x in lb]
-        if common:
-            return f"{na}与{nb}共通{'、'.join(common)}，言语相通。"
+        if set(la) & set(lb):
+            return ""            # v29: 相通即常识, 不下发
         return (f"{na}通{'、'.join(la)}，与{nb}（{'、'.join(lb)}）无共通语，"
                 f"交谈须借通译或以手势、习语往来。")
 
     def language_relation_lines(self, cid):
-        """主角与妻室/子女的言语关系句 (v28): 同语者并成一句, 无共通语者按
-        语言分组各成一句; 无语言记录者不列。"""
+        """主角与妻室/子女的言语关系句 (v28/v29): **只列无共通语者**, 按对方语言
+        分组各成一句; 言语相通者一律不写 (用户决策 2026-09-11)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         fam = rec.get("family") or {}
         ids = list(dict.fromkeys(
@@ -3492,7 +3718,7 @@ class Facts:
             return []
         # v28b: 主角与家人称谓与全篇一致 (person_label / kin_label)
         na = self.person_label(cid, style="brief") or self.name_or(cid)
-        groups = {}   # (是否相通, 语言组) -> [id]
+        groups = {}   # 对方语言组 -> [id]
         for x in ids:
             try:
                 x = int(x)
@@ -3501,20 +3727,17 @@ class Facts:
             lx = self.languages(x)
             if not lx:
                 continue
-            common = tuple(sorted(set(pl) & set(lx)))
-            key = ("same", common) if common else ("diff", tuple(lx))
-            groups.setdefault(key, []).append(x)
+            if set(pl) & set(lx):
+                continue          # v29: 言语相通者不出句
+            groups.setdefault(tuple(lx), []).append(x)
         out = []
         for key, members in groups.items():
             names = "、".join(self.person_label(m, style="brief") or self.name_or(m)
                              for m in members)
             if not names:
                 continue
-            if key[0] == "same":
-                out.append(f"{na}与{names}共通{'、'.join(key[1])}，言语相通。")
-            else:
-                out.append(f"{na}通{'、'.join(pl)}，与{names}（{'、'.join(key[1])}）"
-                           f"无共通语，交谈须借通译或以手势、习语往来。")
+            out.append(f"{na}通{'、'.join(pl)}，与{names}（{'、'.join(key)}）"
+                       f"无共通语，交谈须借通译或以手势、习语往来。")
         return out[:4]
 
     def language_bridge_line(self, cid):
@@ -3723,6 +3946,115 @@ class Facts:
         """官职名+名: 「交州刺史应偁」 — person_label 的 office 式入口。"""
         return self.person_label(cid, style="office")
 
+    def _council_scope(self):
+        """议会席位取词用的 (政体, 是否帝国级): 帝国级 = 独立 + 最高头衔 ≥ e_。"""
+        pid = self.cache.get("player_id")
+        rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+        gov = (rec.get("landed") or {}).get("government") or ""
+        return gov, (self._top_rank_now(pid) >= 5 and bool(self._is_independent(pid)))
+
+    def _top_rank_now(self, cid, date=None):
+        """当前（或 date 时）所持头衔的最高层级 (barony=1…empire=5)。
+
+        v29: 只用 `_primary_title_at` 会在「仅持世族庄园/营地 (x_ 头衔)」时返回 0 —
+        游戏里庄园仍属领地层级, 职位/议会变体判定需要层级; 故这里取所有**未失去**
+        头衔的最高层级 (x_ 庄园/毡帐记 1, 与游戏 barony 级待遇一致)。"""
+        if cid is None:
+            return 0
+        best = 0
+        for tid, ivs in (self._hold_intervals(cid, date) or {}).items():
+            if not ivs or ivs[-1][1] is not None:
+                continue
+            key = (self._lt.get(str(tid)) or {}).get("key") or ""
+            rank = self._TT_RANK.get(key[:2], 0)
+            if rank == 0 and key.startswith("x_"):
+                rank = 1 if self.title_kind(tid) else 0
+            best = max(best, rank)
+        return best
+
+    def council_line(self):
+        """御前会议席位 (v29, 问题10): 用 council_task_manager + council_tasks 解析
+        玩家席位的**动态官职名**与大臣 —— 「御前会议六席：长史（某人）、司户（某人）…」
+        (天朝制帝国级为 宰相/户部尚书/御史大夫/大将军/礼部尚书; 非帝国为 长史/司户/
+        察事/司马/博士; 封建为 掌玺大臣/财政总管…)。
+
+        存档只存任务 id, 故席位名靠 council_tasks.position + 政体变体键取;
+        解析不到任何席位时返回 '' — 不再写出「御前会议六席」这种常量串。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return ""
+        rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+        seats = (rec.get("landed") or {}).get("council") or []
+        if not seats:
+            return ""
+        gov, imperial = self._council_scope()
+        act = (self.melt.get("council_task_manager") or {}).get("active") or {}
+        parts = []
+        for sid in seats:
+            e = act.get(str(sid)) or {}
+            if not isinstance(e, dict):
+                continue
+            owner = e.get("court_owner")
+            if isinstance(owner, int) and owner != pid:
+                continue          # 别人的议会 (含配偶席) — 不收
+            word = L.council_seat_word(self.table, self._council_tasks,
+                                       e.get("type") or "", gov, imperial)
+            who = e.get("owner")
+            nm = self.person_label(who, style="brief") if isinstance(who, int) else ""
+            if word and nm:
+                parts.append(f"{word}（{nm}）")
+            elif word:
+                parts.append(f"{word}（虚位）")
+            elif nm:
+                parts.append(nm)
+        if not parts:
+            return ""
+        return f"御前会议{_count_zh(len(parts))}席：" + "、".join(parts)
+
+    def council_seat_word(self, task_type):
+        """单个议会任务 → 席位官职词 (对外出口, 供回归脚本抽查)。"""
+        gov, imperial = self._council_scope()
+        return L.council_seat_word(self.table, self._council_tasks, task_type,
+                                   gov, imperial)
+
+    def court_position_scope(self, cid=None):
+        """职位变体求值域 (v29): 雇主政体/独立/顶层层级/文化传承。
+
+        游戏 court_position_asset 的触发条件就这几项 (实测 39 个带 localization_key
+        的变体块只用 government_has_flag / is_independent_ruler /
+        highest_held_title_tier / has_cultural_pillar)。"""
+        pid = self.cache.get("player_id") if cid is None else cid
+        rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+        gov = (rec.get("landed") or {}).get("government") or ""
+        rank = self._top_rank_now(pid)
+        cul = rec.get("culture")
+        if cul is None:
+            cul = (self._chars.get(str(pid)) or {}).get("culture")
+        heritage = ""
+        if cul is not None:
+            e = ((self.melt.get("culture_manager") or {}).get("cultures") or {}) \
+                .get(str(cul))
+            if isinstance(e, dict):
+                heritage = str(e.get("heritage") or "")
+        return {"gov_flag": L.government_prefix(gov), "tier": rank,
+                "independent": bool(self._is_independent(pid)),
+                "heritage": heritage, "culture": heritage or None}
+
+    def court_position_word(self, type_key, cid=None):
+        """职位类型键 → 游戏显示名 (v29, 问题11)。
+
+        存档存的是类型键 (court_physician_court_position), 游戏按雇主政体/独立/
+        层级/文化传承择 localization_key 变体 (天朝制非帝国 = 医学博士)。取不到
+        变体名时回退类型键的默认本地化 (旧行为)。"""
+        if not type_key:
+            return ""
+        word = L.pick_court_position(self.table, self._cp_variants, type_key,
+                                     self.court_position_scope(cid))
+        if word:
+            return word
+        v = L.loc(self.table, type_key) or ""
+        return "" if (not v or v == type_key) else v
+
     def court_positions_lines(self):
         """玩家营/廷内他人任职 (v7/v23): 返回 (最新任职行, 任免变化行)。
 
@@ -3748,7 +4080,8 @@ class Facts:
         holder_roles = {}  # 任职者名 -> [角色句]; 保持花名册出现序
         order = []
         for p in latest:
-            zh = L.loc(self.table, p.get("type")) or ""
+            # v29: 职位显示名按游戏变体解析 (私人医生 → 医学博士)
+            zh = self.court_position_word(p.get("type")) or ""
             if not zh or zh == p.get("type"):
                 continue
             emp = p.get("employee")
@@ -3777,14 +4110,14 @@ class Facts:
                    for p in h.get("positions") or [] if p.get("type")}
             if prev and cur != prev:
                 for t, emp in sorted(prev - cur):
-                    zh = L.loc(self.table, t) or ""
+                    zh = self.court_position_word(t) or ""
                     if not zh or zh == t:
                         continue
                     nm = self._office_name(emp) if emp is not None else "空缺"
                     if nm:
                         change_lines.append(f"{self.date(h.get('date'))}：{nm}卸任{zh}")
                 for t, emp in sorted(cur - prev):
-                    zh = L.loc(self.table, t) or ""
+                    zh = self.court_position_word(t) or ""
                     if not zh or zh == t:
                         continue
                     nm = self._office_name(emp) if emp is not None else "空缺"
@@ -4129,7 +4462,9 @@ def _clean_ck3_loc(s):
     名字间的逗号 (国王张格本), 防模型模仿出「囚X一」式怪句。
     v17: 修复方案_汤利五问题.md 问题1 — `[A-Z]+` 不匹配 LANDED_TITLE 的下划线
     (`TOOLTIP:LANDED_TITLE,13449` 残留), 且 `L; 名称` 链接标记剥不掉:
-    `[A-Z]`→`[A-Z_]+`, 头衔链接块整体剥离, `L` 后允许 `;`。"""
+    `[A-Z]`→`[A-Z_]+`, 头衔链接块整体剥离, `L` 后允许 `;`。
+    v29: 结果为不可读文本 (裸键/哨兵串/无中日韩字符) 时返回 '' — 调用方改用
+    程序重建的句子 (实测 house_relations 出现 'MAX_RECURSIVE_DEPTH')。"""
     s = str(s or "").replace("\x15", "")
     # v17: 头衔链接块 (ONCLICK:TITLE,id TOOLTIP:LANDED_TITLE,id L; 名称) 整体剥离
     s = re.sub(r"ONCLICK:TITLE,\d+\s*TOOLTIP:[A-Z_]+,\d+\s*L[; ]?", "", s)
@@ -4142,7 +4477,62 @@ def _clean_ck3_loc(s):
     s = re.sub(r"(?<=[\u4e00-\u9fff]) (?=[\u4e00-\u9fff])", "", s)
     # 称号(≤4字)与名字之间的逗号 → 删 (国王，张格本 → 国王张格本)
     s = re.sub(r"([\u4e00-\u9fff]{1,4})，(?=[\u4e00-\u9fff]{2,})", r"\1", s)
-    return s
+    return s if loc_text_ok(s) else ""
+
+
+# ---------------------------------------------------------------------------
+# v29: 干净事实的最后一道程序兜底 (问题1)
+# ---------------------------------------------------------------------------
+# 存档/熔件里偶有未解析的本地化键或 rakaly 哨兵串 (实测
+# house_relations.history.change_reason = 'MAX_RECURSIVE_DEPTH'); 任何一路渲染
+# 漏掉都会把裸键送进提示词。这里按行兜底: 行内出现键形串 (含下划线的 ASCII 词)
+# 或全大写哨兵串即丢弃该行并记审计日志 — 模型侧只收到中文事实。
+
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
+_PLACEHOLDER_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+_KEY_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]{2,}(?![A-Za-z0-9_])")
+_SANITIZE_LOG = {"lines": 0, "samples": []}
+
+
+def loc_text_ok(s):
+    """本地化文本是否可读: 含中日韩字符, 且整体不是裸键/哨兵串。"""
+    t = str(s or "").strip()
+    if not t:
+        return False
+    if _PLACEHOLDER_RE.match(t) or _KEY_TOKEN_RE.search(t):
+        return False
+    return bool(_CJK_RE.search(t))
+
+
+def sanitize_fact_text(text, where=""):
+    """事实文本按行兜底: 丢弃带裸键的行, 记审计 (logs/journal.log + 计数)。"""
+    if not text:
+        return text
+    kept, dropped = [], []
+    for ln in str(text).split("\n"):
+        if ln.strip() and (_PLACEHOLDER_RE.match(ln.strip())
+                           or _KEY_TOKEN_RE.search(ln)):
+            dropped.append(ln.strip())
+            continue
+        kept.append(ln)
+    if dropped:
+        _SANITIZE_LOG["lines"] += len(dropped)
+        for d in dropped[:3]:
+            if len(_SANITIZE_LOG["samples"]) < 12:
+                _SANITIZE_LOG["samples"].append(d)
+        try:
+            import llm as _llm
+            _llm.log(f"干净事实兜底: 丢弃含裸键的行 {len(dropped)} 条"
+                     f" (来自 {where or '未知块'}): {dropped[0][:80]}")
+        except Exception:
+            pass
+    return "\n".join(kept)
+
+
+def sanitize_stats():
+    """兜底统计 (供回归/审计脚本断言与打印)。"""
+    return {"lines": _SANITIZE_LOG["lines"],
+            "samples": list(_SANITIZE_LOG["samples"])}
 
 
 # 恩怨史事件文本中的角色块: \x15ONCLICK:CHARACTER,id \x15TOOLTIP:CHARACTER,id \x15L
@@ -5160,7 +5550,10 @@ def _protagonist(f):
             if cap:
                 p["capital"] = cap
             p["vassal_count"] = ld.get("vassal_count", 0)
-            p["council"] = "御前会议六席" if ld.get("council") else ""
+            # v29: 御前会议席位改用动态官职名 + 大臣名 (解析不到则整句不发)
+            cl_line = f.council_line()
+            if cl_line:
+                p["council"] = cl_line
         # v26: 游牧牧群/口粮 — 与金钱同口径 (只给当前值), 且取 as_of 熔件的毡帐,
         # 不用缓存末档 (十年传记 as_of 早于末档时数值会穿越)。
         # v28: 按 domicile 类型分派 — 牧群只在毡帐 (yurt) 有意义, 口粮只在无地
@@ -5178,20 +5571,11 @@ def _protagonist(f):
             _is_camp = (not _is_nomad) and (
                 _dtype == "camp" or gov == "landless_adventurer_government")
 
-            def _pos(v):
-                try:
-                    return None if float(v) == 0 else v
-                except (TypeError, ValueError):
-                    return None
-
-            if _dom and _is_nomad and _dom.get("herd") is not None:
-                hv = _pos(_dom.get("herd"))
-                if hv is not None:
-                    p["herd"] = hv
+            # v29: 牧群 (游牧货币) 数值不下发; 口粮 (营地补给) 改档位词
             if _dom and _is_camp and _dom.get("provisions") is not None:
-                pv = _pos(_dom.get("provisions"))
-                if pv is not None:
-                    p["provisions"] = pv
+                w = provisions_band(_dom.get("provisions"))
+                if w:
+                    p["provisions_word"] = w
     # 现状 (仅在世时)
     if not cache.get("player_death"):
         def num(v, nd=1):
@@ -5218,17 +5602,15 @@ def _protagonist(f):
         ss = stress_state_zh(ad.get("stress"))
         if ss:
             bits.append(ss)
-        g = num((ad.get("gold") or {}).get("value"))
-        if g is not None:
-            bits.append(f"国库金{g}")
-        inc = num(ad.get("income"))
-        if inc is not None:
-            bits.append(f"月入{inc}")
-        for key, label in (("piety", "虔诚"), ("prestige", "威望"),
-                           ("influence", "影响力"), ("merit", "功勋")):
-            v = num((ad.get(key) or {}).get("currency"))
-            if v is not None:
-                bits.append(f"{label}{v}")
+        # v29: 财务与信仰数值一律档位化 (用户决策 2026-09-11):
+        # 国库金、月入、牧群等货币数值整项不下发; 虔诚/威望/影响力/功勋取游戏档位词
+        # (defines LEVELS_* + 本地化 <kind>_level_N: 戴罪之人/崭露头角/七品…)。
+        for kind, label in (("piety", "虔诚"), ("prestige", "威望"),
+                            ("influence", "影响力"), ("merit", "功勋")):
+            v = (ad.get(kind) or {}).get("currency")
+            w = L.level_word(f.table, f._bands, kind, v)
+            if w:
+                bits.append(f"{label}{w}")
         if bits:
             p["status"] = "，".join(bits) + "。"
     # 死亡 (终传时; v11: as_of 早于死期视为在世, 十年传记不泄漏「死于…」)
@@ -5378,8 +5760,9 @@ def _character_profiles(f):
         langs = f.languages(cid)
         if langs:
             prof["languages"] = "、".join(langs)
-        # v27: 语言事实句 (母语/兼通), 供传记渲染「语言」行
-        prof["language_line"] = f.language_sentence(cid)
+        # v29: 语言事实句 (母语/兼通) 只给主角本人 (用户决策 2026-09-11:
+        # 「母语」描写过滥, 家人之间言语相通属常识); 其余角色仅在「与主角无共通语」
+        # 时由 language_relation 句带出其语言清单 — 故此处不再写 prof["language_line"]。
         # v28: 该角色与主角的言语关系句 (程序直给「相通/须借通译」结论) —
         # 《列传·好友/仇人》《家室列传》写二人交谈时照此落笔
         _pid = f.cache.get("player_id")
@@ -5407,10 +5790,11 @@ def _character_profiles(f):
         if fhl:
             prof["faith_history"] = "；".join(fhl)
         # v7: 该角色在玩家宫廷/营地中的官职 (最新快照, 反向取最后一年)
+        # v29: 显示名按玩家宫廷的政体变体取 (私人医生 → 医学博士)
         for h in reversed(f.cache.get("court_positions") or []):
             for p in h.get("positions") or []:
                 if p.get("employee") == cid:
-                    zh = L.loc(f.table, p.get("type")) or ""
+                    zh = f.court_position_word(p.get("type")) or ""
                     if zh and zh != p.get("type"):
                         prof["court_position"] = zh
                     break
@@ -5433,12 +5817,21 @@ def _character_profiles(f):
             f.kin_label(c) for c in child_ids if f._is_female(c))
         # v28: 主体性别 — 配偶标签按此取 (女角色的丈夫不再写成「妻室」)
         prof["female"] = f._is_female(cid)
-        prof["father"] = "、".join(
-            f.kin_label(x) for x in (fam.get("father") or []) if f.name(x))
+        # v29 (问题5): 主角子女的档案不再重复家世名单 —
+        #   「兄弟姊妹」与主角其余子女完全同集 (主角档案已列全), 同批名单此前
+        #   在家室档案里按人重复 8 次; 「父」为主角时一并省去 (保留「母」以辨生母)。
+        _pid = f.cache.get("player_id")
+        _prec = (f.cache.get("characters") or {}).get(str(_pid)) or {}
+        _pchildren = {int(x) for x in ((_prec.get("family") or {}).get("child") or [])}
+        _is_pchild = int(cid) in _pchildren
+        _fathers = [x for x in (fam.get("father") or []) if f.name(x)]
+        if not (_is_pchild and _pid in _fathers):
+            prof["father"] = "、".join(f.kin_label(x) for x in _fathers)
         prof["mother"] = "、".join(
             f.kin_label(x) for x in (fam.get("mother") or []) if f.name(x))
-        prof["siblings"] = "、".join(
-            f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
+        if not _is_pchild:
+            prof["siblings"] = "、".join(
+                f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
         # v5: 自定义角色 + 真正父亲 (私生子)
         if f.is_custom_start(cid):
             prof["custom_start"] = True
@@ -5464,6 +5857,9 @@ def _character_profiles(f):
             mems.append(f"{f.date(mem.get('creation_date'))}，{s}")
         mems.sort()
         prof["events"] = mems
+        # v29 (问题4): 「传主行迹」用省主语版 — 块内主语恒为传主, 重复姓名无信息
+        _subj = prof.get("label") or name
+        prof["events_subjectless"] = [_strip_subject_prefix(x, _subj) for x in mems]
         ds = _death_sentence(f, cid)
         if ds:
             prof["death"] = ds
@@ -6314,30 +6710,47 @@ def _cn_date_key(s):
 
 
 def _protagonist_stations(f):
-    """主角身份/驻地变化年表 (v20, B3): 头衔阶段 (无地营地显式标注) + 逐年驻地,
-    按日期合并排序。十年传记按 as_of 截断。返回干净中文行列表, 上限 40 行。"""
+    """【冒险者行踪】(v29, 问题2): 只记**无地冒险者时期**的营地阶段与驻地。
+
+    用户决策 2026-09-11: 定居/世族庄园时期的驻地没有意义 (player_locations 里的
+    旅行落点尤甚), 头衔阶段在【人物档案】的历任句里已有; 故本块只保留营地持有
+    区间内的「驻X」行与营地阶段行。无营地期一律返回 [] → 整块不下发。
+    十年传记按 as_of 截断。"""
     cache = f.cache
     pid = cache.get("player_id")
     if pid is None:
         return []
+    camps = f.camp_intervals(pid)
+    if not camps:
+        return []
     items = []  # (date_key, 行文本)
-    # 1) 头衔/身份阶段 (held_titles 已带 无地冒险者营地 标注; 本身按 as_of 截断)
-    try:
-        for ln in f.held_titles(pid):
-            dk = _cn_date_key(ln)
-            if dk is not None:
-                items.append((dk, ln))
-    except Exception:
-        pass
-    # 2) 驻地轨迹 (player_locations → 伯爵领名; 按 as_of 截断)
+    # 1) 营地阶段行 (游戏口径营地宗旨词; 与 held_titles 同源)
+    for tid, ivs in (f._hold_intervals(pid) or {}).items():
+        if f.title_kind(tid) != "camp":
+            continue
+        for iv in ivs:
+            g = iv[0] if iv else None
+            if not g:
+                continue
+            if f.as_of and cl.date_key(g) > cl.date_key(f.as_of):
+                continue
+            end = (iv[1] if len(iv) > 1 else None) or f.as_of \
+                or cache.get("last_date")
+            nm = f._name_in_span(tid, g, end, pid) or ""
+            w = f._camp_holder_word(pid, g)
+            base = f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else "")
+            if base:
+                items.append((cl.date_key(g),
+                              f"{f.date(g)}任{base}（无地冒险者营地）"))
+    # 2) 驻地轨迹: 只取落在营地区间内的 location (旅行落点一律不收)
     hist = cache.get("player_locations") or []
     if f.as_of:
         aok = cl.date_key(f.as_of)
         hist = [loc for loc in hist
-                if not loc.get("date") or cl.date_key(loc.get("date")) <= aok]
+                if not loc.get("date") or cl.date_key(loc["date"]) <= aok]
     seen = set()
     for loc in hist:
-        if not loc.get("date"):
+        if not loc.get("date") or not f.in_camp_period(loc["date"], pid):
             continue
         county = f.county_at_province(loc.get("province"))
         if county is None:
@@ -6351,7 +6764,7 @@ def _protagonist_stations(f):
         seen.add(key)
         items.append((cl.date_key(loc["date"]), f"{f.date(loc['date'])}驻{cname}"))
     items.sort(key=lambda x: x[0])
-    # 按行文本去重 (同日 头衔阶段+驻地 两行都保留, 只去掉完全重复的行)
+    # 按行文本去重 (同日 营地阶段+驻地 两行都保留, 只去掉完全重复的行)
     out = []
     seen_line = set()
     for dk, ln in items:
@@ -6360,6 +6773,101 @@ def _protagonist_stations(f):
         seen_line.add(ln)
         out.append(ln)
     return out[:40]
+
+
+_PLAGUE_INTENSITY_ZH = {"minor": "轻疫", "major": "重疫", "apocalyptic": "毁灭之疫"}
+
+
+def _plague_facts(f):
+    """瘟疫风味 (v29, 问题7): 读本档 epidemics 的**游戏动态名**与感染范围。
+
+    用户决策 2026-09-11 (方案门槛 A): 只写触及主角封地/所在郡的疫情, 以及主角与
+    家人所患疾病的疫情; 远地瘟疫一律不写。名称一律取存档里的 `name`
+    (游戏算好: 「李黯之火」「撒丁痘」), 缺失时回退病名本地化 (trait_smallpox=天花)。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return {}
+    db = (f.melt.get("epidemics") or {}).get("database") or {}
+    if not isinstance(db, dict) or not db:
+        return {}
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    ld = rec.get("landed") or {}
+    # 主角相关省份: 封地各头衔首府 + 庄园/毡帐驻地 + 现所在郡
+    mine = set()
+    lt = f._lt
+    for t in (ld.get("domain") or []):
+        cap = (lt.get(str(t)) or {}).get("capital")
+        if isinstance(cap, int):
+            mine.add(cap)
+    dom_prov = ((rec.get("landed") or {}).get("domicile_province")
+                or ld.get("domicile_province"))
+    if isinstance(dom_prov, int):
+        mine.add(dom_prov)
+    loc_prov = f.character_location_province(pid)
+    if isinstance(loc_prov, int):
+        mine.add(loc_prov)
+    if not mine:
+        return {}
+    fam = rec.get("family") or {}
+    kin = [pid]
+    for k in ("primary_spouse", "spouse", "former_spouses", "concubine",
+              "former_concubines", "child", "father", "mother", "siblings"):
+        for x in fam.get(k) or []:
+            if isinstance(x, int) and x not in kin:
+                kin.append(x)
+    lines = []
+    for eid, e in db.items():
+        if not isinstance(e, dict):
+            continue
+        typ = e.get("type") or ""
+        name = str(e.get("name") or "")
+        disease = _trait_name(f.table, typ) if typ else ""
+        label = name or disease
+        if not label:
+            continue
+        created = str(e.get("creation_date") or "")
+        if f.as_of and created and cl.date_key(created) > cl.date_key(f.as_of):
+            continue
+        known = cache.get("epidemics") or {}
+        hist = known.get(str(eid)) or {}
+        if hist.get("lost_at") and f.as_of \
+                and cl.date_key(hist["lost_at"]) <= cl.date_key(f.as_of):
+            continue            # 该疫已平息
+        where = disease if (disease and disease != name) else ""
+        intensity = _PLAGUE_INTENSITY_ZH.get(str(e.get("intensity") or ""), "")
+        # ① 主角与家人是否染上该疫 (病特质与疫情 type 同名)
+        hit_kin = []
+        if typ:
+            for cid in kin:
+                if f._has_trait_at(cid, typ):
+                    hit_kin.append(f.kin_label(cid) if cid != pid
+                                   else (f.person_label(pid, style="brief")
+                                         or f.name_or(pid)))
+        # ② 主角封地/所在郡是否在其感染之列
+        inf = {int(x) for x in (e.get("infections") or {}) if str(x).isdigit()}
+        hit_prov = sorted(mine & inf)
+        if not hit_kin and not hit_prov:
+            continue
+        head = f"{f.date(created)}，{label}"
+        if where:
+            head += f"（{where}）"
+        if intensity:
+            head += f"，{intensity}"
+        bits = [head]
+        if hit_prov:
+            ctid = f.county_at_province(hit_prov[0])
+            cname = f.title(ctid) if ctid is not None else ""
+            bits.append(f"疫及主角封地{cname}" if cname else "疫及主角所居之地")
+            n = e.get("num_infected_provinces") or len(inf)
+            if n:
+                bits.append(f"蔓及{n}州")
+        if hit_kin:
+            bits.append("、".join(hit_kin) + "染此疫")
+        lines.append("，".join(bits) + "。")
+    if not lines:
+        return {}
+    return {"lines": lines[:4]}
 
 
 def _court_luminaries(f):
@@ -6593,6 +7101,8 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "wandering": _wandering_trail(f),
         # v28: 隐事 (主角/家人近臣的隐事、知情情形、把柄) — 《阴私录》数据源
         "secrets": _secrets_facts(f),
+        # v29: 瘟疫风味 (游戏动态疫名 + 感染范围; 只收触及主角封地/家人的疫情)
+        "plagues": _plague_facts(f),
         # v20 (B3): 主角身份/驻地变化年表 (共享前缀【主角处境】数据源)
         "protagonist_stations": _protagonist_stations(f),
         "luminaries": _court_luminaries(f),

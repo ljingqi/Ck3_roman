@@ -981,6 +981,187 @@ def pick_court_position(table, positions, type_key, scope):
 
 
 # ---------------------------------------------------------------------------
+# 御前会议席位 (v29): common/council_tasks/*.txt 的 position 字段
+# ---------------------------------------------------------------------------
+# 每个议会任务块写明 `position = councillor_steward` (或行政制 minister_personnel),
+# 位置名再按政体取变体 (天朝制: councillor_steward_celestial_government_non_imperial
+# = 司户 / _imperial = 户部尚书)。存档只存任务 id, 故须这张表才能写出席位官职名。
+
+_COUNCIL_POSITION_FALLBACK = {
+    "task_foreign_affairs": "councillor_chancellor",
+    "task_fabricate_claim": "councillor_chancellor",
+    "task_collect_taxes": "councillor_steward",
+    "task_develop_county": "councillor_steward",
+    "task_increase_control": "councillor_steward",
+    "task_organize_levies": "councillor_marshal",
+    "task_train_commanders": "councillor_marshal",
+    "task_disrupt_schemes": "councillor_spymaster",
+    "task_religious_relations": "councillor_court_chaplain",
+    "task_conversion": "councillor_court_chaplain",
+}
+
+
+def _council_tasks_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "council_tasks.json")
+
+
+def build_council_tasks(cfg):
+    """游戏 + 启用 Mod 的 council_tasks → {"tasks": {任务键: 席位键}}。"""
+    tasks = dict(_COUNCIL_POSITION_FALLBACK)
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        d = os.path.join(root, "common", "council_tasks")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = fp.read()
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                if not key.startswith("task_"):
+                    continue
+                m = re.search(r"(?<![A-Za-z_])position\s*=\s*([A-Za-z0-9_]+)", body)
+                if m:
+                    tasks[key] = m.group(1)
+    return {"schema": 1, "tasks": tasks}
+
+
+def save_council_tasks(cfg, table):
+    path = _council_tasks_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_council_tasks(cfg=None, force=False):
+    """载入议会任务→席位表; 缺失或强制时重建。"""
+    cfg = cfg or llm.load_config()
+    path = _council_tasks_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("tasks"):
+                return data
+        except Exception:
+            pass
+    data = build_council_tasks(cfg)
+    save_council_tasks(cfg, data)
+    return data
+
+
+def council_seat_word(table, tasks, task_type, government="", imperial=False):
+    """议会任务 → 席位官职词 (按政体取变体)。
+
+    例: task_collect_taxes + celestial_government + 非帝国 → councillor_steward_
+    celestial_government_non_imperial = 「司户」; 帝国 → 「户部尚书」;
+    非天朝政体 → councillor_steward = 「财政总管」。查不到返回 ''。"""
+    seat = ((tasks or {}).get("tasks") or {}).get(task_type) or ""
+    if not seat:
+        return ""
+    cands = []
+    pfx = government_prefix(government)
+    if seat.startswith("councillor_") and pfx:
+        suffix = "imperial" if imperial else "non_imperial"
+        cands.append(f"{seat}_{pfx}_government_{suffix}")
+        cands.append(f"{seat}_{pfx}_government")
+        cands.append(f"{seat}_non_celestial_government_{suffix}")
+    cands.append(seat)
+    for c in cands:
+        v = loc(table, c)
+        # 拒收未解析引用 ($X$ / [X]) 与英文兜底 (纯 ASCII 词)
+        if v and not v.startswith("$") and not v.startswith("[") \
+                and not re.search(r"[A-Za-z]{2,}", v):
+            return v
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# 特质显示名键表 (v29): common/traits/*.txt 的 name 块 → desc 键
+# ---------------------------------------------------------------------------
+# 部分特质 (如旅行者 lifestyle_traveler) 的显示名不走 trait_<key>, 而由特质定义里的
+# name = { first_valid = { … desc = trait_traveler_1 } } 指定; Mod 特质更常见。
+# 没有这张表时该特质整条被丢弃 (信息丢失, 虽不外泄键)。
+
+def _trait_names_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "trait_names.json")
+
+
+def build_trait_names(cfg):
+    """游戏 + 启用 Mod 的 common/traits → {"traits": {trait_key: loc_key}}。"""
+    out = {}
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        for sub in ("common/traits", "common/traits/tracks"):
+            d = os.path.join(root, *sub.split("/"))
+            if not os.path.isdir(d):
+                continue
+            for fn in sorted(os.listdir(d)):
+                if not fn.endswith(".txt"):
+                    continue
+                try:
+                    with open(os.path.join(d, fn), encoding="utf-8-sig",
+                              errors="replace") as fp:
+                        txt = fp.read()
+                except OSError:
+                    continue
+                for key, body in _top_blocks(txt):
+                    if key.startswith("@"):
+                        continue
+                    nb = _blocks_of(body, "name")
+                    if nb:
+                        cands = re.findall(r"desc\s*=\s*([A-Za-z0-9_.]+)", nb[0])
+                    else:
+                        m = re.search(r"(?<![A-Za-z_])name\s*=\s*([A-Za-z0-9_.]+)",
+                                      body)
+                        cands = [m.group(1)] if m else []
+                    for c in cands:
+                        if c and not c.startswith(("$", "[")):
+                            out[key] = c
+                            break
+    return {"schema": 1, "traits": out}
+
+
+def save_trait_names(cfg, table):
+    path = _trait_names_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_trait_names(cfg=None, force=False):
+    """载入特质显示名键表; 缺失或强制时重建。"""
+    cfg = cfg or llm.load_config()
+    path = _trait_names_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("traits"):
+                return data
+        except Exception:
+            pass
+    data = build_trait_names(cfg)
+    save_trait_names(cfg, data)
+    return data
+
+
+# ---------------------------------------------------------------------------
 # 政体层级词 (动态)
 # ---------------------------------------------------------------------------
 
@@ -1036,6 +1217,8 @@ _DYN_TABLE = None
 _REL_TPL = None
 _LEVELS = None
 _COURT_POSITIONS = None
+_COUNCIL_TASKS = None
+_TRAIT_NAMES = None
 
 
 def currency_levels(cfg=None):
@@ -1052,6 +1235,22 @@ def court_positions(cfg=None):
     if _COURT_POSITIONS is None:
         _COURT_POSITIONS = load_court_positions(cfg or llm.load_config())
     return _COURT_POSITIONS
+
+
+def council_tasks(cfg=None):
+    """议会任务→席位表单例 (v29): {"tasks": {task_type: councillor_seat}}。"""
+    global _COUNCIL_TASKS
+    if _COUNCIL_TASKS is None:
+        _COUNCIL_TASKS = load_council_tasks(cfg or llm.load_config())
+    return _COUNCIL_TASKS
+
+
+def trait_names(cfg=None):
+    """特质显示名键表单例 (v29): {"traits": {trait_key: loc_key}}。"""
+    global _TRAIT_NAMES
+    if _TRAIT_NAMES is None:
+        _TRAIT_NAMES = load_trait_names(cfg or llm.load_config())
+    return _TRAIT_NAMES
 
 
 def table(cfg=None):
@@ -1215,6 +1414,29 @@ def main():
                 print(f"  {key} → {v.get('loc_key') or '(默认名)'} "
                       f"[{loc(table, v['loc_key']) if v.get('loc_key') else loc(table, key)}]"
                       f" when={v.get('when')}")
+    elif cmd == "council":
+        data = build_council_tasks(cfg)
+        p = save_council_tasks(cfg, data)
+        print(f"议会席位表已重建: {p} ({len(data.get('tasks') or {})} 个任务)")
+        table = load_localization_table(cfg)
+        for t in ("task_collect_taxes", "task_organize_levies", "task_disrupt_schemes",
+                  "task_religious_relations", "task_foreign_affairs", "task_conversion",
+                  "task_manage_talent"):
+            row = [t, data["tasks"].get(t, "")]
+            for gov, imp in (("celestial_government", False),
+                             ("celestial_government", True),
+                             ("feudal_government", False)):
+                row.append(council_seat_word(table, data, t, gov, imp) or "—")
+            print("  " + " | ".join(str(x) for x in row))
+    elif cmd == "traits":
+        data = build_trait_names(cfg)
+        p = save_trait_names(cfg, data)
+        t = data.get("traits") or {}
+        print(f"特质显示名表已重建: {p} ({len(t)} 条)")
+        table = load_localization_table(cfg)
+        for k in ("lifestyle_traveler", "lifestyle_physician", "hunchback", "dwarf"):
+            lk = t.get(k, "")
+            print(f"  {k} → {lk or '(trait_<key>)'} = {loc(table, lk or f'trait_{k}')!r}")
     elif cmd == "province":
         m = build_province_map(cfg)
         p = save_province_map(cfg, m)
