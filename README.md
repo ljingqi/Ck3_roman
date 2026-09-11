@@ -142,7 +142,8 @@ CK3 自动存档 (.ck3)  —(watch/continue 只处理启动后写入的新存档
 - **旧缓存自愈**：`extract_snapshot` 对缺失 `dynasty_name` 的旧缓存按家族 id 记忆化补解析；
   渲染期 `display_name` 另有惰性解析兜底（同 house 记忆化），旧战役不重建缓存也正确。
 - **风味双字段**：档案给出 宗族（藤原氏）与 家族/分家（北家/庆州崔，与宗族不同时列出），
-  自然语言渲染「家族：藤原氏（北家）」；`build_names.py` 的 names.json 增 `dynasty_name`。
+  自然语言渲染「家族：藤原北家」（v29b：直连不再用括注；非「氏」结尾时以逗号并列）；
+  `build_names.py` 的 names.json 增 `dynasty_name`。
 - **死者官职地名兜底**：title history 被存档剪除时（b_lantian 无 history），官职地名
   （蓝田县令）回退到死者 `dead_data.domain` 死时辖地解析，不再退化成「县令…史料不详」。
 - **元注释清零**：渲染层不再向模型泄露内部 id/裸键——`_name_or` 亲缘兜底改走熔件全量
@@ -411,6 +412,12 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   缺键而整条丢失的特质恢复显示。
 - **技能同步**：`.agents/skills/no-negative-prompts` 增「程序优先铁律（prompt-last）」
   一节与本项目化的职责清单。
+- **括注同位语清理**（v29b，用户决策：现代汉语以「职名连写」为正）：御前会议席位写
+  「长史延寿」（空席「长史虚悬」）；历任行的类别词改逗号同位语（「周家族乡绅，世族庄园」）；
+  世族庄园行改主语句（「世族庄园「周家族」，主人称乡绅。」）；上位链持有人直连
+  （「唐皇朝李漼」，营地句同）；家族恩怨改「家族：程氏，两族为世仇」；宝器「宝物：X，名望级」；
+  同谋者角色词前置（「同谋张三」）；宗族+分家直连（藤原氏 + 北家 → 藤原北家）。
+  日期、生卒、死地、失位缘由、见载年等**补注**仍用括注（现代汉语正常用法）。
 
 ## 代码纪律（2026-09-10 用户定规）
 
@@ -451,6 +458,10 @@ python pipeline.py demo-death      :: 模拟主角死亡，演示「死后自动
 python pipeline.py rebuild-cache   :: 从各战役文件夹熔件重建缓存（迁移/修复）
 python pipeline.py migrate         :: v4 迁移：旧 cache/ 移入 output/<家族>/data/ + 重建
 python htmlview.py rebuild         :: 重建所有宗族文件夹的 index.html
+
+:: 提速基建（开发/验收用；熔件 100–125MB，载一次要 1–3 分钟，不要反复整载）
+& tools\py.ps1 tools\snap.py 周氏 38673 889.1.1 2   :: 落 facts 快照（含各篇 blocks 与逐请求提示词）
+& tools\py.ps1 tools\verify_fast.py                  :: 快速回归（无熔件，秒级）
 ```
 
 **素材库纪律（只记录新扫描到的存档）**：
@@ -484,7 +495,9 @@ python htmlview.py rebuild         :: 重建所有宗族文件夹的 index.html
 | `data/` | 全局表：names.json + localization.json（含来源指纹）+ province_map.json + dynasties.json + currency_levels.json + court_positions.json + council_tasks.json + trait_names.json（各战役共用，v29 起启用 Mod 变化即自动重建） |
 | `output/<宗族>/data/` | 每玩家记忆缓存 + 熔化存档 melt_*.json（v6 起，与缓存同目录） |
 | `output/` | 传记输出（按宗族分文件夹） |
-| `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线；`verify_lushi.py` / `verify_tadokoro2.py` 为确定性回归） |
+| `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线；`verify_lushi.py` / `verify_tadokoro2.py` / `verify_zhou.py` 为确定性回归） |
+| `tools/enc.ps1` / `tools/py.ps1` | 开发工具链：统一 UTF-8 子进程输出（免中文乱码往返），`& tools\py.ps1 <脚本>` 跑 Python |
+| `tools/snap.py` / `tools/verify_fast.py` | 提速基建（v29b）：熔件载一次落 facts 快照（几十 KB），快速回归秒级跑；端到端仍走 `experiments/verify_zhou.py` |
 
 ## 已知限制
 
