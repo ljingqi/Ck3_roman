@@ -419,6 +419,45 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   同谋者角色词前置（「同谋张三」）；宗族+分家直连（藤原氏 + 北家 → 藤原北家）。
   日期、生卒、死地、失位缘由、见载年等**补注**仍用括注（现代汉语正常用法）。
 
+## v32 能力（监禁者与出狱方式 / 特质子轨道 / 夭折生母）
+
+方案与证据见 `docs/方案_马克龙三问题.md`；确定性回归 `tools/verify_three.py`（27 条断言）。
+
+- **被囚句点名监禁者**：被囚记忆的 `imprisoner` 槽此前未进句（模板「{name}被囚。」）——
+  家室档案行只写「公主被囚」，模型只好自己猜（旧稿写成「囚禁之人，后世皆指为伯爵本人」）。
+  现写「X为Y所囚。」，无槽时回退「被囚。」；传主行迹省主语后仍保留监禁者（「为Y所囚。」）。
+- **出狱方式二分**：`released_from_prison_memory`（被释放）与 `escaped_from_prison_memory`
+  （逃脱）由引擎互斥建立（`prison_on_actions.txt` 未置逃狱旗标才建 released）；后者此前
+  槽位/模板/模块三处皆未登记 → 越狱整条不入事实面（马克龙主角 869.10.16 的越狱即如此）。
+  现单列「越狱脱逃」模块，配对句按方式分词（「4个月后获释」/「当日越狱脱身」），
+  《家室列传》纪事切片补囚禁模块（v31 §12.6 遗留 1 由此消解），囚禁时长把逃脱计入出狱。
+- **强纳为妾带日期**：纳妾本身不留记忆，但 `opinions.active_opinions` 的
+  `forced_me_concubine_marriage_opinion` 带 `start_date`（本地化「将我强行纳为侧室」），
+  且 `concubine_on_accept_effect` 同一段落 `release_from_prison = yes` ——「掳人→囚→强纳为妾」
+  的次序由程序坐实，出句「880年，主角强纳戈迪娜·迭戈斯为妾，同日自狱中释出。」
+  （旧稿「嫁入年份未见于簿册」，模型遂默认先婚后囚）。缓存新增 `opinions` 逐档差分（纳妾白名单）。
+- **特质 XP 子轨道（特质集）**：游戏 `track = {}` / `tracks = {}` 把「不法之徒」这类特质拆成
+  若干子轨道（强盗/骗子/窃贼/偷猎者/掠夺者，阈值 20/40/60/80/100），按经验分档换效果。
+  - 存法破解：角色 `trait_xp_amounts` 是**与 `traits` 顺序对齐的扁平数组，每轨一个数**
+    （实测马克龙档 3987/3987 角色全对）；缓存逐档差分落 `trait_xp` 样本。
+  - **修正既有 bug**：`build_trait_names` 旧实现取 `name` 块第一个 desc，而游戏把**最高档**名
+    写在最前 —— 54 个按 XP 换名的特质全部显示顶档名（主角 reveler 经验 0 却写「传奇的狂欢者」）。
+    现 schema 3：基础名 + 类别 + 档位名条件，渲染期按实际 XP 求值（reveler 0→热切的狂欢者、
+    100→传奇的狂欢者）。
+  - 轨道名走本地化 `trait_track_<key>`（119/119 命中：强盗/窃贼/骗子/后勤师/行军者…），
+    已进档者括注于特质名后（「名声不法之徒（强盗一阶、窃贼二阶）」），进档写入履历
+    （「组织者·行军者（自874年起进至一阶，自877年起进至二阶，自878年起进至三阶）」）。
+  - 数据层：`data/trait_tracks.json`（86 特质 / 121 轨道）＋ `data/trait_names.json` schema 3；
+    `python localization.py traits`（一并重建）或 `tracks`（只重建轨道表）。
+- **夭折句点出生母**：`child_stillborn` / `child_premature` 的 participants 是**母亲**，
+  此前槽位与模板都没用上（「{name}婴儿夭折。」）→ 模型写「未知其母，只知为某人之血脉」
+  （主角只一位妻子，母亲其实早有数据）。现写「X之妻Y产下死婴。」，配偶词按关系取
+  （妻/妾/情人；女主人称「之夫」），生母本人持有该记忆（自指）时回退「X产下死婴。」；
+  逐年摘要剥称谓时一并删配偶词，不留悬空的「之妻」。
+- **附带修正**：主角概览的「被囚」只统计本人被囚（受害者侧句子现在点名监禁者，旧判据
+  「名在句中」会把主角囚人误计为被囚）；传主行迹与逐年摘要的称谓剥离统一走
+  `_strip_subject_prefix`。
+
 ## 代码纪律（2026-09-10 用户定规）
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
@@ -446,7 +485,8 @@ python localization.py mods        :: 列出启用 Mod 的本地化覆盖与来�
 python localization.py levels      :: 重建档位阈值表 data/currency_levels.json（v29）
 python localization.py positions   :: 重建职位显示名变体表 data/court_positions.json（v29）
 python localization.py council     :: 重建议会席位表 data/council_tasks.json（v29）
-python localization.py traits      :: 重建特质显示名键表 data/trait_names.json（v29）
+python localization.py traits      :: 重建特质显示名键表 + 轨道表（v29/v32）
+python localization.py tracks      :: 只重建特质 XP 轨道表 data/trait_tracks.json（v32）
 python localization.py province    :: 重建省份映射 data/province_map.json（首次自动）
 python localization.py dynasties   :: 重建宗族/家族定义表 data/dynasties.json（首次自动）
 python pipeline.py watch [秒]      :: 新档监控：新战役新建文件夹（重名 → 哈布斯堡2）
@@ -492,7 +532,7 @@ python htmlview.py rebuild         :: 重建所有宗族文件夹的 index.html
 | `llm.py` | 自包含 DeepSeek 调用管线（日志/提示词日志/截断重试） |
 | `htmlview.py` | 宗族阅读页生成器（自包含 index.html，离线可读） |
 | `build_names.py` | 全档角色名映射表（含姓氏，本地化，供姓名合并兜底） |
-| `data/` | 全局表：names.json + localization.json（含来源指纹）+ province_map.json + dynasties.json + currency_levels.json + court_positions.json + council_tasks.json + trait_names.json（各战役共用，v29 起启用 Mod 变化即自动重建） |
+| `data/` | 全局表：names.json + localization.json（含来源指纹）+ province_map.json + dynasties.json + currency_levels.json + court_positions.json + council_tasks.json + trait_names.json + trait_tracks.json（各战役共用，v29 起启用 Mod 变化即自动重建） |
 | `output/<宗族>/data/` | 每玩家记忆缓存 + 熔化存档 melt_*.json（v6 起，与缓存同目录） |
 | `output/` | 传记输出（按宗族分文件夹） |
 | `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线；`verify_lushi.py` / `verify_tadokoro2.py` / `verify_zhou.py` 为确定性回归） |
