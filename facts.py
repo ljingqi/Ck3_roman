@@ -2923,8 +2923,9 @@ class Facts:
     def hook_lines(self):
         """牵制事实 (v31, 问题5): {"held": [主角握有的], "over": [他人对主角的]}。
 
-        方向: 存档 `relations.active_relations` 的 `first` 为持有者。强弱取游戏
-        `common/hook_types` 的 `strong`; 同型多条归并成一行 (家主牵制对诸子 8 条)。
+        方向: 取缓存已定好的 `holder`/`target`（v33 起由 `cache_lib.hook_slot_holder`
+        按 `active_hook_<N>` 槽号判定 —— first/second 只是按键规范化的成对编号）。
+        强弱取游戏 `common/hook_types` 的 `strong`; 同型多条归并成一行 (家主牵制对诸子 8 条)。
         只出 as_of 之前已见、且 as_of 时仍持有者 (逐档差分记录 lost_at)。"""
         pid = self.cache.get("player_id")
         if pid is None:

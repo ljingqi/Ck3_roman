@@ -20,6 +20,7 @@ sys.path.insert(0, ROOT)
 import facts as F          # noqa: E402
 import localization as L   # noqa: E402
 import style as S          # noqa: E402
+from cache_lib import hook_slot_holder as F_hook_slot_holder  # noqa: E402
 
 _OK = True
 
@@ -239,12 +240,29 @@ def group_f(snap_path):
     check("夭折句带生母", ("产下死婴" in allt or "孕期提前结束" in allt))
 
 
+def group_g():
+    """v33: 牵制方向在槽号，不在 first/second（成对编号按 id 规范化）。"""
+    print("[G1] 牵制方向 (槽号语义)")
+    h = F_hook_slot_holder
+    check("槽 0 = first 持有对 second",
+          h(38677, 43961, "active_hook_0") == (38677, 43961),
+          str(h(38677, 43961, "active_hook_0")))
+    check("槽 1 = second 持有对 first",
+          h(15982, 38677, "active_hook_1") == (38677, 15982),
+          str(h(15982, 38677, "active_hook_1")))
+    check("奇偶判定 (槽 2 归 first)",
+          h(1, 2, "active_hook_2") == (1, 2))
+    check("无槽号后缀时按 0 处理",
+          h(1, 2, "active_hook") == (1, 2))
+
+
 def main():
     group_a()
     group_b()
     group_c()
     group_d()
     group_e()
+    group_g()
     if len(sys.argv) > 1:
         group_f(sys.argv[1])
     print("\n" + "=" * 60)

@@ -85,6 +85,14 @@ def main():
     check("阴私录含家主牵制归并行", "家主" in sm)
     check("牵制不进《本纪》", "强牵制" not in str(blocks.get("benji_mid") or ""))
     check("hooks_held 已入 facts", bool(sec.get("hooks_held")), list(sec.keys()))
+    # v33: 方向在槽号 —— 该档「干了我老婆」四条**全部**是主角自己的牵制
+    # (opinions 的 xiangyongletadeqizi_opinion 逐条指向「通奸者→丈夫=主角」),
+    # 不得再出现「他人握有对主角的干了我老婆」式反向句
+    _over = list(sec.get("hooks_over") or [])
+    check("「干了我老婆」不写作他人对主角的牵制 (v33 方向修正)",
+          not any("干了我老婆" in x for x in _over), _over[:3])
+    _held = " ".join(sec.get("hooks_held") or [])
+    check("「干了我老婆」仍在主角握有之列", "干了我老婆" in _held, _held[:200])
 
     print("[6] 妻室情人身份")
     check("乔乔身份: 廷中骑士", "廷中骑士" in jm)
