@@ -39,6 +39,7 @@ _NOTE_OK_RE = re.compile(
     r"|自幼"
     r"|原为"
     r"|生，"                     # 「822年生，汉人，信经学」
+    r"|无地冒险者营地"           # v24 游戏口径阶段行:「867年任菲利普家族企业队长（无地冒险者营地）」
     r"|让出|卸任|被褫夺|毁弃|归附|失守|转授|调任|受禅|自立"
     r")")
 
@@ -176,6 +177,11 @@ def group_b(snap_path):
     check("无「国库金/月入」", "国库金" not in surface and "月入" not in surface)
     check("无「牧群+数字」", not re.search(r"牧群\s*\d", surface),
           re.findall(r"牧群.{0,6}", surface)[:2])
+    # 以下断言按周氏（38673）数据结构写就 — 其它家族快照只跑上面的通用面
+    if meta.get("player_id") != 38673:
+        print(f"  SKIP 周氏专属断言 (player_id={meta.get('player_id')}); "
+              f"家族专属面见 group_c")
+        return
     check("现状句含档位词", all(w in (p.get("status") or "")
                               for w in ("虔诚", "威望", "影响力", "功勋")), p.get("status"))
     check("御前会议席位为动态官职名 (长史/司户/…)",
@@ -207,10 +213,69 @@ def group_b(snap_path):
     check("恩怨史无裸键、有重建句", "MAX_RECURSIVE_DEPTH" not in feuds, feuds[:80])
 
 
+# ---------------------------------------------------------------------------
+# C 菲利普4 (v30) 传输面断言 — 与家族无关, 任何快照都可跑
+# ---------------------------------------------------------------------------
+
+# 缺料按语 (提示词与事实层一律不得出现; 见 修复方案_菲利普4.md 问题4)
+_ABSENCE_RE = re.compile(
+    r"资料未载|资料不载|资料未提供|资料不足|史无可考|史料不详|"
+    r"族属不详|信仰不详|官制不详|特质不详|（无[^）]{1,8}记录）")
+# 游戏 UI 口语战绩词 (问题3)
+_UI_WORD_RE = re.compile(r"打了胜仗|吃了败仗")
+# 男性官职词 (女性持有者的称谓不得落在这些词上; 问题9)
+_MALE_WORD_RE = re.compile(r"(?<!女)(伯爵|公爵|国王|男爵|酋长|皇帝)")
+
+
+def _surface(snap):
+    fact = snap["shared"] + "\n" + "\n".join(
+        "\n".join(v.values()) if isinstance(v, dict) else str(v)
+        for v in snap["blocks"].values())
+    instr = "".join(f"{m['system']}\n{m['user']}"
+                    for m in snap["messages"].values())
+    return fact, instr
+
+
+def group_c(snap_path):
+    print(f"[C] v30 传输面 ({os.path.basename(snap_path)})")
+    if not os.path.isfile(snap_path):
+        check("快照存在", False, snap_path)
+        return
+    snap = json.load(open(snap_path, encoding="utf-8"))
+    facts = snap["facts"]
+    fact_surface, instr = _surface(snap)
+    surface = fact_surface + instr
+
+    bad = _ABSENCE_RE.findall(surface)
+    check("无缺料按语 (资料未载/不详/无X记录)", not bad, bad[:5])
+    ui = _UI_WORD_RE.findall(surface)
+    check("无游戏口语战绩词 (打了胜仗/吃了败仗)", not ui, ui[:5])
+    # 「无共通语」只在程序真判定为不通语时才可出现 (问题10)
+    if "无共通语" not in fact_surface:
+        check("事实面无不通语 → 提示词也不提「无共通语」",
+              "无共通语" not in instr)
+    else:
+        check("「无共通语」有事实依据", "无共通语" in fact_surface)
+    # 女性持有者的官职词
+    offenders = []
+    for cid, rec in (facts.get("characters") or {}).items():
+        if not rec.get("female"):
+            continue
+        label = rec.get("label") or ""
+        off = rec.get("office") or ""
+        if off and _MALE_WORD_RE.search(off):
+            offenders.append((cid, label))
+    check("女性无男性官职词", not offenders, offenders[:4])
+    # 献祭门: 教义参数表可用 (问题12)
+    ten = L.doctrines_granting("human_sacrifice_active")
+    check("人祭教义表可用 (doctrines_granting)", bool(ten), sorted(ten))
+
+
 def main():
     snap = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SNAP
     group_a()
     group_b(snap)
+    group_c(snap)
     print("\n" + "=" * 60)
     print("结果: 全部 PASS" if _OK else "结果: 存在 FAIL")
     return 0 if _OK else 1

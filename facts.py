@@ -152,7 +152,7 @@ MEMORY_TEMPLATES = {
     "became_blood_brother": "{name}与{other}结为血盟兄弟。",
     "imprisoned_other": "{name}囚禁{other}。",
     "imprisoned": "{name}被囚。",
-    "released_from_prison_memory": "{name}获释出狱。",
+    "released_from_prison_memory": "{name}获释。",
     "lost_title_memory": "{name}让出{title}。",
     "ascended_throne_memory": "{name}登位，得{title}。",
     "child_born": "{name}添子{other}。",
@@ -173,8 +173,11 @@ MEMORY_TEMPLATES = {
     "passed_palace_exam_memory": "{name}殿试及第。",
     "tortured_memory": "{name}受刑。",
     "torturer_memory": "{name}施刑于人。",
-    "battle_won_memory": "{name}打了胜仗。",
-    "battle_lost_memory": "{name}吃了败仗。",
+    # v30: 战斗胜负改用史笔中性词 (修复方案_菲利普4.md 问题3) — 原「打了胜仗/吃了败仗」
+    # 是游戏 UI 口语, 模型逐字照抄进正文 (「他吃了败仗」「佛罗西吃了败仗」);
+    # 「主动开战/被迫应战」保留 (用户决策)。
+    "battle_won_memory": "{name}取胜。",
+    "battle_lost_memory": "{name}失利。",
     "offensive_war": "{name}主动开战。",
     "defensive_war": "{name}被迫应战。",
     "war_won": "{name}赢得战争。",
@@ -811,6 +814,11 @@ class Facts:
         # v29: 数值档位表 (虔诚/威望/影响力/功勋的 defines 阈值) 与职位显示名变体表
         self._bands = (L.currency_levels() or {}).get("bands") or {}
         self._cp_variants = L.court_positions()
+        # v30: 授予人祭的教义键集 (处决方式「献祭」的可用门, 见 execution_method)
+        try:
+            self._sacrifice_doctrines = L.doctrines_granting("human_sacrifice_active")
+        except Exception:
+            self._sacrifice_doctrines = set()
         self._council_tasks = L.council_tasks()
         self._title_by_key = {}
         for tid, t in self._lt.items():
@@ -3139,6 +3147,30 @@ class Facts:
             fid = c.get("faith")
         return fid
 
+    def faith_doctrines(self, cid):
+        """角色信仰的教义键列表 (v30)。
+
+        存档 religion.faiths[fid].doctrine 每个信仰一条 (重复键被 cl.load_melt 的
+        _merge_dup_pairs 并为列表, 见 cache_lib); 单条时是字符串。取不到返回 []。"""
+        fid = self._faith_id(cid)
+        if fid is None:
+            return []
+        faiths = (self.melt.get("religion") or {}).get("faiths") or {}
+        e = faiths.get(str(fid))
+        if isinstance(e, str):  # v7: none 条目防护
+            return []
+        d = (e or {}).get("doctrine")
+        if isinstance(d, str):
+            return [d]
+        return [x for x in (d or []) if isinstance(x, str)]
+
+    def _sacrifice_faith(self, cid):
+        """行刑者信仰是否允许人祭 (教义授予 human_sacrifice_active)。"""
+        docs = self.faith_doctrines(cid)
+        if not docs:
+            return False
+        return bool(set(docs) & self._sacrifice_doctrines)
+
     def is_islamic(self, cid):
         """角色是否伊斯兰教统治者: 信仰 → 宗教 → religion_type ∈ 伊斯兰系。"""
         fid = self._faith_id(cid)
@@ -3219,7 +3251,9 @@ class Facts:
           - 做成神秘的肉: 无地冒险者政体 + 恐惧税天赋 (fear_tax_perk)。
           - 犬决: 雇有猎犬人 (kennelperson_camp_officer)。
           - 食人: cannibal 特质或 secret_cannibal (信仰教义参数无存档, 略)。
-          - 献祭: 需信仰 human_sacrifice_active 教义 (无存档教义表, 暂不判定)。
+          - 献祭: 行刑者信仰的教义授予 human_sacrifice_active (存档
+            religion.faiths[fid].doctrine 有教义键列表; 参数名由
+            localization.doctrines_granting 从 doctrine_types 的 parameters 生成)。
         返回 (key, 中文短语); killer 缺失或状态不可用回退 ('', '') —
         调用方保持既有「被X处决」。"""
         if killer_id is None:
@@ -3251,6 +3285,11 @@ class Facts:
         if self._has_trait_at(killer_id, "cannibal", date) or \
                 self._has_secret(killer_id, "secret_cannibal"):
             avail.append("devour")
+        # 献祭: 信仰教义授予 human_sacrifice_active (v30 修复 — 此前该项从未入池,
+        # 因为注释误判「无存档教义表」; 实测 cl.load_melt 的 religion.faiths 带完整
+        # doctrine 列表, 玩家信仰 norse_pagan 即含 tenet_gruesome_festivals)
+        if self._sacrifice_faith(killer_id):
+            avail.append("sacrifice")
         if not avail:
             return "", ""
         avail.sort(key=lambda k: _EXECUTION_ORDER.get(k, 99))
@@ -5276,7 +5315,7 @@ _STATS_LABEL = {
     "imprisoned": "被囚", "imprisoned_other": "囚禁他人",
     "offensive_war": "开战", "defensive_war": "应战",
     "war_won": "获胜", "war_lost": "战败",
-    "battle_won_memory": "胜仗", "battle_lost_memory": "败仗",
+    "battle_won_memory": "取胜", "battle_lost_memory": "失利",
     "faith_changed": "改信",
 }
 _DEATH_STAT_LABEL = {

@@ -1308,6 +1308,104 @@ def dynasty_table(cfg=None):
 
 
 # ---------------------------------------------------------------------------
+# 教义参数 (v30): common/religion/doctrine_types/*.txt 的 parameters 块
+# ---------------------------------------------------------------------------
+# 存档 religion.faiths[fid].doctrine 只给**教义键列表**, 不给教义的功能参数;
+# 处决方式里的「献祭」需要 human_sacrifice_active — 该参数写在 doctrine_types 的
+# parameters 块里 (实测: tenet_human_sacrifice / tenet_gruesome_festivals /
+# tenet_sacrificial_ceremonies 三处), 故此处落成 doctrine → 参数名 的静态表,
+# Mod 新增/改写教义时随指纹重建 (修复方案_菲利普4.md 问题12)。
+
+def _doctrine_params_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "doctrine_parameters.json")
+
+
+def build_doctrine_parameters(cfg):
+    """游戏 + 启用 Mod 的 doctrine_types/*.txt → {"doctrines": {教义: [参数…]},
+    "by_parameter": {参数: [教义…]}} (Mod 同名教义整体覆盖)。"""
+    by_doctrine = {}
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        d = os.path.join(root, "common", "religion", "doctrine_types")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = fp.read()
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                params = set()
+                for pblk in _blocks_of(body, "parameters"):
+                    for pk, op, val in _script_items(pblk):
+                        if op == "block":
+                            continue
+                        if str(val).lower() in ("yes", "true") or \
+                                str(val).isdigit():
+                            params.add(pk)
+                if params:
+                    by_doctrine[key] = sorted(params)
+    by_param = {}
+    for doc, params in by_doctrine.items():
+        for p in params:
+            by_param.setdefault(p, []).append(doc)
+    for p in by_param:
+        by_param[p] = sorted(by_param[p])
+    return {"schema": 1, "doctrines": by_doctrine, "by_parameter": by_param}
+
+
+def save_doctrine_parameters(cfg, data):
+    path = _doctrine_params_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(data, fp, ensure_ascii=False)
+    return path
+
+
+def load_doctrine_parameters(cfg=None, force=False):
+    """载入教义参数字典; 缺失或强制时由游戏/Mod 文件重建。"""
+    cfg = cfg or llm.load_config()
+    path = _doctrine_params_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("by_parameter"):
+                return data
+        except Exception:
+            pass
+    data = build_doctrine_parameters(cfg)
+    if data.get("by_parameter"):
+        save_doctrine_parameters(cfg, data)
+    return data
+
+
+# 内置兜底: 游戏文件不可读时仍能判定人祭 (三处 parameters = { human_sacrifice_active = yes })
+_DOCTRINE_PARAM_FALLBACK = {
+    "human_sacrifice_active": ("tenet_human_sacrifice", "tenet_gruesome_festivals",
+                               "tenet_sacrificial_ceremonies"),
+}
+
+
+def doctrines_granting(param, cfg=None):
+    """授予某教义参数的教义键集合 (表缺失/为空时回退内置表)。"""
+    try:
+        table = load_doctrine_parameters(cfg)
+        keys = (table.get("by_parameter") or {}).get(param) or []
+    except Exception:
+        keys = []
+    return set(keys) or set(_DOCTRINE_PARAM_FALLBACK.get(param, ()))
+
+
+# ---------------------------------------------------------------------------
 # 查询助手
 # ---------------------------------------------------------------------------
 
