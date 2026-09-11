@@ -143,6 +143,40 @@ def group_a():
           == {"延寿", "世族庄园", "名望级"},
           _paren_violations("长史（延寿）周家族乡绅（世族庄园）"))
 
+    print("[A7] flavorization 取词 (问题2 — 与存档信封 meta_player_name 对照)")
+    import flavorization as FZ
+    norse = dict(government="tribal_government", name_list="name_list_norse",
+                 heritage="heritage_north_germanic")
+    asx = dict(government="feudal_government", name_list="name_list_anglo_saxon",
+               heritage="heritage_west_germanic")
+    han_i = dict(government="feudal_government", name_list="name_list_han",
+                 independent=True)
+    han_v = dict(government="feudal_government", name_list="name_list_han",
+                 independent=False)
+    check("诺斯 部落 公国 → count_feudal_male_norse (雅尔)",
+          FZ.resolve("character", "duchy", "male", **norse)
+          == "count_feudal_male_norse",
+          FZ.resolve("character", "duchy", "male", **norse))
+    check("诺斯 公国头衔名 → county_feudal_norse (雅尔国)",
+          FZ.resolve("title", "duchy", "male", **norse) == "county_feudal_norse",
+          FZ.resolve("title", "duchy", "male", **norse))
+    check("汉 独立 公国 → duke_independent_male_feudal_chinese (王)",
+          FZ.resolve("character", "duchy", "male", **han_i)
+          == "duke_independent_male_feudal_chinese",
+          FZ.resolve("character", "duchy", "male", **han_i))
+    check("汉 封臣 公国 → duke_male_feudal_chinese (公)",
+          FZ.resolve("character", "duchy", "male", **han_v)
+          == "duke_male_feudal_chinese",
+          FZ.resolve("character", "duchy", "male", **han_v))
+    check("盎格鲁-撒克逊 女伯爵 → count_feudal_female_english",
+          FZ.resolve("character", "county", "female", **asx)
+          == "count_feudal_female_english",
+          FZ.resolve("character", "county", "female", **asx))
+    kb = FZ.resolve("character", "duchy", "male", government="feudal_government",
+                    name_list="name_list_akan")
+    check("限定头衔条目 (titles) 不外泄", kb != "duke_feudal_brittany", kb)
+    check("flavorization 表非空", bool(FZ.coverage()["counts"]))
+
 
 def group_b(snap_path):
     print(f"[B] 快照传输面 ({os.path.basename(snap_path)})")
