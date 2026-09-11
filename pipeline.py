@@ -1768,18 +1768,34 @@ def step_index_melts(cfg):
     llm.log(f"归档完成: 新建 {built} 份, 已有 {skipped} 份, 失败 {failed} 份")
 
 
+def _log_loc_source(cfg):
+    """v29: 启动时通报本地化来源 (启用 Mod 个数与指纹) — 用户勾选 Mod 后一眼可查。
+    本地化表本身由 localization.load_localization_table 按指纹自动重建。"""
+    try:
+        import localization as loc
+        fp = loc.source_fingerprint(cfg)
+        llm.log(f"本地化来源: 游戏 {fp.get('game') or '(未找到)'}, "
+                f"启用 Mod {len(fp.get('mods') or [])} 个, 指纹 {str(fp.get('hash'))[:12]}…")
+    except Exception as e:
+        llm.log(f"本地化来源检查失败: {e}")
+
+
 def main():
     cfg = llm.load_config()
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd == "watch":
         cfg["poll_interval_seconds"] = int(sys.argv[2]) if len(sys.argv) > 2 else 60
+        _log_loc_source(cfg)
         step_watch(cfg, continue_mode=False)
     elif cmd == "continue":
         cfg["poll_interval_seconds"] = int(sys.argv[2]) if len(sys.argv) > 2 else 60
+        _log_loc_source(cfg)
         step_watch(cfg, continue_mode=True)
     elif cmd == "scan":
+        _log_loc_source(cfg)
         step_scan(cfg)
     elif cmd == "status":
+        _log_loc_source(cfg)
         step_status(cfg)
     elif cmd == "bio":
         pid = int(sys.argv[2]) if len(sys.argv) > 2 and not sys.argv[2].startswith("-") else None

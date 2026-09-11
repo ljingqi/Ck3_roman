@@ -88,13 +88,12 @@ TITLE_CONSISTENCY_RULE = (
 )
 
 # v27: 语言风味 (用户决策 2026-09-10) — 依资料给出的语言落笔, 正向表述。
-# v28: 资料侧已由程序判定每对人的言语关系 (Facts.language_relation_line:
-# 「共通X，言语相通」/「无共通语，交谈须借通译」), 提示词不再要求模型自行判断
-# 语言相同还是不同 — 只要求照资料写明的情形落笔。
+# v28: 资料侧已由程序判定每对人的言语关系。
+# v29 (用户决策 2026-09-11): 家人/同族之间言语相通属常识, 资料侧只下发
+# 「无共通语, 须借通译」这一种情形; 提示词随之只要求照该情形落笔。
 LANGUAGE_FLAVOR_RULE = (
-    "「语言事实」: 资料已写明各人所操语言, 并写明何人之间言语相通、"
-    "何人之间须借通译或以手势、习语往来; 凡写交谈、书信、结盟、婚配、拜谒, "
-    "一律照资料写明的情形落笔。"
+    "「语言事实」: 资料写明某人之间无共通语时, 写其交谈须借通译; "
+    "其余交谈、书信、结盟、婚配、拜谒一律以言语无碍落笔。"
 )
 
 # v28: 隐事笔法 (secrets) — 正向表述: 只给「怎么写」, 数据侧已给形态
@@ -138,17 +137,17 @@ SECTION_REQ = {
     },
     "friend": {
         "lead": "写传主与主角的交游渊源: 二人如何相识、同处何朝何地, 传主的家世与出身。",
-        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散; 二人的言语相通情形 (资料已写明) 一并落笔。",
+        "mid": "叙述传主一生际遇: 婚姻、被囚、失土、起复、登位、结友等, 以资料为限。本篇写出传主与主角结友的时刻与缘由, 以及二人交游中的聚散; 资料写明二人无共通语时, 写出交谈须借通译。",
         "tail": None,
     },
     "enemy": {
         "lead": "写仇家身世与结仇之由: 传主何许人也, 与主角因何成仇。",
-        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发; 双方言语相通情形 (资料已写明) 一并落笔。",
+        "mid": "叙述仇家一生行迹: 登位、婚姻、情事、结仇、私情等, 以资料为限, 客观平实叙述。本篇写出结仇的日期与由头, 以及仇怨在何时何地爆发; 资料写明双方无共通语时, 写出交谈须借通译。",
         "tail": None,
     },
     "jiashi": {
         "lead": "写主角婚配始末: 结缡、离异、前妻之死、再娶, 立起门庭画卷; 妻族门第 (妻之父兄等显贵亲眷) 若有资料一并铺陈。",
-        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境; 家人与主角的言语相通情形 (资料已写明) 一并落笔。",
+        "mid": "写门庭恩怨: 前妻与仇家之情事、他妇之怨、子女状况, 以资料为限。本篇写出妻妾子女的聚散离合: 结缡、离异、诞育、夭折的日期与情境; 资料写明家人与主角无共通语时, 写出交谈须借通译。",
         "tail": None,
     },
     "chaoju": {
@@ -665,14 +664,9 @@ def _profile_lines(facts, cid=None):
             gov = (gov + "，" if gov else "") + f"封臣{p['vassal_count']}人"
         # v26: 游牧牧群 (与金钱同口径: 当前值, 一位小数); 口粮非 0 时并写
         # v28: facts 侧已按 domicile 类型门控并去掉 0 值, 此处只做渲染
-        if p.get("herd") is not None:
-            hv = _num1(p["herd"])
-            if hv and hv != "0":
-                gov = (gov + "，" if gov else "") + f"牧群{hv}"
-        if p.get("provisions") is not None:
-            pv = _num1(p["provisions"])
-            if pv and pv != "0":
-                gov = (gov + "，" if gov else "") + f"口粮{pv}"
+        # v29: 牧群数值不再下发; 口粮改档位词 (facts.provisions_band)
+        if p.get("provisions_word"):
+            gov = (gov + "，" if gov else "") + p["provisions_word"]
         if p.get("council"):
             gov = (gov + "，" if gov else "") + p["council"]
         if gov:
@@ -785,11 +779,12 @@ def _timeline_texts(facts, names=None, types=None):
 
 
 def _render_block(title, lines):
-    """事实块 → 文本 (只收非空行)。"""
+    """事实块 → 文本 (只收非空行)。
+    v29: 出口处过一遍干净事实兜底 (丢含裸键的行并记审计)。"""
     body = [x for x in lines if x]
     if not body:
         return ""
-    return f"{title}\n" + "\n".join(body)
+    return F.sanitize_fact_text(f"{title}\n" + "\n".join(body), where=title)
 
 
 def _set_block(blocks, key, text):
@@ -944,7 +939,10 @@ def _article_facts(facts, cache, key, section=None):
             if sk == "lead":
                 blocks["传主档案"] = "\n".join(lines)
             else:
-                _set_block(blocks, "传主行迹", "\n".join(events))
+                # v29 (问题4): 行迹句省去句首传主名 (块内主语恒为传主)
+                _prof = facts.get("characters", {}).get(str(cid)) or {}
+                ev = _prof.get("events_subjectless") or events
+                _set_block(blocks, "传主行迹", "\n".join(ev))
                 tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
                                  exclude=_has_assassins(facts))
                 if tl:
@@ -1280,12 +1278,18 @@ def _shared_facts_block(facts):
     else:
         life_note = "【现状】在世（截至最后一份存档）"
     profile_txt = _render_block("【人物档案】", _profile_lines(facts))
-    # v20 (B3): 主角身份/驻地变化年表 — 无地冒险者→定居 的轨迹直给模型,
-    # 本纪/刺客列传/朝局共用 (共享前缀), 防击杀地点被锚定到定居后的治所
+    # v20 (B3) / v29 (问题2): 【冒险者行踪】— 只记无地冒险者时期的营地阶段与驻地
+    # (定居/庄园时期的驻地与旅行落点没有意义, 整块在无营地期不下发)
     stations_txt = ""
     stations = facts.get("protagonist_stations") or []
     if stations:
-        stations_txt = _render_block("【主角处境】", stations)
+        stations_txt = _render_block("【冒险者行踪】", stations)
+    # v29 (问题7): 瘟疫风味 — 游戏给的动态疫名 (李黯之火/撒丁痘), 只在
+    # 触及主角封地/所在郡或家人染疫时下发; 远地瘟疫不写
+    plague_txt = ""
+    pl = (facts.get("plagues") or {}).get("lines") or []
+    if pl:
+        plague_txt = _render_block("【瘟疫】", pl)
     # v15: 十年/一生概览 (程序直算统计: 结怨9次、谋杀5次…, 给模型数据锚点)
     stats_txt = ""
     ds = facts.get("decade_stats") or []
@@ -1302,11 +1306,13 @@ def _shared_facts_block(facts):
     out = [f"【传主】{name}\n【家族】{house}\n{life_note}\n\n", profile_txt]
     if stations_txt:
         out.append("\n\n" + stations_txt)
+    if plague_txt:
+        out.append("\n\n" + plague_txt)
     if stats_txt:
         out.append("\n\n" + stats_txt)
     if own_txt:
         out.append("\n\n" + own_txt)
-    return "".join(out)
+    return F.sanitize_fact_text("".join(out), where="共享前缀") + ""
 
 
 def build_intro_messages(facts, cfg, articles=None):
@@ -1905,6 +1911,18 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
                 sections[(ak, sk)] = body
 
     md = _assemble(facts, intro, leads, sections, articles)
+    # v29: 本地化未命中审计 — 启用 Mod 后哪些键还没读进来, 一次生成后即可查
+    try:
+        n = F.L.write_miss_report(cfg)
+        if n:
+            llm.log(f"本地化未命中键 {n} 个已记入 logs/loc_miss.log")
+    except Exception:
+        pass
+    # 兜底统计 (问题1): 丢弃的裸键行数 — 0 表示全链路干净
+    st = F.sanitize_stats()
+    if st.get("lines"):
+        llm.log(f"干净事实兜底共丢弃 {st['lines']} 行 (含裸键), 样例: "
+                f"{st.get('samples', [])[:3]}")
     # v8: 头部注释带 人物/出生/篇目/十年, 供 htmlview 分组与十年标注。
     # v28: 只留 htmlview 真正要用的字段 (人物/人物ID/战役ID/出生/篇目/十年) —
     # 「数据来源: CK3 年度存档快照」与「生成时间」这类元信息不再写入文档。
