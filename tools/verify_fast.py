@@ -270,6 +270,35 @@ def group_c(snap_path):
     ten = L.doctrines_granting("human_sacrifice_active")
     check("人祭教义表可用 (doctrines_granting)", bool(ten), sorted(ten))
 
+    # 问题6: 时间线不得再有同一事件的正反两方冗余行
+    tl = facts.get("timeline") or []
+    byday = {}
+    for e in tl:
+        byday.setdefault(e.get("date"), []).append(e)
+    dup = []
+    for d, es in byday.items():
+        for i in range(len(es)):
+            for j in range(i + 1, len(es)):
+                try:
+                    if F._mirror_partner(es[i], es[j]):
+                        dup.append((d, es[i].get("type"), es[j].get("type")))
+                except Exception:
+                    pass
+    check("时间线无镜像成对行 (战争/战役/刑虐/头衔/出生)", not dup, dup[:4])
+
+    # 问题5: 同一被囚者的入狱与获释不得分立两行
+    inpr, rel = set(), set()
+    for e in tl:
+        t = e.get("text") or ""
+        m = re.search(r"，(.+?)被囚。$", t)
+        if m:
+            inpr.add(m.group(1))
+        m = re.search(r"，(.+?)获释。$", t)
+        if m:
+            rel.add(m.group(1))
+    both = sorted(inpr & rel)
+    check("入狱与获释已合并 (无同一人分列两行)", not both, both[:4])
+
 
 def main():
     snap = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SNAP
