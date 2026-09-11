@@ -363,6 +363,55 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   占位名不再进制（称谓出口返回空串、句子槽位用「某人」）；历任句加冒号断句。
   其余 14 项 P1（性情串、特质履历、营地句、僚属任职、现状数字…）已列入审计文档待分批处理。
 
+## v29 能力（周氏十二问题：程序优先 / Mod 本地化 / 动态名 / 档位化）
+
+方案与证据见 `docs/方案_周氏十二问题.md`，回归 `python experiments/verify_zhou.py`（逐条断言），
+自然度清单见 `docs/审计_事实文本自然度.md`（P1 第 5/12/13/14 项本轮完成）。
+
+- **干净事实行级兜底**：`facts.sanitize_fact_text` 在所有事实块出口过滤裸键行
+  （含下划线的 ASCII 词 / 全大写哨兵串），命中即丢弃并记 `logs/journal.log`。
+  起因：熔件 `house_relations.history.change_reason` 出现 rakaly 哨兵串
+  `MAX_RECURSIVE_DEPTH`，旧渲染层原样透传 → 模型照抄进《家族恩怨录》。
+- **恩怨事件程序重建**：`_rerender_feud_event` 判不可读后，`Facts._feud_event_fallback`
+  用缓存记忆（`house_feud_started/ended_memory` 的 attacker/victim/reason、`became_rivals`）
+  重写该日句——882.4.8 现写「程氏因族人安南经略使程士庸被杀，与周氏结为世仇。」。
+- **【冒险者行踪】**（原【主角处境】）：只记**无地冒险者时期**的营地阶段与驻地
+  （`Facts.camp_intervals` / `in_camp_period`）；定居与世族庄园时期的驻地、旅行落点
+  一律不下发，无营地期整块消失（周立齐档该块不再出现）。
+- **财务档位化**：虔诚/威望/影响力/功勋取**游戏档位词**（`localization.build_currency_levels`
+  解析 `common/defines` 的 NCharacter 块 `LEVELS_*` + 本地化 `<kind>_level_N`）——
+  现写「虔诚戴罪之人，威望闻名遐迩，影响力人微言轻，功勋六品」；**国库金、月入、
+  牧群数值整项不再下发**（口粮给档位词）。
+- **传主行迹省主语**：`events_subjectless` 剥去每句句首的传主称谓
+  （「勇敢者程岩的亲属程士庸去世」→「亲属安南经略使程士庸去世」）。
+- **家室档案去重**：主角子女的档案不再重复 `兄弟姊妹` 名单与 `父<主角>`
+  （同批名单此前按人在家室档案里重复 8 次），保留 `母` 以辨生母。
+- **言语关系只传「不通」**：家人/同族之间言语相通属常识，程序只下发
+  「无共通语，须借通译」一种情形；母语句只保留主角一人（`LANGUAGE_FLAVOR_RULE` 同步收窄）。
+- **科举舞弊方向与级别**：`secret_exam_cheater` 的 target 是主考，级别由**同快照考试记忆**
+  判定（868.1.1↔乡试、873.1.1↔会试）→ 写「在幽蓟经略使张朴主持的乡试中舞弊」，
+  不再写会被读成「考官协助作弊」的「科举舞弊（涉及X）」。
+- **动态瘟疫名**：`cache_lib._diff_epidemics` 逐档记录 `epidemics.database`（存档给的是
+  游戏算好的动态名：李黯之火/撒丁痘/卡利甫痢）；`facts._plague_facts` 只在疫情触及
+  主角封地/所在郡或家人染疫时落笔（「888年6月1日，檀州痘（天花），重疫，疫及主角封地邕州」）。
+- **御前会议动态席位**：`localization.build_council_tasks` 解析 `common/council_tasks/*.txt`
+  的 `position`，按政体取变体名 → 「御前会议六席：长史（延寿）、司户（思恭）、察事（裴奉先）…」
+  （帝国级为 宰相/户部尚书/御史大夫；封建为 掌玺大臣/财政总管）；解析不到即整句不发。
+- **职位显示名动态化**：`localization.build_court_positions` 解析
+  `court_position_asset.trigger → localization_key`（含 `OR/NOT/NOR`、政体旗标、独立、
+  层级、文化传承九个触发词），按雇主政体/层级/传承择名——私人医生→**医学博士**、
+  旅队主管→前驱官、宫廷史官→记室参军、总管→殿中监。
+- **Mod 本地化自动生效**：`data/localization.json` 记**来源指纹**（游戏目录 + 有序启用
+  Mod + 各本地化目录文件数/字节数/mtime），指纹变化即自动重建（新增
+  `localization/replace/<lang>` 遍历）；未命中键记 `logs/loc_miss.log`，
+  `python localization.py mods|check` 可查。实测启用 `deviants_mask_mod` 后
+  其 12081 条中文键即时可用（`trait_deviants_blackmailvictim`=勒索受害者）。
+- **特质显示名键表**：`localization.build_trait_names` 解析 `common/traits` 的 `name` 块
+  `desc` 键——旅行者（`lifestyle_traveler` → `trait_traveler_1`）等此前因 `trait_<key>`
+  缺键而整条丢失的特质恢复显示。
+- **技能同步**：`.agents/skills/no-negative-prompts` 增「程序优先铁律（prompt-last）」
+  一节与本项目化的职责清单。
+
 ## 代码纪律（2026-09-10 用户定规）
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
@@ -385,7 +434,12 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
 
 ```bat
 python build_names.py              :: 重建全档人名表 data/names.json（含姓氏/宗族名，本地化）
-python localization.py build       :: 重建本地化表 data/localization.json（首次自动）
+python localization.py build       :: 重建本地化表 data/localization.json（启用 Mod 变化时自动重建）
+python localization.py mods        :: 列出启用 Mod 的本地化覆盖与来源指纹（v29）
+python localization.py levels      :: 重建档位阈值表 data/currency_levels.json（v29）
+python localization.py positions   :: 重建职位显示名变体表 data/court_positions.json（v29）
+python localization.py council     :: 重建议会席位表 data/council_tasks.json（v29）
+python localization.py traits      :: 重建特质显示名键表 data/trait_names.json（v29）
 python localization.py province    :: 重建省份映射 data/province_map.json（首次自动）
 python localization.py dynasties   :: 重建宗族/家族定义表 data/dynasties.json（首次自动）
 python pipeline.py watch [秒]      :: 新档监控：新战役新建文件夹（重名 → 哈布斯堡2）
@@ -427,7 +481,7 @@ python htmlview.py rebuild         :: 重建所有宗族文件夹的 index.html
 | `llm.py` | 自包含 DeepSeek 调用管线（日志/提示词日志/截断重试） |
 | `htmlview.py` | 宗族阅读页生成器（自包含 index.html，离线可读） |
 | `build_names.py` | 全档角色名映射表（含姓氏，本地化，供姓名合并兜底） |
-| `data/` | 全局表：names.json + localization.json + province_map.json（各战役共用） |
+| `data/` | 全局表：names.json + localization.json（含来源指纹）+ province_map.json + dynasties.json + currency_levels.json + court_positions.json + council_tasks.json + trait_names.json（各战役共用，v29 起启用 Mod 变化即自动重建） |
 | `output/<宗族>/data/` | 每玩家记忆缓存 + 熔化存档 melt_*.json（v6 起，与缓存同目录） |
 | `output/` | 传记输出（按宗族分文件夹） |
 | `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线；`verify_lushi.py` / `verify_tadokoro2.py` 为确定性回归） |
