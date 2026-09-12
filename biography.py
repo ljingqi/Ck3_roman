@@ -606,6 +606,12 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
         fam_bits.append(f"子女{p['children']}")
     if fam_bits:
         lines.append("，".join(fam_bits) + "。")
+    # v34 (问题8, 用户拍板): 妻室与他人所出、法理父不是主角的孩子 —
+    # 不进「子/女」行, 单列一句, 供《家室列传》作「妻子的子女」交代
+    # (《本纪》不收这条)。写成完整句, 不用括注同位语。
+    if cid is None and p.get("wife_other_children") and with_real_parentage:
+        lines.append(f"妻室另育有{p['wife_other_children']}，"
+                     "此数人之法理父并非主角。")
     # ---- v27/v28: 言语关系句 (程序已判定相通或须通译, 模型照写) ----
     if p.get("language_relation"):
         lines.append(p["language_relation"])
@@ -888,10 +894,13 @@ def _article_facts(facts, cache, key, section=None):
         # v34 (问题5): 不再附【主角大事摘要】(与下面的【大事年表】逐字重复,
         # 且共享前缀旧稿已注入 14 次); 逐年锚点由【大事年表】承担。
         sk = _sec_key(section)
-        # v34 (问题5): 开篇/纪事各取本板块切片 (旧稿两块各拿全量, 逐字节相同);
-        # 生平年表归《本纪》, 其他篇目只给本篇切片。
-        tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
-                                 exclude=_has_assassins(facts))
+        # v34 (问题8, 用户拍板): 《本纪》只写主角**自己的子女** —
+        # 妻室与他人所出 (含法理上入了主角户籍的) 的出生记载不进本纪,
+        # 那些孩子作为「妻子的子女」归《家室列传》与《阴私录》。
+        tl_events = [e for e in F.slice_events(facts.get("timeline") or [], key, sk,
+                                               exclude=_has_assassins(facts))
+                     if e.get("own_birth") is not False]
+        tl = [e["text"] for e in tl_events]
         _set_block(blocks, "大事年表", "\n".join(tl))
         link = _murder_link_line(facts, key, sk)
         if link:
