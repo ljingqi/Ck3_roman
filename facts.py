@@ -2576,6 +2576,50 @@ class Facts:
         """兼容别名 (v34): 见 `_my_realm_tids`。"""
         return self._my_realm_tids()
 
+    def legal_children(self, cid):
+        """cid 的**法理子女** id 集 (v34, 问题8, 用户拍板):
+        存档 `family.father` 含 cid 的孩子 — 不论其是否另有实父 (非婚生亦然),
+        这些孩子都算 cid 的子女, 归《本纪》与父亲的家门清单。
+        法理父是**别人**的孩子 (妻室与他人所出而不入其户籍者) 不在其中,
+        归《家室列传》作妻子的子女。"""
+        out, _ = self.legal_children_ex(cid)
+        return out
+
+    def legal_children_ex(self, cid):
+        """同 `legal_children`, 另返回「是否有家谱数据」。
+        无家谱数据时调用方应保留原名单 (不能把无数据当成无子女)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fam = rec.get("family") or {}
+        kids = [k for k in (fam.get("child") or []) if isinstance(k, int)]
+        if not kids:
+            return set(), False
+        out = set()
+        for k in kids:
+            kf = ((self.cache.get("characters") or {}).get(str(k)) or {}).get("family") or {}
+            faths = [x for x in (kf.get("father") or []) if isinstance(x, int)]
+            if cid in faths:
+                out.add(k)
+        return out, True
+
+    def wife_other_children(self, cid):
+        """妻室与他人所出、且法理父不是 cid 的孩子 (v34, 问题8):
+        这些是《家室列传》里的「妻子的子女」, 不进主角的家门清单。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fam = rec.get("family") or {}
+        legal, has = self.legal_children_ex(cid)
+        if not has:
+            return set()
+        out = set()
+        for sid in dict.fromkeys((fam.get("primary_spouse") or [])
+                                 + (fam.get("spouse") or [])):
+            if not isinstance(sid, int):
+                continue
+            srec = (self.cache.get("characters") or {}).get(str(sid)) or {}
+            for k in (srec.get("family") or {}).get("child") or []:
+                if isinstance(k, int) and k not in legal:
+                    out.add(k)
+        return out
+
     def _current_ministers(self, date=None):
         """朝廷职司在 date (缺省熔件当前) 的持有者 →
         ['兵部尚书任清', …] (朝局风云录·朝廷职司用)。
@@ -5332,17 +5376,18 @@ def _mem_sentence(f, owner_id, mem):
             kid = parts.get("child")
             if isinstance(kid, int) and f._is_female(kid):
                 tpl = MEMORY_TEMPLATES.get(mem.get("type") + "_female") or tpl
-        # v34 (问题8): 「添子」是个有主的动作 — 存档的出生记忆记在**生母**名下
-        # (持有者=母亲), 句首却是持有人, 于是生母的生育被读成主角得子
-        # (柳特佩特局: 法霍·索丹的生父是 12780, 旧稿《本纪》把他算作主角之子)。
-        # 孩子的法理父/实父与持有人不一致时, 句尾补出真正的父亲, 歧义交给程序消除。
+        # v34 (问题8, 用户拍板): 「添子」句的持有者若是孩子的**法理父亲**, 句义已明确,
+        # 不加血缘补注 (非婚生仍是他的子女, 本纪只写家门);
+        # 法理父另有其人时 (句首是生母/他人) 才补「（生父X）」, 免把生母的生育
+        # 读成持有人得子 (法霍·索丹的生父是索丹·索丹, 法理父也是索丹·索丹)。
         kid = parts.get("child")
         if isinstance(kid, int):
             kfam = ((f.cache.get("characters") or {}).get(str(kid)) or {}).get("family") or {}
             kfather = (kfam.get("father") or [None])[0]
             kreal = (kfam.get("real_father") or [None])[0]
             who = kreal if isinstance(kreal, int) else kfather
-            if isinstance(who, int) and owner_id is not None and who != owner_id:
+            if isinstance(who, int) and owner_id is not None \
+                    and who != owner_id and kfather != owner_id:
                 wname = f.person_label(who, style="brief") or f.name_or(who)
                 if wname:
                     tpl = tpl.rstrip("。") + "（生父{fname}）。"
@@ -6270,8 +6315,10 @@ def _timeline(f):
                 if s:
                     old = births.get(bkey)
                     if old is None or prio > old[0]:
+                        # v34 (问题8): 一并记下孩子 id — 供「是否主角骨血」分类
                         births[bkey] = (prio, mem.get("creation_date"),
-                                        mtype, s)
+                                        mtype, s,
+                                        child if isinstance(child, int) else None)
                 continue
             # 其余记忆: 成对去重
             s = _mem_sentence(f, cid, mem)
@@ -6300,8 +6347,14 @@ def _timeline(f):
     for cid, (_prio, _d, t, s) in deaths.items():
         # v14: death 记录按死者关系标模块 (仇人死亡/丧友之恸/丧偶之痛/丧亲之恸)
         events.append((_d, t, s, _death_module(f, cid)))
-    for _prio, _d, t, s in births.values():
-        events.append((_d, t, s, "添丁进口" if t in ("child_born", "first_born", "twins_born") else "夭折"))
+    # v34 (问题8, 用户拍板): 《本纪》收「主角是法理父亲」的全部子女 —
+    # 非婚生亦在其中, 且句面不写生父 (本纪写的是他的家门)。
+    # 法理父是别人的孩子 (妻室与他人所出) 不进本纪, 归《家室列传》。
+    own_birth_kids, _has_fam = (
+        f.legal_children_ex(pid) if pid is not None else (set(), False))
+    for _prio, _d, t, s, _kid in births.values():
+        events.append((_d, t, s, "添丁进口" if t in ("child_born", "first_born", "twins_born") else "夭折",
+                       {"own_birth": (_kid is None or _kid in own_birth_kids)}))
     # v26: 改信事件 (游戏不留改信记忆 — 缓存逐档 faith 差分得来)。
     # 只给相关角色 (主角/直系); 首个变化点之前无事件, 从第 2 条起写。
     for cid, rec in (cache.get("characters") or {}).items():
@@ -6334,7 +6387,8 @@ def _timeline(f):
     # 只统计主角名在文本中的事件, 家人/路人的添丁结怨不入概览)
     pname0 = f.name_with_regnal(pid)  # v17: 与时间线文本同口径 (主角也可能带世系编号)
     stats = {}
-    for _d, t, s, mod in events:
+    for _ev in events:
+        _d, t, s, mod = _ev[0], _ev[1], _ev[2], _ev[3]
         if pname0 and pname0 not in s:
             continue
         # v32 (问题1): 被囚统计只算**主角本人**被囚 —— 受害者侧的记忆句现在会点名
@@ -6349,7 +6403,9 @@ def _timeline(f):
     f._timeline_stats = stats
     seen = set()
     out = []
-    for d, t, s, mod in events:
+    for _ev in events:
+        d, t, s, mod = _ev[0], _ev[1], _ev[2], _ev[3]
+        extra = _ev[4] if len(_ev) > 4 else {}
         if s in seen:
             continue
         seen.add(s)
@@ -6362,6 +6418,9 @@ def _timeline(f):
             # 不再在句首重复一遍日期 (「893年4月28日，塔坦尼·布兰死于893年4月28日…」)
             "text": (s if (t == "death" or not d) else f"{f.date(d)}，{s}"),
         }
+        # v34 (问题8): 出生事件的骨血标记 — 《本纪》据此只收主角自己的子女
+        if "own_birth" in extra:
+            rec["own_birth"] = bool(extra["own_birth"])
         ident = idents.get((d, t, s))
         if ident:
             rec["ident"] = ident
@@ -6503,8 +6562,13 @@ def _merge_same_day_events(events, f=None):
         if merged:
             # v27: 合并必须携带 module —— 此前只写 date/type/text, 合并后的
             # 事件模块为空, 模块切片会把「被囚」等集体事件整体漏掉。
-            out.append({"date": d, "type": typ, "text": merged,
-                        "module": entries[0].get("module", "")})
+            # v34 (问题8): 骨血标记同型合并后按「全部为本家子女」判定, 不一并丢失。
+            _rec = {"date": d, "type": typ, "text": merged,
+                    "module": entries[0].get("module", "")}
+            if any("own_birth" in e for e in entries):
+                _rec["own_birth"] = all(e.get("own_birth") is not False
+                                        for e in entries)
+            out.append(_rec)
         else:
             out.extend(entries)
     return out
@@ -6601,8 +6665,12 @@ def _merge_same_month_events(events, f=None):
                     elif len(set(s0)) == 1:
                         merged = _agg_line(ym, s1, spec["verb"], "先后与" + s0[0])
                 if merged:
-                    out.append({"date": ym, "type": typ, "text": merged,
-                                "module": entries[0].get("module", "")})
+                    _rec = {"date": ym, "type": typ, "text": merged,
+                            "module": entries[0].get("module", "")}
+                    if any("own_birth" in e for e in entries):
+                        _rec["own_birth"] = all(e.get("own_birth") is not False
+                                                for e in entries)
+                    out.append(_rec)
                     continue
         out.extend(entries)
     return _merge_affair_pairs(out, f)
@@ -6941,6 +7009,20 @@ def _protagonist(f):
     p["concubines"] = _annotate(_asof_ids(f, fam.get("concubine") or []))
     p["former_concubines"] = _annotate(_asof_ids(f, fam.get("former_concubines") or []))
     child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
+    # v34 (问题8, 用户拍板): 家门清单列**主角是法理父亲的**全部子女
+    # (非婚生亦在内); 法理父是别人的孩子 (妻室与他人所出) 不进本纪的门门清单,
+    # 由《家室列传》作「妻子的子女」交代。
+    # (无家谱数据时保留原名单, 不把「无数据」当成「无子女」。)
+    _legal, _has_fam = f.legal_children_ex(pid)
+    if _has_fam:
+        child_ids = [c for c in child_ids if c in _legal]
+    _wife_other = f.wife_other_children(pid)
+    if _wife_other:
+        _wo_names = "、".join(
+            f.kin_label(c) for c in sorted(_wife_other, key=lambda x: str(x))
+            if f.name(c))
+        if _wo_names:
+            p["wife_other_children"] = _wo_names
     p["children"] = "、".join(f.kin_label(c) for c in child_ids)
     # v26: 子女按性别分列 (「子A、B，女C、D」) — 与 _character_profiles 同口径
     p["children_sons"] = "、".join(

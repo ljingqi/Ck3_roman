@@ -174,18 +174,34 @@ def run(snap_path=None, stream=None):
     c.check("写作规则「一篇一题」已下发", "一篇一题" in sys_msg)
     c.check("写作规则「互见法」已下发", "互见法" in sys_msg)
 
-    stream.write("[10] 出生句归属 (问题8: 生母的生育不写成主角得子)\n")
+    stream.write("[10] 子女归属 (问题8, 用户拍板: 本纪=法理子女, 妻室他出者归家室列传)\n")
     benji_all = json.dumps(blocks.get("benji_mid") or {}, ensure_ascii=False) \
         + json.dumps(blocks.get("benji_lead") or {}, ensure_ascii=False)
+    jia_all = json.dumps(blocks.get("jiashi_mid") or {}, ensure_ascii=False) \
+        + json.dumps(blocks.get("jiashi_lead") or {}, ensure_ascii=False)
+    # ① 本纪只收「主角是法理父亲」的四个孩子 (非婚生亦在内), 且不写血缘补注
     births = re.findall(r"(?:添子|添女|得长子|得长女)([^，。（\n]{2,12})"
                         r"(?:（生父([^）]{1,20})）)?", benji_all)
-    c.check("本纪收到出生记载", len(births) >= 6, f"{len(births)} 条")
-    c.check("有出生句带「生父X」(非主角所出者)", "生父" in benji_all)
-    for kid, father in births:
-        if kid and father:
-            c.check(f"{kid} 生父标注非主角", "潘杜尔夫" not in father, father)
-    c.check("法霍·索丹生父标注为索丹·索丹",
-            bool(re.search(r"法霍·索丹（生父[^）]*索丹·索丹）", benji_all)))
+    kids = set(k for k, _f in births)
+    c.check("本纪收到 4 条法理子女出生", len(births) == 4, sorted(kids))
+    c.check("本纪生父为他人者不进本纪",
+            not ({"法霍·索丹", "玛塔孙塔·加洛林"} & kids), sorted(kids))
+    c.check("本纪出生句不写「生父」补注", "生父" not in benji_all)
+    # ② 主角档案的家门清单同样只列法理子女
+    prof = json.dumps(blocks.get("benji_lead", {}).get("传主档案", ""),
+                      ensure_ascii=False)
+    m = re.search(r"妻室[^。]*?子([^。]*)。", prof)
+    listed = set(x.strip() for x in (m.group(1).split("、") if m else []))
+    c.check("家门清单不含妻室他出之子",
+            not ({"法霍·索丹", "玛塔孙塔·加洛林"} & listed), sorted(listed))
+    # ③ 妻室与他人所出的孩子归《家室列传》: 出生 (带生父) + 「妻室另育有」一句
+    jia_births = re.findall(r"(?:添子|添女)([^，。（\n]{2,12})"
+                            r"（生父([^）]{1,20})）", jia_all)
+    jia_kids = {k for k, _f in jia_births}
+    c.check("家室列传收妻室他出的两名子女",
+            {"法霍·索丹", "玛塔孙塔·加洛林"} <= jia_kids, sorted(jia_kids))
+    c.check("家室列传写明「妻室另育有…」", "妻室另育有" in jia_all)
+    c.check("家室列传出生句带「生父X」", bool(jia_births), len(jia_births))
 
     stream.write("\n" + ("全 PASS" if c.ok else "有 FAIL") + "\n")
     return c.ok, stream
