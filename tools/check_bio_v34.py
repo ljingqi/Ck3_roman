@@ -117,17 +117,19 @@ def main():
                         feuds))
 
     print("[7] 释放口径 (问题7)")
-    # 判据: 妮卡蕾忒不得被写成**已获释**; 「此后再未见释放的记载」是正确写法
+    # 判据: 妮卡蕾忒本人不得被写成**已获释**。紧贴其名的获释措辞才算断言;
+    # 「此后再未见其获释记载」「连获释的记载都没有」是正确写法, 由否定词排除。
     bad_rel = []
-    for m in re.finditer(r"妮卡蕾忒[^。]{0,24}?(获释|出狱|释放)", text):
-        ctx = text[max(0, m.start() - 12):m.end()]
-        if re.search(r"(未|无|没有|不见|未见|无由|连)[^，。]{0,12}"
+    for m in re.finditer(r"妮卡蕾忒[·\w]*[^。]{0,6}?(获释|出狱|释放)", text):
+        ctx = text[max(0, m.start() - 16):m.end()]
+        if re.search(r"(未|无|没有|不见|未见|无由|连|都)[^，。]{0,8}"
                      r"(获释|出狱|释放)", ctx):
             continue
         bad_rel.append(ctx)
-    check("妮卡蕾忒未被写成已释放", not bad_rel, bad_rel[:2])
+    check("妮卡蕾忒本人未被写成已获释", not bad_rel, bad_rel[:2])
     check("妮卡蕾忒写明「再未见释放的记载」",
-          bool(re.search(r"妮卡蕾忒[^。]{0,40}未见[^。]{0,8}(释放|获释)", text)))
+          bool(re.search(r"妮卡蕾忒[^。]{0,40}(未见|没有|无)[^。]{0,8}(释放|获释)",
+                         text)))
     print()
     print("全 PASS" if OK else "有 FAIL")
     return 0 if OK else 1
