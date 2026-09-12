@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v34 回归断言 (七问题) —— 读 tools/snap.py 落的快照做秒级核对, 不碰熔件。
+"""v34/v34b 回归断言 (七问题 + 头衔创建措辞) —— 读 tools/snap.py 落的快照做秒级核对, 不碰熔件。
 
 用法:
     先落快照:  tools\\py.ps1 tools\\snap.py 柳特佩特 38653 878.1.1 1
@@ -202,6 +202,50 @@ def run(snap_path=None, stream=None):
             {"法霍·索丹", "玛塔孙塔·加洛林"} <= jia_kids, sorted(jia_kids))
     c.check("家室列传写明「妻室另育有…」", "妻室另育有" in jia_all)
     c.check("家室列传出生句带「生父X」", bool(jia_births), len(jia_births))
+
+    stream.write("[11] 头衔创建措辞与事件日期 (v34b)\n")
+    tl = facts.get("timeline") or []
+    tl_txt = " ".join(e.get("text") or "" for e in tl)
+    all_txt = json.dumps(facts, ensure_ascii=False)
+
+    def _tl_date(phrase):
+        for e in tl:
+            if phrase in (e.get("text") or ""):
+                return e.get("date")
+        return None
+
+    c.check("时间线写「重建萨莱诺亲王国」(不写受封)",
+            "重建萨莱诺亲王国" in tl_txt
+            and "受封萨莱诺亲王国" not in tl_txt,
+            _tl_date("重建萨莱诺亲王国"))
+    c.check("事实面全文无「受封萨莱诺亲王国」",
+            "受封萨莱诺亲王国" not in all_txt)
+    c.check("萨莱诺亲王国句用 title history 事件日 874.4.25",
+            _tl_date("重建萨莱诺亲王国") == "874.4.25",
+            _tl_date("重建萨莱诺亲王国"))
+    prof_txt = json.dumps((facts.get("characters") or {}).get("38653") or {},
+                          ensure_ascii=False)
+    c.check("主角档案行迹同样写「重建萨莱诺亲王国」",
+            "重建萨莱诺亲王国" in prof_txt)
+    c.check("主角档案行迹日期同用 874年4月25日",
+            "874年4月25日，重建萨莱诺亲王国" in
+            "".join((facts.get("characters") or {}).get("38653", {})
+                    .get("events_subjectless") or []))
+    # 真受封 (granted) 不得被误改, 且日期一并校准到 title history 事件日
+    c.check("受封萨莱诺伯爵领 仍在 (granted, 872.11.26)",
+            _tl_date("受封萨莱诺伯爵领") == "872.11.26",
+            _tl_date("受封萨莱诺伯爵领"))
+    c.check("受封卡马尔达伯爵领 仍在 (granted, 874.4.25)",
+            _tl_date("受封卡马尔达伯爵领") == "874.4.25",
+            _tl_date("受封卡马尔达伯爵领"))
+    c.check("受封那波利伯爵领 仍在 (granted, 875.7.8)",
+            _tl_date("受封那波利伯爵领") == "875.7.8",
+            _tl_date("受封那波利伯爵领"))
+    friend_txt = json.dumps((facts.get("characters") or {}).get("12780") or {},
+                            ensure_ascii=False)
+    c.check("废弃后重立的头衔写「重建」(卡拉布里亚埃米尔国)",
+            "重建卡拉布里亚埃米尔国" in friend_txt
+            and "受封卡拉布里亚埃米尔国" not in all_txt)
 
     stream.write("\n" + ("全 PASS" if c.ok else "有 FAIL") + "\n")
     return c.ok, stream
