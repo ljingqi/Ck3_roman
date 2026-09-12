@@ -333,7 +333,7 @@ def _consort_affair_lines(facts, cache):
         for e in items:
             pid = e.get("partner")
             if pid is not None:
-                for x in _profile_lines(facts, pid):
+                for x in _profile_lines(facts, pid, with_real_parentage=True):
                     out.append("　" + x)
             arc = e.get("arc") or ""
             if arc:
@@ -455,10 +455,17 @@ def _num1(v, nd=1):
         return ""
 
 
-def _profile_lines(facts, cid=None):
+def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chains=False):
     """主角或某角色的档案 → 自然语言行列表 (v15: 字段表格改散文, 程序直出不改写)。
     首行为名号句: 官职+姓名 + 家族分家/族属/信仰/出生/家训;
-    后续每类事实一句, 缺失字段整句省略。cid=None 时用主角。"""
+    后续每类事实一句, 缺失字段整句省略。cid=None 时用主角。
+
+    v34 (问题1/5, 用户拍板「不留」): 两档披露 —
+      · 公开档 (默认): 不写「实父X」, 只写游戏里的**法理谱系**; 主角的
+        「戏剧性事件」只收非揭底链, 揭底链 (托卵承嗣/血脉登基) 改由
+        `with_private_chains=True` 放行。
+      · 内部档 (`with_real_parentage=True`): 放行「实父X」— 只给《家室列传》
+        《阴私录》《妻族传》这些讲门庭内情的篇目。"""
     if cid is None:
         p = facts["protagonist"]
     else:
@@ -612,7 +619,8 @@ def _profile_lines(facts, cid=None):
         kin_bits.append(f"父{p['father']}")
     if p.get("mother"):
         kin_bits.append(f"母{p['mother']}")
-    if p.get("real_father") and p.get("real_father") != p.get("father"):
+    if with_real_parentage and p.get("real_father") \
+            and p.get("real_father") != p.get("father"):
         kin_bits.append(f"实父{p['real_father']}")
     # v30: 自定义开局曾下发「先世资料未载」一行, 模型逐字照抄成满篇考据按语;
     # 现整行撤除 — 无父母谱系即无料, 无料不下发, 家世写法由《本纪》板块要求
@@ -631,15 +639,18 @@ def _profile_lines(facts, cid=None):
     # ---- 死亡句 ----
     if p.get("death"):
         lines.append(p["death"])
-    # ---- 戏剧性事件句 ----
-    if p.get("dramatic_facts"):
+    # ---- 戏剧性事件句 (v34: 揭底链只在内部档放行) ----
+    df = list(p.get("dramatic_facts") or [])
+    if with_private_chains:
+        df += [x for x in (p.get("dramatic_facts_private") or []) if x not in df]
+    if df:
         lines.append("戏剧性事件：" + "；".join(
-            str(x).rstrip("。") for x in p["dramatic_facts"]) + "。")
+            str(x).rstrip("。") for x in df) + "。")
     return lines
 
 
 def _subject_facts(facts, cid):
-    """某角色(好友/仇人)的档案+事件。"""
+    """某角色(好友/仇人)的档案+事件 (公开档: 不写实父)。"""
     p = facts["characters"].get(str(cid)) or {}
     lines = _profile_lines(facts, cid)
     events = p.get("events") or []
@@ -866,10 +877,19 @@ def _article_facts(facts, cache, key, section=None):
     pid = facts.get("player_id")
     pname = (facts["protagonist"] or {}).get("name") or ""
     blocks = {}
+    # ---- v34 (问题1/5): 主角档案与逐年摘要由共享前缀改为按篇下发 ----
+    # 内部档 (含「实父X」与揭底链) 只给讲门庭内情的篇目; 其余篇目拿公开档。
+    private_boards = ("jiashi", "secrets", "qizu")
+    _set_block(blocks, "传主档案",
+               "\n".join(_protagonist_archive_lines(facts,
+                                                    private=key in private_boards)))
     if key == "benji":
-        # v27: 开篇与纪事按模块切片, 两块料不相交; 【人物档案】不再重复
-        # (共享前缀已有同一份), 且纪事排除「谋害人命」(由刺客列传承载)
+        # v27: 开篇与纪事按模块切片, 两块料不相交
+        # v34 (问题5): 不再附【主角大事摘要】(与下面的【大事年表】逐字重复,
+        # 且共享前缀旧稿已注入 14 次); 逐年锚点由【大事年表】承担。
         sk = _sec_key(section)
+        # v34 (问题5): 开篇/纪事各取本板块切片 (旧稿两块各拿全量, 逐字节相同);
+        # 生平年表归《本纪》, 其他篇目只给本篇切片。
         tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
                                  exclude=_has_assassins(facts))
         _set_block(blocks, "大事年表", "\n".join(tl))
@@ -947,7 +967,10 @@ def _article_facts(facts, cache, key, section=None):
             p = facts["characters"].get(str(cid))
             if not p or not p.get("name"):
                 continue
-            fam_lines.append("\n".join(_profile_lines(facts, cid)))
+            # v34 (问题1): 家室列传是内宅档 — 子女档案放行「实父X」
+            # (《本纪》等公开篇目仍只写法理谱系)
+            fam_lines.append("\n".join(
+                _profile_lines(facts, cid, with_real_parentage=True)))
             ev = p.get("events") or []
             if ev:
                 fam_lines.append("  " + "\n  ".join(ev))
@@ -1216,16 +1239,24 @@ def _section_req(text, facts):
     return text
 
 
+def _protagonist_archive_lines(facts, private=False):
+    """主角档案块 (v34, 问题5): 从共享前缀移出, 按篇下发。
+    private=True 放行揭底链 (托卵承嗣/血脉登基) 与「实父」行 —
+    只给《家室列传》《阴私录》这类讲门庭内情的篇目。"""
+    return _profile_lines(facts, None, with_real_parentage=private,
+                          with_private_chains=private)
+
+
 def _shared_facts_block(facts):
-    """所有调用共享的事实前缀 (v9 输入缓存优化 + v14 瘦身):
-    只留【传主】+【人物档案】+ 主角级事件摘要 (修复方案_菲利普2.md 问题4 修复2:
-    全量年表改为按文章取, 不再逐字节重复注入 16 次; 共享前缀仍逐字节一致
-    置于每条 user 消息最前, 供 DeepSeek 前缀缓存命中)。
-    v11: 删【时期】(起止是快照区间, 不是生卒, 对模型无用);
-    卒年自然语言化 (【卒年】931年6月7日，因绊倒坠落而亡——此为终传)。"""
+    """所有调用共享的事实前缀 (v9 输入缓存优化 + v14 瘦身)。
+
+    v34 (问题5, 用户拍板): 只留**稳定最小身份票** —
+    【传主】【家族】【现状】+【概览】+ 按需的【冒险者行踪】【瘟疫】。
+    完整【人物档案】与【主角大事摘要】移出共享前缀, 改由 `_article_facts`
+    按篇下发 (旧稿把同一份档案与逐年摘要注入每一次请求, 各篇因此车轱辘话)。
+    共享前缀仍逐字节一致置于每条 user 消息最前, 供 DeepSeek 前缀缓存命中。"""
     p = facts["protagonist"]
     name = p.get("name") or "主角"
-    # v14: 家族文本含分家 (藤原氏（北家）)
     house = _house_text(facts)
     death = facts.get("player_death")
     if death:
@@ -1236,9 +1267,7 @@ def _shared_facts_block(facts):
         life_note = f"【现状】在世（截至{llm.fmt_cn_date(facts['as_of'])}）"
     else:
         life_note = "【现状】在世（截至最后一份存档）"
-    profile_txt = _render_block("【人物档案】", _profile_lines(facts))
     # v20 (B3) / v29 (问题2): 【冒险者行踪】— 只记无地冒险者时期的营地阶段与驻地
-    # (定居/庄园时期的驻地与旅行落点没有意义, 整块在无营地期不下发)
     stations_txt = ""
     stations = facts.get("protagonist_stations") or []
     if stations:
@@ -1254,23 +1283,14 @@ def _shared_facts_block(facts):
     ds = facts.get("decade_stats") or []
     if ds:
         label = "本十年" if facts.get("decade") else "一生"
-        stats_txt = f"【概览】{label}{'、'.join(ds)}。\n\n"
-    # v17: 主角大事摘要改为按年聚合 (facts._year_summary, 一年一行, 同型事件并人名;
-    # 修复方案_汤利五问题.md 问题4 — 十年传记 89 行 → 约 10 行)。
-    # 十年传记的 timeline 已按本十年窗口截断, 摘要随之只含本十年。
-    pname = p.get("name") or ""
-    own = F._year_summary(facts.get("timeline") or [], pname,
-                          plabel=p.get("label") or "")
-    own_txt = _render_block("【主角大事摘要】", own) if own else ""
-    out = [f"【传主】{name}\n【家族】{house}\n{life_note}\n\n", profile_txt]
+        stats_txt = f"【概览】{label}{'、'.join(ds)}。"
+    out = [f"【传主】{name}\n【家族】{house}\n{life_note}"]
     if stations_txt:
         out.append("\n\n" + stations_txt)
     if plague_txt:
         out.append("\n\n" + plague_txt)
     if stats_txt:
         out.append("\n\n" + stats_txt)
-    if own_txt:
-        out.append("\n\n" + own_txt)
     return F.sanitize_fact_text("".join(out), where="共享前缀") + ""
 
 
@@ -1289,6 +1309,11 @@ def build_intro_messages(facts, cfg, articles=None):
     sys_msg = style.PROMPTS["intro_system"].format(
         rule_block=_rule_block(style_name))
     shared = _shared_facts_block(facts)
+    # v34 (问题5): 总纲是唯一点评一生大势的篇目, 主角档案随总纲下发
+    # (共享前缀已不再注入档案); 总纲讲的是全局, 用公开档 — 揭底隐情归
+    # 《家室列传》《阴私录》, 由篇目预告点出而不在此处说破。
+    shared = _render_block("【人物档案】", _protagonist_archive_lines(facts)) \
+        + "\n\n" + shared
     # 文章预告: 用实际文章标题 (好友/仇人姓名已定; v5 支持任意篇数)
     CN_NUMS = "一二三四五六七八九"
     if articles:
