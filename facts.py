@@ -663,6 +663,17 @@ _PRINCE_WORD_OVERRIDE = {
 }
 
 
+def _date_ord(d):
+    """日期近似天序 (year*372 + (month-1)*31 + day)。
+    只用于「相差 N 天以内」的宽松判断 (v34b 头衔事件日核对), 不做精确历法运算 —
+    月末跨月会多算 1~2 天, 对宽松阈值无影响。非法输入返回极小值。"""
+    try:
+        y, m, dd = (int(x) for x in str(d).split(".")[:3])
+    except (TypeError, ValueError):
+        return -10 ** 9
+    return y * 372 + (m - 1) * 31 + dd
+
+
 class Facts:
     """一次 build_facts 的上下文: 缓存 + melt + 名字/头衔/本地化解析。
     as_of: 传记数据截止日期 (十年传记 = 十年末; 终传/在世 = 最后档期)。
@@ -705,6 +716,7 @@ class Facts:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
         self._regnal_cache = {}  # v17: 世系编号 (cid, tid, date) -> 序号
+        self._mem_date_cache = {}  # v34b: 头衔记忆事实日 (tid, cid, d, reason, type)
         self._label_cache = {}   # v28b: 人物称谓 (cid, date, style) -> 文本
         # v16: 游戏关系原因 (opinions.active_opinions 索引, 惰性构建)
         self._opinion_index = None
@@ -913,6 +925,70 @@ class Facts:
                 if hid != int(cid):
                     return True
         return False
+
+    # v34b: 头衔得失句的**事件日** — 游戏在头衔变动次日才落记忆
+    # (title_event.9900 的 cooldown=1 天), 故 creation_date 常晚 0~1 天;
+    # title history 的条目日期才是事件当天 (柳特佩特: d_salerno 历史 874.4.25 /
+    # 记忆 874.4.26)。其余记忆仍以 creation_date 为事实日。
+    _TITLE_DATE_NEAR_DAYS = 31   # 事件日与记忆日相差上限 (宽松天序, 防误配久远旧事)
+
+    def mem_date(self, cid, mem):
+        """记忆在事实面出句用的日期 (v34b): 头衔得失记忆取 title history 事件日,
+        取不到时回退 creation_date; 其余记忆一律 creation_date。"""
+        d = mem.get("creation_date") or ""
+        mtype = mem.get("type")
+        if not d or mtype not in TITLE_VAR_TYPES:
+            return d
+        tid = None
+        reason = ""
+        for v in mem.get("vars") or []:
+            if v.get("flag") == "landed_title" and v.get("identity"):
+                tid = v.get("identity")
+            elif v.get("flag") == "reason":
+                reason = str(v.get("value") or "")
+        if tid is None:
+            return d
+        key = (tid, cid, d, reason, mtype)
+        hit = self._mem_date_cache.get(key)
+        if hit is None:
+            hit = self._title_event_date(tid, cid, d, reason,
+                                         lost=(mtype == "lost_title_memory")) or d
+            self._mem_date_cache[key] = hit
+        return hit
+
+    def _title_event_date(self, tid, cid, mem_date, reason="", lost=False):
+        """头衔 tid 在 mem_date (含) 前的最近一条历史事件日。
+        先认 `type == reason` 的条目 (destroyed 失去条目的 holder 是原主也能命中),
+        无同类条目再按持有侧兜底 (得: holder==cid; 失: holder!=cid);
+        命中日期与记忆日相差超过 `_TITLE_DATE_NEAR_DAYS` 视为误配, 返回 ''。"""
+        hist = (self._lt.get(str(tid)) or {}).get("history")
+        if not isinstance(hist, dict) or not hist:
+            return ""
+        mk = cl.date_key(mem_date)
+        typed = side = None
+        for d, v in hist.items():
+            dk = cl.date_key(d)
+            if dk > mk:
+                continue
+            for e in (v if isinstance(v, list) else [v]):
+                h = e.get("holder") if isinstance(e, dict) else e
+                typ = (e.get("type") or "") if isinstance(e, dict) else ""
+                if reason and typ == reason and (typed is None or dk > typed[0]):
+                    typed = (dk, d)
+                if h is None:
+                    continue
+                try:
+                    hid = int(h)
+                except (TypeError, ValueError):
+                    continue
+                ok = (hid != int(cid)) if lost else (hid == int(cid))
+                if ok and (side is None or dk > side[0]):
+                    side = (dk, d)
+        for cand in (typed, side):
+            if cand and 0 <= _date_ord(mem_date) - _date_ord(cand[1]) \
+                    <= self._TITLE_DATE_NEAR_DAYS:
+                return cand[1]
+        return ""
 
     def _last_high_title_before(self, cid, date=None):
         """cid 在 date (含) 前最后持有的最高层级头衔 (v17)。
@@ -3564,7 +3640,8 @@ class Facts:
             for m in rec.get("memories") or []:
                 if (m.get("type") or "") != "lost_title_memory":
                     continue
-                d = m.get("creation_date") or ""
+                # v34b: 失守日取 title history 事件日 (记忆日常晚一天)
+                d = self.mem_date(int(cid), m)
                 if not _in_span(d):
                     continue
                 parts = m.get("participants") or {}
@@ -3665,13 +3742,21 @@ class Facts:
             # 关系流水的「向X宣战」不带战争类型、「成为X的仇敌」只记结果,
             # 故**同日的战争类旧句由本节点取代** (改写进同一天, 信息更全):
             #   「向X发动征服战」「战胜X」「X失守那地」「X自此沦为无地冒险者」。
+            # v34b: 只在**关系流水**里做同日取代 — 本段补的节点彼此同日并存
+            # (同日「战胜X」与「X失守那地」是同一场战争的两种事实, 旧实现在
+            # 失守日与战胜日同日时会把「战胜X」一并删掉)。
+            _hist_events = list(events)
+            _node_events = []
             for d, txt in self._house_war_nodes(other[0], my_houses, self.as_of):
-                events = [(ed, et) for ed, et in events
-                          if str(ed) != str(d)
-                          or not any(k in et for k in
-                                     _WAR_KIND_WORDS + _PRISON_KIND_WORDS)]
-                if (str(d), txt) not in {(str(ed), et) for ed, et in events}:
-                    events.append((d, txt))
+                _hist_events = [
+                    (ed, et) for ed, et in _hist_events
+                    if str(ed) != str(d)
+                    or not any(k in et for k in
+                               _WAR_KIND_WORDS + _PRISON_KIND_WORDS)]
+                if (str(d), txt) not in {(str(ed), et) for ed, et in
+                                         _hist_events + _node_events}:
+                    _node_events.append((d, txt))
+            events = _hist_events + _node_events
             if not events:
                 continue
             events.sort(key=lambda x: cl.date_key(x[0]))
@@ -6362,13 +6447,16 @@ def _timeline(f):
                 continue
             pset = frozenset(v for v in parts.values() if isinstance(v, int)) \
                 | {cid}
-            key = (mtype, mem.get("creation_date"), pset)
+            # v34b: 头衔得失事件用 title history 事件日 (记忆日常晚一天),
+            # 去重键/事件日/句面日期同源, 防止文本与排序两套日期
+            _md = f.mem_date(cid, mem)
+            key = (mtype, _md, pset)
             if key in seen_keys:
                 continue
             seen_keys.add(key)
             # v30: 镜像对/监禁对需要参与者身份 → 随事件登记 (见 _drop_mirror_pairs)
             if mtype in _IDENT_TYPES:
-                idents[(mem.get("creation_date"), mtype, s)] = {
+                idents[(_md, mtype, s)] = {
                     "owner": cid, "parts": dict(parts)}
             # v31 (问题2): 配偶之间的情事换档 — 概览记「夫妻之情」, 模块归「婚配联姻」
             ev_type = mtype
@@ -6377,7 +6465,7 @@ def _timeline(f):
                 if isinstance(_oth, int) and _oth != cid \
                         and f.is_spouse_pair(cid, _oth):
                     ev_type = mtype + "_spouse"
-            events.append((mem.get("creation_date"), ev_type, s,
+            events.append((_md, ev_type, s,
                            _TYPE2MODULE.get(ev_type, "")))
     # 合并 死亡记录 + 去世记忆 + 出生事件
     for cid, (_prio, _d, t, s) in deaths.items():
@@ -7294,10 +7382,11 @@ def _character_profiles(f):
             if not s:
                 continue
             # v11: as_of 截断 — 十年传记只列该时期前的事件
-            if f.as_of and mem.get("creation_date") \
-                    and cl.date_key(mem.get("creation_date")) > cl.date_key(f.as_of):
+            # v34b: 日期取事实日 (头衔得失用 title history 事件日)
+            _md = f.mem_date(cid, mem)
+            if f.as_of and _md and cl.date_key(_md) > cl.date_key(f.as_of):
                 continue
-            mems.append(f"{f.date(mem.get('creation_date'))}，{s}")
+            mems.append(f"{f.date(_md)}，{s}")
         mems.sort()
         prof["events"] = mems
         # v29 (问题4): 「传主行迹」用省主语版 — 块内主语恒为传主, 重复姓名无信息
@@ -8168,7 +8257,9 @@ def _killed_by_player(f):
         for mem in prof.get("memories") or []:
             s = _mem_sentence(f, cid, mem)
             if s:
-                entry["events"].append(f"{f.date(mem.get('creation_date'))}，{s}")
+                # v34b: 事实日 (头衔得失用 title history 事件日)
+                entry["events"].append(
+                    f"{f.date(f.mem_date(cid, mem))}，{s}")
         entry["events"].sort()
         out.append(entry)
     out.sort(key=lambda e: cl.date_key(e["death_date"]))
