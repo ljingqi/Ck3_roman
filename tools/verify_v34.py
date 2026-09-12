@@ -174,6 +174,19 @@ def run(snap_path=None, stream=None):
     c.check("写作规则「一篇一题」已下发", "一篇一题" in sys_msg)
     c.check("写作规则「互见法」已下发", "互见法" in sys_msg)
 
+    stream.write("[10] 出生句归属 (问题8: 生母的生育不写成主角得子)\n")
+    benji_all = json.dumps(blocks.get("benji_mid") or {}, ensure_ascii=False) \
+        + json.dumps(blocks.get("benji_lead") or {}, ensure_ascii=False)
+    births = re.findall(r"(?:添子|添女|得长子|得长女)([^，。（\n]{2,12})"
+                        r"(?:（生父([^）]{1,20})）)?", benji_all)
+    c.check("本纪收到出生记载", len(births) >= 6, f"{len(births)} 条")
+    c.check("有出生句带「生父X」(非主角所出者)", "生父" in benji_all)
+    for kid, father in births:
+        if kid and father:
+            c.check(f"{kid} 生父标注非主角", "潘杜尔夫" not in father, father)
+    c.check("法霍·索丹生父标注为索丹·索丹",
+            bool(re.search(r"法霍·索丹（生父[^）]*索丹·索丹）", benji_all)))
+
     stream.write("\n" + ("全 PASS" if c.ok else "有 FAIL") + "\n")
     return c.ok, stream
 

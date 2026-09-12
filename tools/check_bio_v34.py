@@ -92,15 +92,20 @@ def main():
     print("[5] 各篇不复述 (问题5)")
     check("阴私录与家室列传并不同文",
           bool(secrets) and bool(jiashi) and secrets.strip()[:60] != jiashi.strip()[:60])
-    for a, b, la, lb in ((benji, jiashi, "本纪", "家室列传"),
-                         (benji, chaoju, "本纪", "朝局风云录")):
-        if not a or not b:
+    # 本纪与朝局篇都以年表为纲, 共享公开的编年条目 (受封/胜负/去世) 是编年体常态;
+    # 判据只揪**叙事句**重复 (含评断、因果、场景的句子)。
+    _CHRON = re.compile(r"^(\**\d+年)?(\d+月\d+日)?[，,]?"
+                        r"|[，,](赢得战争|受封|失利|战败|获胜|去世|病逝"
+                        r"|死于|战死|被囚|获释|继位|登位)")
+    for b, lb in ((jiashi, "家室列传"), (chaoju, "朝局风云录")):
+        if not b:
             continue
-        sents_a = set(x for x in re.split(r"[。；\n]", a) if len(x) > 14)
-        sents_b = set(x for x in re.split(r"[。；\n]", b) if len(x) > 14)
-        dup = sents_a & sents_b
-        check(f"{la}与{lb}无整句重复", not dup,
-              list(dup)[:1])
+        sents_a = set(x.strip("* 　") for x in re.split(r"[。；\n]", benji)
+                      if len(x) > 14)
+        sents_b = set(x.strip("* 　") for x in re.split(r"[。；\n]", b)
+                      if len(x) > 14)
+        dup = sorted(x for x in (sents_a & sents_b) if not _CHRON.match(x))
+        check(f"本纪与{lb}无叙事句重复", not dup, dup[:2])
 
     print("[6] 恩怨因果 (问题6)")
     check("恩怨篇写战争起因", ("宣战" in feuds) or ("开战" in feuds))

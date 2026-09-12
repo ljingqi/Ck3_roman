@@ -5280,6 +5280,7 @@ def _mem_sentence(f, owner_id, mem):
     tpl = MEMORY_TEMPLATES.get(mtype)
     if not tpl:
         return None
+    extra_fname = ""
     owner = f.person_label(owner_id, style="brief") or f.name_with_regnal(
         owner_id, date=mem.get("creation_date"))
     parts = mem.get("participants") or {}
@@ -5331,6 +5332,21 @@ def _mem_sentence(f, owner_id, mem):
             kid = parts.get("child")
             if isinstance(kid, int) and f._is_female(kid):
                 tpl = MEMORY_TEMPLATES.get(mem.get("type") + "_female") or tpl
+        # v34 (问题8): 「添子」是个有主的动作 — 存档的出生记忆记在**生母**名下
+        # (持有者=母亲), 句首却是持有人, 于是生母的生育被读成主角得子
+        # (柳特佩特局: 法霍·索丹的生父是 12780, 旧稿《本纪》把他算作主角之子)。
+        # 孩子的法理父/实父与持有人不一致时, 句尾补出真正的父亲, 歧义交给程序消除。
+        kid = parts.get("child")
+        if isinstance(kid, int):
+            kfam = ((f.cache.get("characters") or {}).get(str(kid)) or {}).get("family") or {}
+            kfather = (kfam.get("father") or [None])[0]
+            kreal = (kfam.get("real_father") or [None])[0]
+            who = kreal if isinstance(kreal, int) else kfather
+            if isinstance(who, int) and owner_id is not None and who != owner_id:
+                wname = f.person_label(who, style="brief") or f.name_or(who)
+                if wname:
+                    tpl = tpl.rstrip("。") + "（生父{fname}）。"
+                    extra_fname = wname
     # v21: 刑虐记忆按酷刑类型渲染 (阉割/致盲/毁容/断臂/断腿…, 含受害者名) —
     # 大事记/年表此前只写「施刑/受刑」, 具体酷刑事迹丢失 (王晧 1190 被阉)。
     if mem.get("type") in ("torturer_memory", "tortured_memory"):
@@ -5366,11 +5382,15 @@ def _mem_sentence(f, owner_id, mem):
             verb = TITLE_LOSS_VERBS.get(reason)
             if verb:
                 return f"{owner}{verb}{title}。"
-    s = tpl.format(name=owner, other=other, title=title, rel=rel)
+    s = tpl.format(name=owner, other=other, title=title, rel=rel,
+                   fname=extra_fname)
     # 参与者/头衔缺失时清理悬空占位
     s = s.replace("与。", "。").replace("与，", "，").replace("与、", "、")
     s = s.replace("让出。", "让出领地。")
     s = s.replace("得。", "登位。")
+    # 未补出父亲时不留空括注
+    if not extra_fname:
+        s = s.replace("（生父）。", "。").replace("（生父）", "")
     return s
 
 
@@ -5553,12 +5573,18 @@ for _m, _ts in MODULE_TABLE.items():
 MODULE_SLICE = {
     # 本纪: 开篇 = 家世/受学/婚姻/添丁; 纪事 = 权力线索 (起家/兵戈/刑狱/恩怨)
     ("benji", "lead"): {"教化求学", "科考功名", "人质质任", "婚配联姻",
-                        "添丁进口", "信仰皈依", "拥戴加冕", "丧亲之恸",
-                        "夭折", "情变私通"},
+                        "信仰皈依", "拥戴加冕", "丧亲之恸",
+                        "情变私通"},
     ("benji", "mid"): {"起家发迹", "失位让土", "开战兴兵", "战和胜负",
                        "战死负伤", "囚禁入狱", "获释出狱", "刑虐残暴",
                        "受辱含冤", "拥戴加冕", "结仇结怨", "死敌之仇",
-                       "化仇解怨"},
+                       "化仇解怨",
+                       # v34 (问题8): 添丁是家事也是政治 (继承人/联姻/血统),
+                       # 且出生句已带「生父X」——不放进来, 本纪只见子女名单
+                       # 而无出生记载, 模型就把生母的生育算成主角得子
+                       # (法霍·索丹被写成主角之子即此)。与《家室列传》的分工:
+                       # 本纪取年表事实, 家室列传取门庭内情与情事脉络。
+                       "添丁进口", "夭折"},
     # 家室: 开篇 = 结缡/情变/丧偶; 纪事 = 生育/夭亡/丧亲/丧友 + 囚禁 (v32 问题1:
     # 公主被囚的监禁者在旧稿里读不到, 模型只能写「后世皆指为伯爵本人」;
     # 只入纪事 — v27 铁律: 同篇开篇与纪事的素材不相交, 开篇的妻妾档案行
