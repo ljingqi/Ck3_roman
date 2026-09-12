@@ -474,11 +474,46 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   回归：`tools/verify_three.py` [G1]＋`tools/verify_macron.py`（「干了我老婆」不得出现在
   `hooks_over`）。
 
+## v34 能力（柳特佩特七问题：披露分级 / 秘密可读 / 政权门槛 / 特质指纹 / 恩怨因果 / 囚禁区间 / 分篇写法）
+
+方案与逐条证据见 `docs/方案_v34_柳特佩特七问题.md`。
+
+- **披露分级（问题1）**：`villain_chains` 第三元标出**揭底链**（托卵承嗣/血脉登基），
+  主角档案分公开档与内部档——公开档不写「实父X」、不写子女来历，
+  「实父X」只随《家室列传》《阴私录》《妻族传》下发；
+  生育能力类特质（`infertile` 等）在**公开档**整体隐去（史官不可知，用户拍板「不留」）。
+- **共享前缀瘦身（问题5）**：`_shared_facts_block` 只留【传主】【家族】【现状】【概览】
+  （1181 → 78 字符），【人物档案】与逐年摘要改为**按篇下发**；《本纪》开篇/纪事各取
+  本板块切片（旧稿两块逐字节相同）。
+- **秘密可读（问题2）**：存档 `secret_incest` 不记对方（`target` 为空），
+  改由 `Facts._secret_partner` 按「**血亲 ∩ 性/情记忆**」判定（姻亲排除），
+  判不出时退不点名形态；对方不再被算作「知情者」。
+- **政权门槛（问题3）**：`_current_ministers` / `minister_ids` 只收
+  `de_facto_liege ∈ 主角上位链` 的 `e_minister_*` —— 独立领主的《朝局风云录》
+  不再挂着别国六部（实测唐六部 9 席的 liege 全为 `h_china`）。
+- **特质表指纹（问题4）**：`trait_names.json` / `trait_tracks.json` 记
+  `trait_source_fingerprint`（目录 + 各特质文件元信息），指纹不符自动重建；
+  解析失败的特质记 `logs/loc_miss.log`（Carnalitas 的「极小阴茎」即由此找回）。
+- **恩怨因果（问题6）**：`house_feuds` 补 `_house_war_nodes` —— 宣战（带战争类型）、
+  战胜、失守头衔、**沦为无地冒险者**，并取代同日的旧战争句；
+  恩怨之始从「绑人」回到「开战 → 战败 → 夺地 → 对方处境」。
+- **囚禁区间（问题7）**：缓存逐档记 `alive_data.prison_data` 区间
+  （`prison_history: [{from, to, imprisoner, type, since}]`，`to=null` 为在押），
+  释放记忆缺失时凭「区间闭合」补证；有在押数据才写持续关押。
+- **分篇写法（问题5/1）**：`style.RULES` 增「一篇一题」（主题词 + 决定性时刻 +
+  他人视角 + 首尾回照）与「互见法」（一料一处，各篇各题）；每篇文章带 `focus`
+  下发到开篇/纪事与总纲预告。
+
+回归：`experiments/verify_v34.py`（读快照断言）＋`experiments/verify_v34_once.py`
+（**熔件只读一次**：重建单战役缓存 + 落快照 + 跑全部断言，报告写
+`logs/verify_v34_report.txt`）；`tools/verify_fast.py` 全部 PASS。
+
 ## 代码纪律（2026-09-10 用户定规）
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
   `pipeline.py` / `llm.py` 等生产代码之前，先把当前工作树提交为一个检查点，
   保证任何一步都能干净回退。改动分步进行，每步一个提交。
+  可执行细则见技能 `.agents/skills/commit-before-destructive/SKILL.md`。
 - **提示词正向表述**：写给模型的每一句都用「要做什么」表述（见技能 `no-negative-prompts`）。
 - **编码**：Python / JSON / 日志 / output 产物一律 UTF-8，`.bat` 用 GBK（见技能 `utf8-gbk-encoding`）。
 

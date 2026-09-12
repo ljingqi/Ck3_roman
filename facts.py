@@ -3441,7 +3441,50 @@ class Facts:
                                f"发动{kind}"))
             else:
                 out.append((d, f"{self.person_label(pid, d, 'event')}战胜{onm}"))
-        # ---- ② 对方失守头衔 (reason=conquest → 攻取) ----
+        # ---- ② 主角囚禁该族成员及其出狱情形 (v34 问题7: 与《本纪》同口径) ----
+        W = _style.FACT_WORDING
+        for cid, rec in chars.items():
+            if _house(int(cid)) != other_house:
+                continue
+            for m in rec.get("memories") or []:
+                if (m.get("type") or "") != "imprisoned":
+                    continue
+                parts = m.get("participants") or {}
+                if parts.get("imprisoner") != pid:
+                    continue
+                d = m.get("creation_date") or ""
+                if not _in_span(d):
+                    continue
+                vn = _nm(int(cid), d)
+                if not vn:
+                    continue
+                # 出狱证据二选一: ① 释放/越狱记忆 (最准); ② prison_data 区间闭合日
+                rel = None
+                for mm in rec.get("memories") or []:
+                    if mm.get("type") not in ("released_from_prison_memory",
+                                              "escaped_from_prison_memory"):
+                        continue
+                    rd = mm.get("creation_date") or ""
+                    if cl.date_key(str(rd)) < cl.date_key(str(d)):
+                        continue
+                    if (mm.get("participants") or {}).get("imprisoner") != pid:
+                        continue
+                    rel = (rd, mm.get("type") == "escaped_from_prison_memory")
+                    break
+                if rel is None:
+                    ph = rec.get("prison_history") or []
+                    closed = next((iv for iv in ph
+                                   if iv.get("to")
+                                   and cl.date_key(str(iv["to"]))
+                                   >= cl.date_key(str(d))), None)
+                    if closed:
+                        rel = (closed["to"], False)
+                if rel:
+                    verb = "越狱脱身" if rel[1] else "获释"
+                    out.append((d, f"{vn}被囚，{self.date(rel[0])}{verb}"))
+                else:
+                    out.append((d, f"{vn}被囚" + W["prison_still_held"]))
+        # ---- ③ 对方失守头衔 (reason=conquest → 攻取) ----
         lost_titles = []
         for cid, rec in chars.items():
             if _house(int(cid)) != other_house:
@@ -3553,7 +3596,8 @@ class Facts:
             for d, txt in self._house_war_nodes(other[0], my_houses, self.as_of):
                 events = [(ed, et) for ed, et in events
                           if str(ed) != str(d)
-                          or not any(k in et for k in _WAR_KIND_WORDS)]
+                          or not any(k in et for k in
+                                     _WAR_KIND_WORDS + _PRISON_KIND_WORDS)]
                 if (str(d), txt) not in {(str(ed), et) for ed, et in events}:
                     events.append((d, txt))
             if not events:
@@ -6085,6 +6129,11 @@ def _pair_imprisonments(events, f, pid, pname=""):
                         W["prison_released"].format(span=span) if span
                         else W["prison_release_on"].format(
                             date=f.date(out["date"])))
+            else:
+                # v34 (问题7): 记得到此为止 — 释放记忆与 prison_data 都无闭合证据时,
+                # 程序明说「再未见释放的记载」, 不把沉默留给模型去补
+                # (旧稿此处留白, 模型把「囚期未着一字」补成了「获释」)。
+                body += W["prison_still_held"]
             e = events[r["idx"]]
             e["text"] = f"{f.date(r['date'])}，{body}。"
             e["type"] = "imprisoned"
@@ -7475,6 +7524,9 @@ def relation_cause_lines(f, cid, rel_date):
 
 # v34 (问题6): 战争类措辞 — 恩怨史补因果节点时, 同日的旧战争句由新节点取代
 _WAR_KIND_WORDS = ("宣战", "开战", "应战", "战胜", "战败", "赢得战争")
+
+# v34 (问题7): 囚禁类措辞 — 同日的旧「囚禁了X」由带出狱情形的节点取代
+_PRISON_KIND_WORDS = ("囚禁了", "囚禁")
 
 # v34 (问题1, 用户拍板): 这些关系链在句面上写明「谁是谁的亲生子女」,
 # 属史官不可知的内宅隐情 — 只进《家室列传》《阴私录》, 不进《本纪》等公开篇目。
