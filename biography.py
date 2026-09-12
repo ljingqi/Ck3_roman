@@ -1318,7 +1318,7 @@ def build_intro_messages(facts, cfg, articles=None):
     CN_NUMS = "一二三四五六七八九"
     if articles:
         preview = "\n".join(
-            f"{CN_NUMS[i]}、《{a['title']}》——{a.get('theme') or a['key']}"
+            f"{CN_NUMS[i]}、《{a['title']}》——{a.get('focus') or a.get('theme') or a['key']}"
             for i, a in enumerate(articles))
         n_articles = len(articles)
     else:
@@ -1353,7 +1353,8 @@ def build_lead_messages(article, facts, cache, intro, cfg):
         intro=intro, custom_note=custom_note, subject_note=subject_note,
         facts=facts_txt,
         events=(f"{events_block}\n\n" if events_block else ""),
-        title=title, sec_title=sec["title"], sec_req=sec["req"])
+        title=title, focus=article.get("focus") or article.get("theme") or "",
+        sec_title=sec["title"], sec_req=sec["req"])
     return [{"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg}]
 
@@ -1384,7 +1385,8 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
         shared=_shared_facts_block(facts), theme=_decade_theme_note(facts),
         subject_note=subject_note, facts=facts_txt,
         events=(f"{events_block}\n\n" if events_block else ""),
-        title=title, sec_title=section["title"], sec_req=section["req"],
+        title=title, focus=article.get("focus") or article.get("theme") or "",
+        sec_title=section["title"], sec_req=section["req"],
         lead_title=article["sections"][0]["title"],
         lead_digest=_lead_digest(lead_text))
     return [{"role": "system", "content": sys_msg},
@@ -1755,32 +1757,42 @@ def build_articles(facts, cache, cfg):
         } for sk in sec_keys]
     articles = [
         {"key": "benji", "title": f"本纪·{pname}", "subject": None,
-         "theme": "人物生平", "sections": mk_sections("benji")},
+         "theme": "人物生平",
+         "focus": "以公开行迹为限: 家世、执掌之地、战和囚狱、家门添丁",
+         "sections": mk_sections("benji")},
     ]
     if friend is not None:
         articles.append({"key": "friend", "title": f"列传·{fname or '好友'}",
                          "subject": fname, "theme": "好友传记（最亲近同僚的一生）",
+                         "focus": "以传主生平为限, 主角只在二人交游处出场",
                          "sections": mk_sections("friend")})
     if enemy is not None:
         articles.append({"key": "enemy", "title": f"列传·{ename or '仇人'}",
                          "subject": ename, "theme": "仇人传记（一生劲敌）",
+                         "focus": "以传主一生行迹与结仇由头为限, 客观平实",
                          "sections": mk_sections("enemy")})
     articles.extend([
         {"key": "jiashi", "title": "家室列传", "subject": None,
-         "theme": "妻室子女的门庭画卷", "sections": mk_sections("jiashi")},
+         "theme": "妻室子女的门庭画卷",
+         "focus": "写门庭内情: 结缡、情事脉络、子女来历与血脉之争",
+         "sections": mk_sections("jiashi")},
         {"key": "chaoju", "title": "朝局风云录", "subject": None,
-         "theme": "朝局官制沉浮", "sections": mk_sections("chaoju")},
+         "theme": "朝局官制沉浮",
+         "focus": "写主角所处政权的朝局与疆域, 及其在其中的升沉",
+         "sections": mk_sections("chaoju")},
     ])
     # v9: 家族恩怨录 / 宝物志 — 插在中间 (家室列传之后, 朝局风云录之前)
     if facts.get("house_feuds"):
         articles.insert(4, {"key": "feuds", "title": "家族恩怨录",
                             "subject": None,
                             "theme": "与主角家族关系不和的家族恩怨",
+                            "focus": "写仇怨的来龙去脉: 开战、胜负、夺地、对方处境与关系档位",
                             "sections": mk_sections("feuds")})
     if facts.get("family_artifacts"):
         articles.insert(5, {"key": "artifacts", "title": "宝物志",
                             "subject": None,
                             "theme": "主角家族所藏重宝的流转历史",
+                            "focus": "写每件重宝的来历与流转, 以物见人",
                             "sections": mk_sections("artifacts")})
     # v5: 刺客列传 (主角杀 >5 人); v11: 按击杀数动态拆纪事板块
     # (<30 不拆 1 个纪事; 30–59 拆 2 个; ≥60 拆 3 个; 已剔除 lowborn)
@@ -1789,18 +1801,21 @@ def build_articles(facts, cache, cfg):
         articles.append({
             "key": "assassins", "title": "刺客列传·刀下诸魂",
             "subject": None, "theme": f"被主角所杀 {len(killed)} 人的合传",
+            "focus": "为每名死者立小传: 其生平、与主角的交集、死时情状",
             "sections": _assassin_sections(len(killed))})
     # v5: 游侠列传 (无地冒险者)
     if facts.get("protagonist", {}).get("landless"):
         articles.append({
             "key": "youxia", "title": "游侠列传·行纪",
             "subject": None, "theme": "萍踪浪迹的漂泊行纪",
+            "focus": "按行纪次序写漂泊: 每至一地的时间、所驻之地、与当地势力的交集",
             "sections": mk_sections("youxia")})
     # v5: 妻族传 (妻妾含公主头衔/中华皇帝之女·姐妹)
     if facts.get("imperial_spouses"):
         articles.append({
             "key": "qizu", "title": "妻族传·帝胄姻亲",
             "subject": None, "theme": "妻族门第 (公主头衔/中华皇帝之女·姐妹)",
+            "focus": "写妻族门第与姻亲牵连 (含妻室自身的经历)",
             "sections": mk_sections("qizu")})
     # v5: 群英录 (行政制角色)
     if facts.get("protagonist", {}).get("government") and \
@@ -1808,6 +1823,7 @@ def build_articles(facts, cache, cfg):
         articles.append({
             "key": "qunying", "title": "群英录·朝堂要员",
             "subject": None, "theme": "同朝要员的群像",
+            "focus": "写同朝要员的名录与浮沉, 以主角为坐标",
             "sections": mk_sections("qunying")})
     # v28: 阴私录 (条件生成 — 有非谋杀隐事 / 家人近臣隐事 / 把柄 才开篇,
     # 避免「27 桩谋杀之秘」这类只与《刺客列传》重复的战役白付两次调用)
@@ -1815,6 +1831,7 @@ def build_articles(facts, cache, cfg):
         articles.append({
             "key": "secrets", "title": "阴私录·隐事秘辛",
             "subject": None, "theme": "隐事与把柄 (主人公不为人知的一面)",
+            "focus": "写隐事的揭底: 何事、涉及何人、自何时见载、有谁知情",
             "sections": mk_sections("secrets")})
     return articles
 
@@ -1905,6 +1922,21 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
         n = F.L.write_miss_report(cfg)
         if n:
             llm.log(f"本地化未命中键 {n} 个已记入 logs/loc_miss.log")
+    except Exception:
+        pass
+    # v34 (问题4): 特质显示名解析失败清单 — 此前静默丢弃 (新 Mod 特质消失),
+    # 现随每次生成落同一份审计日志。
+    try:
+        miss = F.trait_name_miss_report()
+        if miss:
+            _p = os.path.join(cfg.get("log_dir") or "logs", "loc_miss.log")
+            os.makedirs(os.path.dirname(_p), exist_ok=True)
+            with open(_p, "a", encoding="utf-8") as _fp:
+                _fp.write(f"# 特质显示名未解析 {len(miss)} 个 "
+                          f"(计 {sum(miss.values())} 次)\n")
+                for _k, _n in sorted(miss.items(), key=lambda kv: (-kv[1], kv[0])):
+                    _fp.write(f"{_n}\t{_k}\n")
+            llm.log(f"特质显示名未解析 {len(miss)} 个已记入 logs/loc_miss.log")
     except Exception:
         pass
     # 兜底统计 (问题1): 丢弃的裸键行数 — 0 表示全链路干净
