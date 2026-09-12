@@ -291,6 +291,14 @@ def house_display(h):
     return h
 
 
+def _year_of(d):
+    """日期文本 → 四位数年份 (兼容 '872.1.1' 与 '872年' 两式); 取不到返回 ''。"""
+    if d is None:
+        return ""
+    m = re.match(r"\s*(\d{3,4})", str(d))
+    return m.group(1) if m else ""
+
+
 def _disease_dynamic_name(f, cid, typ, year):
     """疾病特质 → **游戏算好的当代疫名** (v35, 问题5)。
 
@@ -308,21 +316,21 @@ def _disease_dynamic_name(f, cid, typ, year):
     hist = f.cache.get("epidemics") or {}
     if not hist or not typ:
         return ""
-    try:
-        yk = int(str(year)[:4])
-    except (TypeError, ValueError):
+    ys = _year_of(year)
+    if not ys:
         return ""
+    yk = int(ys)
     cands = []
     for rec in hist.values():
         if not isinstance(rec, dict) or rec.get("type") != typ:
             continue
         cd = str(rec.get("creation_date") or "")
-        try:
-            cy = int(cd[:4])
-        except ValueError:
+        cy_s = _year_of(cd)
+        if not cy_s:
             continue
+        cy = int(cy_s)
         la = str(rec.get("lost_at") or "")
-        ly = int(la[:4]) if la[:4].isdigit() else None
+        ly = int(_year_of(la)) if _year_of(la) else None
         if cy > yk:
             continue
         if ly is not None and ly < yk:
@@ -2903,7 +2911,7 @@ class Facts:
         fs = rec.get("first_seen")
         if not fs or rec.get("first"):
             return ""
-        return f"{self._year_only(fs)}年见于记载"
+        return f"{self._year_only(fs)}见于记载"
 
     def _blood_kin(self, cid):
         """cid 的**血亲** id 集 (v34, 问题2): 父/母/子女/同胞。
@@ -4379,7 +4387,7 @@ class Facts:
         # 静态雅化词 (「染斑疹伤寒而亡」) 只在判不出疫情时使用。
         if reason in _DEATH_DISEASE_REASON and killer is None:
             _dyn = _disease_dynamic_name(
-                self, cid, _DEATH_DISEASE_REASON[reason], self._year_only(date))
+                self, cid, _DEATH_DISEASE_REASON[reason], _year_of(date))
             if _dyn:
                 return f"染{_dyn}而亡"
         out = ""
@@ -5087,7 +5095,8 @@ class Facts:
                 # 以免同一行里出现两种病名。
                 _dyn = ""
                 if key in _DISEASE_TRAITS and iv.get("from"):
-                    _dyn = _disease_dynamic_name(self, cid, key, d_from)
+                    _dyn = _disease_dynamic_name(
+                        self, cid, key, _year_of(iv.get("from")))
                 if iv.get("from") and not iv.get("to"):
                     spans.append(f"自{d_from}起获得")
                 elif iv.get("from") and iv.get("to"):
@@ -6425,8 +6434,12 @@ def _enslaved_in_span(f, victim, jailer, d0, d1=None):
 
     owner 取监禁者 (`jailer`), 缺省取主角 —— Carnalitas 的「奴役」互动
     (`carn_enslave_interaction`) 只对 `is_imprisoned_by = actor` 的囚犯开放,
-    故奴役者恒为监禁者本人。判据用逐档差分的 `cache["enslavements"]`:
-    区间与 [d0, d1] 有交集即算 (关系不带创建日, 只知首见档)。
+    故奴役者恒为监禁者本人。判据用逐档差分的 `cache["enslavements"]`。
+
+    **容差**: 快照日一律是 1 月 1 日, 所以「873 年 6 月囚禁、8 月释放」这条链
+    在差分记录里可能落到 874.1.1 那一档 (德圣塔实测: 12 名奴隶全记 874.1.1,
+    而囚期是 873.6.2–873.8.1)。因此关系起点晚于出狱日**不超过一年**仍算命中;
+    同样, 关系终点早于入狱日不超过一年也仍算命中。超过一年即判不相干。
 
     命中返回该记录 (调用方只判真假), 未命中返回 None。"""
     if victim is None:
@@ -6447,10 +6460,11 @@ def _enslaved_in_span(f, victim, jailer, d0, d1=None):
     # 两端都缺 → 无法判定
     if fs_k is None and la_k is None:
         return None
-    if la_k is not None and lo is not None and la_k < lo:
-        return None                     # 囚禁开始前已不是奴隶
-    if fs_k is not None and hi is not None and fs_k > hi:
-        return None                     # 出狱之后才成为奴隶
+    # 容差 = 一年 (快照日一律 1 月 1 日, 见上); 两端比较都在年一级做
+    if la_k is not None and lo is not None and la_k[0] + 1 < lo[0]:
+        return None                 # 囚禁开始前一年多已不是奴隶
+    if fs_k is not None and hi is not None and fs_k[0] > hi[0] + 1:
+        return None                 # 出狱一年多之后才成为奴隶
     return rec
 
 

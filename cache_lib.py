@@ -1395,6 +1395,18 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         # v35: 主角的奴隶入目标集 — 否则姓名/宅第/生卒解析不出, 事实层只剩光名
         # (德圣塔档实测: 不进目标集时 9 名奴隶里数人退化成「哈迪雅」这样的单名)。
         targets.update(enslaved_ids(melt, player_id))
+        # v35: 隐事的持有人与知情人也入目标集 —— 《阴私录》的「把柄」行要用他们的
+        # 全称谓; 不进目标集时 `person_label` 落空, 事实层整行被丢
+        # (德圣塔档实测: 贞子的把柄行时有时无)。
+        for _sid, _rec in ((melt.get("secrets") or {}).get("secrets") or {}).items():
+            if not isinstance(_rec, dict):
+                continue
+            for _k in (_rec.get("owner"), _rec.get("target")):
+                if isinstance(_k, int):
+                    targets.add(_k)
+            for _p in (_rec.get("participants") or []):
+                if isinstance(_p, int):
+                    targets.add(_p)
 
     # 玩家主头衔名变化 (v4): 主头衔 title_name_data (custom → name) 或信封名
     if player_id is not None:

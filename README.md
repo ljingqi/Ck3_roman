@@ -538,12 +538,60 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
 - 回归：`tools/verify_v34.py` 新增 `[11]`（9 条断言）；`experiments/verify_lushi.py`
   断言同步（并修掉自 v30 起恒 FAIL 的「先世资料未载」陈旧判据）。
 
+## v35 能力（德圣塔七问题：考据腔清洗 / 家主牵制 / 奴役语义 / 动态病名 / 文风重构 / 快照纪律）
+
+方案与逐条证据见 `docs/方案_v35_德圣塔七问题.md`。
+
+根因两条：**A. 提示词与事实层把「资料」当叙述话题**（`SECTION_REQ` 20 处「以资料为限」、
+`RULES.secret` 的「按资料给出的见载年份落笔」、事实层的「见载 / 【见载年表】 /
+此后再未见释放的记载」）→ 模型照抄成「本篇不细载」「未著其年」「档案只此一行」；
+**B. 数据该给的没给、提示词却硬要**（事实层给把柄行时丢掉了年份，而提示词要求写出
+见载年份）→ 模型只能编「本篇未著其年，则其见载亦在此数年之间」。
+
+- **考据腔清洗（问题1）**：`biography._META_CLAUSE_RE`（新增，整句都是考据话者整句删）
+  + `_META_NOTE_RE` 承载词/否定词**双向扩表**（本篇/档案/册上/记事者… ✕ 不细载/未著/
+  未署/不着一字/莫得而闻/无从深考…）；删净后只剩标点的整段连标点去掉。提示词侧同步
+  剔除「以资料为限／客观平实／别篇」等框架词。
+- **见载年由程序给足（问题2）**：《阴私录》的「把柄」段原先单排 `secret_topic` 而丢掉
+  年份（同块内「艾哈迈德…（自881年见载）」带年、「握有贞子的把柄：暗行巫术」不带年），
+  现统一补 `_first_seen_note`；`_first_seen_note` 改出「N年见于记载」（去「见载」管道词）；
+  `focus` 与 `SECTION_REQ["secrets"]` 不再索要「见载年」，只写话题。
+- **家主牵制（问题3）**：`house_head_hook`（家主对族人的身份自带牵制）在
+  `cache_lib._diff_hooks` **入库前**跳过（`_HOOK_TYPE_SKIP`），`facts.hook_lines` 再兜一层
+  —— 此前 `hook_notable` 判它「不算料」而 `hook_lines` 照样下发，德圣塔档塞进 2 条、
+  马克龙档曾 8 条。
+- **奴役语义（问题4）**：Carnalitas 的 `carn_enslave_effect` 在奴役的**同一刻**执行
+  `release_from_prison = yes`，所以存档里那句「释放」记忆正是「没为奴隶」这一步。
+  新增 `cache_lib._diff_enslavements` 逐档差分 `opinions.active_opinions[*].scripted_relations.slave`
+  → `cache["enslavements"]`（德圣塔 12 条），主教的奴隶入目标集（姓名可解析）；
+  `_pair_imprisonments` 先问 `_enslaved_in_span`，是奴役则写「同日没为奴隶」而不再写「获释」；
+  《阴私录》新增【奴役】块与「把柄」分列。
+- **动态病名（问题5）**：疾病特质（typhus/consumption/smallpox…）渲染时改用**游戏算好的
+  当代疫名**（`epidemics.database[*].name`，如「平原热」「丘陵热」），匹配规则＝同型疫情
+  存续期覆盖患病起点年、优先「触及该角色属地/所在郡」者、再取起始最晚者，判不出回退
+  静态名。实测：主角 872 年伤寒 →「平原热」（疫情 1，870.7.11 起）；家人 880 年伤寒 →
+  「丘陵热」（疫情 50331649，878.9.26 起）。`cache["epidemics"]` 增记 `infections`。
+- **文风系统重构（问题6）**：删 `MID_TAIL_NOTE`；`RULES` 去「资料」框架
+  （`nonfiction`→「落笔所依」、`world_frame`→「自足之世」、`intertext`→「各篇取材」
+  不再写「其余各篇以一句指代」「不相复述」）；`SECTION_REQ` 20 处「以资料为限」清空。
+- **快照纪律（问题7）**：新技能 `.agents/skills/snapshot-testing/SKILL.md` —— 测试一律走
+  快照，同一熔件每会话最多整载一次，`rebuild-cache` 在测试期禁用（改用
+  `tools/rebuild_folder.py`），**不删熔件重熔**（本战役 21 档重新熔化实测约 50 分钟）。
+- 新增工具：`tools/snapdiff.py`（改动前后**事实面**逐字节对照）、
+  `tools/snap_at_head.py`（用 git HEAD 版源码落对照快照）、`tools/snap.py --name=`。
+
+回归：`tools/verify_v35.py`（读快照，七问断言，秒级）＋`tools/check_bio_v35.py`
+（成稿 md 自查）；`tools/verify_fast.py` 全部 PASS。
+
 ## 代码纪律（2026-09-10 用户定规）
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
   `pipeline.py` / `llm.py` 等生产代码之前，先把当前工作树提交为一个检查点，
   保证任何一步都能干净回退。改动分步进行，每步一个提交。
   可执行细则见技能 `.agents/skills/commit-before-destructive/SKILL.md`。
+- **测试走快照，不重熔存档**（v35）：先看 `output/<家族>/data` 有没有现成的
+  `melt_*.json` 与 `snap_*.json`，有就直接用；断言跑在快照上（秒级），
+  熔件每会话最多整载一次。细则见技能 `.agents/skills/snapshot-testing/SKILL.md`。
 - **提示词正向表述**：写给模型的每一句都用「要做什么」表述（见技能 `no-negative-prompts`）。
 - **编码**：Python / JSON / 日志 / output 产物一律 UTF-8，`.bat` 用 GBK（见技能 `utf8-gbk-encoding`）。
 
@@ -584,10 +632,20 @@ python tools\verify_v34_once.py 柳特佩特 38653 878.1.1
                                       + 落快照 + 跑七问断言 (报告 logs/verify_v34_report.txt)
 python tools\verify_v34.py         :: 只读已有快照重跑断言 (秒级)
 python tools\check_bio_v34.py       :: 成稿 md 七问自查
+python tools\verify_v35.py [快照] [--player=38670]
+                                   :: v35 七问断言 (读快照, 秒级)
+python tools\check_bio_v35.py [家族] [md名]
+                                   :: v35 成稿自查 (考据腔/奴役/动态病名)
 
 :: 提速基建（开发/验收用；熔件 100–125MB，载一次要 1–3 分钟，不要反复整载）
+:: 纪律见技能 .agents/skills/snapshot-testing —— 先看有没有现成 melt/snap，有就直接用；
+:: 断言跑在快照上；rebuild-cache 测试期禁用（改用 rebuild_folder.py）；不删熔件重熔。
 & tools\py.ps1 tools\snap.py 周氏 38673 889.1.1 2   :: 落 facts 快照（含各篇 blocks 与逐请求提示词）
+& tools\py.ps1 tools\snap.py 德圣塔 38670 888.1.1 2 --name=snap_x  :: 自定义快照名
 & tools\py.ps1 tools\verify_fast.py                  :: 快速回归（无熔件，秒级）
+& tools\py.ps1 tools\snapdiff.py <旧快照> <新快照> --facts-only  :: 改动前后事实面逐字节对照
+& tools\py.ps1 tools\snap_at_head.py 德圣塔 38670 878.1.1 1      :: 用 git HEAD 版源码落对照快照
+& tools\py.ps1 tools\rebuild_folder.py 德圣塔 38670              :: 只重建这一个战役的缓存
 ```
 
 **素材库纪律（只记录新扫描到的存档）**：
