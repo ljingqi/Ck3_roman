@@ -541,6 +541,12 @@ EMPTY_CACHE = {
     # 存档里「强行纳为侧室」带确切 start_date (forced_me_concubine_marriage_opinion),
     # 这是「劫掠掳人 → 强纳为妾」唯一带日期的记录 (纳妾本身不留记忆)。
     "opinions": {},
+    # v35: 奴役关系逐档差分 (opinions.active_opinions[*].scripted_relations.slave) —
+    # Carnalitas 的 carn_enslave_effect 在奴役的同一刻 `release_from_prison = yes`
+    # (见 Mod common/scripted_effects/carn_slave_effects.txt), 故存档里那句
+    # 「释放」记忆正是「没为奴隶」这一步; 该关系是唯一能把两者区分开的权威数据。
+    # 只收主角为奴隶主的那些 (key = "<主人id>><奴隶id>")。
+    "enslavements": {},
 }
 
 
@@ -1386,6 +1392,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
             if player_id in (_h, _t):
                 targets.add(_h)
                 targets.add(_t)
+        # v35: 主角的奴隶入目标集 — 否则姓名/宅第/生卒解析不出, 事实层只剩光名
+        # (德圣塔档实测: 不进目标集时 9 名奴隶里数人退化成「哈迪雅」这样的单名)。
+        targets.update(enslaved_ids(melt, player_id))
 
     # 玩家主头衔名变化 (v4): 主头衔 title_name_data (custom → name) 或信封名
     if player_id is not None:
@@ -1703,9 +1712,19 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     _diff_epidemics(cache, melt, date_label)
     # v31: 牵制 (hooks) 逐档差分 — 存档只存当前持有的牵制且无创建日
     _diff_hooks(cache, melt, date_label)
+    # v35: 奴役关系逐档差分 — 把「抓人 → 没为奴隶 → 放出牢房」与「真获释」分开
+    _diff_enslavements(cache, melt, date_label)
     # v32: 纳妾类好感 (opinions) 逐档差分 — 「强行纳为侧室」是纳妾唯一带日期的记录
     _diff_opinions(cache, melt, date_label)
     return cache
+
+
+# v35: 牵制类型黑名单 —— `house_head_hook`(家主权) 是**身份自带**的机制牵制,
+# 不是「握有把柄」这一叙事事件: 家主对每个族人天然持有, 玩家档常见 2~8 条
+# (德圣塔对两个儿子各一条)。facts.hook_notable 早已把它判为「不足以单开一篇隐事」,
+# 但 hook_lines 仍会原样下发, 两处口径矛盾 → 《阴私录》里塞满「家主牵制」。
+# 入库前即跳过, 省体积、省差分, 也杜绝下游复用。
+_HOOK_TYPE_SKIP = {"house_head_hook"}
 
 
 def hook_slot_holder(first, second, field):
@@ -1778,6 +1797,8 @@ def _diff_hooks(cache, melt, date_label):
             tp = v.get("type")
             if not tp:
                 continue
+            if str(tp) in _HOOK_TYPE_SKIP:
+                continue
             holder, target = hook_slot_holder(first, second, k)
             want[f"{holder}>{target}>{tp}"] = {
                 "holder": holder, "target": target, "type": str(tp),
@@ -1789,6 +1810,65 @@ def _diff_hooks(cache, melt, date_label):
             hist[key] = dict(v, first_seen=date_label, first=first_snap)
             continue
         rec["expiration"] = v.get("expiration")
+        rec.pop("lost_at", None)
+        rec["last_seen"] = date_label
+    for key, rec in hist.items():
+        if key not in want and not rec.get("lost_at"):
+            rec["lost_at"] = date_label
+
+
+def enslaved_ids(melt, owner_id):
+    """本档被 owner_id 奴役的角色 id 集 (Carnalitas)。
+
+    存档形如::
+
+        opinions.active_opinions = [
+            {"owner": 38670, "target": 14590,
+             "scripted_relations": {"slave": {"flags": "AA=="}}}, …]
+
+    `owner` = 奴隶主, `target` = 奴隶 (与 `slave_owner` 成对, 见 Mod
+    common/scripted_relations/carnal_slave_relations.txt)。"""
+    out = set()
+    for o in (melt.get("opinions") or {}).get("active_opinions") or []:
+        if not isinstance(o, dict) or o.get("owner") != owner_id:
+            continue
+        if "slave" in (o.get("scripted_relations") or {}):
+            t = o.get("target")
+            if isinstance(t, int):
+                out.add(t)
+    return out
+
+
+def _diff_enslavements(cache, melt, date_label):
+    """把本档「主角为奴隶主」的奴役关系并入 cache["enslavements"] (逐档差分)。
+
+    Carnalitas 的 `carn_enslave_effect` 在奴役的**同一刻**对已被囚的奴隶执行
+    `release_from_prison = yes` (Mod common/scripted_effects/carn_slave_effects.txt),
+    所以存档里那句 `released_from_prison_memory` 正是「没为奴隶」这一步 ——
+    只有这层关系能把它与「真获释」区分开。关系本身不带创建日, 逐档差分即得
+    「首次见于记载」的档期。
+
+    记录形如::
+
+        {"38670>14590": {"owner": 38670, "slave": 14590,
+                         "first_seen": "873.1.1", "first": false,
+                         "lost_at": null, "last_seen": "888.1.1"}}
+
+    `first` = 首档即见 (数据起点前已为奴隶); 本档不再出现即记 `lost_at`
+    (被解放 / 转卖 / 死亡)。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return
+    hist = cache.setdefault("enslavements", {})
+    first_snap = len(cache.get("sources") or []) <= 1
+    want = {}
+    for sid in enslaved_ids(melt, pid):
+        want[f"{pid}>{sid}"] = {"owner": pid, "slave": sid}
+    for key, v in want.items():
+        rec = hist.get(key)
+        if rec is None:
+            hist[key] = dict(v, first_seen=date_label, first=first_snap)
+            continue
         rec.pop("lost_at", None)
         rec["last_seen"] = date_label
     for key, rec in hist.items():
@@ -1905,6 +1985,12 @@ def _diff_epidemics(cache, melt, date_label):
                 "creation_date": e.get("creation_date") or date_label,
                 "start_province": e.get("start_province"),
                 "provinces": len(e.get("infections") or {}),
+                # v35 (问题5): 感染省份集 — 判「这场疫是否触及此人属地/所在郡」,
+                # 供疾病特质取该场疫的游戏动态名 (平原热/丘陵热…)。只留前 400 个,
+                # 与 tools/snap.py 的 melt_tables 同口径, 控缓存体积。
+                "infections": sorted(
+                    (int(x) for x in (e.get("infections") or {})
+                     if str(x).isdigit()))[:400],
                 "first_seen": date_label,
                 "first": True,
                 "lost_at": None,
@@ -1915,6 +2001,10 @@ def _diff_epidemics(cache, melt, date_label):
                      ("provinces", len(e.get("infections") or {}))):
             if v not in (None, ""):
                 rec[k] = v
+        _inf = sorted(int(x) for x in (e.get("infections") or {})
+                      if str(x).isdigit())[:400]
+        if _inf:
+            rec["infections"] = _inf
         rec["first"] = False
         rec["last_seen"] = date_label
         rec["lost_at"] = None

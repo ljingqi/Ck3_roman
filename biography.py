@@ -1181,9 +1181,15 @@ def _article_facts(facts, cache, key, section=None):
             if ho:
                 mid_lines.append(style.FACT_WORDING["hook_head_over"])
                 mid_lines.extend(ho)
+            # v35 (问题4): 奴役 (Carnalitas) 与「把柄」分列 —— 「抓人 → 没为奴隶 →
+            # 放出牢房」是一层人身关系, 不是握有把柄; 旧稿把它读成「抓了又放」。
+            en = list(sec.get("enslaved") or [])
+            if en:
+                mid_lines.append(style.FACT_WORDING["enslaved_head"])
+                mid_lines.extend(en)
             _set_block(blocks, "家人近臣隐事", "\n".join(mid_lines))
             if sec.get("events"):
-                blocks["见载年表"] = "\n".join(sec["events"])
+                blocks["隐事纪年"] = "\n".join(sec["events"])
     return blocks
 
 
@@ -1451,29 +1457,69 @@ def _strip_markdown_tables(text):
 # 旧词表只列 资料|史料|史书|文献|典籍|史, 「记载/史册/年录」留在原位, 删词后成
 # 「乔乔何人，记载，其出身官职」式残句 (实测马克龙重跑稿)。宾语改「其+…」通配,
 # 短句一律收进按语一并删去。
+# v35 (问题1): 词表双向扩充 —— 德圣塔实测漏网形态:
+#   「本篇不细载」(×2)「本篇未著其年」「史料未著一字」「档案只此一行」
+#   「记事者未署何时发觉」「档案不著一字」「无从深考」「莫得而闻」「不敢妄断」。
+# 判据 = 承载词 (本篇/档案/册上/记载…) 与否定词 (不细载/未著/未署/不着一字…)
+# 同现即连主语一起删; 两者都不在词表者一律保留 (有「正常句不被误改」用例守门)。
 _META_NOTE_RE = re.compile(
     r"[，,]?\s*(?:据)?(?:资料|史料|史书|文献|典籍|记载|史册|年录|载籍|史笔"
-    r"|正史|实录|旧史|至今|史|今)?\s*"
-    r"(?:亦|也|俱|皆|均|并|尚|又)?\s*"
-    r"(?:未载|不载|未详|无可考|无考|不可考|阙如|失考|未记|缺载|不详)"
-    r"(?:其[^，。；！？\n]{1,10}|其详|其始末|其原委|其由来|始末|先后|前后"
-    r"|缘由|由来|究竟|果真)?\s*[，,]?")
+    r"|正史|实录|旧史|至今|史|今|本篇|本纪|本传|档案|册子|册上|簿册|名册"
+    r"|官册|旧籍|记注|记事者|史官|书册)?\s*"
+    r"(?:亦|也|俱|皆|均|并|尚|又|只|惟|仅|单)?\s*"
+    r"(?:未载|不载|未详|无可考|无考|不可考|阙如|失考|未记|缺载|不详"
+    r"|不细载|不细述|未细载|未著一笔|未著一字|未着一字|未署|无载|未著"
+    r"|未着一字|不着一字|未见详录|未见其详|未及详|莫得而闻|无从深考"
+    r"|不敢妄断|不敢遽断|未可考|无由得知)"
+    r"(?:\s*其[^，。；！？\n]{1,10}|\s*其详|\s*其始末|\s*其原委|\s*其由来"
+    r"|\s*始末|\s*先后|\s*前后|\s*缘由|\s*由来|\s*究竟|\s*果真"
+    r"|\s*何时[^，。；！？\n]{0,6}|\s*何年[^，。；！？\n]{0,6}"
+    r"|\s*何地[^，。；！？\n]{0,6}|\s*何人[^，。；！？\n]{0,6})?\s*[，,]?")
+# v35: 「承载词 + 否定词」连缀的整句按语 (一整句都是考据话, 整句删) ——
+# 「记事者未署何时发觉，亦未署何人最先看破。」「何时见载、何时知情，本篇未著其年，」
+# 这类句子的剩下成分只有「亦/然」等连接词, 逐词删会留残句, 故按整句处理。
+_META_CLAUSE_RE = re.compile(
+    r"[，,]?\s*(?:何时见载|何时知情|见载于何年|何年见载|自何年见载)"
+    r"(?:\s*[、，,]?\s*(?:何时知情|何时见载))?\s*[，,]?\s*"
+    r"(?:(?:本篇|本纪|本传|档案|册子|册上|簿册|名册|官册|旧籍|记注|史料"
+    r"|资料|记载|史册|史笔|史官|记事者)\s*)?"
+    r"(?:亦|也|只|惟|仅|皆|均|俱|并|尚|又)?\s*"
+    r"(?:未载|不载|未详|未著[^，。；！？\n]{0,8}|未署[^，。；！？\n]{0,8}"
+    r"|不著[^，。；！？\n]{0,8}|不详|无从[^，。；！？\n]{0,8}"
+    r"|不可考|无可考|莫得而闻)\s*[，,]?"
+    r"|[，,]?\s*(?:记事者|史官|史笔)\s*"
+    r"(?:亦|也|只|惟|仅|皆|均|俱|并|尚|又)?\s*"
+    r"(?:未署|未言|未明|未记|未载|不载|未详|不著|未著)"
+    r"[^，。；！？\n]{0,14}[。；]\s*"
+    # v35: 「档案只此一行」「记载里也只有一句」式 —— 报道词 + 数量寡少
+    # (第二分句会引出正文引文, 故只吃「，病名」这类补语与常见的「其余一概沉默」)
+    r"|[，,]?\s*(?:档案|记载|史册|史料|资料|册子|册上|簿册|名册|本篇|本纪|本传"
+    r"|记事者|史官|史笔)(?:里)?\s*(?:也|亦|只|惟|仅|均|皆|俱|并|尚|又)?\s*"
+    r"(?:只|惟|仅)?\s*(?:此|有)?\s*一?\s*(?:行|句|言|条|笔|事|语)\s*[。；]?\s*"
+    r"|[，,]?\s*(?:其[余他]|别的|外的)[^，。；！？\n]{0,6}"
+    r"(?:一概沉默|一概从略|别无记述|无可考|不详|不载)\s*[。；]?\s*")
 # 清洗后可能残留的连接符 (，，/，。/、，/ 句首逗号)
 _META_FIXUPS = ((re.compile(r"[，,]{2,}"), "，"),
                 (re.compile(r"[，,]+([。；;！？\n])"), r"\1"),
                 (re.compile(r"([。；;！？\n])[，,]+"), r"\1"),
                 (re.compile(r"^[，,]+"), ""),
-                (re.compile(r"、[，,]"), "，"))
+                (re.compile(r"、[，,]"), "，"),
+                # v35: 按语删净后可能整段只剩标点 → 连标点一并去掉
+                (re.compile(r"^[。；;！？，,\s]+$"), ""))
 
 
 def _strip_meta_notes(text):
     """删去「资料不载/史无可考/…」这类考据按语 (程序端收尾, 不改提示词)。
 
     按语删去后原位补一个逗号, 再由 _META_FIXUPS 收拢多余连接符 —
-    这样「父祖之事，资料不载，唯知…」变成「父祖之事，唯知…」而不是粘连句。"""
+    这样「父祖之事，资料不载，唯知…」变成「父祖之事，唯知…」而不是粘连句。
+    v35: 先删「整句都是考据话」的按语 (_META_CLAUSE_RE), 再删句内按语
+    (_META_NOTE_RE) —— 后者单独用会在「记事者未署何时发觉，亦未署何人最先看破」
+    这类句子上留残句。"""
     if not text:
         return text
-    out = _META_NOTE_RE.sub("，", text)
+    out = _META_CLAUSE_RE.sub("", text)
+    out = _META_NOTE_RE.sub("，", out)
     for pat, rep in _META_FIXUPS:
         out = pat.sub(rep, out)
     return out
@@ -1721,14 +1767,13 @@ def _assassin_sections(n):
         mids = ["mid1", "mid2"]
     else:
         mids = ["mid"]
-    mid_suffix = style.MID_TAIL_NOTE
     secs = [{"key": "lead", "title": style.SECTION_TITLES["assassins"]["lead"],
              "req": style.SECTION_REQ["assassins"]["lead"]}]
     chunk = (n + len(mids) - 1) // len(mids)
     for i, k in enumerate(mids):
         lo, hi = i * chunk, min((i + 1) * chunk, n)
         secs.append({"key": k, "title": style.SECTION_TITLES["assassins"][k],
-                     "req": style.SECTION_REQ["assassins"][k] + mid_suffix,
+                     "req": style.SECTION_REQ["assassins"][k],
                      "slice": (lo, hi)})
     return secs
 
@@ -1755,14 +1800,12 @@ def build_articles(facts, cache, cfg):
     def mk_sections(key):
         titles = style.SECTION_TITLES.get(key, {})
         defaults = {"lead": "开篇", "mid": "纪事"}
-        mid_suffix = style.MID_TAIL_NOTE
         return [{
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
             "req": _section_req(
                        style.SECTION_REQ.get(key, {}).get(sk)
-                       or "按传记笔法写作, 以资料为限。", facts)
-                   + (mid_suffix if sk != "lead" else ""),
+                       or "按传记笔法写作。", facts),
         } for sk in sec_keys]
     articles = [
         {"key": "benji", "title": f"本纪·{pname}", "subject": None,
@@ -1840,7 +1883,10 @@ def build_articles(facts, cache, cfg):
         articles.append({
             "key": "secrets", "title": "阴私录·隐事秘辛",
             "subject": None, "theme": "隐事与把柄 (主人公不为人知的一面)",
-            "focus": "写隐事的揭底: 何事、涉及何人、自何时见载、有谁知情",
+            # v35 (问题2): 旧 focus 写「自何时见载」, 与板块要求一起逼模型产出
+            # 「见载年」这一元数据; 数据给不齐时就编出「本篇未著其年」。现只写话题,
+            # 年份由事实层的「N年见于记载」给足。
+            "focus": "写隐事的揭底: 何事、涉及何人、事在何年、有谁知情",
             "sections": mk_sections("secrets")})
     return articles
 

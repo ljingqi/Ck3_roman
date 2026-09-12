@@ -175,6 +175,17 @@ _PEER_SLOT_TYPES = {
 # 872→876 / 878→), 不进「特质履历」; **当前持有仍写入「为人」**,
 # 「878年公主怀孕」是有用事实, 只有履历噪声要去掉。
 _TRANSIENT_TRAITS = {"pregnant", "ill", "wounded_1", "wounded_2", "wounded_3"}
+# v35 (问题5): 疫情类疾病特质 —— 取游戏算好的当代疫名而非特质静态名
+# (键取自 common/epidemics/00_epidemics.txt 的 `trait =` 行)。
+_DISEASE_TRAITS = frozenset({"smallpox", "bubonic_plague", "typhus", "consumption",
+                             "measles", "dysentery", "ergotism"})
+# v35 (问题5): 疫情类**死因键** → 疾病特质键 (取动态疫名用)。
+_DEATH_DISEASE_REASON = {
+    "death_typhus": "typhus", "death_smallpox": "smallpox",
+    "death_bubonic_plague": "bubonic_plague",
+    "death_consumption": "consumption", "death_measles": "measles",
+    "death_dysentery": "dysentery", "death_ergotism": "ergotism",
+}
 
 # v34 (问题1, 用户拍板「不留」): 生育能力类特质属**史官不可知**的身体隐微 —
 # 「不育」写在《本纪》里等于告诉读者主角的生育力, 而史官只见他子女绕膝。
@@ -278,6 +289,81 @@ def house_display(h):
     if len(h) == 1 and "\u4e00" <= h <= "\u9fff":
         return h + "氏"
     return h
+
+
+def _disease_dynamic_name(f, cid, typ, year):
+    """疾病特质 → **游戏算好的当代疫名** (v35, 问题5)。
+
+    游戏为每场疫情随机取名并写进存档 (`epidemics.database[*].name`), 例如伤寒一律
+    显示为「平原热」「丘陵热」「露营热」等 (see common/epidemics/00_epidemics.txt 的
+    `name` 块, 其中 `epidemic_terrain_fever` 即
+    `[ROOT.Epidemic.GetStartingOutbreakProvince.GetTerrain.GetNameNoTooltip|U]热`);
+    而特质静态名 `trait_typhus` 只是「伤寒」。旧稿渲染特质履历时用静态名, 于是
+    「第一次在法国得伤寒、第二次在瑞典得伤寒」都写成了「伤寒」, 动态名未生效。
+
+    取法: 在 cache["epidemics"] 里找同型 (type == 疾病特质键) 的疫情, 其存续期
+    (`creation_date` … `lost_at`) 覆盖该角色患病起点年 `year` 者;
+    优先「玩家属地/所在郡曾被该疫感染」的那一场 (`hit_prov`), 否则取同型中
+    起始最晚者。判不出返回 '' (调用方回退静态名, 行为与旧版一致)。"""
+    hist = f.cache.get("epidemics") or {}
+    if not hist or not typ:
+        return ""
+    try:
+        yk = int(str(year)[:4])
+    except (TypeError, ValueError):
+        return ""
+    cands = []
+    for rec in hist.values():
+        if not isinstance(rec, dict) or rec.get("type") != typ:
+            continue
+        cd = str(rec.get("creation_date") or "")
+        try:
+            cy = int(cd[:4])
+        except ValueError:
+            continue
+        la = str(rec.get("lost_at") or "")
+        ly = int(la[:4]) if la[:4].isdigit() else None
+        if cy > yk:
+            continue
+        if ly is not None and ly < yk:
+            continue
+        cands.append((rec, cy))
+    if not cands:
+        return ""
+    mine = _battlefield_provinces(f, cid)
+    def _hit(rec):
+        inf = {int(x) for x in (rec.get("infections") or [])
+               if isinstance(x, int) or str(x).isdigit()}
+        return bool(mine & inf)
+    hits = [c for c in cands if _hit(c[0])] if mine else []
+    pool = hits or cands
+    pool.sort(key=lambda c: c[1])
+    return str(pool[-1][0].get("name") or "")
+
+
+def _battlefield_provinces(f, cid):
+    """角色相关省份集 (封地首府 + 驻地 + 当前位置); 判疫情是否触及该角色。"""
+    out = set()
+    rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
+    ld = rec.get("landed") or {}
+    for t in (ld.get("domain") or []):
+        cap = ((f._lt or {}).get(str(t)) or {}).get("capital")
+        if isinstance(cap, int):
+            out.add(cap)
+    for key in ("domicile_province",):
+        v = ld.get(key)
+        if isinstance(v, int):
+            out.add(v)
+    ll = rec.get("last_location") or {}
+    if isinstance(ll.get("province"), int):
+        out.add(ll["province"])
+    try:
+        loc = f.character_location_province(cid)
+        if isinstance(loc, int):
+            out.add(loc)
+    except Exception:
+        pass
+    return out
 
 
 def _dynasty_display(dn, hn):
@@ -2806,11 +2892,18 @@ class Facts:
         return out
 
     def _first_seen_note(self, rec):
-        """隐事首见标注: 「自873年见载」; 首档即见 (数据起点前已有) 返回 ''。"""
+        """隐事年份短语 (v35): 「879年见于记载」; 无年可给返回 ''。
+
+        v35 之前是「自879年见载」并以括注形态 `（自879年见载）` 进入正文 —— 「见载」
+        是数据管道词, 模型照抄成满篇考据按语 (德圣塔实测「何时见载、何时知情, 本篇
+        未著其年」)。现改为一句陈述里的年份成分「N年见于记载」, 由调用方决定是并入
+        主题括注还是另起一句。
+        首档即见 (数据起点前已有) 无年份可给 → 返回 ''; 提示词侧不再点名索要年份,
+        模型手里没有年份时也就不会去编「未著其年」。"""
         fs = rec.get("first_seen")
         if not fs or rec.get("first"):
             return ""
-        return f"自{self._year_only(fs)}见载"
+        return f"{self._year_only(fs)}年见于记载"
 
     def _blood_kin(self, cid):
         """cid 的**血亲** id 集 (v34, 问题2): 父/母/子女/同胞。
@@ -2977,8 +3070,9 @@ class Facts:
         s = f"{owner}有一桩隐事：{topic}"
         note = self._first_seen_note(rec)
         if note:
+            note = f"（{note}）"
             # 主题自带括注 (科举舞弊（涉及X）) 时并入同一括号, 不叠两层括号
-            s = s[:-1] + f"，{note}）" if s.endswith("）") else s + f"（{note}）"
+            s = s[:-1] + f"，{note[1:]}" if s.endswith("）") else s + note
         return s + "。"
 
     def secret_knowers(self, rec, self_cid=None):
@@ -3231,12 +3325,21 @@ class Facts:
         return _FACT_WORDING["hook_since"].format(
             year=self._year_only(rec["first_seen"]))
 
+    # v35 (问题3): 家主牵制不入事实层 —— `house_head_hook` 是**家主身份自带**的机制
+    # 牵制 (家主对其每个族人天然持有), 不是「握有把柄」这一叙事事件。v31 起
+    # `hook_notable` 已把它判为「不足以单开一篇隐事」, 但 `hook_lines` 仍原样下发,
+    # 于是《阴私录》里塞满「主角握有对两个儿子的『家主』牵制」(德圣塔档 2 条,
+    # 马克龙档曾 8 条), 与用户「强牵制太泛滥」的判断一致。cache_lib 已在入库前跳过
+    # (见 `_HOOK_TYPE_SKIP`), 此处对旧缓存再兜一层。
+    _HOOK_TYPE_SKIP = frozenset({"house_head_hook"})
+
     def hook_lines(self):
         """牵制事实 (v31, 问题5): {"held": [主角握有的], "over": [他人对主角的]}。
 
         方向: 取缓存已定好的 `holder`/`target`（v33 起由 `cache_lib.hook_slot_holder`
         按 `active_hook_<N>` 槽号判定 —— first/second 只是按键规范化的成对编号）。
-        强弱取游戏 `common/hook_types` 的 `strong`; 同型多条归并成一行 (家主牵制对诸子 8 条)。
+        强弱取游戏 `common/hook_types` 的 `strong`; 同型多条归并成一行。
+        家主牵制 (`house_head_hook`) 按身份自带机制略去 (v35, 见 `_HOOK_TYPE_SKIP`)。
         只出 as_of 之前已见、且 as_of 时仍持有者 (逐档差分记录 lost_at)。"""
         pid = self.cache.get("player_id")
         if pid is None:
@@ -3245,6 +3348,8 @@ class Facts:
         recs = []
         for rec in (self.cache.get("hooks") or {}).values():
             if not isinstance(rec, dict):
+                continue
+            if str(rec.get("type") or "") in self._HOOK_TYPE_SKIP:
                 continue
             fs, la = rec.get("first_seen"), rec.get("lost_at")
             if ao is not None and fs and cl.date_key(fs) > ao:
@@ -3299,6 +3404,86 @@ class Facts:
             if lines:
                 out[direction] = lines
         return out
+
+    def _is_slave_of(self, slave, owner=None, date=None):
+        """slave 在 date 时点是否为 owner (缺省=主角) 的奴隶 (cache["enslavements"])。
+
+        判据 = 逐档差分记录: first_seen ≤ date 且 (lost_at 为空或 > date)。"""
+        pid = self.cache.get("player_id")
+        owner = pid if owner is None else owner
+        if slave is None or owner is None:
+            return False
+        rec = (self.cache.get("enslavements") or {}).get(f"{owner}>{slave}")
+        if not isinstance(rec, dict):
+            return False
+        dk = cl.date_key(date) if date else (
+            cl.date_key(self.as_of) if self.as_of else None)
+        fs, la = rec.get("first_seen"), rec.get("lost_at")
+        if dk is not None and fs and cl.date_key(fs) > dk:
+            return False
+        if dk is not None and la and cl.date_key(la) <= dk:
+            return False
+        return True
+
+    def enslaved_lines(self):
+        """奴役事实 (v35, 问题4): 主角为奴隶主的那些人。
+
+        Carnalitas 的 `carn_enslave_effect` 在奴役的**同一刻**对已被囚的奴隶执行
+        `release_from_prison = yes`, 所以存档里那句「释放」记忆正是「没为奴隶」这一步;
+        只有这层关系 (`opinions.active_opinions[*].scripted_relations.slave`,
+        缓存 `enslavements`) 能把两者区分开。旧稿把「抓人 → 没为奴隶 → 放出牢房」
+        整个读成了「抓了又放」, 正是缺了这条。
+
+        返回 {"lines": [...], "head": bool} — 逐条 = 「X没为Y的奴隶（Z年起）。」;
+        超三人时归并成一行 (与牵制同口径)。无奴役时返回 {}。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return {}
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        recs = []
+        for rec in (self.cache.get("enslavements") or {}).values():
+            if not isinstance(rec, dict):
+                continue
+            fs, la = rec.get("first_seen"), rec.get("lost_at")
+            if ao is not None and fs and cl.date_key(fs) > ao:
+                continue
+            if ao is not None and la and cl.date_key(la) <= ao:
+                continue
+            if not isinstance(rec.get("slave"), int):
+                continue
+            recs.append(rec)
+        if not recs:
+            return {}
+        recs.sort(key=lambda r: cl.date_key(r.get("first_seen") or "9999.9.9"))
+        W = _FACT_WORDING
+        plabel = self.person_label(pid, style="brief") or "主角"
+        names = []
+        for r in recs:
+            nm = self.person_label(r["slave"], style="brief") or ""
+            if nm:
+                names.append((r, nm))
+        if not names:
+            return {}
+        out = []
+        if len(names) > 3:
+            first = names[0][0]
+            shown = "、".join(nm for _r, nm in names[:3])
+            extra = W["enslaved_group_extra"].format(n=len(names))
+            out.append(W["enslaved_group"].format(
+                actor=plabel, names=shown, extra=extra,
+                year=self._year_only(first.get("first_seen"))))
+        else:
+            for r, nm in names:
+                fs = r.get("first_seen")
+                if r.get("first") or not fs:
+                    # 首档即见: 起年不可知, 只写事 (不给空年份)
+                    out.append(W["enslaved_line"].format(
+                        slave=nm, actor=plabel))
+                else:
+                    out.append(W["enslaved_line_since"].format(
+                        slave=nm, actor=plabel,
+                        year=self._year_only(fs)))
+        return {"lines": out}
 
     def forced_concubine_lines(self):
         """强纳为妾事实 (v32, 问题1): 逐条 = 「880年1月1日，主角强纳戈迪娜·迭戈斯为妾。」。
@@ -4190,6 +4375,13 @@ class Facts:
             killer = d.get("killer")
         if date is None:
             date = d.get("date")
+        # v35 (问题5): 疫情类死因用游戏算好的当代疫名 (「染丘陵热而亡」),
+        # 静态雅化词 (「染斑疹伤寒而亡」) 只在判不出疫情时使用。
+        if reason in _DEATH_DISEASE_REASON and killer is None:
+            _dyn = _disease_dynamic_name(
+                self, cid, _DEATH_DISEASE_REASON[reason], self._year_only(date))
+            if _dyn:
+                return f"染{_dyn}而亡"
         out = ""
         if killer is None:
             out = _death_clause(self.table, reason, None, lambda k: "")
@@ -4867,7 +5059,12 @@ class Facts:
         v31 (问题1): 体况瞬时特质 (怀孕/患病/受伤) 的得而复失只是状态回摆,
         不进履历 — 生育事实由「添丁进口」记忆承载, 这里只留性情/才具/名声等
         真正构成「履历」的特质。
-        日期只保留年 (快照差分日期全是 1月1日, 日内粒度无意义)。"""
+        日期只保留年 (快照差分日期全是 1月1日, 日内粒度无意义)。
+        v35 (问题5): **疾病类特质用游戏算好的当代疫名** —— 伤寒在存档里叫「平原热」
+        「丘陵热」「露营热」等 (`epidemics.database[*].name`), 旧稿一律写静态名
+        「伤寒」, 于是「第一次在法国得伤寒、第二次在瑞典得伤寒」写成同一句话。
+        同型多场疫并存时取「触及本角色属地/所在郡」者, 再取起始最晚者; 判不出
+        回归静态名。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
         ao = cl.date_key(self.as_of) if self.as_of else None
@@ -4886,12 +5083,19 @@ class Facts:
                     continue  # v24: 首见即具 — 无信息量, 略去
                 d_from = self._year_only(iv.get("from"))
                 d_to = self._year_only(iv.get("to"))
+                # v35: 疾病类特质按当代疫名写 (平原热/丘陵热…), 只在首次出现处换名,
+                # 以免同一行里出现两种病名。
+                _dyn = ""
+                if key in _DISEASE_TRAITS and iv.get("from"):
+                    _dyn = _disease_dynamic_name(self, cid, key, d_from)
                 if iv.get("from") and not iv.get("to"):
                     spans.append(f"自{d_from}起获得")
                 elif iv.get("from") and iv.get("to"):
                     spans.append(f"自{d_from}起获得，自{d_to}后消失")
                 elif iv.get("to"):
                     spans.append(f"至{d_to}后消失")
+                if _dyn:
+                    z = _dyn
             if spans:
                 lines.append(f"{z}（{'；'.join(spans)}）")
         # v32 (问题2): 轨道进档履历 — 「不法之徒·强盗（自872年起进至二阶）」
@@ -6216,6 +6420,40 @@ def _prison_span(d0, d1):
     return W["prison_years"].format(y=y)
 
 
+def _enslaved_in_span(f, victim, jailer, d0, d1=None):
+    """victim 在囚期 [d0, d1] 内是否被没为奴隶 (v35, 问题4)。
+
+    owner 取监禁者 (`jailer`), 缺省取主角 —— Carnalitas 的「奴役」互动
+    (`carn_enslave_interaction`) 只对 `is_imprisoned_by = actor` 的囚犯开放,
+    故奴役者恒为监禁者本人。判据用逐档差分的 `cache["enslavements"]`:
+    区间与 [d0, d1] 有交集即算 (关系不带创建日, 只知首见档)。
+
+    命中返回该记录 (调用方只判真假), 未命中返回 None。"""
+    if victim is None:
+        return None
+    owner = jailer
+    if owner is None:
+        owner = f.cache.get("player_id")
+    if owner is None:
+        return None
+    rec = (f.cache.get("enslavements") or {}).get(f"{owner}>{victim}")
+    if not isinstance(rec, dict):
+        return None
+    lo = cl.date_key(str(d0)) if d0 else None
+    hi = cl.date_key(str(d1)) if d1 else None
+    fs, la = rec.get("first_seen"), rec.get("lost_at")
+    fs_k = cl.date_key(str(fs)) if fs else None
+    la_k = cl.date_key(str(la)) if la else None
+    # 两端都缺 → 无法判定
+    if fs_k is None and la_k is None:
+        return None
+    if la_k is not None and lo is not None and la_k < lo:
+        return None                     # 囚禁开始前已不是奴隶
+    if fs_k is not None and hi is not None and fs_k > hi:
+        return None                     # 出狱之后才成为奴隶
+    return rec
+
+
 def _pair_imprisonments(events, f, pid, pname=""):
     """同一被囚者的入狱与获释合成一行 (问题5); 双视角同一囚禁事件只留一条。"""
     ins, outs = [], []
@@ -6306,12 +6544,19 @@ def _pair_imprisonments(events, f, pid, pname=""):
             W = _style.FACT_WORDING
             body = W["prison_jailed"].format(jailer=jn, victim=vn) if jn \
                 else W["prison_held"].format(victim=vn)
+            # v35 (问题4): 出狱缘由先问「这一步是不是没为奴隶」——
+            # Carnalitas 的 carn_enslave_effect 在奴役的同一刻 release_from_prison,
+            # 所以那句「释放」记忆常是「没为奴隶」而不是「获释」。
+            owned = _enslaved_in_span(f, victim, r["jailer"],
+                                      r["date"], out["date"] if out else None)
             if out is not None:
                 used.add(out["idx"])
                 drop.add(out["idx"])
                 span = _prison_span(r["date"], out["date"])
                 same = span == W["prison_same_day"]
-                if out.get("escape"):
+                if owned is not None and not out.get("escape"):
+                    body += W["prison_enslaved"]
+                elif out.get("escape"):
                     # v32: 越狱者不在「获释」之列 —— 出狱方式按记忆型分词
                     body += W["prison_escape_same_day"] if same else (
                         W["prison_escaped"].format(span=span) if span
@@ -6321,10 +6566,13 @@ def _pair_imprisonments(events, f, pid, pname=""):
                         W["prison_released"].format(span=span) if span
                         else W["prison_release_on"].format(
                             date=f.date(out["date"])))
+            elif owned is not None:
+                # 无释放记忆、但在押期间已没为奴隶 → 出狱缘由即此
+                body += W["prison_enslaved"]
             else:
                 # v34 (问题7): 记得到此为止 — 释放记忆与 prison_data 都无闭合证据时,
-                # 程序明说「再未见释放的记载」, 不把沉默留给模型去补
-                # (旧稿此处留白, 模型把「囚期未着一字」补成了「获释」)。
+                # 程序把「此后如何」说全, 不把沉默留给模型去补
+                # (旧稿此处留白, 模型把囚期留白补成了「获释」)。
                 body += W["prison_still_held"]
             e = events[r["idx"]]
             e["text"] = f"{f.date(r['date'])}，{body}。"
@@ -8665,6 +8913,11 @@ def _secrets_facts(f):
     if kin_lines:
         out["kinsmen"] = kin_lines[:10]
     # 主角握有的他人把柄 (v28b: 按对方持有人归并, 主角名只写一次)
+    # v35 (问题2): 每桩**必须带年份** —— 旧稿此段单排 `secret_topic` 而丢掉
+    # `_first_seen_note`, 于是同一块里「艾哈迈德…(自881年见载)」带年、而
+    # 「握有贞子的把柄：暗行巫术」不带年; 提示词又要求写出见载年份, 模型只能写
+    # 「何时见载、何时知情, 本篇未著其年, 则其见载亦在此数年之间」(德圣塔实测)。
+    # 年份由程序给足, 提示词侧不再索要。
     groups = {}
     for rec in f.secrets_known_by(pid, cut):
         o = rec.get("owner")
@@ -8675,7 +8928,16 @@ def _secrets_facts(f):
         owner = f.person_label(oid, style="brief")
         if not owner:
             continue
-        topics = [t for t in (f.secret_topic(r, self_cid=pid) for r in recs) if t]
+        topics = []
+        for r in recs:
+            t = f.secret_topic(r, self_cid=pid)
+            if not t:
+                continue
+            note = f._first_seen_note(r)
+            if note:
+                # 主题自带括注 (科举舞弊（涉及X）) 时并入同一括号, 不叠两层
+                t = t[:-1] + f"，{note}）" if t.endswith("）") else t + f"（{note}）"
+            topics.append(t)
         if not topics:
             continue
         known.append(f"{plabel}握有{owner}的把柄：" + "；".join(topics) + "。")
@@ -8707,19 +8969,25 @@ def _secrets_facts(f):
         s = f.secret_line(dict(rec, first=True), owner_label=olabel,
                           knowers=False, self_cid=pid)
         if s:
-            # 事件行前缀已给日期, 句内不再重复「自X年见载」
+            # 事件行前缀已给日期, 句内不再重复年份
             events.append(f"{f.date(fs)}，{s}")
     if events:
         out["events"] = sorted(set(events))[:12]
     # v31 (问题5): 牵制 (把柄维度) — 主角握有 / 他人握有对主角的。
     # 用户决策: 牵制只随《阴私录》下发, 不进《本纪》。
+    # v35 (问题3): 家主牵制按身份自带机制略去 (见 Facts._HOOK_TYPE_SKIP)。
     hl = f.hook_lines()
     if hl.get("held"):
         out["hooks_held"] = hl["held"]
     if hl.get("over"):
         out["hooks_over"] = hl["over"]
+    # v35 (问题4): 奴役 (Carnalitas) 单独成块 —— 旧稿把「没为奴隶」整个读成
+    # 「抓了又放」, 因为奴役关系从未进过缓存; 现由 cache["enslavements"] 直出。
+    en = f.enslaved_lines()
+    if en.get("lines"):
+        out["enslaved"] = en["lines"]
     out["any"] = bool(out.get("held") or out.get("kinsmen") or out.get("known")
-                      or f.hook_notable())
+                      or out.get("enslaved") or f.hook_notable())
     return out
 
 
