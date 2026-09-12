@@ -176,6 +176,14 @@ _PEER_SLOT_TYPES = {
 # 「878年公主怀孕」是有用事实, 只有履历噪声要去掉。
 _TRANSIENT_TRAITS = {"pregnant", "ill", "wounded_1", "wounded_2", "wounded_3"}
 
+# v34 (问题1, 用户拍板「不留」): 生育能力类特质属**史官不可知**的身体隐微 —
+# 「不育」写在《本纪》里等于告诉读者主角的生育力, 而史官只见他子女绕膝。
+# 这类特质在**公开档案**(surface) 的「为人」句中整体隐去, 只保留在内部版档案里。
+_FERTILITY_TRAITS = frozenset({
+    "infertile", "infertile_male", "infertile_female", "sterile",
+    "fertile", "fecund", "lustful_fertility",
+})
+
 # v31 (问题1): 「为人」句的类别顺序与每类上限 (超限加「等」)
 _TRAIT_GROUP_ORDER = ("personality", "education", "lifestyle", "commander",
                       "fame", "health", "childhood", "court_type", "")
@@ -193,6 +201,16 @@ _AFFAIR_SLOTS = {
 # v31 (问题7): 这些隐事的 target 即对方当事人 (存档 participants 只列持有人),
 # 算「当事人」而非第三方知情者
 _SECRET_PARTY_TARGET_TYPES = {"secret_lover", "secret_adultery"}
+
+# v34 (问题2): 乱伦隐事在存档里**不记对方** (`target` 恒为空数组, 双方各持一条),
+# 但对方可由「持有人的血亲 ∩ 与持有人的性/情记忆」判定。
+# 血亲只认**血缘** (父/母/子女/同胞); 姻亲 (配偶) 不算 — 否则夫妻同房会被写成乱伦。
+_SEX_MEM_TYPES = ("had_sex", "became_lovers", "became_soulmates", "developed_crush")
+_SEX_MEM_OTHER_KEYS = ("sex_partner", "new_relation", "new_soulmate")
+
+# 「乱伦」主题模板: 判出对方时写明, 判不出时退不带对象的形态
+SECRET_INCEST_TOPIC = "乱伦（与{target}）"
+SECRET_INCEST_TOPIC_ANON = "乱伦"
 
 # 记忆类型 → 取 vars 中的 landed_title (头衔 id)
 TITLE_VAR_TYPES = {"lost_title_memory", "ascended_throne_memory"}
@@ -2514,20 +2532,53 @@ class Facts:
                     continue
         return holder
 
+    def _my_realm_tids(self):
+        """主角所处政权的头衔 id 集 (v34, 问题3):
+        主角首要头衔 + 其上位链上的全部头衔。朝廷职司 (`e_minister_*`) 的
+        `de_facto_liege` 落在这个集合里, 才算「主角所处朝廷的职司」。
+        独立领主上位链到顶, 集合即其自身领地头衔 → 别国职司不再混入。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return set()
+        out = set()
+        _tier, ptid = self._primary_title_at(pid)
+        if ptid is not None:
+            out.add(int(ptid))
+            for tid, _h in self.liege_chain(ptid) or []:
+                out.add(int(tid))
+        if not out:
+            # 无地冒险者等无头衔情形: 取玩家营地/庄园头衔
+            ld = ((self.cache.get("characters") or {}).get(str(pid)) or {}).get("landed") or {}
+            for x in ld.get("domain") or []:
+                if isinstance(x, int):
+                    out.add(int(x))
+        return out
+
+    def _realm_title_set(self):
+        """兼容别名 (v34): 见 `_my_realm_tids`。"""
+        return self._my_realm_tids()
+
     def _current_ministers(self, date=None):
         """朝廷职司在 date (缺省熔件当前) 的持有者 →
         ['兵部尚书任清', …] (朝局风云录·朝廷职司用)。
         v28: 输出形态改为「官职词+人名」— 此前「兵部：任清（兵部尚书）」把
         「部名」与「官职词」写了两遍。官职词取不到时才退「部名：人名」。
         v28b: **按 as_of 取时任者** — 此前一律取熔件当前 holder, 十年传记会把
-        后来的任命写进早期十年 (田所2 @878 写出 883 年才上任的宰相)。"""
+        后来的任命写进早期十年 (田所2 @878 写出 883 年才上任的宰相)。
+        v34 (问题3): **只收主角所处政权的职司** — 此前遍历全图所有
+        `e_minister_*`, 于是贝内文托亲王的《朝局风云录》里永远挂着唐六部
+        (实测 9 个职司的 de_facto_liege 全为 h_china)。"""
         d = date if date is not None else self.as_of
+        mine = self._my_realm_tids()
         out = []
         for tid, t in self._lt.items():
             if not isinstance(t, dict):
                 continue
             key = t.get("key") or ""
             if not key.startswith("e_minister_"):
+                continue
+            lc = t.get("de_facto_liege")
+            if mine and lc not in mine:
                 continue
             holder = self.holder_at(int(tid), d)
             if not isinstance(holder, int):
@@ -2543,13 +2594,18 @@ class Facts:
         return out
 
     def minister_ids(self, date=None):
-        """朝廷职司 (e_minister_*) 在 date 的持有者 id 列表 (要员隐事取材用)。"""
+        """朝廷职司 (e_minister_*) 在 date 的持有者 id 列表 (要员隐事取材用)。
+        v34 (问题3): 与 `_current_ministers` 同口径 — 只取主角所处政权的职司。"""
         d = date if date is not None else self.as_of
+        mine = self._my_realm_tids()
         out = []
         for tid, t in self._lt.items():
             if not isinstance(t, dict):
                 continue
             if not (t.get("key") or "").startswith("e_minister_"):
+                continue
+            lc = t.get("de_facto_liege")
+            if mine and lc not in mine:
                 continue
             h = self.holder_at(int(tid), d)
             if isinstance(h, int) and h not in out:
@@ -2590,6 +2646,83 @@ class Facts:
             return ""
         return f"自{self._year_only(fs)}见载"
 
+    def _blood_kin(self, cid):
+        """cid 的**血亲** id 集 (v34, 问题2): 父/母/子女/同胞。
+        姻亲 (配偶/前配偶/妾) 一律不算 — 乱伦只认血缘。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fam = rec.get("family") or {}
+        out = set()
+        for key in ("father", "mother", "child", "siblings"):
+            for x in fam.get(key) or []:
+                if isinstance(x, int) and x != cid:
+                    out.add(x)
+        # 自己作为对方 family 里的 father/mother/child/siblings 出现的反向关系
+        # (缓存已做反向合并, 此处兜底熔件侧同一字段)
+        for _cid, r in (self.cache.get("characters") or {}).items():
+            rf = (r.get("family") or {})
+            if cid in (rf.get("father") or []) or cid in (rf.get("mother") or []):
+                try:
+                    out.add(int(_cid))
+                except (TypeError, ValueError):
+                    continue
+        return out
+
+    def _sex_partner_mems(self, cid):
+        """cid 的性/情记忆 [(日期, 对方 id)], 按日期升序 (v34, 问题2)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        out = []
+        for m in rec.get("memories") or []:
+            t = str(m.get("type") or "")
+            if not t.startswith(_SEX_MEM_TYPES):
+                continue
+            parts = m.get("participants") or {}
+            other = None
+            for slot in _SEX_MEM_OTHER_KEYS:
+                v = parts.get(slot)
+                if isinstance(v, int) and v != cid:
+                    other = v
+                    break
+            if other is None:
+                # 兜底: 取唯一一个非本人的 int 参与者
+                cands = [v for v in parts.values()
+                         if isinstance(v, int) and v != cid]
+                if len(cands) == 1:
+                    other = cands[0]
+            if other is not None:
+                out.append((str(m.get("creation_date") or ""), other))
+        out.sort(key=lambda x: cl.date_key(x[0]) if x[0] else (0, 0, 0))
+        return out
+
+    def _secret_partner(self, rec):
+        """乱伦等「对方不入档」的隐事 → 对方 id (判不出返回 None)。
+
+        v34 (问题2): 存档的 `secret_incest` 只有持有人 (`target` 为空数组),
+        对方靠**血亲 ∩ 性/情记忆**判定: 取「与持有人的性/情记忆对象中,
+        同时是持有人血亲」的那一个; 多条候选取日期最早者 (关系之始)。
+        姻亲不算血亲 — 主角是当事人配偶, 不能被判成乱伦对象。
+        """
+        if not isinstance(rec, dict):
+            return None
+        owner = rec.get("owner")
+        if not isinstance(owner, int):
+            return None
+        kin = self._blood_kin(owner)
+        if not kin:
+            return None
+        for d, other in self._sex_partner_mems(owner):
+            if other in kin:
+                return other
+        return None
+
+    def _secret_partner_label(self, rec, self_cid=None):
+        """对方称谓 (person_label brief; 本人写「自己」)。判不出返回 ''。"""
+        o = self._secret_partner(rec)
+        if o is None:
+            return ""
+        if self_cid is not None and o == self_cid:
+            return "自己"
+        return self.person_label(o, style="brief") or ""
+
     def secret_topic(self, rec, self_cid=None):
         """隐事主题短语 (不含持有人): 「在张朴主持的乡试中舞弊」/「谋害叠溪寋」/
         「与阿足私通」; 未收录类型回退游戏本地化类型名 (取不到返回 '')。
@@ -2611,6 +2744,12 @@ class Facts:
             lvl = self._exam_level_for_secret(rec.get("owner"), rec.get("first_seen"))
             where = f"{tname}主持的{lvl}" if tname else (lvl or "科考")
             return f"在{where or '科考'}中舞弊" if (tname or lvl) else "科考舞弊"
+        if tp == "secret_incest":
+            # v34 (问题2): 对方不入档, 由「血亲 ∩ 性/情记忆」判定 (姻亲不算);
+            # 判不出时退不带对象的形态 — 交程序判定, 不给模型发散空间。
+            pn = self._secret_partner_label(rec, self_cid=self_cid)
+            return (SECRET_INCEST_TOPIC.format(target=pn) if pn
+                    else SECRET_INCEST_TOPIC_ANON)
         tpl = SECRET_TOPICS.get(tp)
         if tpl:
             if "{target}" in tpl:
@@ -2692,6 +2831,12 @@ class Facts:
         if (rec.get("type") or "") in _SECRET_PARTY_TARGET_TYPES \
                 and isinstance(rec.get("target"), int):
             parties.add(rec["target"])
+        # v34 (问题2): 乱伦的对方不在 target 里, 但已被判出 → 也是当事人,
+        # 不能同时出现在「知情者」名单里 (同义反复)。
+        if (rec.get("type") or "") == "secret_incest":
+            _p = self._secret_partner(rec)
+            if isinstance(_p, int):
+                parties.add(_p)
         seen = self._year_only(rec.get("first_seen")) if self._first_seen_note(rec) else ""
         groups = []            # [(年份文本 or '', [名, ...])] — 同一年并列
         index = {}
@@ -4350,17 +4495,21 @@ class Facts:
         """兼容出口: as_of 时点特质中文名列表 (旧调用点)。"""
         return [z for _k, z in self._trait_pairs_at(cid)]
 
-    def trait_groups(self, cid):
+    def trait_groups(self, cid, public=False):
         """「为人」句的特质分组 (v31, 问题1): [(类别词, [特质名, …], 是否截断), …]。
 
         类别取游戏 `common/traits` 的 `category` (localization.py 建表), 不靠提示词;
         每组超 `_TRAIT_GROUP_LIMIT` 项取前若干并加「等」— 旧文本把 12 项特质连成
         一顿号串, 模型只能照抄成「报菜名」。顺序见 `_TRAIT_GROUP_ORDER`。
-        v32 (问题2): 特质名后按需附子轨道括注 (「不法之徒（强盗一阶）」)。"""
+        v32 (问题2): 特质名后按需附子轨道括注 (「不法之徒（强盗一阶）」)。
+        v34 (问题1, 用户拍板): `public=True` 时隐去生育能力类特质
+        (`_FERTILITY_TRAITS`) — 史官只见子女绕膝, 不见其身体隐微。"""
         cats = (L.trait_names().get("categories") or {})
         xpmap = self.trait_xp_map(cid)
         buckets = {}
         for key, z in self.trait_pairs(cid):
+            if public and key in _FERTILITY_TRAITS:
+                continue
             buckets.setdefault(cats.get(key, ""), []).append(
                 self._trait_display(key, z, xpmap))
         out = []
@@ -4376,11 +4525,12 @@ class Facts:
                 out.append((word, names, False))
         return out
 
-    def traits_sentence(self, cid):
+    def traits_sentence(self, cid, public=False):
         """「为人」句的按类文本 (v31): 「性情野心勃勃、专断；禀赋眉清目秀」;
-        无特质返回 ''。类别词为空者直列 (Mod 自造类别)。"""
+        无特质返回 ''。类别词为空者直列 (Mod 自造类别)。
+        v34: `public=True` 走公开版 (隐去生育能力类特质, 见 `trait_groups`)。"""
         parts = []
-        for word, names, truncated in self.trait_groups(cid):
+        for word, names, truncated in self.trait_groups(cid, public=public):
             body = "、".join(names) + ("等" if truncated else "")
             parts.append(f"{word}{body}" if word else body)
         return "；".join(parts)
@@ -6341,7 +6491,7 @@ def _protagonist(f):
         "culture": f.culture(pid),
         "faith": f.faith(pid),
         # v31 (问题1): 「为人」按类别分句 (性情/才具/阅历…), 不再一顿号串
-        "traits": f.traits_sentence(pid),
+        "traits": f.traits_sentence(pid, public=True),
         "government": f.government(pid),
     }
     # v11: 角色语言 (语言：诺斯语、阿拉伯语)
@@ -6692,7 +6842,7 @@ def _character_profiles(f):
             "culture": f.culture(cid),
             "faith": f.faith(cid),
             # v31 (问题1): 按类分句 (与主角档案同口径)
-            "traits": f.traits_sentence(cid),
+            "traits": f.traits_sentence(cid, public=True),
         }
         # v31 (问题6): 主角廷中身份 — 骑士/廷臣 + 入宫日 (乔乔/佩拉约等妻室情人
         # 正是主角廷中骑士; 旧档案里这一身份完全缺席)。玩家**自家人**不写这一句
@@ -7181,8 +7331,15 @@ def relation_cause_lines(f, cid, rel_date):
     return out
 
 
+# v34 (问题1, 用户拍板): 这些关系链在句面上写明「谁是谁的亲生子女」,
+# 属史官不可知的内宅隐情 — 只进《家室列传》《阴私录》, 不进《本纪》等公开篇目。
+_PRIVATE_CHAIN_MODULES = frozenset({"托卵承嗣", "血脉登基"})
+
+CHAIN_PRIVATE = _PRIVATE_CHAIN_MODULES
+
+
 def _villain_chains(f):
-    """大奸大恶关系链 (v15, 程序直算): [(模块名, 自然语言句)]。
+    """大奸大恶关系链 (v15, 程序直算): [(模块名, 自然语言句, 是否揭底链)]。
     数据源: 缓存 family/death/memories + 熔件 titles/heir/schemes。
     - 奸夫谋夫: 主角谋杀了某人, 而该人之配偶是主角情人 (遗孀/鳏夫改嫁情形一并写出);
     - 托卵承嗣: 法理父 ≠ 实父 — 法理父抚养了主角之子/女 (或主角抚养他人之子/女);
@@ -7190,7 +7347,12 @@ def _villain_chains(f):
     - 血亲之刃: 主角谋杀了自己的血亲 (父/母/子女/兄弟姊妹);
     - 血脉登基: 高位头衔 (k_/e_/h_) 第一继承人实为主角之子/女 (私生),
       且同母手足中有被主角谋杀者时一并点出。
-    所有条目按 as_of 截断 (十年传记只写该时期内的戏剧)。"""
+    所有条目按 as_of 截断 (十年传记只写该时期内的戏剧)。
+
+    v34 (问题1, 用户拍板「不留」): 第三条返回值为**揭底链标记** —
+    `_PRIVATE_CHAIN_MODULES` 里的链 (托卵承嗣/血脉登基) 把「谁是谁的亲生子」
+    写在句面上, 属史官不可知的内宅隐情, 只进《家室列传》《阴私录》;
+    《本纪》等公开篇目的档案只收非揭底链。"""
     cache = f.cache
     pid = cache.get("player_id")
     if pid is None:
@@ -7286,7 +7448,7 @@ def _villain_chains(f):
                 break
             chains.append(("奸夫谋夫",
                 f"{f.date(vdate)}，{disp}被{pname}谋杀——"
-                f"{sname}{lname}正是{pname}的情人{remarry}{kin_note}。"))
+                f"{sname}{lname}正是{pname}的情人{remarry}{kin_note}。", False))
 
     # ---- 托卵承嗣 (法理父 ≠ 实父, 且涉及主角) — 按 (法理父, 实父, 性别) 合并 ----
     cuckoo = {}   # (lf, rf, sex, 方向) -> [child 名]
@@ -7316,10 +7478,10 @@ def _villain_chains(f):
         joined = "、".join(items)
         if rf == pid:
             chains.append(("托卵承嗣",
-                f"{lfname}抚养的{joined}，实为{pname}之{sex}。"))
+                f"{lfname}抚养的{joined}，实为{pname}之{sex}。", True))
         else:
             chains.append(("托卵承嗣",
-                f"{pname}抚养的{joined}，实为{rfname}之{sex}。"))
+                f"{pname}抚养的{joined}，实为{rfname}之{sex}。", True))
 
     # ---- 共谋暗杀 (熔件 active schemes: 主角主导的谋杀密谋) ----
     schemes = ((f.melt.get("schemes") or {}).get("active") or {})
@@ -7363,15 +7525,15 @@ def _villain_chains(f):
                 tail = f"等{len(agents)}人" if len(agents) > 3 else ""
                 chains.append(("共谋暗杀",
                     f"密谋刺杀{tname}者以{pname}为首，"
-                    f"参与者{'、'.join(shown)}{tail}。"))
+                    f"参与者{'、'.join(shown)}{tail}。", False))
             else:
                 chains.append(("共谋暗杀",
-                    f"{pname}正密谋刺杀{tname}。"))
+                    f"{pname}正密谋刺杀{tname}。", False))
         elif isinstance(tgt, int) and tgt == pid and isinstance(owner, int) and owner != pid:
             oname = f.name_or(owner)
             if oname:
                 chains.append(("共谋暗杀",
-                    f"{oname}正密谋刺杀{pname}。"))
+                    f"{oname}正密谋刺杀{pname}。", False))
 
     # ---- 血亲之刃 (谋杀自己的血亲) ----
     for victim, vdate in murders.items():
@@ -7392,7 +7554,7 @@ def _villain_chains(f):
             vname = f.name_or(victim)
             if vname:
                 chains.append(("血亲之刃",
-                    f"{pname}谋杀了{rel}{vname}。"))
+                    f"{pname}谋杀了{rel}{vname}。", False))
 
     # ---- 血脉登基 (高位头衔第一继承人是主角私生子女; 同母手足中被谋杀者点出) ----
     melt_date = (f.melt.get("date") or "")
@@ -7458,7 +7620,7 @@ def _villain_chains(f):
         else:
             who = f"{pname}情人之{sex}"
         chains.append(("血脉登基",
-            f"{hname}为{tname}第一继承人，实为{who}{dead_sib}。"))
+            f"{hname}为{tname}第一继承人，实为{who}{dead_sib}。", True))
 
     return chains
 
@@ -8196,17 +8358,22 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     # v14/v24: 十年戏剧主题 (Top5, 并列第5名全保留) — 模块切片与总纲预告用
     facts["decade_modules"] = decade_module_top(facts.get("timeline") or [],
                                                 facts.get("protagonist") or {})
-    # v15: 大奸大恶关系链 (程序直算) — 句并入主角【戏剧性事件】(共享前缀
-    # 每请求可见), 模块名计入十年戏剧主题; 概览统计一并打包。
+    # v15/v34: 大奸大恶关系链 (程序直算) — 句并入主角【戏剧性事件】。
+    # v34 (问题1, 用户拍板「不留」): 分两档 —
+    #   `dramatic_facts`        非揭底链 (暗杀/血亲之刃/奸夫谋夫) — 公开档案可见;
+    #   `dramatic_facts_private` 揭底链   (托卵承嗣/血脉登基) — 只在《家室列传》
+    #                            《阴私录》下发, 公开篇目 (本纪等) 看不到「实父」。
     vc = _villain_chains(f)
     facts["villain_chains"] = vc
     if vc:
         dfa = facts["protagonist"].setdefault("dramatic_facts", [])
-        for _m, s in vc:
-            if s not in dfa:
-                dfa.append(s)
+        dfp = facts["protagonist"].setdefault("dramatic_facts_private", [])
+        for _m, s, _priv in vc:
+            bucket = dfp if _priv else dfa
+            if s not in bucket:
+                bucket.append(s)
         dm = facts.get("decade_modules") or []
-        for _m, _s in vc:
+        for _m, _s, _priv in vc:
             if not any(x[0] == _m for x in dm):
                 dm.append((_m, 3))
         # v24: 专题模块并入后再统一收口到 Top5 (此前并入后不再截断, 主题可 >10)
