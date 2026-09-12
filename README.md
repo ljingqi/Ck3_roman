@@ -296,7 +296,8 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   把 `appointment_succession`→受任、`stepped_down`→卸任/接任、`inheritance`→承袭、
   `conquest*`→攻取/失守、`revoked`→被褫夺… 未知 reason 回退旧词（登位/让出）。
   天朝制/行政制下戏剧主题显示名换为「受任迁转/卸任调转」，板块要求同步换词
-  （陆氏：867 受封陆家族 → 869 受任阶州 → 872 卸任阶州 → 875 受任商州）。
+  （陆氏：867 创建陆家族 → 869 受任阶州 → 872 卸任阶州 → 875 受任商州；
+  `created` 于 v34b 由「受封」改为「创建/重建」，见下）。
 - **牧群/口粮按 domicile 门控**：牧群只在毡帐（yurt）写、口粮只在无地营地（camp）写，
   0 值一律省略（天朝制世族此前写出「牧群0」）。
 - **朝廷职司 = 官职词+人名**：`兵部尚书任清`（原「兵部：任清（兵部尚书）」重复）；
@@ -515,6 +516,27 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
 （**熔件只读一次**：重建单战役缓存 + 落快照 + 跑全部断言，报告写
 `logs/verify_v34_report.txt`）＋`tools/check_bio_v34.py`（成稿 md 七问自查）；
 `tools/verify_fast.py` 全部 PASS。
+
+## v34b 修正（柳特佩特：头衔创建措辞与头衔事件日期）
+
+方案与证据见 `docs/修复方案_v34b_头衔创建措辞.md`。
+
+- **头衔创建（问题：正文写「受封萨莱诺亲王国」）**：`style.TITLE_GAIN_VERBS["created"]`
+  由「受封」改「**创建**」，并按游戏自身两档（`ascended_throne_memory_desc_created_first`
+  「作为一个新头衔」/ `_desc_created`「在一段废弃期后」）增设
+  `TITLE_GAIN_CREATED_VERBS = {"first": "创建", "restored": "重建"}`；判定入口
+  `Facts.title_had_other_holder`（= 游戏 trigger `any_past_holder != owner`）。
+  实测：`874年4月26日，…潘杜尔夫·柳特佩特受封萨莱诺亲王国。` →
+  `874年4月25日，…潘杜尔夫·柳特佩特重建萨莱诺亲王国。`（该公国 872 年废弃、874 年由玩家创设）；
+  陆氏 `867 受封陆家族` → `867 创建陆家族`；`granted` 仍「受封」。
+- **头衔事件日期**：游戏 `title_event.9900`（cooldown 1 天）次日才落 ascended 记忆，
+  `creation_date` 常晚 0~1 天；`Facts.mem_date` 改为按 title history 取事件日
+  （`_title_event_date`：先认 `type == reason`，再按持有侧兜底，与记忆日相差 > 31 天视为
+  误配回退），并接到时间线/人物档案/刺客列传/恩怨失守节点四处（去重键与句面日期同源）。
+- **连带的恩怨节点同日并存**：夺地日与战胜日同日时，旧实现会把同日「战胜X」节点一并删掉
+  （v34 问题6 的因果链断在最后一环）；现只在**关系流水**里做同日取代。
+- 回归：`tools/verify_v34.py` 新增 `[11]`（9 条断言）；`experiments/verify_lushi.py`
+  断言同步（并修掉自 v30 起恒 FAIL 的「先世资料未载」陈旧判据）。
 
 ## 代码纪律（2026-09-10 用户定规）
 
