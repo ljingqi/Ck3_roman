@@ -1192,12 +1192,42 @@ def _iter_trait_files(cfg):
                     yield os.path.join(d, fn)
 
 
+def trait_source_fingerprint(cfg):
+    """特质来源指纹 (v34, 问题4): 游戏/Mod 目录 + 各特质文件的 (路径, 大小, mtime)。
+
+    存进 data/trait_names.json; 与当前指纹不符即重建 —
+    此前该表只校验 schema, 启用新 Mod (如 Carnalitas) 后**不会**重建,
+    于是新 Mod 的特质查不到中文名, 又被静默丢弃 (`dick_small_bad_3` 即此)。
+    只取文件元信息, 不读内容 — 建表时才读, 开销可忽略。"""
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(("game", g))
+    for i, m in enumerate(enabled_mod_dirs(cfg)):
+        roots.append((f"mod{i}", m))
+    files = []
+    for path in _iter_trait_files(cfg):
+        try:
+            st = os.stat(path)
+            files.append([path, int(st.st_size), int(st.st_mtime)])
+        except OSError:
+            continue
+    detail = {"roots": [[n, p] for n, p in roots], "files": sorted(files)}
+    blob = json.dumps(detail, ensure_ascii=False, sort_keys=True)
+    return {
+        "hash": hashlib.sha1(blob.encode("utf-8")).hexdigest(),
+        "mods": [p for n, p in roots if n != "game"],
+        "game": g or "",
+        "files": len(files),
+    }
+
+
 def build_trait_names(cfg):
     """游戏 + 启用 Mod 的 common/traits → 特质基础名 + 类别 + 档位名条件表。
 
     返回::
 
-        {"schema": 3,
+        {"schema": 4,
          "traits":      {trait_key: loc_key},       # **基础名** (v29/v32)
          "categories":  {trait_key: category},      # 游戏 category (v31)
          "level_names": {trait_key: [{"any": bool,
@@ -1255,7 +1285,8 @@ def build_trait_names(cfg):
                 out[key] = rows[-1]["key"]
             if rows:
                 levels[key] = rows
-    return {"schema": 3, "traits": out, "categories": cats, "level_names": levels}
+    return {"schema": 4, "traits": out, "categories": cats,
+            "level_names": levels, "fingerprint": trait_source_fingerprint(cfg)}
 
 
 # ---------------------------------------------------------------------------
@@ -1318,7 +1349,8 @@ def build_trait_tracks(cfg):
                         rows.append({"track": key, "levels": lv})
             if rows:
                 out[key] = rows
-    return {"schema": 1, "tracks": out}
+    return {"schema": 2, "tracks": out,
+            "fingerprint": trait_source_fingerprint(cfg)}
 
 
 def save_trait_tracks(cfg, table):
@@ -1330,15 +1362,17 @@ def save_trait_tracks(cfg, table):
 
 
 def load_trait_tracks(cfg=None, force=False):
-    """载入特质轨道表; 缺失/旧版即重建。"""
+    """载入特质轨道表; 缺失/旧版/**来源指纹不符**即重建 (v34, 问题4)。"""
     cfg = cfg or llm.load_config()
     path = _trait_tracks_path(cfg)
     if not force and os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1 and "tracks" in data:
-                return data
+            if data.get("schema") == 2 and "tracks" in data:
+                cur = trait_source_fingerprint(cfg).get("hash")
+                if (data.get("fingerprint") or {}).get("hash") == cur:
+                    return data
         except Exception:
             pass
     data = build_trait_tracks(cfg)
@@ -1355,16 +1389,19 @@ def save_trait_names(cfg, table):
 
 
 def load_trait_names(cfg=None, force=False):
-    """载入特质显示名 + 类别表; 缺失、旧版 (无 categories/level_names) 或强制时重建。"""
+    """载入特质显示名 + 类别表; 缺失、旧版 (无 categories/level_names) 或
+    **来源指纹不符**时重建 (v34, 问题4 — 启用新 Mod 后自动补全)。"""
     cfg = cfg or llm.load_config()
     path = _trait_names_path(cfg)
     if not force and os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 3 and data.get("traits") \
+            if data.get("schema") == 4 and data.get("traits") \
                     and "categories" in data and "level_names" in data:
-                return data
+                cur = trait_source_fingerprint(cfg).get("hash")
+                if (data.get("fingerprint") or {}).get("hash") == cur:
+                    return data
         except Exception:
             pass
     data = build_trait_names(cfg)

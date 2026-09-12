@@ -208,8 +208,8 @@ _SECRET_PARTY_TARGET_TYPES = {"secret_lover", "secret_adultery"}
 _SEX_MEM_TYPES = ("had_sex", "became_lovers", "became_soulmates", "developed_crush")
 _SEX_MEM_OTHER_KEYS = ("sex_partner", "new_relation", "new_soulmate")
 
-# 「乱伦」主题模板: 判出对方时写明, 判不出时退不带对象的形态
-SECRET_INCEST_TOPIC = "乱伦（与{target}）"
+# 「乱伦」主题: 判出对方时以冒号带出 (与「主角握有…：」同式), 判不出时不点名
+SECRET_INCEST_TOPIC = "乱伦：与{target}"
 SECRET_INCEST_TOPIC_ANON = "乱伦"
 
 # 记忆类型 → 取 vars 中的 landed_title (头衔 id)
@@ -375,7 +375,9 @@ def _trait_name(table, key, xp=None):
 
     v29: 旅行者 (lifestyle_traveler) 等特质的显示名由 common/traits 的 name 块指定
     (desc = trait_traveler_1), 不再因 `trait_<key>` 缺键而整条丢失。
-    v32: 有 XP 轨道者先按角色实际 XP 取档名 (无 XP 数据时用基础名, 不再固定顶档名)。"""
+    v32: 有 XP 轨道者先按角色实际 XP 取档名 (无 XP 数据时用基础名, 不再固定顶档名)。
+    v34 (问题4): 全链落空时记进 `_TRAIT_NAME_MISSES`, 由 `trait_name_miss_report()`
+    落日志 — 此前是静默丢弃, 新 Mod 特质 (Carnalitas) 消失而无从察觉。"""
     if not key:
         return ""
     mapped = (L.trait_names().get("traits") or {}).get(key)
@@ -390,7 +392,23 @@ def _trait_name(table, key, xp=None):
         v = L.loc(table, cand)
         if v and not v.startswith(("$", "[")):
             return v
-    return TRAIT_ZH.get(key, "")
+    fb = TRAIT_ZH.get(key, "")
+    if not fb:
+        _TRAIT_NAME_MISSES[key] = _TRAIT_NAME_MISSES.get(key, 0) + 1
+    return fb
+
+
+# v34 (问题4): 未解析出中文名的特质 key → 出现次数 (静默丢弃的可见化)
+_TRAIT_NAME_MISSES = {}
+
+
+def trait_name_miss_report(clear=True):
+    """未解析出中文名的特质清单 (问题4 的告警出口)。
+    返回 {trait_key: 出现次数}; `clear=True` 时清空累计。"""
+    out = dict(_TRAIT_NAME_MISSES)
+    if clear:
+        _TRAIT_NAME_MISSES.clear()
+    return out
 
 
 def _daynum(d):
@@ -3373,6 +3391,101 @@ class Facts:
 
     # ---- 家族恩怨 (house_relations) / 宝物志 (artifacts) ----
 
+    def _house_war_nodes(self, other_house, my_houses, as_of):
+        """两族之间的**战争因果节点** (v34, 问题6): [(日期, 句)]。
+
+        恩怨史的数据源 `house_relations.history` 只记「关系值变动的那一下」
+        (结仇那天的囚禁), 战争胜负与夺地两端全在缓存记忆里 — 于是模型只能把
+        围城被俘读成结仇之因 (柳特佩特局: 两次征服战争 → 战败 → 失守那波利
+        伯爵领 → 沦为无地冒险者, 旧文案写成「绑了人家族人」)。
+        这里按记忆直算四个节点: 宣战 / 战胜 / 夺其头衔 / 对方沦为无地冒险者。"""
+        cache = self.cache
+        pid = cache.get("player_id")
+        if pid is None:
+            return []
+        chars = cache.get("characters") or {}
+        out = []
+
+        def _house(cid):
+            return self._house_of_cid(cid)
+
+        def _nm(cid, date=None):
+            return self.person_label(cid, date, "brief") if cid else ""
+
+        def _in_span(d):
+            return not (as_of and d and cl.date_key(d) > cl.date_key(as_of))
+
+        # ---- ① 主角对该族成员的宣战 / 战胜 (征服战写明「征服」) ----
+        prec = chars.get(str(pid)) or {}
+        for m in prec.get("memories") or []:
+            t = m.get("type") or ""
+            if t not in ("offensive_war", "war_won"):
+                continue
+            d = m.get("creation_date") or ""
+            if not _in_span(d):
+                continue
+            parts = m.get("participants") or {}
+            other = parts.get("other_party") if t == "offensive_war" \
+                else parts.get("loser")
+            if not isinstance(other, int) or _house(other) != other_house:
+                continue
+            onm = _nm(other, d)
+            if t == "offensive_war":
+                cb = ""
+                for v in m.get("vars") or []:
+                    if v.get("flag") == "war_cb":
+                        cb = str(v.get("value") or "")
+                        break
+                kind = "征服战" if "conquest" in cb else "开战"
+                out.append((d, f"{self.person_label(pid, d, 'event')}向{onm}"
+                               f"发动{kind}"))
+            else:
+                out.append((d, f"{self.person_label(pid, d, 'event')}战胜{onm}"))
+        # ---- ② 对方失守头衔 (reason=conquest → 攻取) ----
+        lost_titles = []
+        for cid, rec in chars.items():
+            if _house(int(cid)) != other_house:
+                continue
+            for m in rec.get("memories") or []:
+                if (m.get("type") or "") != "lost_title_memory":
+                    continue
+                d = m.get("creation_date") or ""
+                if not _in_span(d):
+                    continue
+                parts = m.get("participants") or {}
+                if parts.get("new_holder") != pid:
+                    continue
+                tid = None
+                for v in m.get("vars") or []:
+                    if v.get("flag") == "landed_title" and v.get("identity"):
+                        tid = v.get("identity")
+                        break
+                tname = self.title(tid) if tid else ""
+                nm = _nm(int(cid), d)
+                out.append((d, f"{nm}失守{tname}" if tname else f"{nm}失守领地"))
+                lost_titles.append((d, int(cid), tname))
+        # ---- ③ 对方此后沦为无地冒险者 (问题6 的关键答案: 为什么记恨) ----
+        seen_cid = None
+        for d, cid, tname in sorted(lost_titles, key=lambda x: cl.date_key(x[0])):
+            if self._title_kind_landless(cid, d):
+                nm = _nm(cid)
+                if nm and cid != seen_cid:
+                    out.append((d, f"{nm}自此沦为无地冒险者"))
+                    seen_cid = cid
+                break
+        out.sort(key=lambda x: cl.date_key(x[0]))
+        return out
+
+    def _title_kind_landless(self, cid, date):
+        """该角色在 date 是否已无领地头衔 (沦为无地冒险者)。"""
+        try:
+            tier, tid = self._primary_title_at(cid, as_of=date)
+        except Exception:
+            return False
+        if tid is None:
+            return True
+        return self.title_kind(tid) in ("camp", "estate", "none")
+
     def house_feuds(self):
         """与主角家族关系为 争吵/敌对/世仇 的家族 (v9 家族恩怨录数据源)。
         返回 [{house, level, events:[日期，事件…]}], 按事件数降序。"""
@@ -3433,6 +3546,16 @@ class Facts:
                 if not txt:
                     continue
                 events.append((d, txt))
+            # v34 (问题6): 补战争因果节点 — 宣战/战胜/夺其头衔/沦为无地冒险者。
+            # 关系流水的「向X宣战」不带战争类型、「成为X的仇敌」只记结果,
+            # 故**同日的战争类旧句由本节点取代** (改写进同一天, 信息更全):
+            #   「向X发动征服战」「战胜X」「X失守那地」「X自此沦为无地冒险者」。
+            for d, txt in self._house_war_nodes(other[0], my_houses, self.as_of):
+                events = [(ed, et) for ed, et in events
+                          if str(ed) != str(d)
+                          or not any(k in et for k in _WAR_KIND_WORDS)]
+                if (str(d), txt) not in {(str(ed), et) for ed, et in events}:
+                    events.append((d, txt))
             if not events:
                 continue
             events.sort(key=lambda x: cl.date_key(x[0]))
@@ -5880,6 +6003,25 @@ def _pair_imprisonments(events, f, pid, pname=""):
                              "jailer": parts.get("imprisoner"),
                              "date": e.get("date"),
                              "escape": t == "escaped_from_prison_memory"})
+    # v34 (问题7): 释放记忆缺失时的补证 — 逐档 prison_data 区间记下「哪一档起不在押」,
+    # 该档日期即出狱日期 (游戏只在囚禁者主动释放时写 released 记忆; 家soft house_arrest
+    # 之外的翻档常缺记忆, 旧稿因此把已出狱者写成「一直关押」)。
+    for r in ins:
+        victim = r["victim"]
+        if any(o["victim"] == victim for o in outs):
+            continue
+        srec = (f.cache.get("characters") or {}).get(str(victim)) or {}
+        for iv in srec.get("prison_history") or []:
+            if not iv.get("to"):
+                continue
+            if cl.date_key(str(iv["to"])) < cl.date_key(str(r["date"])):
+                continue
+            if cl.date_key(str(iv["to"])) > cl.date_key(str(r["date"])):
+                outs.append({"idx": -1, "victim": victim,
+                             "jailer": iv.get("imprisoner"),
+                             "date": iv["to"], "escape": False,
+                             "from_prison_data": True})
+            break
     if not ins:
         return events
     drop = set()
@@ -7330,6 +7472,9 @@ def relation_cause_lines(f, cid, rel_date):
             break
     return out
 
+
+# v34 (问题6): 战争类措辞 — 恩怨史补因果节点时, 同日的旧战争句由新节点取代
+_WAR_KIND_WORDS = ("宣战", "开战", "应战", "战胜", "战败", "赢得战争")
 
 # v34 (问题1, 用户拍板): 这些关系链在句面上写明「谁是谁的亲生子女」,
 # 属史官不可知的内宅隐情 — 只进《家室列传》《阴私录》, 不进《本纪》等公开篇目。

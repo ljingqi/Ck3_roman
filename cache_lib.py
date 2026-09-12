@@ -646,6 +646,9 @@ def char_record(cache, cid):
             "landed": {},
             "memories": [],
             "kills": [],        # v8: 击杀 id 列表 (alive_data.kills ∪ dead_data.kills, 跨年累积)
+            # v34 (问题7): 囚禁区间 [{from, to, imprisoner, type, since}]
+            # to 为 null = 仍在押; 释放记忆缺失时凭此判定「已出释」
+            "prison_history": [],
         }
     return cache["characters"][key]
 
@@ -1542,6 +1545,29 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                        or samples[-1].get("xp") != new_xp):
             samples.append({"from": date_label, "traits": list(new_traits),
                             "xp": new_xp})
+        # v34 (问题7): 囚禁状态区间 — 存档 `alive_data.prison_data` 是「此刻是否在押」
+        # 的权威字段 (释放会使它消失/换主), 而 `released_from_prison_memory` 只在
+        # 囚禁者主动释放时才有记忆。两者互补: 有 prison_data 才能区分
+        # 「仍在押」与「已出释而游戏未记」。
+        _pd = (c.get("alive_data") or {}).get("prison_data")
+        if isinstance(_pd, dict) and _pd.get("imprisoner") is not None:
+            ph = rec.setdefault("prison_history", [])
+            cur = {"from": date_label, "to": None,
+                   "imprisoner": _pd.get("imprisoner"),
+                   "type": _pd.get("type") or "",
+                   "since": _pd.get("date") or date_label}
+            # 与上一段同囚禁者/同类型 → 视为同一段 (换档不新开)
+            if ph and ph[-1].get("to") is None \
+                    and ph[-1].get("imprisoner") == cur["imprisoner"] \
+                    and ph[-1].get("type") == cur["type"]:
+                pass
+            else:
+                if ph and ph[-1].get("to") is None:
+                    ph[-1]["to"] = date_label
+                ph.append(cur)
+        elif rec.get("prison_history") and rec["prison_history"][-1].get("to") is None:
+            # 本档已无 prison_data → 上一段在此档之前结束 (获释/换主)
+            rec["prison_history"][-1]["to"] = date_label
         # 家庭: 直接字段 + 反查亲属 (v4)
         fam = family_of(c)
         fathers, mothers = _parents_of(chars, cid, parent_map, fam)
