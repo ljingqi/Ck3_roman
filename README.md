@@ -504,9 +504,10 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   他人视角 + 首尾回照）与「互见法」（一料一处，各篇各题）；每篇文章带 `focus`
   下发到开篇/纪事与总纲预告。
 
-回归：`experiments/verify_v34.py`（读快照断言）＋`experiments/verify_v34_once.py`
+回归：`tools/verify_v34.py`（读快照断言，可 `run()` 内联）＋`tools/verify_v34_once.py`
 （**熔件只读一次**：重建单战役缓存 + 落快照 + 跑全部断言，报告写
-`logs/verify_v34_report.txt`）；`tools/verify_fast.py` 全部 PASS。
+`logs/verify_v34_report.txt`）＋`tools/check_bio_v34.py`（成稿 md 七问自查）；
+`tools/verify_fast.py` 全部 PASS。
 
 ## 代码纪律（2026-09-10 用户定规）
 
@@ -549,6 +550,11 @@ python pipeline.py demo-death      :: 模拟主角死亡，演示「死后自动
 python pipeline.py rebuild-cache   :: 从各战役文件夹熔件重建缓存（迁移/修复）
 python pipeline.py migrate         :: v4 迁移：旧 cache/ 移入 output/<家族>/data/ + 重建
 python htmlview.py rebuild         :: 重建所有宗族文件夹的 index.html
+python tools\verify_v34_once.py 柳特佩特 38653 878.1.1
+                                   :: v34 一次性验证: 熔件只读一次 → 重建该战役缓存
+                                      + 落快照 + 跑七问断言 (报告 logs/verify_v34_report.txt)
+python tools\verify_v34.py         :: 只读已有快照重跑断言 (秒级)
+python tools\check_bio_v34.py       :: 成稿 md 七问自查
 
 :: 提速基建（开发/验收用；熔件 100–125MB，载一次要 1–3 分钟，不要反复整载）
 & tools\py.ps1 tools\snap.py 周氏 38673 889.1.1 2   :: 落 facts 快照（含各篇 blocks 与逐请求提示词）
