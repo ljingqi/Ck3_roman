@@ -418,7 +418,11 @@ FLAVOR_DEATH_ZH = {
 # 政体无关: 封建的承袭/受封/攻取、行政制的受任/调任 一表覆盖; 未知 reason
 # 回退旧词 (登位/让出), 行为与旧版一致。
 TITLE_GAIN_VERBS = {
-    "created": "受封",                    # 起家/新封 (含世族受封家业)
+    # v34b (柳特佩特): created = **本人创设头衔** —— 游戏自有文案即
+    # `ascended_throne_memory_desc_intro_created = 我创建了[landed_title]`
+    # (`game_concept_created = 创建`), 旧词「受封」(v28 为世族庄园所定) 把
+    # 玩家自创的萨莱诺亲王国写成受人册封。分两档见 TITLE_GAIN_CREATED_VERBS。
+    "created": "创建",
     "appointment": "受任",
     "appointment_succession": "受任",
     "inheritance": "承袭",
@@ -438,6 +442,17 @@ TITLE_GAIN_VERBS = {
     "negotiated": "议得",
     "stepped_down": "接任",
     "destroyed": "重建",
+}
+
+
+# v34b: reason=created 的两档语 — 采游戏自身口径 (character_memories_1.txt 的
+# `var:reason ?= flag:created` + `var:landed_title = { any_past_holder = { this !=
+# scope:owner } }`): 头衔此前另有主人 (废弃期后重立) → desc_created「在一段废弃期后」;
+# 无前主 (首次出现) → desc_created_first「作为一个新头衔」。判定入口
+# Facts.title_had_other_holder (facts._mem_sentence 用)。
+TITLE_GAIN_CREATED_VERBS = {
+    "first": "创建",
+    "restored": "重建",
 }
 
 

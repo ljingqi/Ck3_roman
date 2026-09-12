@@ -886,6 +886,34 @@ class Facts:
         self._regnal_cache[key] = n
         return n
 
+    # v34b: 头衔历史「另有其主」判定 — 与游戏 character_memories_1.txt 的
+    # `var:landed_title = { any_past_holder = { this != scope:owner } }` 同义。
+    # 供 reason=created 分档 (首建「创建」/ 废弃后重立「重建」) 与测试断言用。
+    def title_had_other_holder(self, tid, cid, date=None):
+        """头衔 tid 在 date (含) 之前是否另有主人 (holder 存在且 ≠ cid)。
+        history 兼容三种取值: 裸 id / {type, holder} / 同日事件列表;
+        holder 为 None (无主 destroyed 条目) 不计。无 history 时返回 False。"""
+        if tid is None or cid is None:
+            return False
+        hist = (self._lt.get(str(tid)) or {}).get("history")
+        if not isinstance(hist, dict) or not hist:
+            return False
+        limit = cl.date_key(date) if date else None
+        for d, v in hist.items():
+            if limit is not None and cl.date_key(d) > limit:
+                continue
+            for e in (v if isinstance(v, list) else [v]):
+                h = e.get("holder") if isinstance(e, dict) else e
+                if h is None:
+                    continue
+                try:
+                    hid = int(h)
+                except (TypeError, ValueError):
+                    continue
+                if hid != int(cid):
+                    return True
+        return False
+
     def _last_high_title_before(self, cid, date=None):
         """cid 在 date (含) 前最后持有的最高层级头衔 (v17)。
         头衔在当日已易手 (死日同日继位) 时, `_primary_title_at` 取不到,
@@ -5421,6 +5449,14 @@ def _mem_sentence(f, owner_id, mem):
                 break
         if mem.get("type") == "ascended_throne_memory":
             verb = TITLE_GAIN_VERBS.get(reason)
+            # v34b (柳特佩特): reason=created 是**本人创设头衔** (游戏自有文案
+            # 即「我创建了X」), 不是受封; 分档同游戏 desc_created_first /
+            # desc_created —— 头衔此前另有主人 (废弃后重立) 写「重建」。
+            if reason == "created" and title_tid is not None:
+                _restored = f.title_had_other_holder(
+                    title_tid, owner_id, mem.get("creation_date"))
+                verb = TITLE_GAIN_CREATED_VERBS.get(
+                    "restored" if _restored else "first") or verb
             if verb:
                 return f"{owner}{verb}{title}。"
         else:
@@ -8731,6 +8767,7 @@ def facts_to_text(facts, keys=None):
 DEATH_REASON_ZH = _style.DEATH_REASON_ZH
 FLAVOR_DEATH_ZH = _style.FLAVOR_DEATH_ZH
 TITLE_GAIN_VERBS = _style.TITLE_GAIN_VERBS
+TITLE_GAIN_CREATED_VERBS = _style.TITLE_GAIN_CREATED_VERBS
 TITLE_LOSS_VERBS = _style.TITLE_LOSS_VERBS
 MEMORY_TEMPLATES = _style.MEMORY_TEMPLATES
 SECRET_TOPICS = _style.SECRET_TOPICS
