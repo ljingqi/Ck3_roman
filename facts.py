@@ -2286,6 +2286,48 @@ class Facts:
     # v28b: 派系领袖头衔 (无地名, 单用不成称谓「领袖」) — 称谓交起义分支出词
     _FACTION_LEADER_FLAVORS = ("faction_leader", "faction_leader_male",
                                "faction_leader_female")
+    # v36 (问题1): 层级前缀 flavor — 这些键的词是**统治者层级词** (王/国王/公爵/皇帝…),
+    # 必须配地名才成称谓; 解不出地名时整词作废 (此前写出裸词「王丁文举」「公爵句就狼莫」)。
+    _TIER_FLAVOR_PREFIXES = ("hegemon_", "emperor_", "king_", "duke_", "count_",
+                             "baron_", "prince_", "princess_")
+
+    def _has_current_landed_title(self, cid, anchor):
+        """锚点仍持有州府 (c_) 以上的**真领地**头衔? (v36 — 朝廷职司「前」字判据)
+        营地/庄园/朝廷职司/男爵领都不算真领地。"""
+        for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
+            if not any(iv[1] is None for iv in ivs):
+                continue
+            key = (self._lt.get(str(tid)) or {}).get("key") or ""
+            if key.startswith("e_minister_") or self._is_estate_title(tid):
+                continue
+            if self._TT_RANK.get(key[:2], 0) >= 2:
+                return True
+        return False
+
+    def _ministry_office_at(self, cid, anchor, include_former=False):
+        """朝廷职司官职词 (v36, 问题6): 在任 → 「礼部尚书」; include_former 且已去职
+        → 「前礼部尚书」。多桩取层级最高、再取最晚获得者 (用户拍板2: 用最高头衔)。
+        数据源只有 e_minister_* 头衔 — 存档 dead_data.flavor 对礼部/户部只给通用词
+        「尚书」(minister_any_male), 部名必须由头衔补。"""
+        best = None   # (rank, gain_key, word, still_held)
+        for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
+            key = (self._lt.get(str(tid)) or {}).get("key") or ""
+            if not key.startswith("e_minister_"):
+                continue
+            word = self._minister_office(tid)
+            if not word:
+                continue
+            gains = [cl.date_key(iv[0]) for iv in ivs if iv and iv[0]]
+            cand = (self._TT_RANK.get(key[:2], 0),
+                    max(gains) if gains else (0, 0, 0), word,
+                    any(iv[1] is None for iv in ivs))
+            if best is None or (cand[0], cand[1]) > (best[0], best[1]):
+                best = cand
+        if best is None:
+            return ""
+        if best[3]:
+            return best[2]
+        return f"前{best[2]}" if include_former else ""
 
     def official_title(self, cid, date=None):
         """角色官职名: 「头衔名+官职词」(交州刺史/淄青节度使/青徐路观察使)。
@@ -2295,22 +2337,41 @@ class Facts:
         伊斯兰统治者特殊: 家族名+苏丹国/哈里发国 (复用 realm_name)。
         v15: 宗教领袖 (教宗) 优先 — 称谓直达, 不走「X国国王主教」神权词。
         v25: date 锚点 — 默认取卒日 (死者按其卒时国号称呼), 在世取 as_of;
-        动态国号 (h_china 唐→秦) 据此按卒期正确落名。"""
+        动态国号 (h_china 唐→秦) 据此按卒期正确落名。
+        v36 (问题6, 用户拍板2): 朝廷职司 (六部/御史台/枢密院) 先行出词 —
+        在任给「礼部尚书」, 已去职且无真领地者给「前礼部尚书」, 不再被通用 flavor 截断。
+        v36 (问题1, 用户拍板5): 层级前缀 flavor (王/公爵/国王…) 解不出地名时整词作废,
+        返回空串; 男爵领已在 _primary_title_at 处排除。"""
         rhw = self.religious_head_word(cid)
         if rhw:
             return rhw
         anchor = self._anchor_date(cid, date)
+        # v36 (问题6, 用户拍板2): ① 在任朝廷职司先行出词 — 存档 flavor 对礼部/户部
+        # 只给通用词「尚书」(minister_any_male), 部名要靠头衔补;
+        # ② 已去职且锚点无真领地者写「前礼部尚书」。
+        mo = self._ministry_office_at(cid, anchor)
+        if mo:
+            return mo
+        if not self._has_current_landed_title(cid, anchor):
+            mo = self._ministry_office_at(cid, anchor, include_former=True)
+            if mo:
+                return mo
         c = self._chars.get(str(cid)) or {}
         fkey = (c.get("dead_data") or {}).get("flavor")
         if fkey:
             v = L.loc(self.table, fkey)
             if v and not v.startswith("$") and not v.startswith("["):
-                place = self._last_title_place(cid, fkey, date=anchor)
-                if place and not v.startswith(place):
+                if fkey.startswith(self._TIER_FLAVOR_PREFIXES):
+                    # v36 (问题1): 层级词必须配地名 (「新罗」+「国王」= 新罗国王);
+                    # 头衔被存档剪除而解不出地名时, 裸层级词不成称谓 → 空串
+                    # (由起义领袖/王子称号/显示名分支接管)。
+                    place = self._last_title_place(cid, fkey, date=anchor)
+                    if not place or v.startswith(place):
+                        return ""
                     return f"{place}{v}"
                 # v28b: 派系领袖头衔 (faction_leader_male/female「领袖」) 无地名,
                 # 单用不成称谓 — 交 person_label 的起义称谓分支出词
-                if not place and fkey in self._FACTION_LEADER_FLAVORS:
+                if fkey in self._FACTION_LEADER_FLAVORS:
                     return ""
                 return v
         tier, tid = self._primary_title_at(cid, as_of=anchor)
@@ -3701,55 +3762,101 @@ class Facts:
         伊斯兰: 家族名+苏丹国/哈里发国) + 王子词。
         v20: 天皇座子女的称号已并入显示名 (name_with_regnal), 此处返回 '' 防重复。
         v21: date 参数 — 按指定日期 (死者死亡日) 计算父头衔, 供刺客列传等
-        名单型数据使用 (王祦 → 高丽国皇子), 防 as_of 穿越。"""
+        名单型数据使用 (王祦 → 高丽国皇子), 防 as_of 穿越。
+        v36 (问题3, 用户拍板1/2):
+          ① 父/母头衔按**一生最高**取 (父已死或已失位也能解出称号), 政体取头衔侧
+             (`_title_government`) —— 「父为前代皇帝」者不再退成裸名;
+          ② 新增兄弟路线: **兄弟为当今皇帝 且 其父亦为皇帝** 时, 按当今皇帝的头衔
+             给皇子/皇女称号 (李丽容: 父唐宣宗李忱、兄唐懿宗李漼 → 唐皇朝皇女)。"""
         if self._tenno_prince_word(cid, date):
             return ""
         tier0, _ = self._primary_title_at(cid, as_of=date)
         if tier0 is not None:
             return ""  # 自己已有头衔, 不适用
-        parents = self._parents_of_cid(cid)
-        if not parents:
+        style = self._parent_prince_style(cid, date)
+        if style:
+            return style
+        return self._emperor_sibling_style(cid, date)
+
+    _EMPEROR_TIERS = ("hegemon", "empire")
+
+    def _style_parent_title(self, parent, date):
+        """父/母「给子女称号用」的头衔 (tier, tid) (v36, 用户拍板2):
+        现仍持有者优先; 空则退其一生最高头衔 — 父已死/已失位时也能出称号。"""
+        t, tid = self._primary_title_at(parent, as_of=date)
+        if t is not None and self._is_landed_title(tid):
+            return t, tid
+        ftid = self._former_high_title(parent, date)
+        if ftid is None:
+            return None, None
+        key = (self._lt.get(str(ftid)) or {}).get("key") or ""
+        rank = self._TT_RANK.get(key[:2], 0)
+        tier = self._RANK_TIER.get(rank) if rank >= 1 else None
+        return (tier, ftid) if tier else (None, None)
+
+    def _prince_style_from_title(self, ptier, ptid, date, child, owner):
+        """(层级, 头衔) + 持有人 → 「前缀 + 王子词」 (v36 抽出; 政体取头衔侧,
+        独立与否取持有人)。取不到基名返回 ''。"""
+        pgov = self._title_government(ptid)
+        pbase = self._name_at_date(ptid, date or self.as_of) or self.title_base_name(ptid)
+        if not pbase:
             return ""
-        best = None  # (rank, ptier, parent_cid)
-        for pid2 in parents:
-            pid2 = int(pid2)
-            t, _tid = self._primary_title_at(pid2, as_of=date)
-            rank = {"hegemon": 6, "empire": 5, "kingdom": 4}.get(t, 0)
-            if rank > 0 and self._is_landed_title(_tid):
-                if best is None or rank > best[0]:
-                    best = (rank, t, pid2)
-        if best is None:
-            return ""
-        _rank, ptier, pparent = best
-        _t, ptid = self._primary_title_at(pparent, as_of=date)
-        prec = (self.cache.get("characters") or {}).get(str(pparent)) or {}
-        pgov = (prec.get("landed") or {}).get("government") or ""
-        if not pgov:
-            pc = self._chars.get(str(pparent)) or {}
-            pgov = (pc.get("landed_data") or {}).get("government") or ""
-        independent = self._is_independent(pparent)
-        # 前缀: 伊斯兰特殊 (家族名+苏丹国/哈里发国), 否则 头衔名+层级词
+        independent = self._is_independent(owner)
         rn = self.realm_name(ptid)
         if rn:
             prefix = rn
+        elif pgov in self._CELESTIAL_LIKE_GOVS and independent \
+                and ptier in ("kingdom", "empire", "hegemon"):
+            # 独立天朝制: 王国/帝国=国, 皇朝=皇朝 (大理国 / 唐皇朝)
+            w = L.loc(self.table, {"kingdom": "kingdom_celestial_chinese_independent",
+                                   "empire": "empire_celestial_chinese_independent",
+                                   "hegemon": "hegemony_celestial_chinese"}[ptier])
+            prefix = f"{pbase}{w}" if (w and not w.startswith("$")
+                                       and not w.startswith("[")) else pbase
         else:
-            pbase = self._name_at_date(ptid, date or self.as_of) or self.title_base_name(ptid)
-            if pgov in self._CELESTIAL_LIKE_GOVS and independent \
-                    and ptier in ("kingdom", "empire", "hegemon"):
-                # 独立天朝制: 王国/帝国=国, 皇朝=皇朝 (大理国)
-                key = {"kingdom": "kingdom_celestial_chinese_independent",
-                       "empire": "empire_celestial_chinese_independent",
-                       "hegemon": "hegemony_celestial_chinese"}[ptier]
-                w = L.loc(self.table, key)
-                if w and not w.startswith("$") and not w.startswith("["):
-                    prefix = f"{pbase}{w}"
-                else:
-                    prefix = pbase
-            else:
-                pword = L.tier_word(self.table, pgov, ptier)
-                prefix = f"{pbase}{pword}" if pword else pbase
-        female = self._is_female(cid)
-        return prefix + self._prince_word(ptier, pgov, independent, female)
+            pword = L.tier_word(self.table, pgov, ptier)
+            prefix = f"{pbase}{pword}" if pword else pbase
+        word = self._prince_word(ptier, pgov, independent, self._is_female(child))
+        # 称号已并入显示名时不叠前缀 (绰号「时尚王子」+ 父为国主 → 防「新罗国王子时尚王子金晸」;
+        # 与 _tenno_prince_word 的同名守卫同口径)
+        if word and word in (self.name_with_regnal(child, date) or ""):
+            return ""
+        return prefix + word
+
+    def _parent_prince_style(self, cid, date):
+        """父/母为王国级以上统治者时的子女称号 (取层级最高的一位父母)。"""
+        best = None  # (rank, ptier, ptid, parent_cid)
+        for pid2 in self._parents_of_cid(cid):
+            t, tid = self._style_parent_title(int(pid2), date)
+            rank = {"hegemon": 6, "empire": 5, "kingdom": 4}.get(t, 0)
+            if rank > 0 and (best is None or rank > best[0]):
+                best = (rank, t, tid, int(pid2))
+        if best is None:
+            return ""
+        _rank, ptier, ptid, pparent = best
+        return self._prince_style_from_title(ptier, ptid, date, cid, pparent)
+
+    def _emperor_sibling_style(self, cid, date):
+        """兄弟为当今皇帝 且 父亦为皇帝 → 皇子/皇女称号 (v36, 用户拍板1)。
+        两个条件缺一不给 — 免得把「皇帝庶兄弟」一律抬成皇胄。"""
+        fam = ((self.cache.get("characters") or {}).get(str(cid)) or {}).get("family") or {}
+        sibs = [int(x) for x in (fam.get("siblings") or []) if isinstance(x, int)]
+        fathers = [int(x) for x in (fam.get("father") or []) if isinstance(x, int)]
+        if not sibs or not fathers:
+            return ""
+        father_ok = False
+        for f2 in fathers:
+            t, _tid = self._style_parent_title(f2, date)
+            if t in self._EMPEROR_TIERS:
+                father_ok = True
+                break
+        if not father_ok:
+            return ""
+        for b in sibs:
+            t, tid = self._primary_title_at(b, as_of=date)
+            if t in self._EMPEROR_TIERS and self._is_landed_title(tid):
+                return self._prince_style_from_title(t, tid, date, cid, b)
+        return ""
 
     # ---- 家族恩怨 (house_relations) / 宝物志 (artifacts) ----
 
@@ -5411,6 +5518,205 @@ class Facts:
             prev = cur
         return latest_lines, change_lines
 
+    def court_office_lines(self):
+        """主角**获授**的朝廷职位 (v36, 问题2/用户拍板3): 主角为任职者
+        (employee=主角, employer=他人 — 太师/某部尚书这类朝廷命官)。
+
+        与 court_positions_lines 方向相反 (那是「我廷中的僚属」); 逐档记录 → 按任期聚合:
+        最新行形如「任唐皇帝李漼之太师（两度受任：869年6月28日、881年2月25日；至晚自885年起已卸任）」,
+        变化行形如「881年：受唐皇帝李漼之任命为太师」/「885年：卸任太师」。
+        失去时点按快照差分推断 (至晚口径, 与 trait_history 同源)。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return [], []
+        hist = self.cache.get("court_office_history") or []
+        if not hist:
+            return [], []
+        if self.as_of:
+            hist = [h for h in hist
+                    if cl.date_key(h.get("date")) <= cl.date_key(self.as_of)]
+        if not hist:
+            return [], []
+        W = _style.FACT_WORDING
+        # 逐档 offices 集 → 任期段 [(hire, loss_snapshot_or_None, office)]
+        stints = []          # [(hire_date, loss_date|None, office_dict)]
+        open_run = {}        # (type, employer) -> office_dict
+        for h in hist:
+            cur = {(e.get("type"), e.get("employer")): e
+                   for e in (h.get("offices") or [])}
+            for key, office in cur.items():
+                if key not in open_run:
+                    open_run[key] = dict(office, _start=office.get("hire_date")
+                                         or h.get("date"))
+            for key in list(open_run):
+                if key not in cur:
+                    o = open_run.pop(key)
+                    stints.append((o.pop("_start"), h.get("date"), o))
+        for key, o in open_run.items():
+            stints.append((o.pop("_start"), None, o))
+        if not stints:
+            return [], []
+        stints.sort(key=lambda x: cl.date_key(x[0]))
+        # 最新行: 同一 (职位, 雇主) 的多段任期并作一行 (两度受任)
+        latest_lines, change_lines = [], []
+        by_office = {}
+        order = []
+        for hire, loss, o in stints:
+            word = self.court_position_word(o.get("type"), cid=o.get("employer")) or ""
+            if not word or word == o.get("type"):
+                continue
+            emp = o.get("employer")
+            elab = self.person_label(emp, date=hire, style="brief") \
+                if isinstance(emp, int) else ""
+            key = (word, elab)
+            item = by_office.setdefault(key, {"hires": [], "last_loss": None})
+            if item is None:
+                continue
+            if key not in order:
+                order.append(key)
+            if hire:
+                item["hires"].append(self.date(hire))
+            if loss:
+                item["last_loss"] = self._year_only(loss)
+            if hire:
+                change_lines.append(W["office_change_gain"].format(
+                    date=self.date(hire), employer=elab or "朝廷",
+                    gverb=self.grant_verb(emp), word=word))
+            if loss:
+                change_lines.append(W["office_change_lose"].format(
+                    date=self.date(loss), word=word))
+        for key in order:
+            word, elab = key
+            item = by_office[key]
+            hires = item["hires"]
+            if not hires:
+                continue
+            held = W["office_held"].format(employer=elab or "朝廷", word=word)
+            if len(hires) == 1:
+                held += W["office_since"].format(date=hires[0])
+            else:
+                held += W["office_since_multi"].format(
+                    dates="、".join(hires), n=_count_zh(len(hires)))
+            if item["last_loss"]:
+                held += W["office_lost_late"].format(year=item["last_loss"])
+            latest_lines.append(held)
+        # 变化行按日期去重排序
+        seen = set()
+        out_changes = []
+        for ln in sorted(change_lines):
+            if ln in seen:
+                continue
+            seen.add(ln)
+            out_changes.append(ln)
+        return latest_lines, out_changes
+
+    def estate_place_name(self, cid=None):
+        """世族庄园驻地州府名 (v36, 问题4): 缓存 landed.domicile_province → 州府名
+        (10282 → 宾州); 缺失时退庄园头衔 capital 所在州府。取不到返回 ''。
+        与「治所」(官职驻地, realm_capital) 是两处地方 — 家业在祖籍州府。"""
+        pid = self.cache.get("player_id") if cid is None else cid
+        rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+        ld = rec.get("landed") or {}
+        prov = ld.get("domicile_province")
+        if not isinstance(prov, int):
+            for t in (ld.get("domain") or []):
+                if self._is_estate_title(t):
+                    cap = (self._lt.get(str(t)) or {}).get("capital")
+                    if isinstance(cap, int):
+                        prov = cap
+                    break
+        if not isinstance(prov, int):
+            return ""
+        tid = self.county_at_province(prov)
+        if tid is None and \
+                ((self._lt.get(str(prov)) or {}).get("key") or "").startswith("c_"):
+            tid = prov
+        if tid is None:
+            return ""
+        nm = self._name_at_date(tid, self.as_of) or self.title_base_name(tid)
+        return nm if nm and not nm.startswith(("c_", "b_")) else ""
+
+    def grant_verb(self, granter_cid):
+        """头衔/职位授予动词 (v36, 用户拍板4): 按**授予方政体**取词
+        (天朝/行政=任命, 封建=册封, 部落/宗族=授予…); 取不到用「任命」。"""
+        if not isinstance(granter_cid, int):
+            return _style.TITLE_GRANT_VERB_FALLBACK
+        gov = ""
+        rec = (self.cache.get("characters") or {}).get(str(granter_cid)) or {}
+        gov = (rec.get("landed") or {}).get("government") or ""
+        if not gov:
+            gov = ((self._chars.get(str(granter_cid)) or {}).get("landed_data") or {}) \
+                .get("government") or ""
+        if not gov:
+            # 授予方已死/无地: 退其最高头衔的政体 (皇帝 → 天朝制)
+            ftid = self._former_high_title(granter_cid) \
+                or self._primary_title_at(granter_cid)[1]
+            if ftid is not None:
+                gov = self._title_government(ftid)
+        key = L.government_prefix(gov) if gov else ""
+        return _style.TITLE_GRANT_VERBS.get(
+            key, _style.TITLE_GRANT_VERB_FALLBACK)
+
+    def grant_actor(self, cid, tid, date=None):
+        """头衔/职位的**授予者** (v36, 用户拍板4): 该头衔 de_facto_liege 在 date 的
+        持有人; 持有人即本人或无人时沿上位链上溯。取不到返回 None。"""
+        liege = (self._lt.get(str(tid)) or {}).get("de_facto_liege")
+        seen = set()
+        while liege is not None and str(liege) not in seen:
+            seen.add(str(liege))
+            holder = self.holder_at(int(liege), date)
+            if isinstance(holder, int) and holder != int(cid):
+                if self.name_or(holder, ""):
+                    return holder
+                return None
+            liege = (self._lt.get(str(liege)) or {}).get("de_facto_liege")
+        return None
+
+    def revoke_actor(self, cid, tid, date=None, reason=""):
+        """头衔的**褫夺者/篡夺者** (v36, 用户拍板4): usurped 取夺位的新持有人;
+        revoked 取当时的领主 (de_facto_liege 持有人)。取不到返回 ''。"""
+        if tid is None:
+            return ""
+        if reason == "usurped":
+            new_holder = self._next_holder(tid, date, exclude=cid)
+            if isinstance(new_holder, int) and new_holder != int(cid):
+                return self.person_label(new_holder, date=date, style="brief")
+            return ""
+        actor = self.grant_actor(cid, tid, date)
+        return self.person_label(actor, date=date, style="brief") if actor else ""
+
+    def _next_holder(self, tid, date=None, exclude=None):
+        """头衔在 date 之后的首位持有人 (title history 序列) — 篡夺者判定用。"""
+        seq = self._title_seqs.get(int(tid)) or []
+        dk = cl.date_key(date) if date else None
+        for d, ev in seq:
+            if dk is not None and cl.date_key(d) <= dk:
+                continue
+            entries = ev if isinstance(ev, list) else [ev]
+            for e in entries:
+                h = e.get("holder") if isinstance(e, dict) else e
+                if isinstance(h, int) and h != exclude:
+                    return h
+        return None
+
+    def title_office_text(self, cid, tid, date=None):
+        """头衔的「地名+官职词」式官称 (衢州刺史/慈州刺史) — 头衔得失句用 (v36)。
+        男爵领/营地名/无词者返回 '' (调用方回退头衔显示名)。"""
+        if tid is None:
+            return ""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        rank = self._TT_RANK.get(key[:2], 0)
+        if rank < 2:            # v36 用户拍板5: 男爵领 (1) 与营地名 (0) 不出官称
+            return ""
+        tier = self._RANK_TIER.get(rank)
+        base = self._name_at_date(tid, date or self.as_of) or self.title_base_name(tid)
+        if not base or not tier:
+            return ""
+        word = self._office_word(tier, self._title_government(tid),
+                                 independent=self._is_independent(cid),
+                                 female=self._is_female(cid), tid=tid, cid=cid)
+        return f"{base}{word}" if word else base
+
     # ---- v5: 文化名序 / 文风 ----
 
     def name_order(self, cid):
@@ -5777,10 +6083,35 @@ def _mem_sentence(f, owner_id, mem):
                 verb = TITLE_GAIN_CREATED_VERBS.get(
                     "restored" if _restored else "first") or verb
             if verb:
+                # v36 (用户拍板4): 他人授予的头衔补「被谁任命/授予」(动词按授予方政体)
+                if owner_id is not None and title_tid is not None \
+                        and reason in _GRANTED_REASONS:
+                    gcid = f.grant_actor(owner_id, title_tid, mem.get("creation_date"))
+                    gl = f.person_label(gcid, date=mem.get("creation_date"),
+                                        style="brief") if isinstance(gcid, int) else ""
+                    if gl:
+                        office = f.title_office_text(
+                            owner_id, title_tid, mem.get("creation_date")) or title
+                        return f"{owner}受{gl}{f.grant_verb(gcid)}为{office}。"
                 return f"{owner}{verb}{title}。"
         else:
             verb = TITLE_LOSS_VERBS.get(reason)
             if verb:
+                # v36 (用户拍板4): 被谁剥夺 / 自愿辞职
+                actor = ""
+                if reason in ("revoked", "usurped"):
+                    actor = f.revoke_actor(owner_id, title_tid,
+                                           mem.get("creation_date"), reason)
+                if actor:
+                    office = f.title_office_text(
+                        owner_id, title_tid, mem.get("creation_date")) or title
+                    word = _style.TITLE_REVOKE_VERB if reason == "revoked" \
+                        else _style.TITLE_USURP_VERB
+                    return f"{owner}被{actor}{word}{office}。"
+                if reason == "stepped_down":
+                    office = f.title_office_text(
+                        owner_id, title_tid, mem.get("creation_date")) or title
+                    return f"{owner}{_style.TITLE_RESIGN_VERB}{office}。"
                 return f"{owner}{verb}{title}。"
     s = tpl.format(name=owner, other=other, title=title, rel=rel,
                    fname=extra_fname)
@@ -7226,6 +7557,13 @@ def _protagonist(f):
     if cpl:
         # v23: 主语=任职者 (仲宣任丑角…；德方任私人医生…), 组间以「；」分隔
         p["court_positions"] = "；".join(cpl)
+    # v36 (问题2, 用户拍板3): 主角**获授**的朝廷职位 (太师等) — 与上面的僚属花名册分列,
+    # 同时进《传主档案》与《朝局风云录》(realm facts 侧同源)。
+    col, coch = f.court_office_lines()
+    if col:
+        p["court_office"] = "；".join(col)
+    if coch:
+        p["court_office_changes"] = "；".join(coch)
     # v11: as_of 早于末档时, 直辖/封臣/营规等明细是「后期快照」数据, 不进入提示词
     # (只做头衔维度; 明细维度如要按时期需另行逐年快照, 成本高暂不做)
     skip_detail = bool(f.as_of) and cl.date_key(f.as_of) < cl.date_key(
@@ -7295,6 +7633,10 @@ def _protagonist(f):
                 p["estate_name"] = f._title_name_at(_etid, f.as_of) or "家族庄园"
                 p["estate_word"] = f.estate_kind_word(_etid, pid)
                 p["estate_holder"] = f._estate_holder_word(pid)
+                # v36 (问题4): 庄园驻地州府 (家业在宾州 — 与官职治所吉昌县两处地方)
+                _ep = f.estate_place_name(pid)
+                if _ep:
+                    p["estate_place"] = _ep
                 break
         if ld and not skip_detail:
             p["ruler_since"] = f.date(ld.get("became_ruler_date"))
@@ -7846,6 +8188,13 @@ def _realm_facts(f):
     min_off = f._current_ministers(f.as_of)
     if min_off:
         out["ministers"] = min_off
+    # v36 (问题2, 用户拍板3): 主角**获授**的朝廷职位 (太师等) — 《朝局风云录》升沉段用;
+    # 只写主角自己受任的职位 (employee=主角), 与廷中僚属花名册分列。
+    col, coch = f.court_office_lines()
+    if col:
+        out["protagonist_offices"] = col
+    if coch:
+        out["protagonist_office_changes"] = coch
     # v28: 要员隐事 — 最高领主链 (皇帝/路/王国) 与朝廷职司时任者的隐事
     # (用户 2026-09-10 决策: 《朝局风云录》收录最高统治者的秘密)
     out["secrets"] = _realm_secret_lines(f)
@@ -9040,6 +9389,7 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     if sources:
         period = f"{sources[0]} – {sources[-1]}"
     cpl, cpch = f.court_positions_lines()
+    col, coch = f.court_office_lines()
     # v8: 死因中文化 (总纲【卒年】不再泄漏英文 key, 干净事实铁律)
     # v11: as_of 早于死期 (十年传记) 时视为在世, 不泄漏死亡信息
     pd = cache.get("player_death")
@@ -9083,6 +9433,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # v7 新增: 宫廷/营地官职 + 家族家训
         "court_positions": cpl,
         "court_position_changes": cpch,
+        # v36 (问题2, 用户拍板3): 主角获授的朝廷职位 (进《朝局风云录》升沉段)
+        "court_office": col,
+        "court_office_changes": coch,
         "house_motto": f.motto(),
         # v9: 家族恩怨录 / 宝物志 数据源
         "house_feuds": f.house_feuds(),
@@ -9163,6 +9516,11 @@ FLAVOR_DEATH_ZH = _style.FLAVOR_DEATH_ZH
 TITLE_GAIN_VERBS = _style.TITLE_GAIN_VERBS
 TITLE_GAIN_CREATED_VERBS = _style.TITLE_GAIN_CREATED_VERBS
 TITLE_LOSS_VERBS = _style.TITLE_LOSS_VERBS
+# v36 (用户拍板4): 「他人授予」类缘由 — 这些缘由的头衔得失句补授予者
+# (appointment/appointment_succession 天朝制任命轮转; granted 封建册封;
+#  leased_out/negotiated/swear_fealty 让渡/议得/归附)。
+_GRANTED_REASONS = ("appointment", "appointment_succession", "granted",
+                    "leased_out", "negotiated", "swear_fealty")
 MEMORY_TEMPLATES = _style.MEMORY_TEMPLATES
 SECRET_TOPICS = _style.SECRET_TOPICS
 SECRET_TOPICS_NO_TARGET = _style.SECRET_TOPICS_NO_TARGET
