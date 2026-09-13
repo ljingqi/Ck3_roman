@@ -350,7 +350,38 @@ FACT_WORDING = {
     "affair_joined_court": "自{date}在主角廷中",
     "court_knight": "{actor}廷中骑士",
     "court_member": "{actor}廷臣",
+    # v36 (用户拍板3): 主角**获授**的朝廷职位 (太师/某部尚书…; employee=主角) —
+    # 传主档案与《朝局风云录》同时出词; 「至晚」口径与特质履历同源 (快照差分推失去时点)。
+    "office_head": "朝廷职位：",
+    "office_held": "任{employer}之{word}",
+    "office_since": "（自{date}任）",
+    "office_since_multi": "（{n}度受任：{dates}）",
+    "office_lost_late": "；至晚自{year}起已卸任",
+    "office_change_gain": "{date}：受{employer}之{gverb}为{word}",
+    "office_change_lose": "{date}：已卸任{word}",
 }
+
+
+# v36 (用户拍板4): 头衔授予动词 — 按**授予方政体**取词 (天朝/行政=任命, 封建=册封,
+# 部落/宗族=授予…)。头衔记忆句补「被谁任命/授予」时用; 取不到政体用「任命」。
+TITLE_GRANT_VERBS = {
+    "celestial": "任命",
+    "administrative": "任命",
+    "meritocratic": "任命",
+    "steppe_admin": "任命",
+    "feudal": "册封",
+    "clan": "授予",
+    "tribal": "授予",
+    "nomad": "授予",
+    "herder": "授予",
+    "wanua": "授予",
+    "mandala": "授予",
+}
+TITLE_GRANT_VERB_FALLBACK = "任命"
+# 去职动词: 自行去职 (stepped_down) 用「辞去」; 被夺 (revoked/usurped) 用「褫夺」/「篡夺」
+TITLE_RESIGN_VERB = "辞去"
+TITLE_REVOKE_VERB = "褫夺"
+TITLE_USURP_VERB = "篡夺"
 
 # ---------------------------------------------------------------------------
 # 8. 事实层措辞表 (v30 问题11 自 facts.py 搬入)

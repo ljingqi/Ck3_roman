@@ -559,12 +559,15 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
         if p.get("estate_name"):
             # v29b: 持有者称谓改主语句 (「世族庄园「周家族」，主人称乡绅。」),
             # 不用「世族庄园「周家族」（乡绅）」式括注同位语
+            # v36 (问题4): 庄园驻地州府一并写出 (庄园在宾州), 与「治所」两处并列
+            _place = f"，庄园在{p['estate_place']}" if p.get("estate_place") else ""
             if p.get("estate_holder"):
                 lines.append(f"{p.get('estate_word') or '家族庄园'}"
-                             f"「{p['estate_name']}」，主人称{p['estate_holder']}。")
+                             f"「{p['estate_name']}」，主人称{p['estate_holder']}"
+                             f"{_place}。")
             else:
                 lines.append(f"{p.get('estate_word') or '家族庄园'}"
-                             f"「{p['estate_name']}」。")
+                             f"「{p['estate_name']}」{_place}。")
     # ---- 官职句 ----
     # v23: p.court_positions 是主角营/廷内**他人任职**花名册 (雇主=主角,
     # 任职者已在 facts 层按人聚合: 「仲宣任丑角（自…任），又任盗贼大师…」),
@@ -579,6 +582,10 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
             lines.append(f"帐下僚属任职：{p['court_positions']}。")
     if p.get("court_position"):
         lines.append(f"在主角处任{p['court_position']}。")
+    # v36 (问题2, 用户拍板3): 主角**自己获授**的朝廷职位 (太师等) — 只出现在传主档案
+    # (cid is None 即主角本人), 主语是主角, 与上面的「僚属花名册」方向相反。
+    if cid is None and p.get("court_office"):
+        lines.append(f"朝廷职位：{p['court_office']}。")
     # ---- 家庭句 ----
     # v28: 配偶标签按**档案主体的性别**取 — 女性角色的丈夫此前被写成「妻室」
     # (陆氏家室列传: 妻「亮」的档案出现「妻室商州刺史陆荣廷」)。
@@ -1012,6 +1019,11 @@ def _article_facts(facts, cache, key, section=None):
         # v13: 朝廷职司现任 (尚书省六部/御史台/枢密院)
         if realm.get("ministers"):
             dashi.append("朝廷职司：" + "、".join(realm["ministers"]))
+        # v36 (问题2, 用户拍板3): 主角获授的朝廷职位与任免 (朝局升沉段)
+        if realm.get("protagonist_offices"):
+            dashi.append("主角朝廷职位：" + "；".join(realm["protagonist_offices"]))
+        if realm.get("protagonist_office_changes"):
+            dashi.append("主角朝廷职位任免：" + "；".join(realm["protagonist_office_changes"]))
         _set_block(blocks, "天下大势", "\n".join(dashi))
         # 朝局动态: 模块切片 (v27, 与《本纪》纪事同口径; 排除谋害人命)
         dyn = F.slice_timeline(facts.get("timeline") or [], key, sk,

@@ -528,6 +528,7 @@ EMPTY_CACHE = {
     "player_title_history": [],  # [{date, name}] 玩家主头衔名变化 (复兴党流亡委员会等)
     "realm_history": [],         # [{date, holders:{title_id: holder_id}}] 关键头衔持有者逐年
     "court_positions": [],       # [{date, positions:[{type, employee, hire_date, task}]}] 玩家营/廷内僚属任职逐年 (v7; employer==玩家, 非玩家自身官职)
+    "court_office_history": [],  # v36 (问题2): [{date, offices:[{type, employer, hire_date}]}] 主角**获授**的朝廷职位逐年 (employee==玩家, employer==他人)
     "house_motto": None,         # 玩家家族家训 (dynasty_house.motto, 字符串或模板 dict) (v7)
     "characters": {},
     "relations": {},
@@ -1374,6 +1375,33 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         if mine:
             cache.setdefault("court_positions", []).append(
                 {"date": date_label, "positions": mine})
+        # v36 (问题2, 用户拍板3): 主角**获授**的朝廷职位 — court_positions.database 中
+        # employee == 玩家、employer == 他人 (太师/某部尚书这类朝廷命官)。方向与上面的
+        # 「僚属」相反, 故分列一键, 语义互不混: 上面是「谁在我廷中任职」, 这里是
+        # 「我在谁的朝中任职」。失去时点在 facts 侧按快照差分推断
+        # (太师 881 受任、884 档仍在、885 档已无 → 至晚自885年起已卸任)。
+        own = []
+        for _pos_id, e in cpd.items():
+            if not isinstance(e, dict):
+                continue
+            try:
+                if e.get("employee") is None or int(e.get("employee")) != player_id:
+                    continue
+                if e.get("employer") is None:
+                    continue
+                employer = int(e.get("employer"))
+            except (TypeError, ValueError):
+                continue
+            ptype = e.get("court_position")
+            if not ptype:
+                continue
+            targets.add(employer)   # 雇主入目标集, 保证「唐皇帝李漼」这类称谓可解析
+            own.append({"type": ptype, "employer": employer,
+                        "hire_date": e.get("hire_date")})
+        # v36: 逐档都记一条 (空集也记) — 失去时点靠「后一档已无此职位」差分推断
+        # (与 court_positions 只在非空时记录不同: 那里是花名册, 这里是任期)。
+        cache.setdefault("court_office_history", []).append(
+            {"date": date_label, "offices": own})
         # 玩家家族家训 (v7): dynasty_house[<id>].motto (字符串或模板 dict)
         pobj = chars.get(str(player_id))
         if isinstance(pobj, dict) and pobj.get("dynasty_house") is not None:
