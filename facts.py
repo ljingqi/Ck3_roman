@@ -1533,7 +1533,12 @@ class Facts:
             # 仅州府/县/堡 (或仅庄园/毡帐): 最高层级最早获得的一个
             # (v28: 有领地时庄园不再占位, 领地阶段照常出现在历任里 —
             #  陆氏 869 受任阶州此前被 x_nf_ 庄园挤掉, 历任只剩一行)
-            t0 = sorted(items, key=lambda it: (-it[1], cl.date_key(it[2])))[0]
+            # v36 (用户拍板5): 男爵领 (rank 1) 不入相位 — 头衔材料最低取到州府 (c_);
+            # 只剩男爵领时返回 [] (该日不改相位, 由祖业/营地行承担)。
+            cands = [it for it in items if it[1] != 1]
+            if not cands:
+                return []
+            t0 = sorted(cands, key=lambda it: (-it[1], cl.date_key(it[2])))[0]
             return [(t0[2], t0[0])]
         max_tier = max(r for _t, r, _g in majors)
         tops = sorted([it for it in majors if it[1] == max_tier],
@@ -1547,11 +1552,17 @@ class Facts:
 
     def _primary_title_at(self, cid, as_of=None):
         """角色在 as_of 日期的首要头衔 (tier, tid): 最高层级中最早获得者;
-        无头衔 (仅营地) 返回 (None, tid)。"""
+        无头衔 (仅营地) 返回 (None, tid)。
+        v36 (用户拍板5): **男爵领 (rank 1) 不入首要头衔** — 头衔材料最低取到州府 (c_),
+        男爵领只在「死于X / 生于X」这类地名处使用; 营地/庄园 (x_, rank 0) 照旧保留。"""
         held = {}
         for tid, ivs in self._hold_intervals(cid, as_of).items():
-            if ivs and ivs[-1][1] is None:
-                held[tid] = ivs[-1][0]
+            if not (ivs and ivs[-1][1] is None):
+                continue
+            key = (self._lt.get(str(tid)) or {}).get("key") or ""
+            if self._TT_RANK.get(key[:2], 0) == 1:
+                continue
+            held[tid] = ivs[-1][0]
         if not held:
             return None, None
         items = [(tid, self._TT_RANK.get((self._lt.get(str(tid)) or {}).get("key", "")[:2], 0), g)
@@ -1573,6 +1584,11 @@ class Facts:
         events = []
         loss_types = {}  # (tid, date_key) -> type
         for tid, ivs in intervals.items():
+            # v36 (用户拍板5): 男爵领 (rank 1) 不进历任 — 最低取到州府 (c_);
+            # 男爵领只在「死于X / 生于X」处作地名。
+            if self._TT_RANK.get(
+                    ((self._lt.get(str(tid)) or {}).get("key") or "")[:2], 0) == 1:
+                continue
             for (g, l, lt) in ivs:
                 events.append((cl.date_key(g), g, tid, 1))
                 if l:
@@ -3244,6 +3260,11 @@ class Facts:
         keep, folded = [], set()
         for tid in ids:
             t = self._lt.get(str(tid)) or {}
+            # v36 (用户拍板5): 男爵领 (rank 1) 一律不进直辖清单 — 头衔材料最低取到州府;
+            # 首府男爵领由所辖州府蕴含, 其余男爵领 (如慈州之文城县) 亦不再并列。
+            if self._TT_RANK.get((t.get("key") or "")[:2], 0) == 1:
+                folded.add(tid)
+                continue
             cap = t.get("capital")
             if t.get("capital_barony") and isinstance(cap, int) \
                     and cap != tid and cap in held:
