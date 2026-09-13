@@ -2649,9 +2649,70 @@ class Facts:
 
     def faction_word(self, cid):
         """角色为起义派系领袖时的起义名 (「农民起义」), 否则 ''。
-        数据来自 cache["factions"] (逐档差分; 旧缓存无此字段时返回 '')。"""
+        数据来自 cache["factions"] (逐档差分 + v37 起义头衔路线; 旧缓存无此字段时返回 '')。"""
         rec = (self.cache.get("factions") or {}).get(str(cid)) or {}
         return self._UPRISING_WORDS.get(rec.get("type") or "", "")
+
+    def uprising_info(self, cid):
+        """起义领袖的起事信息 (v37, 问题8): {"base", "counties", "target", "word"} 或 {}。
+
+        - base: 起事州府名 — 起义头衔 `capital` (剧本头衔「农民叛乱」的起事州, 带
+          建立日与领袖), 落在 cache["factions"][cid]["base"]["county_name"]; 缺失时
+          用 county id 现查头衔名。**这是「死者在哪」的唯一真数据** —— 此前事实层不读,
+          无地点的死者被模型就近安放到主角家业所在 (旧稿慈州 / 新稿宾州)。
+        - counties: 该次起事参与的州府数 (「聚众N州」), 由 faction title_members 计。
+        - target: 反抗对象 — 先取该对象的最高头衔国号 (唐皇朝), 退其称谓 (唐皇帝李漼)。
+        """
+        rec = (self.cache.get("factions") or {}).get(str(cid)) or {}
+        if not rec:
+            return {}
+        out = {}
+        word = self._UPRISING_WORDS.get(rec.get("type") or "", "")
+        if word:
+            out["word"] = word
+        base = rec.get("base") or {}
+        nm = (base.get("county_name") or "").strip()
+        if not nm and isinstance(base.get("county"), int):
+            nm = self.title_base_name(base["county"]) or ""
+            if nm.startswith(("c_", "b_", "x_")):
+                nm = ""
+        if nm:
+            out["base"] = nm
+        counties = rec.get("counties") or []
+        if counties:
+            out["counties"] = len(counties)
+        tgt = rec.get("target")
+        if isinstance(tgt, int):
+            _t, tid = self._primary_title_at(tgt)
+            rn = self.title(tid) if tid is not None else ""
+            if rn and rn.startswith(("c_", "b_", "x_")):
+                rn = ""
+            out["target"] = rn or self.person_label(tgt, style="brief")
+        return out
+
+    # v37 (问题8): 「乱连N州」的规模上限 —— 超出者多是 escalated 民变 (存档
+    # title_members 动辄 30–40 州, 那是整场民变的波及面, 不是该首领的聚众), 一律不写。
+    _UPRISING_COUNT_CAP = 12
+
+    def uprising_line(self, cid, name=None):
+        """起义领袖的起事独立行 (v37, 问题8): 「丁文举起于渠州，乱连六州，反抗唐皇朝。」
+
+        与既有「X死于Y。」同形 (独立行, 不用名词括注同位语); 三项皆无返回 ''。"""
+        info = self.uprising_info(cid)
+        if not info:
+            return ""
+        who = name or self.name_with_regnal(cid) or self.name_or(cid)
+        if not who:
+            return ""
+        parts = []
+        if info.get("base"):
+            parts.append(f"起于{info['base']}")
+        n = info.get("counties") or 0
+        if 2 <= n <= self._UPRISING_COUNT_CAP:
+            parts.append(f"乱连{_count_zh(n)}州")
+        if info.get("target"):
+            parts.append(f"反抗{info['target']}")
+        return f"{who}{'，'.join(parts)}。" if parts else ""
 
     def person_label(self, cid, date=None, style="full"):
         """人物称谓统一入口 (v28b)。style:
@@ -8865,6 +8926,10 @@ def _killed_by_player(f):
             "death_date": (prof.get("death") or {}).get("date") or "9999.9.9",
             # v24: 受害者死前最近可知所在男爵领 (无则 '', 调用方省略标注)
             "victim_place": f.victim_place(cid),
+            # v37 (问题8): 起义领袖的起事信息 (起于X州 / 聚众N州 / 反抗X) —
+            # 起义头衔带的真地点, 补上死者「无地可依」的空白
+            "uprising": f.uprising_info(cid),
+            "uprising_line": f.uprising_line(cid),
             "house": _dynasty_display(prof.get("dynasty_name"),
                                       prof.get("house_name")),
             "house_branch": _house_branch(prof.get("dynasty_name"),

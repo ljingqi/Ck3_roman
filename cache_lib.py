@@ -1480,6 +1480,13 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # v11: 秘密生父索引预建一次 (real_father_of 对每个目标调用, 避免重复全量扫描)
     sec_candidates = _secret_father_candidates(melt)
 
+    # v37 (问题8): 起义领袖预扫进目标集 —— 他们活着时的所在 (last_location) 必须落库。
+    # 此前领袖只在循环**之后**的 _diff_factions 里登记、且不入 targets, 于是死后
+    # 「死于X / 起于X」全无数据 (周氏2 实测 12 名死者 11 人无地点, 模型只能把他们
+    # 就近安放到主角家业所在 —— 旧稿「居慈州境内」/新稿「宾州人」)。
+    for _base in uprising_title_bases(melt).values():
+        targets.add(int(_base["holder"]))
+
     for cid in sorted(targets):
         c = chars.get(str(cid))
         if c is None:
@@ -2172,6 +2179,60 @@ def _diff_secrets(cache, melt, date_label):
 _UPRISING_TYPES = ("peasant_faction", "escalated_peasant_faction",
                    "populist_faction", "nomadic_faction")
 
+# v37 (问题8): 起义头衔名 → 派系类型 (游戏 title_name_data.name 的取值)。
+# 起义头衔由剧本创建 (key = x_script_*/x_mc_*), 带 capital (起事州府)、date (起事日)
+# 与 holder (领袖); `delete_on_destroy` 使它在领袖死后从存档消失 —— 故必须在
+# 其存活期的档里取, 或由 refresh_uprising_bases.py 按时代熔件补档。
+_UPRISING_TITLE_NAMES = {
+    "农民叛乱": "peasant_faction",
+    "民粹暴动": "populist_faction",
+    "游牧民叛乱": "nomadic_faction",
+    "农民起义": "peasant_faction",
+    "民粹起义": "populist_faction",
+    "游牧民起义": "nomadic_faction",
+}
+
+
+def _title_name_of(t):
+    """头衔显示名: title_name_data.name → key。"""
+    tnd = (t or {}).get("title_name_data") or {}
+    return (tnd.get("name") or "").strip() or ((t or {}).get("key") or "")
+
+
+def uprising_title_bases(melt):
+    """本档起义头衔 → {holder_cid: base} (v37, 问题8)。
+
+    base = {"holder", "title", "county", "county_name", "name", "type", "from"}:
+    头衔 id / 起事州府 id (title.capital, 实为 c_ 头衔 id) / 州府名 / 头衔名
+    (农民叛乱…, 也是起义词来源) / 派系类型 / 起事日 (title.date)。
+    判据: 头衔键为剧本键 (x_script_/x_mc_/x_ho_) 且头衔名在 _UPRISING_TITLE_NAMES 内。
+    """
+    lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
+    out = {}
+    for tid, t in lt.items():
+        if not isinstance(t, dict):
+            continue
+        key = t.get("key") or ""
+        if not key.startswith(("x_script_", "x_mc_", "x_ho_")):
+            continue
+        name = _title_name_of(t)
+        ftype = _UPRISING_TITLE_NAMES.get(name)
+        if not ftype:
+            continue
+        holder = t.get("holder")
+        if not isinstance(holder, int):
+            continue
+        county = t.get("capital")
+        county_name = ""
+        if isinstance(county, int):
+            county_name = _title_name_of(lt.get(str(county)) or {})
+        out[str(holder)] = {
+            "holder": holder, "title": int(tid), "county": county,
+            "county_name": county_name, "name": name, "type": ftype,
+            "from": t.get("date"),
+        }
+    return out
+
 
 def _diff_factions(cache, melt, date_label):
     """把本档起义派系的**领袖**并入 cache["factions"] (逐档差分)。
@@ -2181,17 +2242,21 @@ def _diff_factions(cache, melt, date_label):
         {"43603": {"type": "peasant_faction", "first_seen": "870.1.1",
                    "last_seen": "871.1.1", "first": false,
                    "target": 10529, "counties": [14534, 14538],
-                   "faith": 136, "culture": 166}}
+                   "faith": 136, "culture": 166,
+                   "base": {"title": 18606, "county": 15246, "county_name": "渠州",
+                            "name": "农民叛乱", "from": "870.9.26"}}}
 
     只收起义类派系 (其余封臣派系领袖本有领地头衔)。存档无派系起止日期,
     首见档即记 first_seen, 最后一次出现记 last_seen。
     领袖一律记录 (不按相关集过滤): 逐档差分是时序的, 叛乱领袖常在身故后才因
     隐事/谋杀进入传主视野 (陆氏 43603 即 870–871 在党、872 才见于隐事档),
     先按相关集过滤会漏掉其起义身份; 每档约 40–55 名领袖, 体积可忽略。
+
+    v37 (问题8): 另并**起义头衔**路线 —— 起义头衔 (x_script_* 且名为「农民叛乱」等)
+    带真实 base 州府 (capital)、建立日与持有者; 派系记录缺失者 (周氏2 的王伯玉/
+    张知微: 同持「农民叛乱」头衔却无 faction 记录) 由此补上领袖身份与起事地。
     """
     facs = (melt.get("faction_manager") or {}).get("factions") or {}
-    if not facs:
-        return
     hist = cache.setdefault("factions", {})
     first_snap = len(cache.get("sources") or []) <= 1
     for _fid, rec in facs.items():
@@ -2229,6 +2294,17 @@ def _diff_factions(cache, melt, date_label):
             r["faith"] = vars_["faction_faith"]
         if "faction_culture" in vars_:
             r["culture"] = vars_["faction_culture"]
+    # v37: 起义头衔路线 (含无 faction 记录的领袖)
+    for _holder, base in uprising_title_bases(melt).items():
+        r = hist.get(str(_holder))
+        if r is None:
+            r = {"type": base["type"], "first_seen": date_label,
+                 "last_seen": date_label, "first": first_snap}
+            hist[str(_holder)] = r
+        else:
+            r.setdefault("type", base["type"])
+        r["base"] = {k: base[k] for k in ("title", "county", "county_name",
+                                          "name", "from", "type") if k in base}
 
 
 # ---------------------------------------------------------------------------

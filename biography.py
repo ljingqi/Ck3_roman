@@ -716,8 +716,9 @@ def _strip_station(s):
 
 
 def _assassin_lead_line(k):
-    """刺客列传开篇名录的一行: 「死者：称谓（死于…，被其烧死。）」。
-    v30: 同组血亲并列一行 (问题7)。"""
+    """刺客列传开篇名录的一行: 「死者：称谓（渠州起事；死于…，被其烧死。）」。
+    v30: 同组血亲并列一行 (问题7)。
+    v37 (问题8): 起义领袖补起事州府 — 开篇是独立请求, 无地点则模型会就近安放。"""
     nm = k.get("name") or ""
     off = k.get("office") or ""
     disp = k.get("label") or (f"{off}{nm}" if off else nm)
@@ -727,6 +728,9 @@ def _assassin_lead_line(k):
             db = "死于" + db[len(_p) + 2:]  # 去掉「称谓+死于」前缀
             break
     db = _strip_station(db)  # v20: 开篇压缩名录不带驻地标注
+    base = (k.get("uprising") or {}).get("base") or ""
+    if base:
+        db = f"{base}起事；{db}" if db else f"{base}起事。"
     grp = list(k.get("group") or [])
     if grp:
         disps = [disp] + [g.get("label") or g.get("name") or "" for g in grp]
@@ -781,6 +785,14 @@ def _assassin_kill_lines(facts, cache, k):
         vp = (e.get("victim_place") or "").strip()
         if vp:
             lines.append(f"{e.get('name') or ''}死于{vp}。")
+    # v37 (问题8): 起义领袖的起事真地点 (起义头衔 capital → 州府) —
+    # 独立行「丁文举起于渠州，聚众六州，反抗唐皇朝。」; 数据无则整行省略。
+    # 此前事实层从不读它, 死者「无地可依」, 模型只能就近安放到主角家业所在
+    # (旧稿「居慈州境内」/ 新稿「宾州人」)。
+    for e in [k] + grp:
+        ul = (e.get("uprising_line") or "").strip()
+        if ul:
+            lines.append(ul)
     # 亲缘: 父/母/妻/妾 (从缓存 family 取; v27 带前头衔/现头衔)
     # v30: 同组血亲只写**共同**父/母 (组内各人母亲可能不同 — 五位皇女各出其母,
     # 若照抄组首的母亲会写成「全组同母」), 配偶另按人名分列。
