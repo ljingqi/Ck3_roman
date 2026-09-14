@@ -3698,6 +3698,74 @@ class Facts:
                     slave=nm, actor=plabel, since=since, year=end_y))
         return {"lines": out, "former": fout}
 
+    def harm_lines(self):
+        """强迫/半强迫之事的**事实行** (v38, 问题1 追修)。
+
+        数据源 = 时间线里模块「强暴凌辱」的事件 (由性事记忆族的 noncon/dubcon 档
+        经 `_mem_sentence` 出句), 取「主角为一方当事人」的那些。句式为
+
+            881年8月28日，黔中王朱安仁强奸唐皇帝李润。（受害方及其亲属由此视其为仇）
+
+        为什么单列一块: 《阴私录》此前的纪事块只有「谁视主角为曾强奸她」这种
+        **他人评断**, 缺「这件事发生过」的确定事实 —— 朱安仁档实测, 模型据此
+        把强奸写成了两情相悦的私通 (「李润的家书」「离宫所历之事」)。
+        括注里的后效由 `carnal_opinions` 的当事人/亲属条数判定; 无此类好感时
+        退为「（N年见于记载）」。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return []
+        # 当事人: 指向主角的 carn_raped_* 好感 (受害方本人与其亲友)
+        party, kin = [], set()
+        for rec in (self.cache.get("carnal_opinions") or {}).values():
+            if not isinstance(rec, dict) or rec.get("target") != pid:
+                continue
+            mod = str(rec.get("modifier") or "")
+            owner = rec.get("owner")
+            if not isinstance(owner, int):
+                continue
+            if mod == "carn_raped_me":
+                if owner not in party:
+                    party.append(owner)
+            elif mod in ("carn_raped_family_member", "carn_raped_my_lover",
+                         "carn_raped_my_friend"):
+                kin.add(owner)
+        W = _FACT_WORDING
+        out = []
+        for e in _timeline(self) or []:
+            if (e.get("module") or "") != "强暴凌辱":
+                continue
+            # 主角是当事人之一: 记忆**持有者** (施为方/受害方) 或**参与槽**里的对象
+            ident = e.get("ident") or {}
+            parts = ident.get("parts") or {}
+            involved = ident.get("owner") == pid \
+                or pid in [v for v in parts.values() if isinstance(v, int)]
+            if not involved:
+                continue
+            text = e.get("text") or ""
+            year = self._year_only(e.get("date")) if e.get("date") else ""
+            # 受害方 (可能来自施为方视角的记忆, 也可能来自受害方视角)
+            vids = [v for v in parts.values() if isinstance(v, int) and v != pid] \
+                or [ident.get("owner") if ident.get("owner") != pid else None]
+            vname = ""
+            for v in vids:
+                if isinstance(v, int):
+                    # 与好感记录里的当事人核对, 取一致的称谓
+                    cand = self.person_label(v, style="brief") or ""
+                    if cand:
+                        vname = cand
+                        break
+            if not vname:
+                for v in party:
+                    vname = self.person_label(v, style="brief") or ""
+                    if vname:
+                        break
+            if vname:
+                tail = W["harm_after_subject"].format(name=vname)
+            else:
+                tail = W["harm_after_none"].format(year=year or "")
+            out.append(W["harm_line"].format(text=text.rstrip("。"), after=tail))
+        return out
+
     def carnal_opinion_lines(self):
         """Carnalitas 事件好感 → 干净中文句 (v38, 问题1/问题4)。
 
@@ -6644,6 +6712,12 @@ MODULE_SLICE = {
     ("qunying", "mid"): {"起家发迹", "失位让土", "开战兴兵", "战和胜负",
                          "囚禁入狱", "获释出狱", "结仇结怨", "死敌之仇",
                          "拥戴加冕"},
+    # 强暴凌辱 (v38, 问题1): 强迫/半强迫的性事 —— 时间线里是「谁对谁做了什么、在何日」
+    # 的确定性事实。放进《阴私录》的开篇与纪事: 该篇讲的正是「何事、涉及何人、
+    # 事在何年、有谁知情」, 强迫之事属于此列。**不进其他篇目的白名单** ——
+    # 本纪/朝局只写公开行迹, 此事由《阴私录》承载 (v27 的「一篇一题」分工)。
+    ("secrets", "lead"): {"强暴凌辱"},
+    ("secrets", "mid"): {"强暴凌辱"},
     # 列传: 开篇只给传主档案与关系缘由 (不配年表); 纪事给传主行迹 + 模块切片
     ("friend", "lead"): set(),
     ("friend", "mid"): {"结友知交", "挚友血盟", "丧友之恸", "结仇结怨"},
@@ -9839,10 +9913,14 @@ def _secrets_facts(f):
     vl = f.carnal_victim_line()
     if vl:
         out["carnal_victim"] = [vl]
+    # v38 (问题1 追修): 强迫之事的事实行 (时间线 slice 之外单独成块, 开篇/纪事都下发)
+    hl = f.harm_lines()
+    if hl:
+        out["harm"] = hl
     out["any"] = bool(out.get("held") or out.get("kinsmen") or out.get("known")
                       or out.get("enslaved") or out.get("enslaved_former")
                       or out.get("carnal_opinions") or out.get("carnal_victim")
-                      or f.hook_notable())
+                      or out.get("harm") or f.hook_notable())
     return out
 
 

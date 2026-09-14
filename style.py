@@ -381,6 +381,13 @@ FACT_WORDING = {
     # 与性事记忆互为佐证 (记忆给「谁做的」, 修正给「近来仍算近事」这一状态)。
     "carnal_recently_raped": "主角近来遭人强暴，此事五年之内仍算近事。",
     "carnal_opinions_head": "人身侵害与旧主奴关系如下：",
+    # v38 (问题1 追修): 强迫/半强迫之事的**事实行** —— 直接取时间线里那句
+    # 「881年8月28日，X强奸Y。」并补一句后效 (受害方及其亲友由此视施为者为仇)。
+    # 事实行先立「这是强迫」这一层, 模型才不会把它写成两情相悦。
+    "harm_head": "强迫之事如下：",
+    "harm_line": "{text}（{after}）",
+    "harm_after_subject": "{name}由此视其为仇",
+    "harm_after_none": "{year}年见于记载",
     # v32 (马克龙问题1): 强纳为妾 — 存档唯一带确切日期的纳妾记录
     # (opinions.active_opinions 的 forced_me_concubine_marriage_opinion.start_date);
     # 该脚本同一段落 `release_from_prison = yes`, 故「当日自狱中释出」是程序可断言的。

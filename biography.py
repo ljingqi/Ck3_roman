@@ -1186,6 +1186,14 @@ def _article_facts(facts, cache, key, section=None):
                 lines.append(_murder_index_line(facts, sec))
             if has_held and sec.get("held_unrevealed"):
                 lines.append("这些隐事至今无人知晓。")
+            # v38 (问题1 追修): 强迫之事**先进开篇** —— 时间线里那句
+            # 「881年8月28日，X强奸Y。」是程序坐实的确定事实; 少了它, 开篇只剩
+            # 「有桩始终未曾命名的事」这种留白, 模型就把强奸写成两情相悦的私通
+            # (朱安仁档实测: 正文写成「李润的家书」「离宫所历之事」)。
+            harm = list(sec.get("harm") or [])
+            if harm:
+                lines.append(style.FACT_WORDING["harm_head"])
+                lines.extend(harm[:2])
             # v31 (问题7): 主角无自有隐事时, 开篇改用家人近臣隐事前半 —
             # 旧文本开篇块为空, 模型只能拿共享前缀一行「戏剧性事件」自问自答
             # (「知情者何人？…则其亦必知情」)。
@@ -1226,6 +1234,11 @@ def _article_facts(facts, cache, key, section=None):
             cvl = list(sec.get("carnal_victim") or [])
             if cvl:
                 mid_lines.extend(cvl)
+            # v38 (问题1 追修): 强迫之事全列 (开篇给前两条, 纪事给全部)
+            harm = list(sec.get("harm") or [])
+            if harm:
+                mid_lines.append(style.FACT_WORDING["harm_head"])
+                mid_lines.extend(harm)
             _set_block(blocks, "家人近臣隐事", "\n".join(mid_lines))
             if sec.get("events"):
                 blocks["隐事纪年"] = "\n".join(sec["events"])
