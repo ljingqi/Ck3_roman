@@ -32,6 +32,7 @@ import time
 
 import localization
 import llm
+import style as _style   # v38: 牵制白名单判据 (style.hook_type_kept) 与措辞表
 
 # ---------------------------------------------------------------------------
 # 名称解码
@@ -546,8 +547,18 @@ EMPTY_CACHE = {
     # Carnalitas 的 carn_enslave_effect 在奴役的同一刻 `release_from_prison = yes`
     # (见 Mod common/scripted_effects/carn_slave_effects.txt), 故存档里那句
     # 「释放」记忆正是「没为奴隶」这一步; 该关系是唯一能把两者区分开的权威数据。
-    # 只收主角为奴隶主的那些 (key = "<主人id>><奴隶id>")。
+    # v38 (问题4): 记录**全部**主奴关系 (不再只收主角为主的那部分), 并记下每档
+    # 每名奴隶的主人 (`owner` 随档刷新) —— 「被卖给谁」由此可查 (见
+    # `enslavement_traces`)。key = "<主人id>><奴隶id>"。
     "enslavements": {},
+    # v38 (问题4/问题1): Carnalitas 关系好感逐档差分 (强奸/奴役/逼良为娼/前主奴)。
+    # 这些好感**自带 start_date** (比逐档差分精确), 且覆盖「不留记忆」的互动:
+    # 出售与释放奴隶只留一条 `carn_former_slave_or_slave_owner_opinion`。
+    # 只收涉主角者 (key = "<持有者id>><对象id>><modifier>")。
+    "carnal_opinions": {},
+    # v38 (问题1): 角色修正 `carn_recently_raped`(最近被强奸, 5 年) 逐档差分 —
+    # 受害方身上唯一带「何时」的信号 (key = "<角色id>>carn_recently_raped")。
+    "carnal_modifiers": {},
 }
 
 
@@ -1763,6 +1774,11 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     _diff_enslavements(cache, melt, date_label)
     # v32: 纳妾类好感 (opinions) 逐档差分 — 「强行纳为侧室」是纳妾唯一带日期的记录
     _diff_opinions(cache, melt, date_label)
+    # v38 (问题1/问题4): Carnalitas 事件好感 (强奸/奴役/逼良为娼/前主奴) 与
+    # `carn_recently_raped` 修正逐档差分 — 它们自带 start_date, 也是「出售奴隶」
+    # 这种不留记忆的互动唯一的痕迹
+    _diff_carnal_opinions(cache, melt, date_label)
+    _diff_carnal_modifiers(cache, melt, date_label)
     return cache
 
 
@@ -1771,7 +1787,13 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
 # (德圣塔对两个儿子各一条)。facts.hook_notable 早已把它判为「不足以单开一篇隐事」,
 # 但 hook_lines 仍会原样下发, 两处口径矛盾 → 《阴私录》里塞满「家主牵制」。
 # 入库前即跳过, 省体积、省差分, 也杜绝下游复用。
-_HOOK_TYPE_SKIP = {"house_head_hook"}
+# v38 (问题2, 用户拍板): 黑名单升级为**白名单** —— 判据见 `style.hook_type_kept`。
+# 全档 7259 条牵制里 `house_head_hook` 5243、`filial_piety_hook` 1069、
+# `favor_hook` 548, 而涉主角的只有 4 条 (全是这三类); 通用人情/身份自带牵制
+# 不下发, 模型才不会拿「握有对元宗的牵制『人情』」当把柄去编。
+def hook_type_kept(tp):
+    """牵制类型是否入库 (v38, 问题2) —— 判据与 facts 侧同源 (style.hook_type_kept)。"""
+    return _style.hook_type_kept(tp)
 
 
 def hook_slot_holder(first, second, field):
@@ -1844,7 +1866,7 @@ def _diff_hooks(cache, melt, date_label):
             tp = v.get("type")
             if not tp:
                 continue
-            if str(tp) in _HOOK_TYPE_SKIP:
+            if not hook_type_kept(tp):
                 continue
             holder, target = hook_slot_holder(first, second, k)
             want[f"{holder}>{target}>{tp}"] = {
@@ -1886,8 +1908,27 @@ def enslaved_ids(melt, owner_id):
     return out
 
 
+def all_enslavements(melt):
+    """本档**全部**主奴关系 {奴隶 id: 主人 id} (v38, 问题4)。
+
+    与 `enslaved_ids` 同源 (`scripted_relations.slave`), 但不再限定主人是玩家 ——
+    主角把奴隶卖出后, 奴隶会带着 `slave` 关系转到买家名下, 只有看全档才能读出
+    「卖给了谁」; 这也是把「被出售」与「被释放」分开的判据 (被释放者换成
+    `former_slave` 特质, 不再有 slave 关系)。"""
+    out = {}
+    for o in (melt.get("opinions") or {}).get("active_opinions") or []:
+        if not isinstance(o, dict):
+            continue
+        if "slave" not in (o.get("scripted_relations") or {}):
+            continue
+        owner, target = o.get("owner"), o.get("target")
+        if isinstance(owner, int) and isinstance(target, int) and owner != target:
+            out[target] = owner
+    return out
+
+
 def _diff_enslavements(cache, melt, date_label):
-    """把本档「主角为奴隶主」的奴役关系并入 cache["enslavements"] (逐档差分)。
+    """把本档主奴关系并入 cache["enslavements"] (逐档差分)。
 
     Carnalitas 的 `carn_enslave_effect` 在奴役的**同一刻**对已被囚的奴隶执行
     `release_from_prison = yes` (Mod common/scripted_effects/carn_slave_effects.txt),
@@ -1899,28 +1940,51 @@ def _diff_enslavements(cache, melt, date_label):
 
         {"38670>14590": {"owner": 38670, "slave": 14590,
                          "first_seen": "873.1.1", "first": false,
-                         "lost_at": null, "last_seen": "888.1.1"}}
+                         "last_seen": "888.1.1", "lost_at": null}}
 
     `first` = 首档即见 (数据起点前已为奴隶); 本档不再出现即记 `lost_at`
-    (被解放 / 转卖 / 死亡)。"""
+    (被解放 / 转卖 / 死亡)。
+
+    v38 (问题4, 用户拍板「全部做完」): 三点改动 ——
+    ① 收**全部**关系 (不再只收主角为主者): 奴隶被卖出后仍进缓存, 才有痕迹可查;
+    ② 主人变化时把前任主人记进 `prev_owners`, `owner` 随档刷新 ——
+       「转卖给了谁」由此可考;
+    ③ 关系消失时记录 `end_owner` (消失那一刻仍在奴役他的人是买家) 或
+       `freed` (那一刻已无人奴役他 = 转为 `former_slave`)。
+    """
     pid = cache.get("player_id")
     if pid is None:
         return
     hist = cache.setdefault("enslavements", {})
     first_snap = len(cache.get("sources") or []) <= 1
+    cur = all_enslavements(melt)
     want = {}
-    for sid in enslaved_ids(melt, pid):
-        want[f"{pid}>{sid}"] = {"owner": pid, "slave": sid}
+    for slave, owner in cur.items():
+        want[f"{owner}>{slave}"] = {"owner": owner, "slave": slave}
     for key, v in want.items():
         rec = hist.get(key)
         if rec is None:
             hist[key] = dict(v, first_seen=date_label, first=first_snap)
             continue
+        if rec.get("owner") != v["owner"]:
+            owners = rec.setdefault("prev_owners", [])
+            if rec.get("owner") is not None and rec["owner"] not in owners:
+                owners.append(rec["owner"])
+            rec["owner"] = v["owner"]
         rec.pop("lost_at", None)
+        rec.pop("end_owner", None)
+        rec.pop("freed", None)
         rec["last_seen"] = date_label
     for key, rec in hist.items():
-        if key not in want and not rec.get("lost_at"):
-            rec["lost_at"] = date_label
+        if key in want or rec.get("lost_at"):
+            continue
+        rec["lost_at"] = date_label
+        slave = rec.get("slave")
+        now_owner = cur.get(slave) if isinstance(slave, int) else None
+        if isinstance(now_owner, int):
+            rec["end_owner"] = now_owner
+        else:
+            rec["freed"] = True
 
 
 # v32: 纳妾类关系好感 — 存档里「强行纳为侧室」唯一带确切日期的记录
@@ -1933,6 +1997,160 @@ _CONCUBINE_OPINIONS = {
     "forced_spouse_concubine_marriage_opinion",
     "stole_concubine_opinion",
 }
+
+# v38 (问题1/问题4): Carnalitas 关系好感族 — 与前缀/后缀匹配, 只收涉主角者。
+# 前缀族取自 Mod common/opinion_modifiers/*.txt:
+#   carn_raped_*（曾强奸我/我的情人/我的朋友/家庭成员）— 受害方与其亲友持有;
+#   carn_enslaved_*（奴役了我/亲族/近亲/宗族/目标/宾客, 含 crime 变体）;
+#   carn_former_slave_or_slave_owner_opinion（曾经是主奴关系）— **出售与释放
+#     都留这一条**, 是「人被卖掉之后」在存档里最直接的痕迹。
+# 后缀族 (v32 纳妾同表之外单列): 被要求解放、被逼卖淫 —— 两者也都是指向主角的
+# 单条事件好感。
+_CARNAL_OPINION_PREFIXES = ("carn_raped_", "carn_enslaved_")
+_CARNAL_OPINION_SUFFIXES = (
+    "carn_former_slave_or_slave_owner_opinion",
+    "carn_forced_me_into_prostitution_opinion",
+    "carn_demanded_manumission_opinion",
+)
+
+
+def _carnal_opinion_kind(mod):
+    """关系好感 modifier 是否属 Carnalitas 事件族 (v38); 是则返回族名。"""
+    m = str(mod or "")
+    for p in _CARNAL_OPINION_PREFIXES:
+        if m.startswith(p):
+            return "rape" if p == "carn_raped_" else "enslave"
+    for s in _CARNAL_OPINION_SUFFIXES:
+        if m == s:
+            if "former_slave" in s:
+                return "former_slave"
+            if "prostitution" in s:
+                return "prostitution"
+            return "manumission"
+    return ""
+
+
+def _diff_carnal_opinions(cache, melt, date_label):
+    """Carnalitas 关系好感逐档差分 → cache["carnal_opinions"] (v38, 问题1/问题4)。
+
+    存档形如::
+
+        opinions.active_opinions = [
+            {"owner": 50473, "target": 15601,
+             "temporary_opinion": {"modifier": "carn_former_slave_or_slave_owner_opinion",
+                                   "start_date": "881.4.17",
+                                   "expiration_date": "882.1.12"}}, …]
+
+    方向: `owner` = 持有该好感的人, `target` = 施加者 (与 `_diff_opinions` 同口径)。
+    这些好感**自带 start_date**, 比逐档差分精确 —— 出售奴隶那一刻 (881.4.17)
+    正是由此坐实。只收 `owner`/`target` 有一方是主角的记录 (控体积):
+    全档 7000+ 条好感里 Carnalitas 的不过百余条。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return
+    acts = (melt.get("opinions") or {}).get("active_opinions") or []
+    hist = cache.setdefault("carnal_opinions", {})
+    first_snap = len(cache.get("sources") or []) <= 1
+    want = {}
+    for o in acts:
+        if not isinstance(o, dict):
+            continue
+        owner, target = o.get("owner"), o.get("target")
+        if not isinstance(owner, int) or not isinstance(target, int):
+            continue
+        if owner != pid and target != pid:
+            continue
+        for v in _opinion_values(o):
+            mod = v.get("modifier")
+            kind = _carnal_opinion_kind(mod)
+            if not kind:
+                continue
+            want[f"{owner}>{target}>{mod}"] = {
+                "owner": owner, "target": target, "modifier": str(mod),
+                "kind": kind,
+                "start": v.get("start_date"),
+                "expiration": v.get("expiration_date"),
+            }
+    for key, v in want.items():
+        rec = hist.get(key)
+        if rec is None:
+            hist[key] = dict(v, first_seen=date_label, first=first_snap)
+            continue
+        rec["start"] = v.get("start") or rec.get("start")
+        rec["expiration"] = v.get("expiration")
+        rec.pop("lost_at", None)
+        rec["last_seen"] = date_label
+    for key, rec in hist.items():
+        if key not in want and not rec.get("lost_at"):
+            rec["lost_at"] = date_label
+
+
+def _char_modifier_names(c):
+    """角色条目里的**临时修正**名列表 (v38)。
+
+    存档实测 (`alive_data` 段内, 与 stress/gold 同级)::
+
+        modifier={
+            modifier=carn_recently_raped        expiration_date=886.8.28
+        }
+
+    解析后的 melt 里位于 `alive_data` 下, 键名单复数按 rakaly 归一, 故同时兼容
+    `modifiers` / `modifier` / `character_modifiers`。"""
+    if not isinstance(c, dict):
+        return []
+    out = []
+    for key in ("modifiers", "modifier", "character_modifiers"):
+        v = (c.get("alive_data") or {}).get(key)
+        if v is None:
+            v = c.get(key)
+        if isinstance(v, dict):
+            out.extend(str(k) for k in v.keys())
+        elif isinstance(v, list):
+            for m in v:
+                if isinstance(m, dict):
+                    for kk in ("modifier", "key", "name"):
+                        if m.get(kk):
+                            out.append(str(m[kk]))
+                            break
+                elif m:
+                    out.append(str(m))
+    return out
+
+
+def _diff_carnal_modifiers(cache, melt, date_label):
+    """角色修正 `carn_recently_raped` 逐档差分 → cache["carnal_modifiers"] (v38)。
+
+    Mod `common/modifiers/carn_rape_modifiers.txt` 的 `carn_recently_raped`
+    (本地化「最近被强奸」, health −0.25, **5 年**) 由 `carn_rape_victim_stress_effect`
+    加在受害方身上 —— 与性事记忆相比它多一层「此事确实被按强迫处理」的语义,
+    且是受害方在无记忆时的兜底信号。只收缓存已知角色与主角 (控体积)。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return
+    hist = cache.setdefault("carnal_modifiers", {})
+    first_snap = len(cache.get("sources") or []) <= 1
+    known = set(cache.get("characters") or {})
+    want = {}
+    for cid, c in all_characters(melt).items():
+        if "carn_recently_raped" not in _char_modifier_names(c):
+            continue
+        try:
+            cid_i = int(cid)
+        except (TypeError, ValueError):
+            continue
+        if cid_i != pid and str(cid) not in known:
+            continue
+        want[f"{cid_i}>carn_recently_raped"] = {"character": cid_i}
+    for key, v in want.items():
+        rec = hist.get(key)
+        if rec is None:
+            hist[key] = dict(v, first_seen=date_label, first=first_snap)
+            continue
+        rec.pop("lost_at", None)
+        rec["last_seen"] = date_label
+    for key, rec in hist.items():
+        if key not in want and not rec.get("lost_at"):
+            rec["lost_at"] = date_label
 
 
 def _opinion_values(o):

@@ -153,6 +153,16 @@ PARTICIPANT_SLOTS = {
     "child_born": "child", "first_born": "child",
     "childhood_education_guardian": "guardian",
     "successful_murder": "victim",
+    # v38 (问题1): Carnalitas 性事记忆族 (24 键共用 `sex_partner` 槽;
+    # 常量 `_SEX_MEM_PREFIX` 处按前缀族解析, 无需逐键登记)
+    "had_a_threesome_memory": "partner_1",
+    # v38 (问题1 顺带): 同期未登记槽位的普通游戏记忆 —— 槽名取自游戏本地化
+    # 描述里的占位符 ([rescuer]/[old_friend]/[dead_relation]/[new_relation])。
+    "saved_from_assault_memory": "rescuer",
+    "stopped_being_friends": "old_friend",
+    "lover_died": "dead_relation", "soulmate_died": "dead_relation",
+    "best_friend_died": "dead_relation", "nemesis_died": "dead_relation",
+    "developed_crush": "new_relation",
 }
 
 # v32 (问题3): 生母本人持有该记忆时 particip[mother] == 持有人 → 视为无对手方,
@@ -218,7 +228,6 @@ _SECRET_PARTY_TARGET_TYPES = {"secret_lover", "secret_adultery"}
 # 血亲只认**血缘** (父/母/子女/同胞); 姻亲 (配偶) 不算 — 否则夫妻同房会被写成乱伦。
 _SEX_MEM_TYPES = ("had_sex", "became_lovers", "became_soulmates", "developed_crush")
 _SEX_MEM_OTHER_KEYS = ("sex_partner", "new_relation", "new_soulmate")
-
 # 「乱伦」主题: 判出对方时以冒号带出 (与「主角握有…：」同式), 判不出时不点名
 SECRET_INCEST_TOPIC = "乱伦：与{target}"
 SECRET_INCEST_TOPIC_ANON = "乱伦"
@@ -1331,7 +1340,12 @@ class Facts:
 
     def _title_name_at(self, tid, date, cid=None):
         """头衔在某日期的完整名 (v11): 按日期名 + 层级词 (独立王国=国)。
-        cid 提供时按该角色当前独立性取词 (历任/朝局用)。"""
+        cid 提供时按该角色当前独立性取词 (历任/朝局用)。
+
+        v38 (问题3): 独立性按该日期**时任持有者**判定 —— 头衔是「国」还是「路」
+        取决于它在那一刻是否自成一国。旧稿按区间中点取名, 又用**当前**持有者的
+        独立性取词, 于是同一个 k_qingxu 在 872 年 (皇帝兼领) 显示「青徐国」、
+        878 年 (臣子受任) 显示「青徐路」, 两条并列读来像两个政权。"""
         if tid is None:
             return ""
         t = self._lt.get(str(tid)) or {}
@@ -1350,6 +1364,10 @@ class Facts:
         if key.startswith("e_minister_"):  # v13: 朝廷职司只给名字
             return nm
         gov = self._title_government(tid)
+        # v38 (问题3): 未显式给出 cid 时, 按该日期的时任持有者判独立性
+        # (title history 里这一条 holder 即当时之主)
+        if cid is None:
+            cid = self.holder_at(tid, date)
         independent = self._is_independent(cid) if cid is not None else False
         word = self._tier_word_at(tid, gov, independent)
         # v28: 与 title() 同口径 — 中文建制地名 (州/府/京/郡/县收尾) 不叠层级词
@@ -1361,19 +1379,15 @@ class Facts:
         return nm
 
     def _name_in_span(self, tid, start, end, cid=None):
-        """头衔在 [start, end] 区间中点的完整名 (v11): 取区间中点日期命名,
-        避开更名当日的 1-2 天过渡名 (鄂路→青徐、青徐→周), 即任期内的稳定名。"""
+        """头衔在 [start, end] 区间内的稳定名 (v11)。
+
+        取样点取**任期起点** (而非区间中点): 更名只在任期头尾出现 1~2 天的过渡名
+        (鄂路→青徐、青徐→周), 从起点取名正好落在改名之后那一版, 一段任期内
+        只有一个名字。v38 (问题3): 旧稿取区间**中点**, 同一段任期里跨过一次改名
+        就会在同一条里并写出两个名字 (「青徐国：…，青徐路：…」) —— 模型据此把
+        青徐读成两个政权。"""
         if tid is None:
             return ""
-        if start and end:
-            try:
-                sy = [int(x) for x in str(start).split(".")[:3]]
-                ey = [int(x) for x in str(end).split(".")[:3]]
-                if len(sy) == 3 and len(ey) == 3:
-                    mid = ".".join(str((a + b) // 2) for a, b in zip(sy, ey))
-                    return self._title_name_at(tid, mid, cid)
-            except Exception:
-                pass
         return self._title_name_at(tid, start, cid)
 
     def _hold_intervals(self, cid, as_of=None):
@@ -3073,12 +3087,13 @@ class Facts:
         return out
 
     def _sex_partner_mems(self, cid):
-        """cid 的性/情记忆 [(日期, 对方 id)], 按日期升序 (v34, 问题2)。"""
+        """cid 的性/情记忆 [(日期, 对方 id)], 按日期升序 (v34, 问题2;
+        v38 问题1: 并入 Carnalitas 的 `had_sex_*` 族)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         out = []
         for m in rec.get("memories") or []:
             t = str(m.get("type") or "")
-            if not t.startswith(_SEX_MEM_TYPES):
+            if t not in _SEX_MEM_TYPES and not t.startswith(_SEX_MEM_PREFIX):
                 continue
             parts = m.get("participants") or {}
             other = None
@@ -3481,8 +3496,12 @@ class Facts:
     # `hook_notable` 已把它判为「不足以单开一篇隐事」, 但 `hook_lines` 仍原样下发,
     # 于是《阴私录》里塞满「主角握有对两个儿子的『家主』牵制」(德圣塔档 2 条,
     # 马克龙档曾 8 条), 与用户「强牵制太泛滥」的判断一致。cache_lib 已在入库前跳过
-    # (见 `_HOOK_TYPE_SKIP`), 此处对旧缓存再兜一层。
-    _HOOK_TYPE_SKIP = frozenset({"house_head_hook"})
+    # (见 `hook_type_kept`), 此处对旧缓存再兜一层。
+    # v38 (问题2, 用户拍板): 判据由「排除家主」升级为**白名单** —— 通用人情类
+    # (人情/义务/蒙恩/支持者/忠诚/威胁/操控/孝道…) 一律不下发, 判据见
+    # `style.hook_type_kept`; 旧缓存里已入库的通用牵制由此同样被拦下。
+    def _hook_kept(self, tp):
+        return _style.hook_type_kept(tp)
 
     def hook_lines(self):
         """牵制事实 (v31, 问题5): {"held": [主角握有的], "over": [他人对主角的]}。
@@ -3490,7 +3509,9 @@ class Facts:
         方向: 取缓存已定好的 `holder`/`target`（v33 起由 `cache_lib.hook_slot_holder`
         按 `active_hook_<N>` 槽号判定 —— first/second 只是按键规范化的成对编号）。
         强弱取游戏 `common/hook_types` 的 `strong`; 同型多条归并成一行。
-        家主牵制 (`house_head_hook`) 按身份自带机制略去 (v35, 见 `_HOOK_TYPE_SKIP`)。
+        v38 (问题2): 类型先过 `style.hook_type_kept` 白名单 —— 只有背后有一件具体事
+        的牵制才出句 (勒索/捏造/罪案/Mod 内容牵制/强牵制), 通用人情与身份自带类
+        (人情/义务/蒙恩/忠诚/威胁/操控/家主/孝道) 一律略去, 见 `_hook_kept`。
         只出 as_of 之前已见、且 as_of 时仍持有者 (逐档差分记录 lost_at)。"""
         pid = self.cache.get("player_id")
         if pid is None:
@@ -3500,7 +3521,7 @@ class Facts:
         for rec in (self.cache.get("hooks") or {}).values():
             if not isinstance(rec, dict):
                 continue
-            if str(rec.get("type") or "") in self._HOOK_TYPE_SKIP:
+            if not self._hook_kept(rec.get("type")):
                 continue
             fs, la = rec.get("first_seen"), rec.get("lost_at")
             if ao is not None and fs and cl.date_key(fs) > ao:
@@ -3585,27 +3606,44 @@ class Facts:
         缓存 `enslavements`) 能把两者区分开。旧稿把「抓人 → 没为奴隶 → 放出牢房」
         整个读成了「抓了又放」, 正是缺了这条。
 
-        返回 {"lines": [...], "head": bool} — 逐条 = 「X没为Y的奴隶（Z年起）。」;
-        超三人时归并成一行 (与牵制同口径)。无奴役时返回 {}。"""
+        返回 {"lines": [...], "former": [...], "head": bool} —
+        在册者逐条 = 「X没为Y的奴隶（Z年起）。」(超三人时归并成一行, 与牵制同口径);
+        **曾为主角所有、此后不再所有者**进 `former`, 逐条写出关系的收束
+        (v38 问题4: 被卖/被释/被夺, 由缓存差分判定) —— 旧稿只写在册的,
+        人一被卖掉就从事实面彻底消失, 模型此后再无此人可依。
+
+        v38 (问题4, 用户拍板「全部做完」): 收「曾经是主角奴隶」的全部关系
+        (不只看在本档还在册的), 并给出三档收束句:
+          · 转卖 → 「X没为Y的奴隶（Z年起），至W年转归他人」;
+          · 释放 → 「X没为Y的奴隶（Z年起），至W年获释」;
+          · 结局不明 (死亡/数据中断) → 「X没为Y的奴隶（Z年起），此后不再见于记载」。
+        判据来自 cache_lib._diff_enslavements 记录的 `end_owner` / `freed` /
+        `lost_at` (见该处注释)。"""
         pid = self.cache.get("player_id")
         if pid is None:
             return {}
         ao = cl.date_key(self.as_of) if self.as_of else None
         recs = []
-        for rec in (self.cache.get("enslavements") or {}).values():
+        former = []
+        for key, rec in (self.cache.get("enslavements") or {}).items():
             if not isinstance(rec, dict):
+                continue
+            # v38: 只取主角为**某一任**主人的关系 (转卖后关系仍在缓存里)
+            owners = [rec.get("owner")] + list(rec.get("prev_owners") or [])
+            if pid not in owners:
                 continue
             fs, la = rec.get("first_seen"), rec.get("lost_at")
             if ao is not None and fs and cl.date_key(fs) > ao:
                 continue
-            if ao is not None and la and cl.date_key(la) <= ao:
-                continue
             if not isinstance(rec.get("slave"), int):
                 continue
+            if ao is not None and la and cl.date_key(la) <= ao:
+                # 关系在 as_of 之前就断了 → 曾为主角所有
+                former.append(rec)
+                continue
             recs.append(rec)
-        if not recs:
-            return {}
         recs.sort(key=lambda r: cl.date_key(r.get("first_seen") or "9999.9.9"))
+        former.sort(key=lambda r: cl.date_key(r.get("lost_at") or "9999.9.9"))
         W = _FACT_WORDING
         plabel = self.person_label(pid, style="brief") or "主角"
         names = []
@@ -3613,7 +3651,12 @@ class Facts:
             nm = self.person_label(r["slave"], style="brief") or ""
             if nm:
                 names.append((r, nm))
-        if not names:
+        fnames = []
+        for r in former:
+            nm = self.person_label(r["slave"], style="brief") or ""
+            if nm:
+                fnames.append((r, nm))
+        if not names and not fnames:
             return {}
         out = []
         if len(names) > 3:
@@ -3634,7 +3677,97 @@ class Facts:
                     out.append(W["enslaved_line_since"].format(
                         slave=nm, actor=plabel,
                         year=self._year_only(fs)))
-        return {"lines": out}
+        fout = []
+        for r, nm in fnames[:8]:
+            fs, la = r.get("first_seen"), r.get("lost_at")
+            since = "" if (r.get("first") or not fs) \
+                else "（{}起）".format(self._year_only(fs))
+            end_y = self._year_only(la) if la else ""
+            buyer = r.get("end_owner")
+            bname = self.person_label(buyer, style="brief") \
+                if isinstance(buyer, int) else ""
+            if bname:
+                fout.append(W["enslaved_former_sold"].format(
+                    slave=nm, actor=plabel, since=since, year=end_y,
+                    buyer=bname))
+            elif r.get("freed"):
+                fout.append(W["enslaved_former_freed"].format(
+                    slave=nm, actor=plabel, since=since, year=end_y))
+            else:
+                fout.append(W["enslaved_former_lost"].format(
+                    slave=nm, actor=plabel, since=since, year=end_y))
+        return {"lines": out, "former": fout}
+
+    def carnal_opinion_lines(self):
+        """Carnalitas 事件好感 → 干净中文句 (v38, 问题1/问题4)。
+
+        数据源 `cache["carnal_opinions"]` (逐档差分, 自带 `start` = 游戏给的
+        start_date)。这些好感的本地化本身就是一句对对方的评断 —— 实测:
+
+            carn_raped_me                              = 曾强奸我
+            carn_raped_my_lover                        = 曾强奸我的情人
+            carn_raped_family_member                   = 曾强奸家庭成员
+            carn_raped_my_friend                       = 曾强奸我的朋友
+            carn_enslaved_me_opinion                   = 奴役了我
+            carn_enslaved_me_crime_opinion             = 非法奴役了我
+            carn_enslaved_close_family_opinion         = 奴役了亲族成员
+            carn_former_slave_or_slave_owner_opinion   = 曾经是主奴关系
+            carn_forced_me_into_prostitution_opinion   = 迫使我卖淫
+            carn_demanded_manumission_opinion          = 被要求解放奴隶
+
+        方向: `owner` = 持有该评断的人, `target` = 被评断的人。句式为
+        「{owner}视{target}为：{评断词}（{年}）」，即以**持有者的视角**直陈 ——
+        这是存档里最直白的一句话, 不再让模型从 id 与日期里猜。查不到本地化的
+        键整条略去 (不把裸键送进提示词)。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return {}
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        out = []
+        for rec in (self.cache.get("carnal_opinions") or {}).values():
+            if not isinstance(rec, dict):
+                continue
+            owner, target = rec.get("owner"), rec.get("target")
+            if not isinstance(owner, int) or not isinstance(target, int):
+                continue
+            fs = rec.get("start") or rec.get("first_seen")
+            if ao is not None and fs and cl.date_key(fs) > ao:
+                continue
+            word = L.loc(self.table, str(rec.get("modifier") or ""))
+            if not word or not loc_text_ok(word):
+                continue
+            she = self.person_label(owner, style="brief") or ""
+            the = self.person_label(target, style="brief") or ""
+            if not she or not the:
+                continue
+            year = self._year_only(fs) if fs else ""
+            date = f"（{year}起）" if year and not rec.get("first") else ""
+            out.append(f"{she}视{the}为：{word}{date}。")
+        if not out:
+            return {}
+        return {"lines": sorted(set(out))[:10]}
+
+    def carnal_victim_line(self):
+        """主角身上「最近遭强暴」的收束句 (v38, 问题1)。
+
+        数据源 = 逐档差分的角色修正 `carn_recently_raped` (Mod 在受害方身上加
+        5 年, health −0.25)。它与性事记忆互为佐证: 记忆给「谁做的」, 修正给
+        「此事确实按强迫处理、且五年内仍算近事」这一当下状态。只在主角自己身上
+        时出句; 无则返回 ''。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return ""
+        rec = (self.cache.get("carnal_modifiers") or {}).get(
+            f"{pid}>carn_recently_raped")
+        if not isinstance(rec, dict):
+            return ""
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        fs, la = rec.get("first_seen"), rec.get("lost_at")
+        if ao is not None and fs and cl.date_key(fs) > ao:
+            return ""
+        if ao is not None and la and cl.date_key(la) <= ao:
+            return ""
+        return _FACT_WORDING["carnal_recently_raped"]
 
     def forced_concubine_lines(self):
         """强纳为妾事实 (v32, 问题1): 逐条 = 「880年1月1日，主角强纳戈迪娜·迭戈斯为妾。」。
@@ -3689,13 +3822,16 @@ class Facts:
         return sorted(set(out))
 
     def hook_notable(self):
-        """有「非家主牵制」的牵制 (v31): 《阴私录》的门槛 — 仅对子女的家主牵制
-        是家主身份自带, 不足以单开一篇隐事。"""
+        """有「够格入《阴私录》」的牵制 (v31; v38 问题2 收紧判据)。
+
+        门槛即 `style.hook_type_kept` 的白名单: 只有背后有一件具体事的牵制
+        (勒索/捏造/罪案/Mod 内容牵制/强牵制) 才算料; 家主、孝道、人情、义务、
+        蒙恩这类身份自带或通用人情不单开一篇。"""
         pid = self.cache.get("player_id")
         for rec in (self.cache.get("hooks") or {}).values():
             if not isinstance(rec, dict):
                 continue
-            if rec.get("type") == "house_head_hook":
+            if not _style.hook_type_kept(rec.get("type")):
                 continue
             if pid in (rec.get("holder"), rec.get("target")):
                 return True
@@ -6029,12 +6165,115 @@ def _torture_kind(f, mem):
     return ""
 
 
+# v38 (问题1): Carnalitas 性事记忆族 (had_sex_*) —— Mod 按
+# `(giving|receiving)_player_[(dom|sub)_](vaginal|anal|oral)[_cum_(inside|outside)]_(consensual|dubcon|noncon)`
+# 组合出 24 个类型键, 逐键登记进 MEMORY_TEMPLATES 既不现实也无意义。
+# 这里按前缀族解析: 方向 (施为/受害)、体位、自愿程度都可从键名确定性读出。
+# 用户拍板 (2026-09-14): **只记录强迫 (noncon) 与半强迫 (dubcon)**;
+# consensual 仍走旧口径 (`had_sex` / `had_sex_spouse` / `had_sex_consensual`)。
+_SEX_MEM_PREFIX = "had_sex_"
+_SEX_CONSENT = ("noncon", "dubcon")   # 收录档 (顺序即判定顺序)
+_SEX_ACT_OF = (("vaginal", re.compile(r"_vaginal")),
+               ("anal", re.compile(r"_anal")),
+               ("oral", re.compile(r"_oral")))
+# 语境: 判「记忆持有人是施为方还是受害方」——`giving_player` 即施为方
+# (与男女无关: 女性施为时 Mod 写 `_fm_desc` 逆强奸, 仍是 giving 方为主使者)。
+_SEX_GIVING_RE = re.compile(r"_giving_player")
+_SEX_RECEIVING_RE = re.compile(r"_receiving_player")
+# 体位/自愿程度的**包含式**匹配 (浮点状态: cum_inside / cum_outside / 无标记)
+_SEX_MEM_RE = re.compile(r"^had_sex_")
+# v38 (问题1): 性事记忆族的参与槽 — 全部 24 键共用 `sex_partner`
+_SEX_PARTNER_SLOT = "sex_partner"
+
+
+def sex_mem_info(mtype):
+    """性事记忆类型键 → {role, consent, act, kept} (v38, 问题1)。
+
+    role: 'actor' (持有人为施为方) / 'victim' (持有人为受害方);
+    consent: 'noncon' / 'dubcon' / 'consensual' / '';
+    act: 'vaginal' / 'anal' / 'oral' / '';
+    kept: 是否属用户拍板收录的档 (强迫与半强迫)。
+    非性事记忆族返回 None。"""
+    t = str(mtype or "")
+    if not _SEX_MEM_RE.match(t):
+        return None
+    if _SEX_RECEIVING_RE.search(t):
+        role = "victim"
+    elif _SEX_GIVING_RE.search(t):
+        role = "actor"
+    else:
+        role = "actor"
+    consent = ""
+    for c in _SEX_CONSENT + ("consensual",):
+        if t.endswith("_" + c):
+            consent = c
+            break
+    act = ""
+    for name, rx in _SEX_ACT_OF:
+        if rx.search(t):
+            act = name
+            break
+    return {"role": role, "consent": consent, "act": act,
+            "kept": consent in _SEX_CONSENT}
+
+
+def _sex_mem_sentence(f, owner_id, mem, info):
+    """性事记忆 (强迫/半强迫) → 干净中文句 (v38, 问题1)。
+
+    持有人是施为方还是受害方由 `sex_mem_info` 从键名读出 (与男女无关),
+    对方取 `sex_partner` 槽。体位只在句子动词上分档 (阴道/肛/口), 射精位置
+    与性行为细节不进事实面 (它们是游戏 UI 的露骨描述)。"""
+    parts = mem.get("participants") or {}
+    other_id = parts.get(_SEX_PARTNER_SLOT)
+    if not isinstance(other_id, int) or other_id == owner_id:
+        # 参与槽缺失或指向自己 = 存档退化记录 (见 _PEER_SLOT_TYPES 同源判据)
+        return None
+    owner = f.person_label(owner_id, style="brief") \
+        or f.name_with_regnal(owner_id, date=mem.get("creation_date"))
+    other = f.person_label(other_id, style="brief") \
+        or f.name_with_regnal(other_id, date=mem.get("creation_date"))
+    if not owner or not other:
+        return None
+    table = _style.SEX_MEM_WORDING.get(f"{info['role']}_{info['consent']}") or {}
+    tpl = table.get(info["act"]) or table.get("base")
+    if not tpl:
+        return None
+    return tpl.format(name=owner, other=other)
+
+
 def _mem_sentence(f, owner_id, mem):
     """一条记忆 → 干净中文句。
 
     v31: 同伴槽位型记忆的参与槽与持有者同一人时返回 None (退化记录, 见
-    `_PEER_SLOT_TYPES`); 配偶之间的 had_sex 改用「同房」模板 (问题2/3)。"""
+    `_PEER_SLOT_TYPES`); 配偶之间的 had_sex 改用「同房」模板 (问题2/3)。
+    v38 (问题1): Carnalitas 性事族 (had_sex_*) 按前缀族解析 —— 强迫 (noncon)
+    与半强迫 (dubcon) 出句, 其余自愿档仍走旧模板。"""
     mtype = mem.get("type")
+    # ---- v38: Carnalitas 性事族 (含多数无逐键模板者) ----
+    if isinstance(mtype, str) and mtype.startswith(_SEX_MEM_PREFIX):
+        info = sex_mem_info(mtype)
+        if info is None:
+            return None
+        if info["kept"]:
+            return _sex_mem_sentence(f, owner_id, mem, info)
+        # 自愿档: 继续走旧模板 (had_sex / had_sex_spouse / had_sex_consensual)
+        mtype = "had_sex"
+    # v38 (问题1 顺带): 三人行 —— 两个对象槽 (partner_1/partner_2)
+    if mtype == "had_a_threesome_memory":
+        parts = mem.get("participants") or {}
+        ids = [parts.get(k) for k in ("partner_1", "partner_2")]
+        ids = [i for i in ids if isinstance(i, int) and i != owner_id]
+        if not ids:
+            return None
+        owner = f.person_label(owner_id, style="brief") \
+            or f.name_with_regnal(owner_id, date=mem.get("creation_date"))
+        names = [f.person_label(i, style="brief")
+                 or f.name_with_regnal(i, date=mem.get("creation_date"))
+                 for i in ids]
+        names = [n for n in names if n]
+        if not owner or not names:
+            return None
+        return f"{owner}与{'、'.join(names)}同宿。"
     tpl = MEMORY_TEMPLATES.get(mtype)
     if not tpl:
         return None
@@ -6326,6 +6565,17 @@ MODULE_TABLE = {
     "越狱脱逃":   {"escaped_from_prison_memory"},
     "刑虐残暴":   {"tortured_memory", "torturer_memory"},
     "受辱含冤":   {"ignored_assault_memory"},
+    # v38 (问题1): 强迫/半强迫的性事 —— 用户拍板只收这两档。12 个键 = 施为/受害
+    # × (dom/sub) × 体位 (阴道/肛/口) × (noncon/dubcon); Mod 里没有 dom/sub 标记
+    # 的旧键也在其中。刻意**不进** MODULE_SLICE 的任何板块白名单: 它是时间线里的
+    # 可核查事实, 由哪一篇展开属于篇目判断, 事实层不替模型决定。
+    "强暴凌辱":   {
+        f"had_sex_{side}_player_{dom}{act}_{cons}"
+        for side in ("giving", "receiving")
+        for dom in ("", "dom_", "sub_")
+        for act in ("vaginal_cum_inside", "vaginal_cum_outside", "anal", "oral")
+        for cons in ("noncon", "dubcon")
+    },
     "结仇结怨":   {"became_rivals", "became_grudge"},
     "死敌之仇":   {"became_nemesis"},
     "化仇解怨":   {"stopped_being_rivals"},
@@ -6498,8 +6748,11 @@ def _related_ids(f):
         add(cfam.get("spouse"), 2)
     # v15: 主角情人 (became_lovers/had_sex 参与者, 含已分手) — 情人的婚配/生育/亲属去世
     # 进时间线 (阿尔东萨与国王成婚、诞女、长女被谋杀后去世等, 大奸大恶戏剧的上下文)。
+    # v38 (问题1): 并入 Carnalitas 的 `had_sex_*` 族 — 强迫/半强迫的受害方与施为方
+    # 同属相关角色, 其档案与年表才进得了各篇。
     for m in prec.get("memories") or []:
-        if m.get("type") in ("became_lovers", "had_sex"):
+        _t = str(m.get("type") or "")
+        if _t in ("became_lovers", "had_sex") or _t.startswith(_SEX_MEM_PREFIX):
             for v in (m.get("participants") or {}).values():
                 if isinstance(v, int) and v != pid:
                     out.setdefault(v, 2)
@@ -6722,9 +6975,37 @@ _IDENT_TYPES = frozenset(
 _DATE_PREFIX_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
 
 
+def _sex_mirror_partner(a, b):
+    """a/b 是否为同一桩性事的正反两方记忆 (v38, 问题1)。
+
+    Carnalitas 的性事记忆对**双方各写一条**: 施为方持 `..._giving_player_...`,
+    受害方持 `..._receiving_player_...`, 两条 `sex_partner` 互指且自愿档相同、
+    创建日相同 (同一脚本段落内先后创建)。判据即按这三项。
+    原始类型键留在 ident["type"] —— 事件本身的 type 已归并为模块档
+    (noncon/dubcon 原样, consensual 并为 had_sex)。"""
+    ia = sex_mem_info((a.get("ident") or {}).get("type") or a.get("type"))
+    ib = sex_mem_info((b.get("ident") or {}).get("type") or b.get("type"))
+    if not ia or not ib:
+        return False
+    if ia["consent"] != ib["consent"]:
+        return False
+    if ia["role"] == ib["role"]:
+        return False          # 同向 (双方都持施为/受害) — 非镜像对
+    pa = (a.get("ident") or {}).get("parts") or {}
+    pb = (b.get("ident") or {}).get("parts") or {}
+    oa = (a.get("ident") or {}).get("owner")
+    ob = (b.get("ident") or {}).get("owner")
+    va, vb = pa.get(_SEX_PARTNER_SLOT), pb.get(_SEX_PARTNER_SLOT)
+    return isinstance(va, int) and isinstance(vb, int) \
+        and va == ob and vb == oa
+
+
 def _mirror_partner(a, b):
     """a/b 是否为同一事件的正反两方记忆 (按参与者身份互指判定)。"""
     ta, tb = a.get("type"), b.get("type")
+    # v38 (问题1): 性事记忆对 (双方各一条, 施为方/受害方)
+    if _sex_mirror_partner(a, b):
+        return True
     if frozenset({ta, tb}) not in _MIRROR_TYPE_PAIRS:
         return False
     pa = (a.get("ident") or {}).get("parts") or {}
@@ -7043,6 +7324,15 @@ def _timeline(f):
             if not owner_rel and not part_rel:
                 continue  # 路人记忆大事: 剔除
             mtype = mem.get("type")
+            # v38 (问题1): 性事记忆族的自愿档归并 —— 只有强迫/半强迫单独成档
+            # (模块「强暴凌辱」, 不进任何板块白名单); 自愿档与旧的 had_sex 同键同模,
+            # 婚姻内的那一支仍换档为「夫妻之情」(见下方 ev_type)。
+            _sxinfo = sex_mem_info(mtype) \
+                if isinstance(mtype, str) and mtype.startswith(_SEX_MEM_PREFIX) \
+                else None
+            norm_type = mtype
+            if _sxinfo is not None:
+                norm_type = mtype if _sxinfo["kept"] else "had_sex"
             # 死亡类记忆: 按死者 id 去重 (去世 > 丧偶)
             if mtype in ("relative_died", "friend_died", "rival_died",
                          "spouse_died"):
@@ -7125,21 +7415,26 @@ def _timeline(f):
             # v34b: 头衔得失事件用 title history 事件日 (记忆日常晚一天),
             # 去重键/事件日/句面日期同源, 防止文本与排序两套日期
             _md = f.mem_date(cid, mem)
-            key = (mtype, _md, pset)
+            key = (norm_type, _md, pset)
             if key in seen_keys:
                 continue
             seen_keys.add(key)
             # v30: 镜像对/监禁对需要参与者身份 → 随事件登记 (见 _drop_mirror_pairs)
-            if mtype in _IDENT_TYPES:
-                idents[(_md, mtype, s)] = {
-                    "owner": cid, "parts": dict(parts)}
+            # v38 (问题1): 性事记忆对 (施为方/受害方各一条) 同样按身份配对
+            if norm_type in _IDENT_TYPES or _sxinfo is not None:
+                idents[(_md, norm_type, s)] = {
+                    "owner": cid, "parts": dict(parts), "type": mtype}
             # v31 (问题2): 配偶之间的情事换档 — 概览记「夫妻之情」, 模块归「婚配联姻」
-            ev_type = mtype
-            if mtype in ("had_sex", "became_lovers"):
-                _oth = (parts or {}).get(PARTICIPANT_SLOTS.get(mtype) or "")
+            # v38 (问题1): 强迫/半强迫档不换 —— 「妻子为丈夫所强奸」仍是强迫之事,
+            # 不因婚内就归进「夫妻之情」。
+            ev_type = norm_type
+            if norm_type in ("had_sex", "became_lovers") \
+                    and not (_sxinfo is not None and _sxinfo["kept"]):
+                _oth = (parts or {}).get("sex_partner" if norm_type == "had_sex"
+                                          else PARTICIPANT_SLOTS.get(norm_type) or "")
                 if isinstance(_oth, int) and _oth != cid \
                         and f.is_spouse_pair(cid, _oth):
-                    ev_type = mtype + "_spouse"
+                    ev_type = norm_type + "_spouse"
             events.append((_md, ev_type, s,
                            _TYPE2MODULE.get(ev_type, "")))
     # 合并 死亡记录 + 去世记忆 + 出生事件
@@ -8106,7 +8401,11 @@ def _realm_facts(f):
                 hn = f.name_or(hid, "") if hid is not None else ""
                 # v29b: 头衔与持有人直连 (「唐皇朝李漼」), 不用括注同位语
                 parts.append(f"{f.title(tid)}{hn}" if hn else f.title(tid))
-            out["liege_chain"] = " → ".join(parts)
+            # v38 (问题3): 链顶是主角自己 → 点明自立, 免得模型把「自己的政权」
+            # 与同表里的唐/青徐混为一谈
+            top_hid = chain[-1][1]
+            tail = "（自立，上无领主）" if top_hid == pid else ""
+            out["liege_chain"] = " → ".join(parts) + tail
     # 高位头衔持有者变化 (h_/e_/k_): title history 精确日期为主, realm_history 快照兜底;
     # 头衔名按任期 (v11: 唐皇朝 → 周皇朝 更名可见, 882 的「周皇朝」错标即由此根除)。
     # v13: 只收「相关」高位头衔 (上位链 + 相关角色曾任 + 朝廷职司另列), 剔除全球
@@ -8205,6 +8504,77 @@ def _realm_facts(f):
             keep_tids.add(tid)
     span_end = f.as_of or f.cache.get("last_date")
     changes = []
+    # v38 (问题3): 隶属标注 —— 高位头衔更替原是一行一条、彼此平级 (唐皇朝 / 青徐国
+    # 并列), 模型无从知道青徐是唐的封臣王国, 于是写出「唐皇朝以外, 青徐国自成一系」
+    # 甚至「李润改元以青徐国为号」。现按熔件的 `de_facto_liege` (跟不动时沿
+    # `de_jure_liege` 上溯) 求出每个头衔的**最近帝国/霸主级宗主**, 逐条标注,
+    # 并给出「同属一个朝廷」的归组行。实测 k_qingxu 的 de_facto_liege = h_china。
+    def _up_liege(tid):
+        seen = set()
+        cur = tid
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            t = f._lt.get(str(cur)) or {}
+            nxt = t.get("de_facto_liege")
+            if not isinstance(nxt, int):
+                nxt = t.get("de_jure_liege")
+            if not isinstance(nxt, int):
+                return cur if cur != tid else None
+            cur = nxt
+        return None
+
+    liege_of = {}
+    for tid in sorted(keep_tids):
+        sup = _up_liege(tid)
+        if sup is not None and sup != tid:
+            liege_of[tid] = sup
+    # 归组: 宗主 → 其下的高层头衔 (下辖层级词按 tier 取)
+    vassal_groups = {}
+    for tid, sup in liege_of.items():
+        vassal_groups.setdefault(sup, []).append(tid)
+
+    def _group_suffix(tid):
+        """该头衔的宗主标注: 「（唐皇朝封臣）」; 无宗主 (自成一国) 不给标注。"""
+        sup = liege_of.get(tid)
+        if sup is None:
+            return ""
+        nm = _simple_name(sup)
+        return f"（{nm}封臣）" if nm else ""
+
+    def _simple_name(tid):
+        """头衔的**宗室/朝廷通称** —— 按 span_end 的时任持有者取 (h_china → 「唐皇朝」)。
+        用于宗主标注。"""
+        t = f._lt.get(str(tid)) or {}
+        if not (t.get("key") or ""):
+            return ""
+        return f._title_name_at(tid, span_end)
+
+    def _base_name(tid):
+        """头衔的**底名** (不含层级词) —— k_qingxu → 「青徐」。
+        归组行用它, 免得把「青徐路/福建路」这类**按时任持有者独立性**取的层级词
+        (同一头衔在皇帝兼领时叫「国」、臣子受任时叫「路」) 混进同一行。"""
+        t = f._lt.get(str(tid)) or {}
+        key = t.get("key") or ""
+        if not key:
+            return ""
+        nm = f._name_at_date(tid, span_end) or L.loc(self.table, key) or key
+        return str(nm).strip()
+
+    def _tier_tail(name):
+        """名字的层级词尾巴 (国/路/州府/皇朝/伯爵领…) —— 用于「同一条里换了层级词」判定。
+        「国」是**独立天朝制王国**的层级词 (`_tier_word_at` 查
+        `kingdom_celestial_chinese_independent`), 不在 GENERIC_TIER_ZH 里,
+        故本地补入。"""
+        for w in sorted(f._rank_words | {"国"}, key=len, reverse=True):
+            if w and name.endswith(w):
+                return w
+        return ""
+
+    def _name_stem(name):
+        """去掉层级词尾巴的底名 (青徐国 → 青徐)。"""
+        t = _tier_tail(name)
+        return name[:len(name) - len(t)] if t else name
+
     for tid in sorted(keep_tids):
         seq = sorted(hist_map.get(tid) or [], key=lambda x: cl.date_key(x[0]))
         if not seq:
@@ -8220,6 +8590,7 @@ def _realm_facts(f):
             dedup.append((d, holder))
         prev = None
         prev_nm = None
+        prev_tail = ""
         bits = []
         for i, (d, holder) in enumerate(dedup):
             if holder == prev:
@@ -8227,14 +8598,36 @@ def _realm_facts(f):
             hn = f.name_or(holder, "") if holder is not None else "无"
             end = dedup[i + 1][0] if i + 1 < len(dedup) else span_end
             nm = f._name_in_span(tid, d, end, cid=holder)
+            tail = _tier_tail(nm) if nm else ""
+            # v38 (问题3): 头衔是「国」还是「路」取决于该任期持有者是否自立 ——
+            # 皇帝兼领时显示「青徐国」、臣子受任时显示「青徐路」, 这不是改名。
+            # 底名相同而只有层级词不同时, 只留首个 (后文由宗主标注说明归属)。
+            if nm and tail and prev_tail and tail != prev_tail \
+                    and _name_stem(nm) == _name_stem(prev_nm):
+                nm = ""
             if nm and nm != prev_nm:
                 bits.append(f"{nm}：{f.date(d)}：{hn}")
                 prev_nm = nm
+                prev_tail = tail
             else:
                 bits.append(f"{f.date(d)}：{hn}")
             prev = holder
         if len(bits) > 1:
-            changes.append("，".join(bits))
+            changes.append("，".join(bits) + _group_suffix(tid))
+    # v38 (问题3): 同一宗主的头衔归组一行 —— 让「唐皇朝 / 青徐国」并列的两行
+    # 一眼看出是同一个朝廷的上下级, 而不是两个并立的政权。
+    for sup in sorted(vassal_groups):
+        names = []
+        for tid in vassal_groups[sup]:
+            nm = _base_name(tid)
+            if nm and nm not in names:
+                names.append(nm)
+        if len(names) < 2:
+            continue
+        snm = _base_name(sup) or _simple_name(sup)
+        if not snm:
+            continue
+        changes.append(f"{snm}朝廷所辖（同一朝廷）：" + "、".join(names))
     # 排序: 上位链头衔在前 (按层级降序), 其余按最后更替日期降序 (近期先)
     def _sort_key(ln):
         nm = ln.split("：", 1)[0]
@@ -9424,7 +9817,7 @@ def _secrets_facts(f):
         out["events"] = sorted(set(events))[:12]
     # v31 (问题5): 牵制 (把柄维度) — 主角握有 / 他人握有对主角的。
     # 用户决策: 牵制只随《阴私录》下发, 不进《本纪》。
-    # v35 (问题3): 家主牵制按身份自带机制略去 (见 Facts._HOOK_TYPE_SKIP)。
+    # v35 (问题3) / v38 (问题2): 牵制按白名单过滤 (见 Facts._hook_kept)。
     hl = f.hook_lines()
     if hl.get("held"):
         out["hooks_held"] = hl["held"]
@@ -9432,11 +9825,24 @@ def _secrets_facts(f):
         out["hooks_over"] = hl["over"]
     # v35 (问题4): 奴役 (Carnalitas) 单独成块 —— 旧稿把「没为奴隶」整个读成
     # 「抓了又放」, 因为奴役关系从未进过缓存; 现由 cache["enslavements"] 直出。
+    # v38 (问题4): 在册与昔日分两档下发 (昔日档写明何时、为何不再是主角的奴隶)。
     en = f.enslaved_lines()
     if en.get("lines"):
         out["enslaved"] = en["lines"]
+    if en.get("former"):
+        out["enslaved_former"] = en["former"]
+    # v38 (问题1): Carnalitas 事件好感 (强奸/奴役/逼良为娼/前主奴) — 自带 start_date,
+    # 覆盖「不留记忆」的互动; 与性事记忆互为佐证。
+    cp = f.carnal_opinion_lines()
+    if cp.get("lines"):
+        out["carnal_opinions"] = cp["lines"]
+    vl = f.carnal_victim_line()
+    if vl:
+        out["carnal_victim"] = [vl]
     out["any"] = bool(out.get("held") or out.get("kinsmen") or out.get("known")
-                      or out.get("enslaved") or f.hook_notable())
+                      or out.get("enslaved") or out.get("enslaved_former")
+                      or out.get("carnal_opinions") or out.get("carnal_victim")
+                      or f.hook_notable())
     return out
 
 

@@ -321,6 +321,39 @@ FACT_WORDING = {
     "hook_strong_word": "强",
     "hook_since": "（{year}起）",
     "hook_expires": "（{date}届满）",
+    # v38 (问题2): 牵制**白名单**判据 (见 FACT_WORDING["hook_keep_*"]) —
+    # 只下发「背后有一件具体事」的牵制; 通用人情/身份自带类一律不入事实层。
+    # 判据由程序在 cache_lib 入库前与 facts 读取时各执行一次 (旧缓存同样生效),
+    # 不写进提示词 (no-negative-prompts 的 prompt-last 铁律)。
+    "hook_keep_exact": frozenset({
+        # —— 勒索: 背后必有一桩隐事 (弱勒索另有 weak_prostitute_blackmail_hook) ——
+        "weak_blackmail_hook", "weak_blackmail_hook_no_secret",
+        "weak_prostitute_blackmail_hook", "strong_prostitute_blackmail_hook",
+        # —— 捏造 / 罪案 / 比试: 各有具体由头 ——
+        "fabrication_hook", "minor_crime_accomplice_hook",
+        "sumptuary_crime_hook", "trial_by_combat_hook",
+        # —— 结拜 (献血为盟是一件具体事) ——
+        "blood_brother_hook", "blood_sister_hook",
+        # —— Mod 内容牵制 (Carnalitas 奴役 / interracial_takeover 的奴隶 /
+        #    缺角作者包的「干了我老婆」) ——
+        "carn_slave_hook", "bno_slave_hook", "bno_cum_slave_hook",
+        "ganlewodelaopo_hook",
+    }),
+    # 通用人情类牵制的**族名片段** (含这些片段的类型键一律剔除):
+    # 人情 (favor_hook 本地化即「人情」)、义务、蒙恩、支持者、忠诚、威胁、
+    # 操控、家主/孝道 (身份自带)、可继承的感恩宣称、契约类。
+    "hook_keep_drop_fragments": (
+        "favor", "obligation", "indebted", "supporter", "loyalty",
+        "threat", "manipulation", "suspicious", "house_head", "filial_piety",
+        "oath_claimant", "contact_list", "influence", "hostage", "follower_oath",
+    ),
+    # 引擎脚本关键字/测试钩子被 hook_types 解析器误收为「牵制类型」的部分:
+    # 白名单制天然排除, 此处只用于 `hook_type_name_ok` 判断显示名是否有意义。
+    "hook_keep_ignore": frozenset({
+        "on_used", "send_interface_toast", "if", "limit", "NOT", "target", "OR",
+        "stress_impact", "test_hook", "strong_test_hook", "perpetual_test_hook",
+        "add_test_hook",
+    }),
     # v35: 奴役 (Carnalitas) — 存档里「释放」记忆正是「没为奴隶」这一步, 故出狱缘由
     # 写「没为奴隶」而不是「获释」; 奴役本身不带日期, 年份取逐档差分的首见档
     # (差分日期与囚期可能差一档, 故不写「同日」)。{year} 取自 Facts._year_only,
@@ -332,6 +365,22 @@ FACT_WORDING = {
     "enslaved_group": "{actor}的奴隶：{names}{extra}（{year}起）。",
     "enslaved_group_extra": "等{n}人",
     "enslaved_head": "主角的奴隶如下：",
+    # v38 (问题4): 「曾经是主角的奴隶」的收束句 —— 三档各有确定判据
+    # (cache_lib._diff_enslavements 的 end_owner / freed / 两者皆无):
+    #   _sold  失去那一刻已被**别人**奴役 = 转卖, 带出买家;
+    #   _freed 失去那一刻已无人奴役他   = 转为 former_slave (获释);
+    #   _lost  其余 (死亡 / 数据中断) — 只写「不再见于记载」, 不外推缘由。
+    "enslaved_former_sold":
+        "{slave}没为{actor}的奴隶{since}，至{year}转归{buyer}。",
+    "enslaved_former_freed":
+        "{slave}没为{actor}的奴隶{since}，至{year}获释。",
+    "enslaved_former_lost":
+        "{slave}没为{actor}的奴隶{since}，此后不再见于记载。",
+    "enslaved_former_head": "主角昔日的奴隶如下：",
+    # v38 (问题1): 角色修正 carn_recently_raped (身上留五年) 的收束句 ——
+    # 与性事记忆互为佐证 (记忆给「谁做的」, 修正给「近来仍算近事」这一状态)。
+    "carnal_recently_raped": "主角近来遭人强暴，此事五年之内仍算近事。",
+    "carnal_opinions_head": "人身侵害与旧主奴关系如下：",
     # v32 (马克龙问题1): 强纳为妾 — 存档唯一带确切日期的纳妾记录
     # (opinions.active_opinions 的 forced_me_concubine_marriage_opinion.start_date);
     # 该脚本同一段落 `release_from_prison = yes`, 故「当日自狱中释出」是程序可断言的。
@@ -536,6 +585,9 @@ MEMORY_TEMPLATES = {
     # v31 (问题2): 配偶之间的床笫之事不写作「私通」——婚姻之内, 本无非分之义
     # (旧文本把主角与公主的夫妻之实写成「私通四次」, 太史公曰亦随之失真)。
     "had_sex_spouse": "{name}与{other}同房。",
+    # v38 (问题1): 双方自愿、但非配偶的床笫之事 (Carnalitas 的 consensual 族) ——
+    # 婚姻之外的相与; 配偶那一档仍走 `had_sex_spouse`。
+    "had_sex_consensual": "{name}与{other}相与。",
     "became_friends": "{name}与{other}结为好友。",
     "became_soulmates": "{name}与{other}结为灵魂伴侣。",
     "became_blood_brother": "{name}与{other}结为血盟兄弟。",
@@ -605,6 +657,65 @@ MEMORY_TEMPLATES = {
     "ignored_assault_memory": "{name}受辱未报。",
     # v15: 成功谋杀 (主角视角, 神秘死亡味由受害者死亡记录句负责)
     "successful_murder": "{name}谋杀{other}。",
+    # v38 (问题1 顺带): 同期未命中的普通游戏记忆 — 此前整条落不到事实面。
+    "saved_from_assault_memory": "{name}自袭击中救下{other}。",
+    "stopped_being_friends": "{name}与{other}断绝交谊。",
+    "lover_died": "{name}的情人{other}去世。",
+    "soulmate_died": "{name}的灵魂伴侣{other}去世。",
+    "best_friend_died": "{name}的挚友{other}去世。",
+    "nemesis_died": "{name}的死敌{other}去世。",
+    "developed_crush": "{name}倾心于{other}。",
+    "had_a_threesome_memory": "{name}与{other}、{other2}同宿。",
+}
+
+
+# ---------------------------------------------------------------------------
+# v38 (问题1): Carnalitas 性事记忆族 (had_sex_*) 的措辞表
+# ---------------------------------------------------------------------------
+# 类型键由 Mod 按 `性别关系×主动/被动×体位×射精位置×自愿程度` 组合生成
+# (common/scripted_effects/carn_had_sex_memory_effect.txt, 共 24 键), 逐键写模板
+# 既不可能也不必要 —— 事实层只取「谁对谁做了什么、自愿到什么程度」, 体位与射精
+# 位置属游戏 UI 的露骨描述 (Mod 本地化里即 "我强奸并中出了X"), 不进事实面。
+#
+# 用户拍板 (2026-09-14): **只记录强迫与非自愿**两类 —— 即 `_noncon` (强奸)
+# 与 `_dubcon` (半推半就); `_consensual` 一律仍按旧口径 (`had_sex` /
+# `had_sex_spouse` / `had_sex_consensual`) 由 `MEMORY_TEMPLATES` 处理。
+#
+# 方向铁律 (与 Mod 脚本逐条核对): 类型名里的 `giving_player` 即**施为方**,
+# `receiving_player` 即**受害方** —— 与男女无关 (女性施为时写 `_fm_desc`
+# 「我逆强奸了X并让他中出我」, 仍是 giving 方为主使者)。因此:
+#   `_mem_sentence` 先看 `_actor_of_sex_mem()` 判出记忆持有人是施为方还是受害方,
+#   再在这里取对应句式。
+SEX_MEM_WORDING = {
+    # 施为方视角: {name}=持有人 (施为者), {other}=受害方
+    "actor_noncon": {
+        "vaginal": "{name}强奸了{other}。",
+        "anal": "{name}鸡奸了{other}。",
+        "oral": "{name}逼{other}口交。",
+        "base": "{name}强奸了{other}。",
+    },
+    "actor_dubcon": {
+        "vaginal": "{name}半强迫地与{other}交合。",
+        "anal": "{name}半强迫地与{other}鸡奸。",
+        "oral": "{name}半强迫地逼{other}口交。",
+        "base": "{name}半强迫地与{other}交合。",
+    },
+    # 受害方视角: {name}=持有人 (受害者), {other}=施为方
+    "victim_noncon": {
+        "vaginal": "{name}为{other}所强奸。",
+        "anal": "{name}为{other}所鸡奸。",
+        "oral": "{name}被迫为{other}口交。",
+        "base": "{name}为{other}所强奸。",
+    },
+    "victim_dubcon": {
+        "vaginal": "{name}半推半就，与{other}交合。",
+        "anal": "{name}半推半就，与{other}鸡奸。",
+        "oral": "{name}半推半就，为{other}口交。",
+        "base": "{name}半推半就，与{other}交合。",
+    },
+    # 归并行 (同一受害者被同一人多次 / 同一施为者多次) — 两句各一
+    "group_actor": "{name}对{names}行强迫之事（共{n}次）。",
+    "group_victim": "{name}为{names}所强迫（共{n}次）。",
 }
 
 
@@ -753,6 +864,32 @@ TRAIT_GROUP_WORDS = {
     "commander": "将略", "fame": "名声", "health": "体况",
     "childhood": "幼性", "court_type": "宫廷", "": "禀赋",
 }
+
+
+def hook_type_kept(tp):
+    """牵制类型是否进入事实层 (v38, 问题2)。
+
+    白名单制 (见 FACT_WORDING["hook_keep_exact"] / `hook_keep_drop_fragments`):
+    只有「背后有一件具体事」的牵制才下发 —— 勒索族 (背后是隐事)、捏造、罪案共犯、
+    违反禁奢令、比武审判、Mod 内容牵制 (Carnalitas 奴役等), 以及全部以 `strong_`
+    开头且不在通用人情类的强牵制 (黑函/重罪共犯/救命恩/血盟/神命/影响力…)。
+
+    通用人情类一律剔除: 人情 (favor)、义务 (obligation)、蒙恩 (indebted)、
+    支持者、忠诚、威胁、操控、可疑活动、家主、孝道 —— 这些是「某些角色欠了你
+    一个人情」这类机制关系, 不构成叙事事件; 模型拿到它们只能编出「握有把柄」。
+    实测德圣塔/周氏档: 全档 7259 条牵制里 `house_head_hook` 5243、`filial_piety_hook`
+    1069、`favor_hook` 548, 而涉主角的只有 4 条 (全是这三类)。"""
+    t = str(tp or "")
+    if not t:
+        return False
+    if t in FACT_WORDING["hook_keep_ignore"]:
+        return False
+    if t in FACT_WORDING["hook_keep_exact"]:
+        return True
+    for frag in FACT_WORDING["hook_keep_drop_fragments"]:
+        if frag in t:
+            return False
+    return t.startswith("strong_")
 
 
 MERGE_VERB = {

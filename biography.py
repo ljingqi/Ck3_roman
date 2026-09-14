@@ -1207,10 +1207,25 @@ def _article_facts(facts, cache, key, section=None):
                 mid_lines.extend(ho)
             # v35 (问题4): 奴役 (Carnalitas) 与「把柄」分列 —— 「抓人 → 没为奴隶 →
             # 放出牢房」是一层人身关系, 不是握有把柄; 旧稿把它读成「抓了又放」。
+            # v38 (问题4): 追加「昔日奴隶」档 —— 被卖掉/获释的人此后仍在事实面上
+            # (旧稿一被卖掉就彻底消失, 模型此后再无此人可依)。
             en = list(sec.get("enslaved") or [])
             if en:
                 mid_lines.append(style.FACT_WORDING["enslaved_head"])
                 mid_lines.extend(en)
+            enf = list(sec.get("enslaved_former") or [])
+            if enf:
+                mid_lines.append(style.FACT_WORDING["enslaved_former_head"])
+                mid_lines.extend(enf)
+            # v38 (问题1): Carnalitas 事件好感 (强奸/奴役/逼良为娼/前主奴) 与
+            # 「近来遭强暴」修正 — 自带 start_date, 补足「不留记忆」的互动。
+            cpl = list(sec.get("carnal_opinions") or [])
+            if cpl:
+                mid_lines.append(style.FACT_WORDING["carnal_opinions_head"])
+                mid_lines.extend(cpl)
+            cvl = list(sec.get("carnal_victim") or [])
+            if cvl:
+                mid_lines.extend(cvl)
             _set_block(blocks, "家人近臣隐事", "\n".join(mid_lines))
             if sec.get("events"):
                 blocks["隐事纪年"] = "\n".join(sec["events"])
@@ -1759,8 +1774,8 @@ def _timeline_event_key(body):
     # v32: 夭折句改写为带生母的「X之妻Y产下死婴。」「X之妻Y孕期提前结束。」
     if re.match(r"^.+?产下死婴。$", body):
         return ("生", "产下死婴。")
-    if re.match(r"^.+?孕期提前结束。$", body):
-        return ("生", "孕期提前结束。")
+    if re.match(r"^.+?流产。$", body):
+        return ("生", "流产。")
     if re.match(r"^.+?幼子夭折。$", body):
         return ("生", "幼子夭折。")
     if re.match(r"^.+?婴儿夭折。$", body):
