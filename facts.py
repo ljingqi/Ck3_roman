@@ -7520,13 +7520,19 @@ def _std_index(f):
 
     notes: {(frozenset({源,的}), 性事记忆日) → 「（X把病传染给了Y）」}
     standalone: [(日期, 文本, 源, 的)] —— 无性事行动可挂的传播行
+
+    去重: 同一病人同一病种**只留一条** —— `health.1200/1201` 会自我重排复检,
+    同一次感染在队列里会留下多条边 (日期各异), 且治愈后可再感染; 取最早的
+    一次, 并优先取能挂到性事记忆的那条 (日期最准, 且证明事发于本传跨度内)。
     """
     if getattr(f, "_std_idx", None) is not None:
         return f._std_idx
     edges = f.cache.get("disease_edges") or {}
     acts = _std_act_index(f) if edges else {}
+    chars = f.cache.get("characters") or {}
     W = _style.FACT_WORDING
     notes, standalone = {}, []
+    buckets = {}   # (病种, 病人) -> [(档位, 排序日, payload)]
     for rec in edges.values():
         if not isinstance(rec, dict):
             continue
@@ -7536,9 +7542,12 @@ def _std_index(f):
         fire = _date_obj(rec.get("fire_date"))
         if not zh or not isinstance(tgt, int) or fire is None:
             continue
+        if str(tgt) not in chars:
+            # 病人不在缓存相关集内 —— 这条边进不了任何篇目, 直接跳过 (省索引)
+            continue
         tname = f.person_label(tgt, style="brief") or f.name_with_regnal(tgt)
         sname = ""
-        if isinstance(src, int):
+        if isinstance(src, int) and src != tgt and str(src) in chars:
             sname = f.person_label(src, style="brief") or f.name_with_regnal(src)
         if not tname:
             continue
@@ -7559,18 +7568,36 @@ def _std_index(f):
         if cands:
             ok = [c for c in cands if c[0]]
             picked = max(ok or cands, key=lambda c: c[1])
+        bk = (key, tgt)
         if picked and sname:
             _, _, d, _cid, _mem = picked
-            notes[(pair, str(d))] = W["std_note"].format(
-                src=sname, tgt=tname, disease=zh)
+            note = W["std_note"].format(src=sname, tgt=tname, disease=zh)
+            # 档位 0 = 可挂性事 (优先); 排序日 = 性事日
+            buckets.setdefault(bk, []).append(
+                (0, _date_obj(d) or fire, ("note", pair, str(d), note)))
+            continue
+        # v24 同源口径: 数据起点即见 (first=True) 的传播没有可作实的日期,
+        # 不单独成行 (病人仍由其档案/特质可见); 有性事行动可挂者不受此限 ——
+        # 性事记忆在册即证明事发于本传跨度之内。
+        if rec.get("first"):
             continue
         when = str(rec.get("first_seen") or rec.get("fire_date") or "")
+        wd = _date_obj(when) or fire
         if sname:
-            standalone.append((when, W["std_line"].format(
-                src=sname, tgt=tname, disease=zh), src, tgt))
+            text = W["std_line"].format(src=sname, tgt=tname, disease=zh)
+            buckets.setdefault(bk, []).append(
+                (1, wd, ("line", when, text, src, tgt)))
         else:
-            standalone.append((when, W["std_line_anon"].format(
-                tgt=tname, disease=zh), None, tgt))
+            text = W["std_line_anon"].format(tgt=tname, disease=zh)
+            buckets.setdefault(bk, []).append(
+                (1, wd, ("line", when, text, None, tgt)))
+    for _bk, items in buckets.items():
+        items.sort(key=lambda x: (x[0], x[1]))
+        payload = items[0][2]
+        if payload[0] == "note":
+            notes[(payload[1], payload[2])] = payload[3]
+        else:
+            standalone.append((payload[1], payload[2], payload[3], payload[4]))
     f._std_idx = (notes, standalone)
     return f._std_idx
 
