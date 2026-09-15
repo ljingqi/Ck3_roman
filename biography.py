@@ -1194,6 +1194,11 @@ def _article_facts(facts, cache, key, section=None):
             if harm:
                 lines.append(style.FACT_WORDING["harm_head"])
                 lines.extend(harm[:2])
+            # v40: 性病传播 (无性事行动可挂的那一档) —— 开篇给前两条
+            dis = list(sec.get("disease") or [])
+            if dis:
+                lines.append(style.FACT_WORDING["std_head"])
+                lines.extend(dis[:2])
             # v31 (问题7): 主角无自有隐事时, 开篇改用家人近臣隐事前半 —
             # 旧文本开篇块为空, 模型只能拿共享前缀一行「戏剧性事件」自问自答
             # (「知情者何人？…则其亦必知情」)。
@@ -1239,6 +1244,11 @@ def _article_facts(facts, cache, key, section=None):
             if harm:
                 mid_lines.append(style.FACT_WORDING["harm_head"])
                 mid_lines.extend(harm)
+            # v40: 性病传播全列 (纪事给全部)
+            dis = list(sec.get("disease") or [])
+            if dis:
+                mid_lines.append(style.FACT_WORDING["std_head"])
+                mid_lines.extend(dis)
             _set_block(blocks, "家人近臣隐事", "\n".join(mid_lines))
             if sec.get("events"):
                 blocks["隐事纪年"] = "\n".join(sec["events"])

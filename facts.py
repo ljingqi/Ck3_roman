@@ -3766,6 +3766,22 @@ class Facts:
             out.append(W["harm_line"].format(text=text.rstrip("。"), after=tail))
         return out
 
+    def std_lines(self):
+        """性病传播的事实行 (v40): 无性事行动可挂的那一档单独成行。
+
+        返回 [「{日期}，{源}把{病}传染给了{的}。」] —— 只收当事人属相关集者;
+        无源 (卖淫/先天) 时写「{的}染上{病}。」。有性事行动可挂的传播不走这里
+        (它补在性行为句末, 见 `_std_note_for`)。"""
+        related = _related_ids(self)
+        out = []
+        for when, text, src, tgt in _std_index(self)[1]:
+            if not when:
+                continue
+            if not (tgt in related or (isinstance(src, int) and src in related)):
+                continue
+            out.append(f"{self.date(when)}，{text}")
+        return out
+
     def carnal_opinion_lines(self):
         """Carnalitas 事件好感 → 干净中文句 (v38, 问题1/问题4)。
 
@@ -6386,16 +6402,22 @@ def _mem_sentence(f, owner_id, mem):
     v31: 同伴槽位型记忆的参与槽与持有者同一人时返回 None (退化记录, 见
     `_PEER_SLOT_TYPES`); 配偶之间的 had_sex 改用「同房」模板 (问题2/3)。
     v38 (问题1): Carnalitas 性事族 (had_sex_*) 按前缀族解析 —— 强迫 (noncon)
-    与半强迫 (dubcon) 出句, 其余自愿档仍走旧模板。"""
+    与半强迫 (dubcon) 出句, 其余自愿档仍走旧模板。
+    v40: 性病传播当次的自愿档是**唯一特例** —— 出体位句并在句末补
+    「（X把病传染给了Y）」(见 `_std_note_for`)。"""
     mtype = mem.get("type")
     # ---- v38: Carnalitas 性事族 (含多数无逐键模板者) ----
     if isinstance(mtype, str) and mtype.startswith(_SEX_MEM_PREFIX):
         info = sex_mem_info(mtype)
         if info is None:
             return None
+        note = _std_note_for(f, owner_id, mem)
         if info["kept"]:
-            return _sex_mem_sentence(f, owner_id, mem, info)
-        # 自愿档: 继续走旧模板 (had_sex / had_sex_spouse / had_sex_consensual)
+            return _std_suffix(_sex_mem_sentence(f, owner_id, mem, info), note)
+        if note:
+            # v40 唯一特例: 性病传播当次的**自愿**性事也出体位句 (用户 2026-09-15 拍板)
+            return _std_suffix(_sex_mem_sentence(f, owner_id, mem, info), note)
+        # 其余自愿档: 继续走旧模板 (had_sex / had_sex_spouse / had_sex_consensual)
         mtype = "had_sex"
     # v38 (问题1 顺带): 三人行 —— 两个对象槽 (partner_1/partner_2)
     if mtype == "had_a_threesome_memory":
@@ -6715,6 +6737,10 @@ MODULE_TABLE = {
         for act in ("vaginal_cum_inside", "vaginal_cum_outside", "anal", "oral")
         for cons in ("noncon", "dubcon")
     },
+    # v40: 性病传播 (情人疱疹/大痘) —— 无性事行动可挂的那一档单独成行
+    # (本体按期在 lover/consort 之间传播、卖淫、先天); 有性事行动可挂的边
+    # 补在性行为句末, 不进本模块。
+    "疾病传播":   {"std_transmission"},
     "结仇结怨":   {"became_rivals", "became_grudge"},
     "死敌之仇":   {"became_nemesis"},
     "化仇解怨":   {"stopped_being_rivals"},
@@ -6787,8 +6813,9 @@ MODULE_SLICE = {
     # 的确定性事实。放进《阴私录》的开篇与纪事: 该篇讲的正是「何事、涉及何人、
     # 事在何年、有谁知情」, 强迫之事属于此列。**不进其他篇目的白名单** ——
     # 本纪/朝局只写公开行迹, 此事由《阴私录》承载 (v27 的「一篇一题」分工)。
-    ("secrets", "lead"): {"强暴凌辱"},
-    ("secrets", "mid"): {"强暴凌辱"},
+    # v40: 疾病传播 (无性事行动可挂的那一档) 同归《阴私录》。
+    ("secrets", "lead"): {"强暴凌辱", "疾病传播"},
+    ("secrets", "mid"): {"强暴凌辱", "疾病传播"},
     # 列传: 开篇只给传主档案与关系缘由 (不配年表); 纪事给传主行迹 + 模块切片
     ("friend", "lead"): set(),
     ("friend", "mid"): {"结友知交", "挚友血盟", "丧友之恸", "结仇结怨"},
@@ -7435,6 +7462,143 @@ def _pair_imprisonments(events, f, pid, pname=""):
     return [e for i, e in enumerate(events) if i not in drop]
 
 
+# ---------------------------------------------------------------------------
+# v40: 性病 (情人疱疹 / 大痘) 传播 —— 补在性行为句后, 或单独成行
+# ---------------------------------------------------------------------------
+# 数据源: `cache["disease_edges"]` (cache_lib._diff_disease_edges)。
+# 用户口径 (2026-09-15): 发生传播时在**性行为**句后补
+# 「（某某把疱疹/大痘传染给了某某）」; 这一次不论自愿或非自愿都出句
+# (自愿档的唯一特例); 没有性事行动可挂 (本体按期在 lover/consort 间传播、
+# 卖淫、先天) 则单独成一条记忆行。
+#
+# 感染日换算: 队列里的 fire_date 是**复检日**, 感染日在其前 [下限, 上限] 天
+# (本体 20_health_effects.txt: 情人疱疹 days={60 1000}、大痘 days={250 1500};
+# 早发大痘转正 health.1013 days={90 150})。
+_STD_WINDOW_DAYS = {"lovers_pox": (1000, 60), "great_pox": (1500, 250),
+                    "early_great_pox": (150, 90)}
+# 本地化表缺键时的兜底名 (本体中文: 情人疱疹 / 梅毒; 早发档显示同疱疹)
+_STD_ZH_FALLBACK = {"lovers_pox": "情人的疱疹", "great_pox": "梅毒",
+                    "early_great_pox": "情人的疱疹"}
+
+
+def _std_disease_zh(f, key):
+    """性病键 → 游戏显示名 (本地化表优先, 兜底表次之)。"""
+    for cand in (f"trait_{key}", f"disease_{key}"):
+        v = L.loc(f.table, cand)
+        if v and not v.startswith(("$", "[")):
+            return v.rstrip("。")
+    return _STD_ZH_FALLBACK.get(key, key)
+
+
+def _date_obj(s):
+    """'1071.2.7' → datetime.date; 非法输入返回 None。"""
+    try:
+        return datetime.date(*(int(x) for x in str(s).split(".")[:3]))
+    except Exception:
+        return None
+
+
+def _std_act_index(f):
+    """性事记忆索引: frozenset({甲,乙}) → [(日期, 持有人, 记忆)] (仅 sex_partner 槽)。"""
+    out = {}
+    for cid, rec in (f.cache.get("characters") or {}).items():
+        cid = int(cid)
+        for mem in rec.get("memories") or []:
+            t = str(mem.get("type") or "")
+            if not t.startswith(_SEX_MEM_PREFIX):
+                continue
+            other = (mem.get("participants") or {}).get(_SEX_PARTNER_SLOT)
+            d = mem.get("creation_date")
+            if isinstance(other, int) and other != cid and d:
+                out.setdefault(frozenset((cid, other)), []).append(
+                    (str(d), cid, mem))
+    return out
+
+
+def _std_index(f):
+    """cache["disease_edges"] → (notes, standalone) (惰性, 只算一次)。
+
+    notes: {(frozenset({源,的}), 性事记忆日) → 「（X把病传染给了Y）」}
+    standalone: [(日期, 文本, 源, 的)] —— 无性事行动可挂的传播行
+    """
+    if getattr(f, "_std_idx", None) is not None:
+        return f._std_idx
+    edges = f.cache.get("disease_edges") or {}
+    acts = _std_act_index(f) if edges else {}
+    W = _style.FACT_WORDING
+    notes, standalone = {}, []
+    for rec in edges.values():
+        if not isinstance(rec, dict):
+            continue
+        key = str(rec.get("disease") or "")
+        zh = _std_disease_zh(f, key)
+        tgt, src = rec.get("target"), rec.get("source")
+        fire = _date_obj(rec.get("fire_date"))
+        if not zh or not isinstance(tgt, int) or fire is None:
+            continue
+        tname = f.person_label(tgt, style="brief") or f.name_with_regnal(tgt)
+        sname = ""
+        if isinstance(src, int):
+            sname = f.person_label(src, style="brief") or f.name_with_regnal(src)
+        if not tname:
+            continue
+        pair = frozenset((src, tgt)) if isinstance(src, int) else None
+        win = _STD_WINDOW_DAYS.get(key) or (1000, 60)
+        lo = fire - datetime.timedelta(days=win[0])
+        hi = fire - datetime.timedelta(days=win[1])
+        fs = _date_obj(rec.get("first_seen"))
+        cands = []
+        for d, cid, mem in (acts.get(pair) or []) if pair else []:
+            dd = _date_obj(d)
+            if dd is None or not (lo <= dd <= hi):
+                continue
+            # 性事必在「首次见到该边」之前 (那条边就是性事当次排下的复检);
+            # 同窗口内取最晚一次 (最接近感染时点的那次暴露)
+            cands.append((dd <= fs if fs else True, dd, d, cid, mem))
+        picked = None
+        if cands:
+            ok = [c for c in cands if c[0]]
+            picked = max(ok or cands, key=lambda c: c[1])
+        if picked and sname:
+            _, _, d, _cid, _mem = picked
+            notes[(pair, str(d))] = W["std_note"].format(
+                src=sname, tgt=tname, disease=zh)
+            continue
+        when = str(rec.get("first_seen") or rec.get("fire_date") or "")
+        if sname:
+            standalone.append((when, W["std_line"].format(
+                src=sname, tgt=tname, disease=zh), src, tgt))
+        else:
+            standalone.append((when, W["std_line_anon"].format(
+                tgt=tname, disease=zh), None, tgt))
+    f._std_idx = (notes, standalone)
+    return f._std_idx
+
+
+def _std_note_for(f, owner_id, mem):
+    """该条性事记忆是否即性病传播当次 → 「（X把病传染给了Y）」; 否则 ''。"""
+    if not (f.cache.get("disease_edges")):
+        return ""
+    t = str(mem.get("type") or "")
+    if not t.startswith(_SEX_MEM_PREFIX):
+        return ""
+    other = (mem.get("participants") or {}).get(_SEX_PARTNER_SLOT)
+    d = mem.get("creation_date")
+    if not isinstance(other, int) or not d:
+        return ""
+    notes, _sa = _std_index(f)
+    if not notes:
+        return ""
+    return notes.get((frozenset((owner_id, other)), str(d)), "")
+
+
+def _std_suffix(s, note):
+    """把「（X把病传染给了Y）」补在性行为句末 (句号之前)。"""
+    if not s or not note:
+        return s
+    return s.rstrip("。") + note + "。"
+
+
 def _timeline(f):
     """主角相关时间线: 只收 宗族/父母妻儿/孙辈儿媳婿 相关事件 (口径见 _related_ids),
     按人按事去重, 按日期排序。
@@ -7582,6 +7746,14 @@ def _timeline(f):
                     ev_type = norm_type + "_spouse"
             events.append((_md, ev_type, s,
                            _TYPE2MODULE.get(ev_type, "")))
+    # v40: 性病传播 —— 无性事行动可挂的边单独成行 (本体按期在 lover/consort
+    # 之间传播、卖淫、先天; 不并入任何性行为句)。只收当事人属相关集者。
+    for _when, _text, _src, _tgt in _std_index(f)[1]:
+        if not _when:
+            continue
+        if not (_tgt in related or (isinstance(_src, int) and _src in related)):
+            continue
+        events.append((_when, "std_transmission", _text, "疾病传播"))
     # 合并 死亡记录 + 去世记忆 + 出生事件
     for cid, (_prio, _d, t, s) in deaths.items():
         # v14: death 记录按死者关系标模块 (仇人死亡/丧友之恸/丧偶之痛/丧亲之恸)
@@ -9990,10 +10162,14 @@ def _secrets_facts(f):
     hl = f.harm_lines()
     if hl:
         out["harm"] = hl
+    # v40: 性病传播的事实行 (无性事行动可挂的那一档; 有行动可挂的补在性行为句末)
+    dl = f.std_lines()
+    if dl:
+        out["disease"] = dl
     out["any"] = bool(out.get("held") or out.get("kinsmen") or out.get("known")
                       or out.get("enslaved") or out.get("enslaved_former")
                       or out.get("carnal_opinions") or out.get("carnal_victim")
-                      or out.get("harm") or f.hook_notable())
+                      or out.get("harm") or out.get("disease") or f.hook_notable())
     return out
 
 

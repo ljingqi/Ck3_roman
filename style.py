@@ -388,6 +388,13 @@ FACT_WORDING = {
     "harm_line": "{text}（{after}）",
     "harm_after_subject": "{name}由此视其为仇",
     "harm_after_none": "{year}年见于记载",
+    # v40: 性病 (情人疱疹/大痘) 传播 —— 有性事行动可挂时补在性行为句末 (句号前);
+    # 无性事行动可挂 (本体按期在 lover/consort 间传播、卖淫、先天) 时单独成行。
+    # 病名由本地化表直取 (本体中文: trait_lovers_pox=情人的疱疹 / trait_great_pox=梅毒)。
+    "std_note": "（{src}把{disease}传染给了{tgt}）",
+    "std_line": "{src}把{disease}传染给了{tgt}。",
+    "std_line_anon": "{tgt}染上{disease}。",
+    "std_head": "疾病传染如下：",
     # v32 (马克龙问题1): 强纳为妾 — 存档唯一带确切日期的纳妾记录
     # (opinions.active_opinions 的 forced_me_concubine_marriage_opinion.start_date);
     # 该脚本同一段落 `release_from_prison = yes`, 故「当日自狱中释出」是程序可断言的。
@@ -740,6 +747,21 @@ SEX_MEM_WORDING = {
     "group_actor": "{name}对{names}行强迫之事（共{n}次）。",
     "group_victim": "{name}为{names}所强迫（共{n}次）。",
 }
+
+# v40: 性病 (情人疱疹/大痘) 传播当次的**自愿**性事 —— 用户拍板 2026-09-15:
+# 「发生性病传播时, 在性行为后面加上一句（某某把疱疹/大痘传染给了某某）,
+#   此时不论该性行为是自愿或非自愿都记录（只有这一个特例）」。
+# 故自愿档只在「本次即传播当次」时出体位句, 其余自愿档仍走旧模板 (私情/同房)。
+# 措辞**不带方向**: Mod 对同一场性事给双方各写一条 (giving/receiving), 归一后
+# 同型同参与者, `_timeline` 的成对去重只留一条 —— 保留哪一条由缓存遍历次序决定。
+SEX_MEM_CONSENSUAL = {
+    "vaginal": "{name}与{other}性交。",
+    "anal": "{name}与{other}行肛交。",
+    "oral": "{name}与{other}行口交。",
+    "base": "{name}与{other}性交。",
+}
+SEX_MEM_WORDING["actor_consensual"] = SEX_MEM_CONSENSUAL
+SEX_MEM_WORDING["victim_consensual"] = SEX_MEM_CONSENSUAL
 
 
 # v28: 隐事 (secrets) 主题短语 — 存档 secrets.secrets 的 type → 中文短语。

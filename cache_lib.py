@@ -1768,6 +1768,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # v29: 瘟疫/疫病 (epidemics) 逐档差分 — 存档给的是**游戏算好的动态名**
     # (「李黯之火」「撒丁痘」「东罗马痘」), 供《本纪》《家室列传》写疫病风味
     _diff_epidemics(cache, melt, date_label)
+    # v40: 性病 (情人疱疹/大痘) 传播边逐档差分 —— 存档 triggered_event 队列里
+    # 明确记着「谁把病传给了谁」(日精度), 供在性行为句后补「（某某把…传染给了某某）」
+    _diff_disease_edges(cache, melt, date_label)
     # v31: 牵制 (hooks) 逐档差分 — 存档只存当前持有的牵制且无创建日
     _diff_hooks(cache, melt, date_label)
     # v35: 奴役关系逐档差分 — 把「抓人 → 没为奴隶 → 放出牢房」与「真获释」分开
@@ -2278,6 +2281,107 @@ def _diff_epidemics(cache, melt, date_label):
     for sid, rec in hist.items():
         if isinstance(rec, dict) and sid not in ids and not rec.get("lost_at"):
             rec["lost_at"] = date_label
+
+
+# ---------------------------------------------------------------------------
+# v40: 性病 (情人疱疹 / 大痘) 传播边 —— 存档 triggered_event 队列
+# ---------------------------------------------------------------------------
+# 用户 2026-09-15 需求: 「发生性病传播时, 在性行为后面加上一句
+# （某某把疱疹/大痘传染给了某某）; 此时不论该性行为是自愿或非自愿都记录
+# （只有这一个特例）; 如果不是调用行动传播的则单独在记忆中记录」。
+#
+# 数据来源: 每条熔件顶层 `triggered_event` (load_melt 后是**列表**) 的隐藏事件::
+#
+#     {"event": "health.1200",
+#      "scope": {"root": {"type": "char", "identity": 50852}, "seed": …,
+#                "event_targets": {
+#                    "sick_character": {"type": "char", "identity": 74421},
+#                    "disease_type": {"type": "flag", "flag": "lovers_pox"},
+#                    "infecting_partner": {"type": "char", "identity": 74418}}},
+#      "date": "1093.1.6"}
+#
+# 语义 (游戏 20_health_effects.txt / events/health_events.txt 逐行核对):
+#   · Carnalitas 性事当场调 `risk_of_std_from_effect` (carn_had_sex_with_effect:
+#     50% 情人疱疹 / 30% 大痘), `contract_*_from` 把**已患病的 partner** 存进
+#     `infecting_partner`、病人自己存进 `sick_character`;
+#   · 得病后立刻排 `health.1200`(情人疱疹 days={60 1000}) / `health.1201`
+#     (大痘 days={250 1500}) 的**复检**, 队列里的 `date` 是复检日, 故
+#     感染日 ∈ [复检日−上限, 复检日−下限] (由 facts 侧按病种换算);
+#   · 本体的 `health.1200` 也会在 lover/consort 之间**按期**传播 —— 这类没有
+#     性事行动, 事实层单独成行 (「不是调用行动传播」那一档)。
+# `infecting_partner` 缺省 (卖淫/先天) 或等于 `sick_character` (本人复检) 时
+# 不构成传播边; 前者由事实层记「染上X」, 后者丢弃。
+_STD_DISEASES = ("lovers_pox", "great_pox", "early_great_pox")
+
+
+def _iter_triggered(melt):
+    """triggered_event → 事件 dict 列表 (load_melt 把重复键并成 list)。"""
+    te = melt.get("triggered_event")
+    if isinstance(te, list):
+        return [e for e in te if isinstance(e, dict)]
+    if isinstance(te, dict):   # 兜底: 未合并的单条/字典形
+        out = []
+        for v in te.values():
+            if isinstance(v, dict):
+                out.append(v)
+            elif isinstance(v, list):
+                out += [x for x in v if isinstance(x, dict)]
+        return out
+    return []
+
+
+def _char_identity(v):
+    """事件槽位 ({"type":"char","identity":N}) → 角色 id; 取不到返回 None。"""
+    if isinstance(v, dict):
+        i = v.get("identity")
+        return i if isinstance(i, int) else None
+    return v if isinstance(v, int) else None
+
+
+def _std_edges_of(melt):
+    """本档 triggered_event → [(disease, source, target, fire_date)] (只收真传播边)。
+
+    `sick_character` 缺失的条目 (存档退化) 丢弃。"""
+    out = []
+    for e in _iter_triggered(melt):
+        tgt = ((e.get("scope") or {}).get("event_targets") or {})
+        dt = tgt.get("disease_type")
+        flag = dt.get("flag") if isinstance(dt, dict) else None
+        if flag not in _STD_DISEASES:
+            continue
+        sick = _char_identity(tgt.get("sick_character"))
+        src = _char_identity(tgt.get("infecting_partner"))
+        if sick is None:
+            continue
+        if src is not None and src == sick:
+            continue          # 本人按期复检: 不是传播
+        out.append((str(flag), src, sick, str(e.get("date") or "")))
+    return out
+
+
+def _diff_disease_edges(cache, melt, date_label):
+    """性病传播边逐档差分 → ``cache["disease_edges"]`` (v40)。
+
+    记录形如::
+
+        {"lovers_pox>74418>74421>1092.6.3":
+            {"disease": "lovers_pox", "source": 74418, "target": 74421,
+             "fire_date": "1092.6.3", "first_seen": "1093.1.1",
+             "first": True, "last_seen": "1093.1.1"}}
+
+    同一条边会连续出现在多档 (排期 → 复检), 故按「病种>源>目标>复检日」去重,
+    `first_seen`/`last_seen` 记首末次见到的快照日; `first=True` 表示数据起点即见。"""
+    hist = cache.setdefault("disease_edges", {})
+    for disease, src, tgt, fire in _std_edges_of(melt):
+        key = f"{disease}>{src}>{tgt}>{fire}"
+        rec = hist.get(key)
+        if rec is None:
+            hist[key] = {"disease": disease, "source": src, "target": tgt,
+                         "fire_date": fire, "first_seen": date_label,
+                         "first": True, "last_seen": date_label}
+            continue
+        rec["first"] = False
+        rec["last_seen"] = date_label
 
 
 def _court_holder_ids(melt):
