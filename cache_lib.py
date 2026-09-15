@@ -1471,7 +1471,59 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     if h.get("name") == tname and h.get("date"):
                         d = h["date"]
                         break
+                # v41 (问题1/2): 改名史与**夺位日**取真事件日 —— 主头衔在
+                # title history 里由玩家取得的日期 (1086.1.1) 早于本档快照日
+                # (1087.1.1); 旧稿写快照日, 十年传记里的登位年份因此晚一年。
+                for _tid in dom:
+                    _h = (lt.get(str(_tid)) or {}).get("history") or {}
+                    if not isinstance(_h, dict):
+                        continue
+                    _ev_date = ""
+                    for _hd in sorted(_h, key=date_key):
+                        if date_key(_hd) > date_key(d):
+                            break
+                        _ev = _h[_hd]
+                        for _e in (_ev if isinstance(_ev, list) else [_ev]):
+                            _hh = _e.get("holder") if isinstance(_e, dict) else _e
+                            try:
+                                _hh = int(_hh) if _hh is not None else None
+                            except (TypeError, ValueError):
+                                _hh = None
+                            if _hh == int(player_id):
+                                _ev_date = _hd
+                    if _ev_date:
+                        d = _ev_date
+                        break
                 hist.append({"date": d, "name": tname})
+
+    # v41 (问题1): 玩家政体变更史 (改行行政官制等) — 只记变化点 (与
+    # player_locations / camp_purposes 同范式, 体量极小); facts 据此出
+    # 「1086年1月1日改行行政官制（原封建采邑制）」这句事实。
+    if player_id is not None:
+        _ld = (chars.get(str(player_id)) or {}).get("landed_data") or {}
+        _gov = _ld.get("government") or ""
+        if _gov:
+            _gh = cache.setdefault("government_history", [])
+            if not _gh or _gh[-1].get("government") != _gov:
+                _gd = date_label
+                for _tid in (_ld.get("domain") or []):
+                    _h = (lt.get(str(_tid)) or {}).get("history") or {}
+                    if not isinstance(_h, dict):
+                        continue
+                    for _hd in sorted(_h, key=date_key):
+                        if date_key(_hd) > date_key(_gd):
+                            break
+                        _ev = _h[_hd]
+                        for _e in (_ev if isinstance(_ev, list) else [_ev]):
+                            _hh = _e.get("holder") if isinstance(_e, dict) else _e
+                            try:
+                                _hh = int(_hh) if _hh is not None else None
+                            except (TypeError, ValueError):
+                                _hh = None
+                            if _hh == int(player_id):
+                                _gd = _hd
+                    break
+                _gh.append({"date": _gd, "government": _gov})
 
     # v8: 击杀受害者入目标集 (保证刺客列传能取到姓名/档案)
     for _cid in list(targets):
@@ -1677,6 +1729,17 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
             if jd:
                 cur["join_court_date"] = jd
             rec["court"] = cur
+        # v41 (问题1): 逐档记录**每个入目标集角色的政体变化点** ——
+        # 神罗 1087–1094 是封建制 (领主显示公爵/伯爵), 1095 起才改行政官制
+        # (军区/分区/将军); 事实层按 as_of 取词时必须知道当时的政体。
+        # 只记变化点 ({cid: [{date, government}]}), 与 camp_purposes 同范式。
+        _ld_all = c.get("landed_data") or {}
+        _gov_all = _ld_all.get("government") or ""
+        if _gov_all:
+            _chg = cache.setdefault("char_government_history", {})
+            _h = _chg.setdefault(str(cid), [])
+            if not _h or _h[-1].get("government") != _gov_all:
+                _h.append({"date": date_label, "government": _gov_all})
         # v8: 击杀 (alive_data.kills / dead_data.kills, 跨年累积去重)
         kills = kills_of(c)
         if kills:

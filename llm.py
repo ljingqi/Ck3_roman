@@ -46,6 +46,11 @@ DEFAULT_CONFIG = {
     "llm_thinking_disabled": True,
     # 流水线开关: scan 检测到玩家死亡后是否自动生成终传
     "auto_bio_on_death": True,
+    # v41: Carnalitas 事件好感族 (carnal_opinions) 是否进事实面。
+    # 该族的本地化文案本身就是一句「谁视谁为：曾强奸我／曾强奸家庭成员」式评断,
+    # 与性事记忆渲染的「强迫之事」逐条重复 (无地点、无行为、无具体日),
+    # 只增提示词长度。默认关闭; 需要在《阴私录》里看到这类评断时置 true。
+    "carnal_opinions": False,
     # 传记板块结构: lead=首段, mid=中段 (v11: 尾段评曰已删, 太史公曰只留总纲)
     "bio_sections": ["lead", "mid"],
 }

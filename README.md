@@ -583,6 +583,60 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
 回归：`tools/verify_v35.py`（读快照，七问断言，秒级）＋`tools/check_bio_v35.py`
 （成稿 md 自查）；`tools/verify_fast.py` 全部 PASS。
 
+## v41 能力（诺兰八问题：政体时效 / 夺位经过 / 好感开关 / 血脉连线 / 宗支 / 共治者 / 仇人池 / 牵制块）
+
+方案：`docs/方案_v41_诺兰八问题.md`；**问题 1 的口径修正见 `docs/补正1_v41_封建期头衔词.md`**
+（我最初判「头衔词没取错」是错的：神罗 1087–1094 是**封建制**，那段时期领主在游戏里
+就是公爵/伯爵，程序却按末档的行政制一律取将军/军区/分区）。
+
+程序端八项改动（**0 条新增提示词**）：
+
+1. **政体按日期取，不再一律用末档** —— 三条一起改才生效：
+   - `cache_lib` 逐档记录 `cache["char_government_history"]{cid: [{date, government}]}`
+     （变化点，与 `camp_purposes` 同范式）；
+   - `facts.Facts._character_government(cid, date)` / `_title_government(tid, date)`：
+     取该日**时任持有者**的政体；日期早于该角色史起点时返回空（由通用词条兜底），
+     `official_title` 读缓存末档政体的旧路径一并改掉（那是错词的直接来源）；
+   - `flavorization.resolve` 补上**从未实现**的 `ignore_top_liege_government` 规则
+     （游戏 `common/flavorization/_flavourization.info:195-202`：该旗标为真时
+     **仅 government** 用本人政体）。缺这一行时，行政制词条会去比最高领主的政体，
+     把封建留守封臣一并吞成「将军/军区/分区」。
+2. **头衔取得方式** —— `facts._holder_intervals` 建索引时保留 gain 事件类型与前一持有人
+   （旧稿只留 `(gain, loss, loss_type)`，gain 缘由被丢），新增 `gain_reason` /
+   `prev_holder` / `_gain_clause`：历任阶段行写成
+   「1086年1月1日自重臣X手中夺得神圣罗马帝国巴西琉斯」，不再只有裸头衔名。
+3. **`cache_lib.player_title_history` 用 title history 事件日**（1086.1.1）
+   而非快照日（1087.1.1）。
+4. **政体变更事实** —— `facts.government_changes()` 出
+   「1086年1月1日改行行政官制（原封建采邑制）」一句。
+5. **`carnal_opinions` 改开关制**（`config.json` 的 `carnal_opinions`，默认 **false**）：
+   本档 29 条全是「曾强奸我/曾强奸家庭成员」式评断，与性事记忆渲染的「强迫之事」
+   行逐条重复；关掉即整族不下发，打开恢复旧行为。
+6. **同父异母联姻连线** —— `facts._kin_blood_links()`（只进《家室列传》《阴私录》）：
+   「…主角之女安娜与黑罗尔德结为夫妇；黑罗尔德实为主角与奥达·魏玛之子，
+   与安娜为同父异母兄妹」。旧稿三条料分居三处，模型读不出这层关系。
+   血统类隐事主题同时点名**实父**（`style.SECRET_TOPICS` 增 `{father}` 位）。
+7. **宗族宗支句** —— `facts.clan_line()`：「东盎格利亚为布里奥讷宗族的分支。」
+   （分家名 ≠ 宗族名才出；按用户定规**不写「主支为谁」**）。
+8. **共治者身份** —— 读熔件 `diarchies`（`type=co_*`）+ 角色变量 `use_co_ruler_title`
+   双条件（游戏 `00_title_holders.txt:10191-10219` 的 `co_ruler_male`），
+   出「共治巴西琉斯，君主神圣罗马帝国巴西琉斯。」（与游戏自缓存渲染串逐字一致）。
+9. **仇人池加「与主角的互动分」**（`biography._shared_history_score`，软口径）：
+   排序键改为 (共享史分, 本十年共享史分, 候选人自己的事迹分, 在世, 结仇最早)。
+   旧稿只数候选人自己的生平，实测会把只与主角结过一次仇、却有三任妻子与多场战争的
+   波美拉尼亚国王选成仇人列传传主。
+10. **牵制块去掉「…的牵制如下：」两条标题行**（`style.FACT_WORDING` 删
+    `hook_head_held` / `hook_head_over`）：每条牵制句本已自足，标题行只会把该维度
+    引成开放清单，模型据此自行铺陈「御前会议诸臣互握把柄」等无据情节。
+
+回归：`tools/verify_v41_unit.py`（离线合成数据，**29 PASS / 0 FAIL**）；
+`tools/verify_fast.py` 新增 `[V41]` 组（含「封建期档不得出现行政制专有词」断言）；
+`tools/verify_v39_unit.py` 49 PASS、`tools/verify_v40_unit.py` 32 PASS、
+`experiments/verify_v38_unit.py` 21 PASS（该组显式打开 `carnal_opinions` 以验旧行为）。
+
+> 缓存需重建一次以带上 `char_government_history`：
+> `& tools\py.ps1 tools\rebuild_folder_v38.py 诺兰`
+
 ## 代码纪律（2026-09-10 用户定规）
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /

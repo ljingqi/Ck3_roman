@@ -16,5 +16,6 @@
   "prompt_log_enabled": true,
   "llm_thinking_disabled": true,
   "auto_bio_on_death": true,
+  "carnal_opinions": false,
   "bio_sections": ["lead", "mid", "tail"]
 }

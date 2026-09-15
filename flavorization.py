@@ -214,9 +214,19 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
         if best_pri is not None and prio <= best_pri:
             continue
         rules = e.get("rules") or {}
-        # top_liege 默认 yes: 封臣按最高领主的政体/文化判定 (显式 no 者按自身)
+        # top_liege 默认 yes: 封臣按最高领主的政体/文化判定 (显式 no 者按自身)。
         use_top = bool(top) and rules.get("top_liege", True) is not False
-        gov_x = (top.get("government") or government) if use_top else government
+        # v41 (问题1) 关键修正: `ignore_top_liege_government` (游戏
+        # `_flavourization.info:195-202`) —— 该旗标为真时, **除 government 外**
+        # 才改用最高领主。旧实现从未读这条规则, 于是最高领主一转行政制,
+        # 封建留守的封臣也去命中 `*_administrative_*_byzantine_group`
+        # (priority 51/50/29/28), 压过 `duchy_feudal`(27)/`duke_feudal_male`(26),
+        # 把诺兰档封建期 (1087–1094) 的公爵/伯爵写成军区/将军/分区/分区长。
+        # 游戏缓存串反证: date=1096.8.15 的封建封臣格哈德II 仍是「公爵」、
+        # 其头衔 d_bar 仍是「巴尔公国」 (logs/research_feudal_greek_titles.md §Q5)。
+        gov_x = (government if (not use_top
+                               or rules.get("ignore_top_liege_government"))
+                 else (top.get("government") or government))
         nl_x = (top.get("name_list") or name_list) if use_top else name_list
         hs_x = (top.get("heritage") or heritage) if use_top else heritage
         fa_x = (top.get("faith") or faith) if use_top else faith

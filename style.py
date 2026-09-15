@@ -316,8 +316,8 @@ FACT_WORDING = {
     # 归并行 (同类多对象/多持有者): 方向各自的句式, 名字取前三 + 总人数
     "hook_group_held": "{actor}握有对{names}的{strength}牵制{name}（共{n}人）。",
     "hook_group_over": "{names}握有对{actor}的{strength}牵制{name}（共{n}人）。",
-    "hook_head_held": "主角握有的牵制如下：",
-    "hook_head_over": "他人握有对主角的牵制如下：",
+    # v41 (问题8): 删去「主角握有的牵制如下：」「他人握有对主角的牵制如下：」
+    # 两条块首标题行 —— 每条牵制句已自足, 标题行只会把该维度引成开放清单。
     "hook_strong_word": "强",
     "hook_since": "（{year}起）",
     "hook_expires": "（{date}届满）",
@@ -780,8 +780,12 @@ SECRET_TOPICS = {
     "secret_siphoned_treasury": "挪用国库",
     # v31 (问题7): 血统类隐事指名所涉子女 — 旧文案「血统有争（涉及X）」是名词
     # 括注同位语, 且与「见载年/知情者」的括注叠在一起, 读来含混。
-    "secret_unmarried_illegitimate_child": "所出{target}血脉存疑",
-    "secret_disputed_heritage": "所生{target}血统有争",
+    # v41 (问题4): 再点名**实父** —— 《家室列传》《阴私录》要靠这一句把
+    # 「主角的女儿嫁的正是主角自己的私生子」接起来 (facts.secret_topic 传入
+    # {father}; 实父判不出时退 SECRET_TOPICS_NO_FATHER 的简式)。
+    "secret_unmarried_illegitimate_child":
+        "所出{target}血脉存疑，实父为{father}",
+    "secret_disputed_heritage": "所生{target}血统有争，实父为{father}",
     "secret_incest": "乱伦",
     "secret_homosexual": "断袖",
     "secret_cannibal": "食人",
@@ -795,6 +799,12 @@ SECRET_TOPICS_NO_TARGET = {
     "secret_murder": "谋害人命",
     "secret_murder_attempt": "行刺未遂",
     "secret_lover": "与人私通",
+}
+
+# v41 (问题4): 血统类隐事判不出实父时的简式 (无料不下发实父位)
+SECRET_TOPICS_NO_FATHER = {
+    "secret_unmarried_illegitimate_child": "所出{target}血脉存疑",
+    "secret_disputed_heritage": "所生{target}血统有争",
 }
 
 

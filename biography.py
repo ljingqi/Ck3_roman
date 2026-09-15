@@ -183,6 +183,72 @@ def _select_enemies(cache):
 
 ENEMY_MIN_DEEDS = 2  # v26: 仇人候选池事迹分门槛 (素材太少写不出列传)
 
+# v41 (问题7): **与主角的互动分** — 仇人列传的传主应先看「与主角之间发生过什么」,
+# 再看传主自己生平是否丰富。旧稿只数候选人自己的记忆 (_ENEMY_DEED_TYPES), 实测
+# 选中希温托博尔·波美拉尼亚 (主角侧仅 4 条: 一次结仇 + 同场加冕两日 + 死讯),
+# 其事迹分 36 全场第一, 靠的全是他自己的三任妻子/战争/生子; 而与他只结过一次仇,
+# 与主角有囚禁/拷打/夺地之实的福尔科·埃斯特等人反被压下去。
+# 权重分三档: 3 = 施加于对方或夺其所有 (战争/囚禁/拷打/谋杀/夺位/夺地/决裂);
+# 2 = 受其施加或双方共同卷入 (被囚/被拷/获释/助战/战果/性事); 1 = 关系本身
+# (结仇/结友/相恋/婚配/同场观礼/生育/亲属亡故)。
+_SHARED_HISTORY_WEIGHTS = {
+    3: ("successful_murder", "imprisoned_other", "torturer_memory",
+        "offensive_war", "war_won", "defensive_war", "war_lost",
+        "lost_title_memory", "ascended_throne_memory", "broke_up_lovers",
+        "became_grudge", "became_nemesis", "faction_demand"),
+    2: ("imprisoned", "tortured_memory", "released_from_prison_memory",
+        "escaped_from_prison_memory", "joined_allys_war",
+        "battle_won_memory", "battle_lost_memory", "stopped_being_friends",
+        "stopped_being_rivals", "saved_from_assault_memory",
+        "ignored_assault_memory"),
+}
+# 性事/强迫类记忆 (Carnalitas had_sex_* 与 had_sex) 一并计 2 分
+_SHARED_HISTORY_SEX_WEIGHT = 2
+# 其余「参与者含对方」的关系类记忆计 1 分 (became_rivals/became_friends/
+# became_lovers/married/witnessed_a_coronation_memory/child_born/rival_died…)
+
+
+def _shared_history_score(cache, cid, as_of=None, since=None):
+    """候选人与主角的互动分 (v41, 问题7): 双向记忆里「参与者含对方」者加权计数。
+
+    双向 = 主角侧记忆 (participants 含 cid) + 候选人侧记忆 (participants 含 pid),
+    同一类型两者各计一次 (对等事件确实各留一条)。可按 as_of / since 截断。"""
+    pid = cache.get("player_id")
+    if pid is None or cid is None:
+        return 0
+    try:
+        cid = int(cid)
+    except (TypeError, ValueError):
+        return 0
+    if cid == pid:
+        return 0
+    w3 = set(_SHARED_HISTORY_WEIGHTS[3])
+    w2 = set(_SHARED_HISTORY_WEIGHTS[2])
+    chars = cache.get("characters") or {}
+    ak = cl.date_key(as_of) if as_of else None
+    sk = cl.date_key(since) if since else None
+    score = 0
+    for a, b in ((pid, cid), (cid, pid)):
+        for m in (chars.get(str(a)) or {}).get("memories") or []:
+            parts = m.get("participants") or {}
+            if b not in [v for v in parts.values() if isinstance(v, int)]:
+                continue
+            d = m.get("creation_date")
+            if d:
+                dk = cl.date_key(d)
+                if ak is not None and dk > ak:
+                    continue
+                if sk is not None and dk < sk:
+                    continue
+            t = str(m.get("type") or "")
+            if t in w3:
+                score += 3
+            elif t in w2 or t == "had_sex" or t.startswith(F._SEX_MEM_PREFIX):
+                score += _SHARED_HISTORY_SEX_WEIGHT
+            else:
+                score += 1
+    return score
+
 # v26: 仇人候选的「事迹分」类型集 — 主动作为型记忆计 1 分 (登位/战争/谋杀/婚配/
 # 生育/结友/囚禁/受质/科考/朝觐/成人礼…); 丧亲/患病/失和等被动背景不计。
 # 旧门槛只数记忆条数, 菅原类子 (12 条全是被动) 因而压过秦皇帝崔慎由。
@@ -240,8 +306,15 @@ def _select_primary_enemy(cache, as_of=None, since=None):
             if _enemy_deeds(cache, c, as_of=as_of) >= ENEMY_MIN_DEEDS}
     pool = rich or pool
 
+    # v41 (问题7, 用户拍板「软口径」): 先看**与主角的互动分**, 再看候选人自己的
+    # 事迹分 (共享史为 0 者仍可凭事迹分入选 —— 不设硬门槛)。
+    shared = {c: _shared_history_score(cache, c, as_of=as_of) for c in pool}
+    shared_dec = {c: _shared_history_score(cache, c, as_of=as_of, since=since)
+                  for c in pool}
+
     def _key(c):
-        return (-_enemy_deeds(cache, c, as_of=as_of),
+        return (-shared.get(c, 0), -shared_dec.get(c, 0),
+                -_enemy_deeds(cache, c, as_of=as_of),
                 1 if _is_dead(cache, c, as_of=as_of) else 0,
                 cl.date_key(pool[c]))
 
@@ -498,6 +571,11 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
     if p.get("motto"):
         bits.append(f"家训「{p['motto']}」")
     lines.append(f"{head}，{'，'.join(bits)}。" if bits else f"{head}。")
+    # ---- v41 (问题6): 共治者身份 (游戏 co_ruler 规则) ----
+    # 单列一句: 「共治巴西琉斯，君主神圣罗马帝国巴西琉斯。」——
+    # 与名号句同位 (放进 bits 会与族属/信仰句挤在一串逗号里)。
+    if p.get("co_ruler"):
+        lines.append(p["co_ruler"])
     # ---- v30: 族属变迁句 (问题1 — 「原为哥特人，871年起为诺斯人。」) ----
     if p.get("culture_history"):
         lines.append(p["culture_history"])
@@ -642,6 +720,13 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
         kin_bits.append(f"兄弟姊妹{p['siblings']}")
     if kin_bits:
         lines.append("，".join(kin_bits) + "。")
+    # ---- v41 (问题5): 宗族宗支句 —— 分家与宗族不同名时点明同宗 ----
+    # (「东盎格利亚为布里奥讷宗族的分支」; 初始家族与宗族同名, 不出句)
+    if p.get("clan_line"):
+        lines.append(p["clan_line"])
+    # ---- v41 (问题1): 政体变更句 (改行行政官制等) ----
+    if p.get("government_change"):
+        lines.append(p["government_change"])
     # ---- 任历句 (v28b: 加冒号断句 — 原「历任867年任X」年月与「历任」粘连) ----
     if p.get("titles_held"):
         lines.append(f"历任：{p['titles_held']}。")
@@ -1208,16 +1293,13 @@ def _article_facts(facts, cache, key, section=None):
         else:
             mid_lines = list(kin_lines if has_held else _split_span(kin_lines, 1))
             mid_lines.extend(sec.get("known") or [])
-            # v31 (问题5): 牵制 (把柄维度) — 用户决策: 只随《阴私录》下发;
-            # 两向各加一行归属语 (「主角握有的牵制如下：」「他人握有对主角的牵制如下：」)
-            hh = list(sec.get("hooks_held") or [])
-            ho = list(sec.get("hooks_over") or [])
-            if hh:
-                mid_lines.append(style.FACT_WORDING["hook_head_held"])
-                mid_lines.extend(hh)
-            if ho:
-                mid_lines.append(style.FACT_WORDING["hook_head_over"])
-                mid_lines.extend(ho)
+            # v31 (问题5): 牵制 (把柄维度) — 用户决策: 只随《阴私录》下发。
+            # v41 (问题8): 去掉「…的牵制如下：」两条标题行 —— 事实行本身已是
+            # 自足句 (「主角握有对X的强牵制「干了我老婆」（1087年起）。」),
+            # 标题行只把这一维度引成「由你来列举」的开放清单, 模型据此自行
+            # 铺陈御前会议互握把柄等无据情节 (诺兰第四个十年实测)。
+            mid_lines.extend(list(sec.get("hooks_held") or []))
+            mid_lines.extend(list(sec.get("hooks_over") or []))
             # v35 (问题4): 奴役 (Carnalitas) 与「把柄」分列 —— 「抓人 → 没为奴隶 →
             # 放出牢房」是一层人身关系, 不是握有把柄; 旧稿把它读成「抓了又放」。
             # v38 (问题4): 追加「昔日奴隶」档 —— 被卖掉/获释的人此后仍在事实面上

@@ -1521,9 +1521,14 @@ def government_prefix(government):
 
 def tier_word(table, government, tier):
     """政体下的层级词: 优先 DLC 领地层级词 (culture_titles: 天朝制
-    县/州府/镇/路/行台/皇朝), 再 <政体>_salary_rank_<层级>_short 俸禄词
-    (celestial: 路/大路/镇/州府; administrative: 督军/大督军/军区),
-    缺失回退通用表 (王国/帝国/公国/伯爵领/堡/皇朝)。"""
+    县/州府/镇/路/行台/皇朝), 缺失回退通用表 (王国/帝国/公国/伯爵领/堡/皇朝)。
+
+    v41 (问题1, 见 logs/research_admin_titles.md): **删去 `<政体>_salary_rank_*`
+    一档** —— 那批键是**封臣契约「俸禄等级」的 UI 标签**
+    (`common/subject_contracts/contracts/administrative.txt:385-459`), 不是头衔
+    层级词; 行政制的「行省/总督区」与「军区/督军区」等正确层级词来自
+    `common/flavorization/` 的 `type = title` 条目, 由 `facts._tier_word_at`
+    先行查询, 查不到才落到这里的通用表。"""
     prefix = government_prefix(government)
     # v8.3: DLC「All Under Heaven」领地层级词 (culture_titles):
     #   barony_celestial_chinese_vassal=县, county=州府, duchy=镇,
@@ -1536,14 +1541,6 @@ def tier_word(table, government, tier):
             c = clean_loc_value(v, table)
             if c and not c.startswith("$") and not c.startswith("["):
                 return c
-    if prefix:
-        for key in (f"{prefix}_salary_rank_{tier}_short",
-                    f"{prefix}_salary_rank_{tier}"):
-            v = table.get(key)
-            if v:
-                c = clean_loc_value(v, table)
-                if c and not c.startswith("$") and not c.startswith("["):
-                    return c
     return GENERIC_TIER_ZH.get(tier, "")
 
 
