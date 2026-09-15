@@ -2685,7 +2685,13 @@ def melt_index_path(melt_path):
 
 
 def build_melt_index(melt):
-    """从全量熔件构建记忆归档 dict (不入库)。"""
+    """从全量熔件构建记忆归档 dict (不入库)。
+
+    v40: 变量元组补上第 4 位 = flag 类变量的值 (`data.flag`) —— 与
+    `memory_brief` v21 同口径。旧版只存 [flag, type, identity], 于是**走边车
+    恢复的记忆**丢掉 `reason` (头衔授予/丧失缘由) 等标志值, 头衔得失句从
+    「受X册封为Y」退化成「登位，得Y」(2026-09-15 诺兰重建实测: 边车一旦生成,
+    重建即走 `_brief_from_index` 这条有损路径)。"""
     out = {"date": melt.get("date"), "chars": {}, "db": {}}
     chars = out["chars"]
     db = out["db"]
@@ -2701,7 +2707,8 @@ def build_melt_index(melt):
         vars_out = []
         for f in (e.get("variables") or {}).get("data") or []:
             d = f.get("data") or {}
-            vars_out.append([f.get("flag"), d.get("type"), d.get("identity")])
+            vars_out.append([f.get("flag"), d.get("type"), d.get("identity"),
+                             d.get("flag") if (d.get("type") or "") == "flag" else None])
         db[mid] = {
             "type": e.get("type"),
             "participants": e.get("participants"),
@@ -2732,14 +2739,17 @@ def load_melt_index(melt_path):
 
 
 def _brief_from_index(mid, e):
-    """归档条目 → memory_brief 同构精简条目 (vars 用 [flag,type,identity] 三元组)。"""
+    """归档条目 → memory_brief 同构精简条目 (vars 用 [flag,type,identity,value] 元组)。
+
+    v40: 兼容旧边车的三元组 (无 value) —— 缺第 4 位时 value 记 None。"""
     return {
         "id": mid,
         "type": e.get("type"),
         "participants": e.get("participants"),
         "creation_date": e.get("creation_date"),
         "end_date": e.get("end_date"),
-        "vars": [{"flag": v[0], "type": v[1], "identity": v[2]}
+        "vars": [{"flag": v[0], "type": v[1], "identity": v[2],
+                  "value": v[3] if len(v) > 3 else None}
                  for v in (e.get("vars") or []) if isinstance(v, (list, tuple))],
     }
 
