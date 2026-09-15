@@ -306,6 +306,17 @@ FACT_WORDING = {
     "prison_escape_same_day": "，当日越狱脱身",
     "prison_jailed": "{jailer}囚禁{victim}",
     "prison_held": "{victim}被囚",
+    # v42 (问题3): 阉割/致盲**必然与释放同日**（存档 21/21 例实证）——
+    # 刑名不再另起一行, 而是充当出狱缘由并入囚禁句。{sp} = 「当日」或「14日后」。
+    "prison_punish_castrated": "，{sp}遭阉割而获释",
+    "prison_punish_blinded": "，{sp}遭剜目而获释",
+    "prison_punish_beardless":
+        "，{sp}其在成年前被{jailer}阉割，终身无须，因而获释",
+    "prison_punish_generic": "，{sp}受刑而获释",
+    # v42 (问题6): 囚期以**死亡**收口 —— 有死亡记录而无释放/越狱/狱史闭合者,
+    # 旧稿一律写「此后一直未见释放」(诺兰 1088 那 10 人其实 6 个月后被杀)。
+    "prison_died_executed": "，{sp}处决",
+    "prison_died_in_prison": "，{sp}死于狱中",
     # v31 (问题5): 牵制句 — 强牵制与普通牵制分档 (游戏 [strong_hook] / [hook] 同义);
     # {name} 由 facts 传引号形态 (「干了我老婆」), 本地化查不到时为空串;
     # {since} 为「（X年起）」或到期日, 对象只有一个时逐条写, 同类多条归并一行。
@@ -786,7 +797,10 @@ SECRET_TOPICS = {
     "secret_unmarried_illegitimate_child":
         "所出{target}血脉存疑，实父为{father}",
     "secret_disputed_heritage": "所生{target}血统有争，实父为{father}",
-    "secret_incest": "乱伦",
+    # v42 (问题1): 乱伦走自然动词式 —— 旧稿是 facts 里的 `乱伦：与{target}`
+    # (全库唯一一条「标签：内容」式隐事主题), 嵌进「有隐事N桩：」成双层冒号;
+    # 判不出对象时退 SECRET_TOPICS_NO_TARGET 的「乱伦」。
+    "secret_incest": "与{target}乱伦",
     "secret_homosexual": "断袖",
     "secret_cannibal": "食人",
     "secret_coup_plotter": "谋逆",
@@ -799,6 +813,8 @@ SECRET_TOPICS_NO_TARGET = {
     "secret_murder": "谋害人命",
     "secret_murder_attempt": "行刺未遂",
     "secret_lover": "与人私通",
+    # v42 (问题1): 乱伦判不出对方时的简式 (名词即事, 不点名)
+    "secret_incest": "乱伦",
 }
 
 # v41 (问题4): 血统类隐事判不出实父时的简式 (无料不下发实父位)

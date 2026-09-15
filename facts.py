@@ -228,9 +228,15 @@ _SECRET_PARTY_TARGET_TYPES = {"secret_lover", "secret_adultery"}
 # 血亲只认**血缘** (父/母/子女/同胞); 姻亲 (配偶) 不算 — 否则夫妻同房会被写成乱伦。
 _SEX_MEM_TYPES = ("had_sex", "became_lovers", "became_soulmates", "developed_crush")
 _SEX_MEM_OTHER_KEYS = ("sex_partner", "new_relation", "new_soulmate")
-# 「乱伦」主题: 判出对方时以冒号带出 (与「主角握有…：」同式), 判不出时不点名
-SECRET_INCEST_TOPIC = "乱伦：与{target}"
-SECRET_INCEST_TOPIC_ANON = "乱伦"
+
+# v42 (问题1): 乱伦主题已并入 style.SECRET_TOPICS (`与{target}乱伦`) —— 旧稿在
+# 此处另立 `SECRET_INCEST_TOPIC = "乱伦：与{target}"`, 是全库唯一一条「标签：内容」
+# 式隐事主题, 嵌进「有隐事N桩：」成双层冒号。
+
+# v42 (问题2): 「自己」的指代基准 = **记录持有人** (即该隐事句的主语)。
+# 旧稿以 `self_cid` (主角 id) 为基准, 家人隐事句的主语是家人、基准却是主角,
+# 于是「对方＝主角」被写成「自己」: 欧金尼娅·诺兰的三桩隐事成了
+# 「乱伦：与自己」「与自己私通」「实父为自己」, 并被子模型逐字抄进正文。
 
 # 记忆类型 → 取 vars 中的 landed_title (头衔 id)
 TITLE_VAR_TYPES = {"lost_title_memory", "ascended_throne_memory"}
@@ -521,6 +527,16 @@ def _daynum(d):
         return y * 372 + m * 31 + dd
     except Exception:
         return 0
+
+
+def _day_before(d):
+    """日期串的前一日 (v42 问题7: 卒日锚点用); 解析失败原样返回。"""
+    try:
+        y, m, dd = (int(x) for x in str(d).split(".")[:3])
+        p = datetime.date(y, m, dd) - datetime.timedelta(days=1)
+        return f"{p.year}.{p.month}.{p.day}"
+    except Exception:
+        return d
 
 
 def _death_reason(table, reason):
@@ -2620,15 +2636,25 @@ class Facts:
         return ""
 
     def _anchor_date(self, cid, date=None):
-        """官职/国号的日期锚点 (v25): 显式 date > 卒日 (已死且在传记窗口内) > as_of。
-        死者取卒日 → 卒于唐则为「唐皇帝」(李漼 874.8.15 卒, h_china 875.6.25 才
-        由崔氏改国号秦); 卒于 as_of 之后者视为在世, 取 as_of (窗口外国号不外泄)。"""
+        """官职/国号的日期锚点 (v25): 显式 date > 卒前一日 (已死且在传记窗口内) > as_of。
+        死者取卒前一日 → 卒于唐则为「唐皇帝」(李漼 874.8.15 卒, h_china 875.6.25 才
+        由崔氏改国号秦); 卒于 as_of 之后者视为在世, 取 as_of (窗口外国号不外泄)。
+
+        v42 (问题7): 两处收口 ——
+        ① **卒日当天头衔已随继承易主**: 头衔史的丢失日就是卒日, 而 `_hold_intervals`
+           的 as_of 过滤是「丢失日 > as_of 才算仍持有」, 取卒日会让死者自己的皇位
+           落空。改取**卒前一日**, 语义即「按卒前的身分称呼」。
+        ② **主角的卒档不在 `characters[pid].death`**: 它记在 `cache["player_death"]`,
+           旧稿因此对主角取不到卒日 → 落到 `as_of` (终传为 None → 熔件当前档,
+           已是卒后) → 终传里主角自己的 `office`/`label` 退成裸名。此处一并回读。"""
         if date:
             return date
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         dd = (rec.get("death") or {}).get("date")
+        if not dd and cid == self.cache.get("player_id"):
+            dd = (self.cache.get("player_death") or {}).get("date")
         if dd and (not self.as_of or cl.date_key(dd) <= cl.date_key(self.as_of)):
-            return dd
+            return _day_before(dd)
         return self.as_of
 
     def _last_title_place(self, cid, fkey="", date=None):
@@ -2894,7 +2920,11 @@ class Facts:
     # 按事件日期查两端角色头衔: 主角侧「瑞典国王崔佛」, 对方侧「粤王范承宗」。
     def _feud_role_title(self, cid, date):
         """事件中某角色的「头衔名+名」— person_label 的 event 式入口
-        (国号随年份: 903 是粤、更早是桂)。"""
+        (国号随年份: 903 是粤、更早是桂)。
+        v42 (问题4, 用户拍板2): 主角改走 `event_name` (只出名字) —— 家族恩怨录的
+        关系流水逐行重复「神圣罗马帝国巴西琉斯」, 与年表同一问题。"""
+        if cid == self.cache.get("player_id"):
+            return self.event_name(cid, date)
         return self.person_label(cid, date, "event")
 
     def _rerender_feud_event(self, raw, date):
@@ -2977,8 +3007,9 @@ class Facts:
                     return f"{other}与{my_label}的世仇就此化解。"
                 if ah not in my_houses:
                     continue                    # 只说本方视角的恩怨之始
-                an = self.person_label(attacker, dk, style="brief") if attacker else ""
-                vn = self.person_label(victim, dk, style="brief") if victim else ""
+                # v42 (问题4): 主角只出名字 (同家族恩怨录其余各行)
+                an = self.event_name(attacker, dk) if attacker else ""
+                vn = self.event_name(victim, dk) if victim else ""
                 reason = ""
                 for v in mem.get("vars") or []:
                     if v.get("flag") == "house_feud_reason":
@@ -3199,6 +3230,12 @@ class Facts:
         nm = self.name_with_regnal(cid, date)
         if not nm or nm in self._PLACEHOLDER_NAMES:
             return ""
+        # v42 (问题4): 年表事实行 —— 主角只写名字 (「邪魔克里斯托弗·诺兰」)。
+        # 头衔已在《传主档案》(office/label + 历任/政体/直辖句) 给足, 年表逐行重复
+        # 只耗注意力 (终传 249 条里 241 条带全称谓); 东方名序由 name_with_regnal
+        # 直出姓名。其余人仍走 brief 式 (官职/称号+名), 供辨认。
+        if style == "timeline" and cid == self.cache.get("player_id"):
+            return nm
         if self._tenno_prince_word(cid, date):
             return nm
         rhw = self.religious_head_word(cid)
@@ -3217,6 +3254,16 @@ class Facts:
         if style == "full":
             return self._full_label(cid, date, off, nm)
         return f"{off}{nm}" if off else nm
+
+    def event_name(self, cid, date=None):
+        """年表/事实行的**主语名** (v42 问题4): 主角只出名字, 其余人出 brief 称谓。
+        单一出口 —— 凡进入 `facts["timeline"]` 或隐事主题/恩怨流水的名字都走这里,
+        使「主角头衔逐行泛滥」不再可能; 与《传主档案》的全称谓分工明确:
+        档案负责**一次**立名, 年表负责**逐条**叙事。"""
+        if cid is None:
+            return ""
+        return self.person_label(cid, date, style="timeline") \
+            or self.name_with_regnal(cid, date)
 
     def _event_office(self, cid, date):
         """恩怨史事件里的现职 (v14): 按事件日期取「头衔名+官职词」; 政体从头衔侧取
@@ -3595,41 +3642,57 @@ class Facts:
         return None
 
     def _secret_partner_label(self, rec, self_cid=None):
-        """对方称谓 (person_label brief; 本人写「自己」)。判不出返回 ''。"""
+        """对方称谓 (person_label brief; **持有人本人**写「自己」)。判不出返回 ''。
+
+        v42 (问题2): 「自己」以**记录持有人**为准, 不再以 `self_cid` (主角) 为准 ——
+        旧稿让家人隐事句里的对象「主角」被写成「自己」(读成该家人与自己)。
+        `self_cid` 仅保留给调用方传主角 id, 用于统一称谓式样。
+        """
         o = self._secret_partner(rec)
         if o is None:
             return ""
-        if self_cid is not None and o == self_cid:
+        owner = rec.get("owner") if isinstance(rec, dict) else None
+        if isinstance(owner, int) and o == owner:
             return "自己"
-        return self.person_label(o, date=self.as_of, style="brief") or ""
+        return self.event_name(o, date=self.as_of) or ""
 
     def secret_topic(self, rec, self_cid=None):
         """隐事主题短语 (不含持有人): 「在张朴主持的乡试中舞弊」/「谋害叠溪寋」/
         「与阿足私通」; 未收录类型回退游戏本地化类型名 (取不到返回 '')。
-        v28b: 涉及对象带官职称谓, 主角本人写作「自己」。
+        v28b: 涉及对象带官职称谓, **持有人本人**写作「自己」。
         v29 (问题6): 科举舞弊写明**方向与级别** — 存档的 target 是主考 (考试组织者),
         主角是在他主持的考试上作弊; 级别由同一快照的考试记忆判定
         (用户实测: 868.1.1 ↔ 乡试、873.1.1 ↔ 会试)。旧表述「科举舞弊（涉及X）」
-        会被读成「考官协助主角作弊」。"""
+        会被读成「考官协助主角作弊」。
+        v42 (问题1/2): ① 乱伦并入 style.SECRET_TOPICS 的 `与{target}乱伦`, 不再
+        自带「乱伦：」标签; ② 「自己」的基准改为**记录持有人** (rec["owner"]) ——
+        隐事句的主语就是持有人, 旧稿以主角 id 为基准, 家人隐事里的主角被写成
+        「自己」(「乱伦：与自己」「实父为自己」)。
+        涉及对象一律用 `event_name` (主角只出名字, 与年表同式)。"""
         if not isinstance(rec, dict):
             return ""
         tp = rec.get("type") or ""
         tgt = rec.get("target")
-        if isinstance(tgt, int):
-            tname = "自己" if (self_cid is not None and tgt == self_cid) \
-                else self.person_label(tgt, date=self.as_of, style="brief")
-        else:
-            tname = ""
+        owner = rec.get("owner")
+
+        def _self_or(cid):
+            """cid → 「自己」(持有人本人) 或统一称谓。"""
+            if not isinstance(cid, int):
+                return ""
+            if isinstance(owner, int) and cid == owner:
+                return "自己"
+            return self.event_name(cid, date=self.as_of) or ""
+
+        tname = _self_or(tgt) if isinstance(tgt, int) else ""
+        if not tname and tp == "secret_incest":
+            # v34 (问题2): 乱伦的 `target` 恒为空数组 (双方各持一条), 对方由
+            # 「血亲 ∩ 性/情记忆」判定 (姻亲不算); 判不出时走下面 {target} 缺位
+            # 的简式「乱伦」—— 交程序判定, 不给模型发散空间。
+            tname = self._secret_partner_label(rec)
         if tp == "secret_exam_cheater":
             lvl = self._exam_level_for_secret(rec.get("owner"), rec.get("first_seen"))
             where = f"{tname}主持的{lvl}" if tname else (lvl or "科考")
             return f"在{where or '科考'}中舞弊" if (tname or lvl) else "科考舞弊"
-        if tp == "secret_incest":
-            # v34 (问题2): 对方不入档, 由「血亲 ∩ 性/情记忆」判定 (姻亲不算);
-            # 判不出时退不带对象的形态 — 交程序判定, 不给模型发散空间。
-            pn = self._secret_partner_label(rec, self_cid=self_cid)
-            return (SECRET_INCEST_TOPIC.format(target=pn) if pn
-                    else SECRET_INCEST_TOPIC_ANON)
         if tp in ("secret_disputed_heritage",
                   "secret_unmarried_illegitimate_child"):
             # v41 (问题4): 血统类隐事**点名实父**。旧稿只写「所生X血统有争」,
@@ -3644,10 +3707,7 @@ class Facts:
                 return ""
             crec = (self.cache.get("characters") or {}).get(str(tgt)) or {}
             rf = ((crec.get("family") or {}).get("real_father") or [None])[0]
-            rn = ""
-            if isinstance(rf, int):
-                rn = "自己" if (self_cid is not None and rf == self_cid) \
-                    else (self.person_label(rf, date=self.as_of, style="brief") or "")
+            rn = _self_or(rf)
             if rn:
                 return tpl.format(target=child, father=rn)
             # 实父判不出 → 不带实父位的简式 (无料不下发)
@@ -3657,6 +3717,7 @@ class Facts:
             if "{target}" in tpl:
                 if tname:
                     return tpl.format(target=tname)
+                # v34 (问题2): 乱伦等「对方不入档」的隐事判不出对象时退简式
                 return SECRET_TOPICS_NO_TARGET.get(tp, "隐情")
             # 模板未用对象 (科举舞弊/挪用国库…) 但有对象时并写, 便于区分同类隐事
             return f"{tpl}（涉及{tname}）" if tname else tpl
@@ -4315,7 +4376,7 @@ class Facts:
                 continue
             year = self._year_only(fs) if fs else ""
             date = f"（{year}起）" if year and not rec.get("first") else ""
-            out.append(f"{she}视{the}为：{word}{date}。")
+            out.append(f"{she}视{the}为{word}{date}。")
         if not out:
             return {}
         return {"lines": sorted(set(out))[:10]}
@@ -4649,7 +4710,8 @@ class Facts:
             return self._house_of_cid(cid)
 
         def _nm(cid, date=None):
-            return self.person_label(cid, date, "brief") if cid else ""
+            # v42 (问题4, 用户拍板2): 主角只出名字 (家族恩怨录同样逐行重复头衔)
+            return self.event_name(cid, date) if cid else ""
 
         def _in_span(d):
             return not (as_of and d and cl.date_key(d) > cl.date_key(as_of))
@@ -4676,10 +4738,11 @@ class Facts:
                         cb = str(v.get("value") or "")
                         break
                 kind = "征服战" if "conquest" in cb else "开战"
-                out.append((d, f"{self.person_label(pid, d, 'event')}向{onm}"
+                # v42 (问题4, 用户拍板2): 主角只出名字 (此处原用 event 式带全头衔)
+                out.append((d, f"{self.event_name(pid, d)}向{onm}"
                                f"发动{kind}"))
             else:
-                out.append((d, f"{self.person_label(pid, d, 'event')}战胜{onm}"))
+                out.append((d, f"{self.event_name(pid, d)}战胜{onm}"))
         # ---- ② 主角囚禁该族成员及其出狱情形 (v34 问题7: 与《本纪》同口径) ----
         W = _style.FACT_WORDING
         for cid, rec in chars.items():
@@ -5216,8 +5279,10 @@ class Facts:
         tpl_v = (self.culture_template(victim_id) or "").lower()
         east = (tpl_k in _ASIAN_HERITAGE_TPL) or (tpl_v in _ASIAN_HERITAGE_TPL)
         sphere = "east" if east else "west"
-        # v28b: 凶手/行刑者称谓与全篇一致 (官职/称号+名)
-        kname = self.person_label(killer_id, date=self.as_of, style="brief") \
+        # v28b: 凶手/行刑者称谓与全篇一致
+        # v42 (问题4): 出口改 `event_name` —— 主角只出名字; 与 _death_sentence 的
+        # 「缩为其」替换同源 (两处必须用同一称谓, 否则替换落空)
+        kname = self.event_name(killer_id, date=self.as_of) \
             or self.name_or(killer_id, "某人")
         age = self._age_at_death(victim_id, date)
         child = age is not None and age < 8
@@ -5356,8 +5421,10 @@ class Facts:
         if killer is None:
             out = _death_clause(self.table, reason, None, lambda k: "")
         else:
-            # v28b: 施事者用统一称谓 (官职/称号+名), 与全篇称谓一致
-            kname = self.person_label(killer, date=self.as_of, style="brief") \
+            # v28b: 施事者用统一称谓, 与全篇称谓一致
+            # v42 (问题4): 出口改 `event_name` (主角只出名字) —— 刺客列传的
+            # killer_pronoun 替换与这里必须同源
+            kname = self.event_name(killer, date=self.as_of) \
                 or self.name_or(killer, "某人")
             if reason == "death_execution":
                 _k, zh = self.execution_method(killer, cid, date)
@@ -5369,7 +5436,7 @@ class Facts:
                     out = mzh
             if not out:
                 out = _death_clause(self.table, reason, killer,
-                                    lambda k: self.person_label(k, date=self.as_of, style="brief")
+                                    lambda k: self.event_name(k, date=self.as_of)
                                     or self.name_or(k, "某人"))
         if imprison and out:
             dur = self.imprison_duration(cid, date)
@@ -6513,16 +6580,18 @@ class Facts:
 
     def revoke_actor(self, cid, tid, date=None, reason=""):
         """头衔的**褫夺者/篡夺者** (v36, 用户拍板4): usurped 取夺位的新持有人;
-        revoked 取当时的领主 (de_facto_liege 持有人)。取不到返回 ''。"""
+        revoked 取当时的领主 (de_facto_liege 持有人)。取不到返回 ''。
+        v42 (问题4): 出口改走 `event_name` —— 主角只出名字 (返回值是**称谓串**,
+        调用方直接嵌句, 勿再当 id 用)。"""
         if tid is None:
             return ""
         if reason == "usurped":
             new_holder = self._next_holder(tid, date, exclude=cid)
             if isinstance(new_holder, int) and new_holder != int(cid):
-                return self.person_label(new_holder, date=date, style="brief")
+                return self.event_name(new_holder, date=date)
             return ""
         actor = self.grant_actor(cid, tid, date)
-        return self.person_label(actor, date=date, style="brief") if actor else ""
+        return self.event_name(actor, date=date) if actor else ""
 
     def _next_holder(self, tid, date=None, exclude=None):
         """头衔在 date 之后的首位持有人 (title history 序列) — 篡夺者判定用。"""
@@ -6750,7 +6819,12 @@ class Facts:
 _TORTURE_TORTURER = {
     "torture": "{owner}折磨{other}。",
     "castrated": "{owner}阉割了{other}。",
-    "castrated_beardless": "{owner}阉割了{other}（自幼，终身无须）。",
+    # v42 (问题3b): 无须阉人改自然句 —— 旧稿 `{owner}阉割了{other}（自幼，终身无须）。`
+    # 把「未满 12 岁被阉」整句塞进括注 (靠 verify_fast 的括注白名单「自幼」放行)。
+    # 游戏口径: `castrated_beardless` = Beardless Eunuch, 阉割时未满 12 岁
+    # (Traits/Interactions 页: "Castration before puberty…" / "younger than 12 years
+    #  old"), 故「在成年前」正合其义。
+    "castrated_beardless": "{other}在成年前被{owner}阉割，终身无须。",
     "blind": "{owner}致盲了{other}。",
     "blinded": "{owner}致盲了{other}。",
     "disfigured": "{owner}毁了{other}的容貌。",
@@ -6760,7 +6834,7 @@ _TORTURE_TORTURER = {
 _TORTURE_VICTIM = {
     "torture": "{owner}受{other}折磨。",
     "castrated": "{owner}被{other}阉割。",
-    "castrated_beardless": "{owner}被{other}阉割（自幼，终身无须）。",
+    "castrated_beardless": "{owner}在成年前被{other}阉割，终身无须。",
     "blind": "{owner}被{other}致盲。",
     "blinded": "{owner}被{other}致盲。",
     "disfigured": "{owner}被{other}毁容。",
@@ -6770,7 +6844,7 @@ _TORTURE_VICTIM = {
 _TORTURE_TORTURER_NO_OTHER = {
     "torture": "{owner}施刑于人。",
     "castrated": "{owner}施以阉刑。",
-    "castrated_beardless": "{owner}施以阉刑（自幼）。",
+    "castrated_beardless": "{owner}在他人成年前施以阉刑，终身无须。",
     "blind": "{owner}施以剜目之刑。",
     "blinded": "{owner}施以剜目之刑。",
     "disfigured": "{owner}施以毁容之刑。",
@@ -6780,7 +6854,7 @@ _TORTURE_TORTURER_NO_OTHER = {
 _TORTURE_VICTIM_NO_OTHER = {
     "torture": "{owner}受刑。",
     "castrated": "{owner}被施以阉刑。",
-    "castrated_beardless": "{owner}被施以阉刑（自幼）。",
+    "castrated_beardless": "{owner}在成年前被阉割，终身无须。",
     "blind": "{owner}被施以剜目之刑。",
     "blinded": "{owner}被施以剜目之刑。",
     "disfigured": "{owner}被施以毁容之刑。",
@@ -6873,12 +6947,9 @@ def _sex_mem_sentence(f, owner_id, mem, info):
     if not isinstance(other_id, int) or other_id == owner_id:
         # 参与槽缺失或指向自己 = 存档退化记录 (见 _PEER_SLOT_TYPES 同源判据)
         return None
-    owner = f.person_label(owner_id, date=mem.get("creation_date"),
-                           style="brief") \
-        or f.name_with_regnal(owner_id, date=mem.get("creation_date"))
-    other = f.person_label(other_id, date=mem.get("creation_date"),
-                           style="brief") \
-        or f.name_with_regnal(other_id, date=mem.get("creation_date"))
+    # v42 (问题4): 年表事实行 —— 主角只出名字 (见 Facts.event_name)
+    owner = f.event_name(owner_id, date=mem.get("creation_date"))
+    other = f.event_name(other_id, date=mem.get("creation_date"))
     if not owner or not other:
         return None
     key = f"{info['role']}_{info['consent']}"
@@ -6923,12 +6994,8 @@ def _mem_sentence(f, owner_id, mem):
         ids = [i for i in ids if isinstance(i, int) and i != owner_id]
         if not ids:
             return None
-        owner = f.person_label(owner_id, date=mem.get("creation_date"),
-                               style="brief") \
-            or f.name_with_regnal(owner_id, date=mem.get("creation_date"))
-        names = [f.person_label(i, date=mem.get("creation_date"), style="brief")
-                 or f.name_with_regnal(i, date=mem.get("creation_date"))
-                 for i in ids]
+        owner = f.event_name(owner_id, date=mem.get("creation_date"))
+        names = [f.event_name(i, date=mem.get("creation_date")) for i in ids]
         names = [n for n in names if n]
         if not owner or not names:
             return None
@@ -6937,9 +7004,7 @@ def _mem_sentence(f, owner_id, mem):
     if not tpl:
         return None
     extra_fname = ""
-    owner = f.person_label(owner_id, date=mem.get("creation_date"),
-                           style="brief") or f.name_with_regnal(
-        owner_id, date=mem.get("creation_date"))
+    owner = f.event_name(owner_id, date=mem.get("creation_date"))
     parts = mem.get("participants") or {}
     slot = PARTICIPANT_SLOTS.get(mtype)
     other_id = None
@@ -6966,8 +7031,7 @@ def _mem_sentence(f, owner_id, mem):
         tpl = MEMORY_TEMPLATES.get("had_sex_spouse") or tpl
     other = ""
     if other_id is not None:
-        other = (f.person_label(other_id, date=f.as_of, style="brief")
-                 or f.name_with_regnal(other_id, date=mem.get("creation_date")))
+        other = f.event_name(other_id, date=f.as_of)
     # v32: 无对手方 → 回退 `<type>_no_other` 模板 (被囚/逃脱/夭折三类都有)
     if not other:
         tpl = MEMORY_TEMPLATES.get(f"{mtype}_no_other") or tpl
@@ -7001,7 +7065,7 @@ def _mem_sentence(f, owner_id, mem):
             who = kreal if isinstance(kreal, int) else kfather
             if isinstance(who, int) and owner_id is not None \
                     and who != owner_id and kfather != owner_id:
-                wname = f.person_label(who, date=f.as_of, style="brief") or f.name_or(who)
+                wname = f.event_name(who, date=f.as_of) or f.name_or(who)
                 if wname:
                     tpl = tpl.rstrip("。") + "（生父{fname}）。"
                     extra_fname = wname
@@ -7047,8 +7111,8 @@ def _mem_sentence(f, owner_id, mem):
                 if owner_id is not None and title_tid is not None \
                         and reason in _GRANTED_REASONS:
                     gcid = f.grant_actor(owner_id, title_tid, mem.get("creation_date"))
-                    gl = f.person_label(gcid, date=mem.get("creation_date"),
-                                        style="brief") if isinstance(gcid, int) else ""
+                    gl = f.event_name(gcid, date=mem.get("creation_date")) \
+                        if isinstance(gcid, int) else ""
                     if gl:
                         office = f.title_office_text(
                             owner_id, title_tid, mem.get("creation_date")) or title
@@ -7067,6 +7131,7 @@ def _mem_sentence(f, owner_id, mem):
                         owner_id, title_tid, mem.get("creation_date")) or title
                     word = _style.TITLE_REVOKE_VERB if reason == "revoked" \
                         else _style.TITLE_USURP_VERB
+                    # actor 已是称谓串 (revoke_actor 出口, v42 起主角只出名字)
                     return f"{owner}被{actor}{word}{office}。"
                 if reason == "stepped_down":
                     office = f.title_office_text(
@@ -7175,7 +7240,7 @@ _FEUD_ROLE_RE = re.compile(
 )
 
 
-def _death_sentence(f, cid, killer_pronoun=False):
+def _death_sentence(f, cid, killer_pronoun=False, annotated=False):
     """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
     v22: death_execution 且行刑者已知时, 处决方式按当时可用选项稳定伪随机
     (斩首/做成神秘的肉/犬决/烧死/食人/献祭) — 存档只记「处决」, 不再千篇一律。
@@ -7184,28 +7249,53 @@ def _death_sentence(f, cid, killer_pronoun=False):
     v25: 死因句统一走 Facts.death_clause — 暗杀类死因按死法池取具体手法。
     v26: imprison=True — 卒时已囚满一年者写「囚禁N年后…」(处决/狱死)。
     v30: killer_pronoun=True 时凶手称谓缩为「其」— 供《刺客列传》专用 (该篇凶手
-    恒为主角, 逐条重复全称谓 14 次; 见 修复方案_菲利普4.md 问题8)。"""
+    恒为主角, 逐条重复全称谓 14 次; 见 修复方案_菲利普4.md 问题8)。
+    v42 (问题5): annotated=True 时并写受害者的**生年/族属/信仰**(凶手为主角时) ——
+    年表里「仇人死亡」一条此前只走记忆句「X的仇人Y去世」, 改走死亡记录后
+    若不带这些补注, 会丢掉与「谋杀Y（1073年生…）」同等的信息量。
+    """
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     d = rec.get("death") or {}
     if not d:
         return None
-    name = f.person_label(cid, date=d.get("date"), style="brief") \
-        or f.name_with_regnal(cid, date=d.get("date"))
+    # v42 (问题4): 年表事实行 —— 主角只出名字 (见 Facts.event_name)
+    name = f.event_name(cid, date=d.get("date"))
     killer = d.get("killer")
     # 施事者名字缺失时用「某人」 (v28b: 统一占位词, 与 name_or 兜底同源)
     clause = f.death_clause(cid, date=d.get("date"), imprison=True)
+    pid = f.cache.get("player_id")
     if killer_pronoun and killer is not None:
-        klabel = f.person_label(killer, date=f.as_of, style="brief") \
-            or f.name_with_regnal(killer)
+        klabel = f.event_name(killer, date=f.as_of)
         if klabel and klabel in clause:
             clause = clause.replace(klabel, "其")
     s = f"{name}死于{f.date(d.get('date'))}，{clause}。"
-    pid = f.cache.get("player_id")
     if pid is not None and killer == pid:
+        # v42: 生年/族属/信仰补注 (与 successful_murder 句同式, 见 _timeline)
+        if annotated:
+            note = _victim_marks(f, cid)
+            if note:
+                s = s.rstrip("。") + note + "。"
         vp = f.victim_place(cid)
         if vp:
             s = s.rstrip("。") + f"（死于{vp}）。"
     return s
+
+
+def _victim_marks(f, cid):
+    """受害者补注「（1073年生，爱沙尼亚人，信东正教）」; 无料返回 ''。
+    v28 起用于谋杀句, v42 (问题5) 起死亡记录句共用 (两者在年表里互为替代)。"""
+    drec = (f.cache.get("characters") or {}).get(str(cid)) or {}
+    by = str(drec.get("birth") or "").split(".")[0] or ""
+    cul = f.culture(cid)
+    fai = f.faith(cid)
+    mark = []
+    if by:
+        mark.append(f"{by}年生")
+    if not is_unknown(cul):
+        mark.append(cul)
+    if not is_unknown(fai):
+        mark.append(f"信{fai}")
+    return f"（{'，'.join(mark)}）" if mark else ""
 
 
 # v14: 30 个戏剧性模块 — 十年小传按主题切片的事实组织 (研究_戏剧模块化.md)。
@@ -7432,7 +7522,30 @@ def _related_ids(f):
 
 # v14: death 记录 (类型 "death", 由 _death_sentence 渲染) 的模块标注 —
 # 按死者与主角的关系: 仇人→仇人死亡, 友人→丧友之恸, 配偶→丧偶之痛, 其余→丧亲之恸。
-def _death_module(f, dead_cid):
+#
+# v42 (问题5): 关系集改为**一次扫全库**预算 (`_death_rel_sets`) —— 旧稿每名死者都
+# 重扫一次「全库 × 全部记忆」, 而 `*_died` 八类统一进 `deaths` 后死者数增加,
+# 逐死者重扫会成倍拉长时间线构建。
+def _death_rel_sets(f, pid):
+    """主角的仇人/友人 id 集 (按与主角共同出现的相关记忆)。返回 (rivals, friends)。"""
+    rivals, friends = set(), set()
+    if pid is None:
+        return rivals, friends
+    for _cid, rec in (f.cache.get("characters") or {}).items():
+        for m in rec.get("memories") or []:
+            parts = m.get("participants") or {}
+            if not any(isinstance(v, int) and v == pid for v in parts.values()):
+                continue
+            t = m.get("type")
+            if t in ("became_rivals", "became_grudge", "became_nemesis"):
+                rivals.update(v for v in parts.values() if isinstance(v, int))
+            elif t in ("became_friends", "became_soulmates",
+                       "became_blood_brother"):
+                friends.update(v for v in parts.values() if isinstance(v, int))
+    return rivals, friends
+
+
+def _death_module(f, dead_cid, rivals=None, friends=None):
     """death 时间线事件归属的戏剧性模块 (按死者关系; v15: 主角所杀者→谋害人命)。"""
     pid = f.cache.get("player_id")
     if pid is None:
@@ -7444,19 +7557,19 @@ def _death_module(f, dead_cid):
     fam = rel.get("family") or {}
     if dead_cid in (fam.get("primary_spouse") or []) + (fam.get("spouse") or []):
         return "丧偶之痛"
-    for cid, rec in (f.cache.get("characters") or {}).items():
-        for m in rec.get("memories") or []:
-            if m.get("type") in ("became_rivals", "became_grudge", "became_nemesis"):
-                parts = m.get("participants") or {}
-                if any(isinstance(v, int) and v == dead_cid for v in parts.values()) \
-                        and any(isinstance(v, int) and v == pid for v in parts.values()):
-                    return "仇人死亡"
-            if m.get("type") in ("became_friends", "became_soulmates", "became_blood_brother"):
-                parts = m.get("participants") or {}
-                if any(isinstance(v, int) and v == dead_cid for v in parts.values()) \
-                        and any(isinstance(v, int) and v == pid for v in parts.values()):
-                    return "丧友之恸"
+    if rivals is None or friends is None:
+        rivals, friends = _death_rel_sets(f, pid)
+    if dead_cid in rivals:
+        return "仇人死亡"
+    if dead_cid in friends:
+        return "丧友之恸"
     return "丧亲之恸"
+
+
+# v42 (问题5): 全部「某人去世」记忆类型 —— 一律按死者 id 归并到死亡记录那一条,
+# 不再分「四类走去重 / 四类走通用句」。名单与 style.MEMORY_TEMPLATES 的 `*_died` 同步。
+_DIED_TYPES = ("relative_died", "friend_died", "rival_died", "spouse_died",
+               "lover_died", "soulmate_died", "best_friend_died", "nemesis_died")
 
 
 def _count_zh(n):
@@ -7506,108 +7619,6 @@ def _decade_lower_bound(f):
             start = None
     lo = max(y - 10, start or (y - 10))
     return f"{lo}.1.1"
-
-
-def _year_summary(timeline, pname, plabel=""):
-    """【主角大事摘要】按年聚合 (v17, 修复方案_汤利五问题.md 问题4):
-    一年一行 — 同型事件 (谋杀/添子/添女) 合并人名 (≤3 全列 + 等N人),
-    其余关键事件 (结怨/结仇/结友/私通/成婚/登位/去世/囚禁…) 去月日保留动词原句;
-    出生年括注一律不写。timeline 已按 as_of/十年窗口截断。
-    v26: 主语改用实际主角名 — 此前两条正则写死「麦克·汤利」, 其它主角的摘要
-    退化成「添子色鬼田所浩二添子田所睦」「谋杀色鬼田所浩二谋杀X」; 出生按
-    孩子性别分「添子/添女」。
-    v28b: plabel 为主角带官职的称谓 (「商州刺史陆荣廷」) — 匹配前先剥去,
-    合并句照旧 (行首前缀不再影响谋杀/添丁的解析)。
-    返回 [str] (每行 'NNNN年，…。')。"""
-    by_year = {}
-    for e in timeline or []:
-        txt = e.get("text") or ""
-        if pname and pname not in txt:
-            continue
-        d = str(e.get("date") or "")
-        y = d.split(".")[0]
-        if not y.isdigit():
-            continue
-        by_year.setdefault(int(y), []).append(e)
-    if not by_year:
-        return []
-    pn = re.escape(pname or "")
-    # v28b: 时间线主语带官职称谓 (「商州刺史陆荣廷」) — 解析前先剥去称谓前缀中
-    # 姓名之前的部分, 两条正则仍以「姓名+动词」开头
-    pprefix = ""
-    if plabel and pname and plabel != pname and plabel.endswith(pname):
-        pprefix = plabel[:-len(pname)]
-    kill_re = re.compile(
-        r"^" + pn + r"谋杀(.+?)(?:（\d+年生）)?(?:（死于([^）]*)）)?。$") if pn else None
-    birth_re = re.compile(
-        r"^" + pn + r"(得长女|得长子|添女|添子)(.+)。$") if pn else None
-    lines = []
-    for y in sorted(by_year):
-        kills, births, rest = [], [], []
-        for e in by_year[y]:
-            body = e["text"]
-            # v26: 1月1日日期已被 fmt_cn_date 折叠成「NNNN年，」, 需一并剥离
-            b = re.sub(r"^\d+年\d+月\d+日，?", "", body)
-            b = re.sub(r"^\d+年\d+月，?", "", b)
-            b = re.sub(r"^\d+年，?", "", b)
-            # v28b: 匹配用正文 — 剥去姓名之前的官职称谓 (「商州刺史」), 合并口径不变
-            bm = b
-            if pprefix and bm.startswith(pprefix):
-                bm = bm[len(pprefix):]
-            typ = e.get("type") or ""
-            m = kill_re.match(bm) if kill_re else None
-            if typ == "successful_murder" or m:
-                if m:
-                    kills.append(m.group(1) + (f"（死于{m.group(2)}）"
-                                               if m.group(2) else ""))
-                else:
-                    kills.append(b.rstrip("。"))
-                continue
-            if typ in ("child_born", "first_born", "twins_born"):
-                m = birth_re.match(bm) if birth_re else None
-                if m:
-                    verb = "添女" if "女" in m.group(1) else "添子"
-                    births.append((verb, m.group(2)))
-                else:
-                    rest.append(b)  # 孪生等无名字模板: 原句保留
-                continue
-            rest.append(b)
-        parts = []
-
-        def _names(items, verb):
-            if not items:
-                return None
-            if len(items) <= 3:
-                return verb + "、".join(items)
-            return verb + "、".join(items[:3]) + f"等{len(items)}人"
-
-        s = _names(kills, "谋杀")
-        if s:
-            parts.append(s)
-        for verb in ("添子", "添女"):
-            s = _names([n for v, n in births if v == verb], verb)
-            if s:
-                parts.append(s)
-        # 其余事件: 去句末句号, 由行末统一收句 (防「。；」连接)
-        parts.extend(r.rstrip("。") for r in rest)
-        # v28b: 同一行内主角称谓只在首次出现处写出 (「…田所浩二主动开战；囚禁X；…」),
-        # 一年一行的摘要里同一全称不再重复五遍
-        # v32: 剥称谓走 _strip_subject_prefix —— 夭折句「<主角>之妻<生母>产下死婴。」
-        # 只删主角名会留下悬空的「之妻」, 该函数一并删去配偶称谓
-        if plabel:
-            seen_label = False
-            norm = []
-            for _p in parts:
-                if _p.startswith(plabel):
-                    if seen_label:
-                        _p = _strip_subject_prefix(_p, plabel)
-                    else:
-                        seen_label = True
-                norm.append(_p)
-            parts = norm
-        body = "；".join(parts)
-        lines.append(f"{y}年，{body}。")
-    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -7833,6 +7844,49 @@ def _enslaved_in_span(f, victim, jailer, d0, d1=None):
     return rec
 
 
+# v42 (问题3): 刑虐刑名 → 并入囚禁句时的出狱缘由键。阉割与致盲**必然与释放同日**
+# (本档 22 条 torturer_memory 实证: castrated 10 + castrated_beardless 2 + blind 9
+# 共 21 例全部同日释放; 唯一不同日的是普通 `torture`)。故只在「刑虐日 == 释放日」
+# 时并入, 普通折磨/断肢/毁容一律自成一行。
+_PUNISH_RELEASE_KEYS = {
+    "castrated": "prison_punish_castrated",
+    "castrated_beardless": "prison_punish_beardless",
+    "blind": "prison_punish_blinded",
+    "blinded": "prison_punish_blinded",
+    "torture": "prison_punish_generic",
+    "disfigured": "prison_punish_generic",
+    "maim_arm": "prison_punish_generic",
+    "maim_leg": "prison_punish_generic",
+}
+
+# v42 (问题6): 「囚期以死亡收口」时判为**刑杀**的死因 (其余写「死于狱中」)
+_PRISON_EXEC_REASONS = frozenset({
+    "death_execution", "death_punishment", "death_imprisonment",
+    "death_dungeon", "death_eradicated",
+})
+
+
+def _punishment_on(events, victim, date):
+    """victim 在 date 这一日的刑虐事件 → (FACT_WORDING 的模板键, 事件下标); 无则 None。
+
+    判据只有「被刑者相同 + 日期相同」—— 不硬编码刑名, 于是普通折磨 (诺兰档
+    安苏莎 1103.7.16 受折磨、7.19 才获释) 天然落选, 不会把两件事并成一件。"""
+    for i, e in enumerate(events):
+        if e.get("type") not in ("torturer_memory", "tortured_memory"):
+            continue
+        if str(e.get("date") or "") != str(date or ""):
+            continue
+        ident = e.get("ident") or {}
+        parts = ident.get("parts") or {}
+        owner = ident.get("owner")
+        v = parts.get("victim") if e.get("type") == "torturer_memory" \
+            else owner
+        if isinstance(v, int) and v == victim:
+            kind = ident.get("torture_kind") or "torture"
+            return (_PUNISH_RELEASE_KEYS.get(kind, "prison_punish_generic"), i)
+    return None
+
+
 def _pair_imprisonments(events, f, pid, pname=""):
     """同一被囚者的入狱与获释合成一行 (问题5); 双视角同一囚禁事件只留一条。"""
     ins, outs = [], []
@@ -7912,14 +7966,14 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 break
             # v30: 称谓口径与 _mem_sentence 一致 (person_label 不传日期) —
             # 传日期会按事件当日头衔取词, 同篇内同一人出现两种称谓
-            vn = f.person_label(victim, date=f.as_of, style="brief") \
-                or f.name_with_regnal(victim)
+            # v42 (问题4): 改走 event_name —— 主角只出名字 (旧稿取 as_of 末档头衔,
+            # 1075 年的囚禁行因此写成 1117 年才有的「神圣罗马帝国巴西琉斯」)
+            vn = f.event_name(victim, date=f.as_of)
             if not vn:
                 continue
             jn = ""
             if r["jailer"] is not None:
-                jn = f.person_label(r["jailer"], date=f.as_of, style="brief") \
-                    or f.name_with_regnal(r["jailer"])
+                jn = f.event_name(r["jailer"], date=f.as_of)
             W = _style.FACT_WORDING
             body = W["prison_jailed"].format(jailer=jn, victim=vn) if jn \
                 else W["prison_held"].format(victim=vn)
@@ -7933,7 +7987,17 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 drop.add(out["idx"])
                 span = _prison_span(r["date"], out["date"])
                 same = span == W["prison_same_day"]
-                if owned is not None and not out.get("escape"):
+                # v42 (问题3): 阉割/致盲与释放同日 —— 刑名即出狱缘由, 并入本行
+                pun = (None if out.get("escape")
+                       else _punishment_on(events, victim, out["date"]))
+                if pun is not None:
+                    # pun = (W 的模板键, 事件下标) —— 见 _punishment_on;
+                    # 同日给「当日」(与「当日获释」同式), 其余给「N日后」
+                    drop.add(pun[1])
+                    body += W[pun[0]].format(
+                        sp=W["prison_same_day"] if same else f"{span}后",
+                        jailer=jn)
+                elif owned is not None and not out.get("escape"):
                     body += W["prison_enslaved"]
                 elif out.get("escape"):
                     # v32: 越狱者不在「获释」之列 —— 出狱方式按记忆型分词
@@ -7949,10 +8013,29 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 # 无释放记忆、但在押期间已没为奴隶 → 出狱缘由即此
                 body += W["prison_enslaved"]
             else:
-                # v34 (问题7): 记得到此为止 — 释放记忆与 prison_data 都无闭合证据时,
-                # 程序把「此后如何」说全, 不把沉默留给模型去补
-                # (旧稿此处留白, 模型把囚期留白补成了「获释」)。
-                body += W["prison_still_held"]
+                # v42 (问题6): 囚期以**死亡**收口 —— 受害者有死亡记录 (日期不早于
+                # 入狱日) 而释放/越狱/狱史皆无证据时, 写出死期与死法; 旧稿一律写
+                # 「此后一直未见释放」(诺兰 1088.1.16 那 10 人其实 6 个月后被处决,
+                # 受害者侧记忆已被引擎剪除, 故此前看不出囚期已终结)。
+                dd = ((f.cache.get("characters") or {}).get(str(victim)) or {}) \
+                    .get("death") or {}
+                d_date = dd.get("date")
+                if d_date and cl.date_key(str(d_date)) >= cl.date_key(str(r["date"])):
+                    # v42: 与释放句同式 —— 同日给「当日」, 其余给「N个月后」,
+                    # 日期不可解析时退「至{date}」, 不留空槽
+                    _sp = _prison_span(r["date"], d_date)
+                    sp = W["prison_same_day"] if _sp == W["prison_same_day"] \
+                        else (f"{_sp}后" if _sp else f"至{f.date(d_date)}")
+                    key = "prison_died_executed" \
+                        if (dd.get("reason") in _PRISON_EXEC_REASONS
+                            or dd.get("killer") == r["jailer"]) \
+                        else "prison_died_in_prison"
+                    body += W[key].format(sp=sp)
+                else:
+                    # v34 (问题7): 记得到此为止 — 释放记忆、狱史与死亡记录三者皆无
+                    # 时, 程序把「此后如何」说全, 不把沉默留给模型去补
+                    # (旧稿此处留白, 模型把囚期留白补成了「获释」)。
+                    body += W["prison_still_held"]
             e = events[r["idx"]]
             e["text"] = f"{f.date(r['date'])}，{body}。"
             e["type"] = "imprisoned"
@@ -8044,10 +8127,11 @@ def _std_index(f):
         if str(tgt) not in chars:
             # 病人不在缓存相关集内 —— 这条边进不了任何篇目, 直接跳过 (省索引)
             continue
-        tname = f.person_label(tgt, date=f.as_of, style="brief") or f.name_with_regnal(tgt)
+        # v42 (问题4): 年表事实行 —— 主角只出名字 (见 Facts.event_name)
+        tname = f.event_name(tgt, date=f.as_of)
         sname = ""
         if isinstance(src, int) and src != tgt and str(src) in chars:
-            sname = f.person_label(src, date=f.as_of, style="brief") or f.name_with_regnal(src)
+            sname = f.event_name(src, date=f.as_of)
         if not tname:
             continue
         pair = frozenset((src, tgt)) if isinstance(src, int) else None
@@ -8147,7 +8231,9 @@ def _timeline(f):
         cid = int(cid)
         # 本人死亡记录 (信息最全, 优先级最高)
         if cid in related:
-            ds = _death_sentence(f, cid)
+            # v42 (问题5): annotated=True —— 主角所杀者并写生年/族属/信仰,
+            # 与 `*_died` 分支取死亡记录时的补注同式 (两者同优先级, 谁先写都一样)
+            ds = _death_sentence(f, cid, annotated=True)
             if ds:
                 deaths[cid] = (3, (rec.get("death") or {}).get("date"),
                                "death", ds)
@@ -8169,17 +8255,28 @@ def _timeline(f):
             if _sxinfo is not None:
                 norm_type = mtype if _sxinfo["kept"] else "had_sex"
             # 死亡类记忆: 按死者 id 去重 (去世 > 丧偶)
-            if mtype in ("relative_died", "friend_died", "rival_died",
-                         "spouse_died"):
+            # v42 (问题5): ① 八类 `*_died` 一律进来 (旧稿只列四类, `nemesis_died` /
+            # `lover_died` / `soulmate_died` / `best_friend_died` 走通用路径,
+            # 于是必出一行通用「去世」且模块为空);
+            # ② **先取死者的真实死亡记录** (reason/killer/死法), 取不到才退回记忆句 ——
+            # 旧稿只给「相关集」内的人渲染死亡记录, 仇人/死敌的死因 (含世仇灭门的
+            # `death_eradicated` = 连同全族被处决) 在年表里退化成「X的仇人Y去世」。
+            if mtype in _DIED_TYPES:
                 dead = parts.get("dead_relation")
                 if isinstance(dead, int):
-                    s = _mem_sentence(f, cid, mem)
-                    if s:
-                        prio = 2 if mtype != "spouse_died" else 1
-                        old = deaths.get(dead)
-                        if old is None or prio > old[0]:
-                            deaths[dead] = (prio, mem.get("creation_date"),
-                                            mtype, s)
+                    ds = _death_sentence(f, dead, annotated=True)
+                    if ds:
+                        _dd = ((cache.get("characters") or {}).get(str(dead)) or {})
+                        deaths[dead] = (3, (_dd.get("death") or {}).get("date"),
+                                        "death", ds)
+                    else:
+                        s = _mem_sentence(f, cid, mem)
+                        if s:
+                            prio = 2 if mtype != "spouse_died" else 1
+                            old = deaths.get(dead)
+                            if old is None or prio > old[0]:
+                                deaths[dead] = (prio, mem.get("creation_date"),
+                                                mtype, s)
                 continue
             # v15: 主角的成功谋杀记忆 — 按死者 id 去重 (受害者死亡记录优先,
             # 谋杀记忆兜底; 只收主角所谋, 路人谋杀不渲染)
@@ -8192,19 +8289,10 @@ def _timeline(f):
                         # 里瓦朗 vs 869年生的里瓦尔, 一字之差模型易混)
                         # v28: 并写族属与信仰 — 存档里 dead_unprunable 一直保留
                         # (游戏中随时可读), 此前小传里完全没有这些信息。
-                        drec = (cache.get("characters") or {}).get(str(dead)) or {}
-                        by = str(drec.get("birth") or "").split(".")[0] or ""
-                        cul = f.culture(dead)
-                        fai = f.faith(dead)
-                        mark = []
-                        if by:
-                            mark.append(f"{by}年生")
-                        if not is_unknown(cul):
-                            mark.append(cul)
-                        if not is_unknown(fai):
-                            mark.append(f"信{fai}")
-                        if mark:
-                            s = s.rstrip("。") + f"（{'，'.join(mark)}）。"
+                        # v42 (问题5): 补注抽成 _victim_marks, 与死亡记录句共用。
+                        note = _victim_marks(f, dead)
+                        if note:
+                            s = s.rstrip("。") + note + "。"
                         # v24: 依谋杀发生日标受害者死前最近可知所在 (男爵领名;
                         # 数据无则省略) — 击杀无案发地点, 以受害者位置为锚,
                         # 不再用主角驻地 (主角驻地 ≠ 案发地)。
@@ -8256,9 +8344,13 @@ def _timeline(f):
             seen_keys.add(key)
             # v30: 镜像对/监禁对需要参与者身份 → 随事件登记 (见 _drop_mirror_pairs)
             # v38 (问题1): 性事记忆对 (施为方/受害方各一条) 同样按身份配对
+            # v42 (问题3): 刑虐记忆一并记下刑名 —— _pair_imprisonments 据此把
+            # 「阉割/致盲 ⇒ 当日获释」并入囚禁行 (见 _punishment_on)
             if norm_type in _IDENT_TYPES or _sxinfo is not None:
-                idents[(_md, norm_type, s)] = {
-                    "owner": cid, "parts": dict(parts), "type": mtype}
+                _ident = {"owner": cid, "parts": dict(parts), "type": mtype}
+                if norm_type in ("torturer_memory", "tortured_memory"):
+                    _ident["torture_kind"] = _torture_kind(f, mem) or "torture"
+                idents[(_md, norm_type, s)] = _ident
             # v31 (问题2): 配偶之间的情事换档 — 概览记「夫妻之情」, 模块归「婚配联姻」
             # v38 (问题1): 强迫/半强迫档不换 —— 「妻子为丈夫所强迫」仍是强迫之事,
             # 不因婚内就归进「夫妻之情」。
@@ -8281,9 +8373,11 @@ def _timeline(f):
             continue
         events.append((_when, "std_transmission", _text, "疾病传播"))
     # 合并 死亡记录 + 去世记忆 + 出生事件
+    # v14: death 记录按死者关系标模块 (仇人死亡/丧友之恸/丧偶之痛/丧亲之恸)
+    # v42 (问题5): 关系集一次预算, 供全部死者共用 (见 _death_rel_sets)
+    _rivals, _friends = _death_rel_sets(f, pid)
     for cid, (_prio, _d, t, s) in deaths.items():
-        # v14: death 记录按死者关系标模块 (仇人死亡/丧友之恸/丧偶之痛/丧亲之恸)
-        events.append((_d, t, s, _death_module(f, cid)))
+        events.append((_d, t, s, _death_module(f, cid, _rivals, _friends)))
     # v34 (问题8, 用户拍板): 《本纪》收「主角是法理父亲」的全部子女 —
     # 非婚生亦在其中, 且句面不写生父 (本纪写的是他的家门)。
     # 法理父是别人的孩子 (妻室与他人所出) 不进本纪, 归《家室列传》。
@@ -8302,8 +8396,7 @@ def _timeline(f):
             d = ch.get("from")
             if not d:
                 continue
-            nm = f.person_label(cid, date=d, style="brief") \
-                or f.name_with_regnal(cid, date=d)
+            nm = f.event_name(cid, date=d)
             fn = f._faith_name(ch.get("faith"))
             if nm and fn:
                 events.append((d, "faith_changed", f"{nm}改信{fn}。", "信仰皈依"))
@@ -8343,9 +8436,13 @@ def _timeline(f):
     for _ev in events:
         d, t, s, mod = _ev[0], _ev[1], _ev[2], _ev[3]
         extra = _ev[4] if len(_ev) > 4 else {}
-        if s in seen:
+        # v42 (§3.1 续, 顺带): 末道句面去重带上**日期** —— 旧稿只按句面文本去重,
+        # 同一被囚者两次入狱的句面逐字相同 (「X为Y所囚。」/「Y获释。」), 后一次
+        # 被静默丢弃 (诺兰档 1086.12.2 海因里希第二次被囚即此, 于是 12.17 的
+        # 阉割找不到可并入的囚禁行)。同日同句的重复仍照常合并。
+        if (d, s) in seen:
             continue
-        seen.add(s)
+        seen.add((d, s))
         rec = {
             "date": d,
             "type": t,
@@ -8419,16 +8516,18 @@ def _cut_module_top(dm, top_n=5):
 
 
 # 同日同型可合并事件: type → (提取可变槽的正则, 组合函数)
+# v42 (§3.1/§3.3, 用户拍板3「保留」): **去掉两条监禁类合并** ——
+#   ① `imprisoned` 的正则还是 v32 前的旧形态 `^(.+?)为(.+?)所囚。$`, 早已永不命中
+#      (现形态是「{jailer}囚禁{victim}，…」); `imprisoned_other` 的正则也会把
+#      「囚禁X，14日后获释」的尾巴当成名字槽 —— 两条都是隐患而非功能;
+#   ② 入狱行现在带出狱缘由 (获释/越狱/没为奴隶/处决/死于狱中), 逐人结局不同,
+#      合并成「诺兰囚禁A、B…等12人」恰好抹掉每人各自的死法 —— 逐人成行才有意义
+#      (诺兰 1088.1.16 的 12 人即此例: 10 人 6 个月后处决, 2 人获释)。
 _MERGE_SLOT_RES = {
     "witnessed_a_coronation_memory": (r"^(.+?)见证加冕。$",
                                       lambda names: "、".join(names) + "见证加冕。"),
     "grand_wedding_completed_guest": (r"^(.+?)出席大婚。$",
                                       lambda names: "、".join(names) + "出席大婚。"),
-    "imprisoned": (r"^(.+?)为(.+?)所囚。$",
-                   lambda pairs: "、".join(p[0] for p in pairs)
-                   + f"为{pairs[0][1]}所囚。"),
-    "imprisoned_other": (r"^(.+?)囚禁(.+?)。$",
-                         lambda pairs: pairs[0][0] + "囚禁" + "、".join(p[1] for p in pairs) + "。"),
 }
 _MERGE_CAP = 10  # 合并人名上限, 超过收成「…等N人」
 
@@ -8467,35 +8566,12 @@ def _merge_same_day_events(events, f=None):
                 slots.append(m.groups())
             if ok:
                 prefix = f"{f.date(d)}，" if d else ""
-                if typ == "imprisoned_other":
-                    # 同一主人 (槽0) 囚禁多人: 只合并主人相同的
-                    owners = {s[0] for s in slots}
-                    if len(owners) == 1:
-                        if len(slots) > _MERGE_CAP:
-                            merged = (prefix + slots[0][0] + "囚禁"
-                                      + "、".join(s[1] for s in slots[:_MERGE_CAP])
-                                      + f"等{len(slots)}人。")
-                        else:
-                            merged = prefix + comb(slots)
-                elif typ == "imprisoned":
-                    # v32: 「A为X所囚」句式 — 只有同一监禁者 (槽1) 才并
-                    # (不同监禁者合并会张冠李戴, 各自成行)
-                    jailers = {s[1] for s in slots}
-                    if len(jailers) == 1:
-                        victims = [s[0] for s in slots]
-                        if len(victims) > _MERGE_CAP:
-                            merged = (prefix + "、".join(victims[:_MERGE_CAP])
-                                      + f"等{len(victims)}人"
-                                      + f"为{slots[0][1]}所囚。")
-                        else:
-                            merged = prefix + comb(slots)
+                names = [s[0] for s in slots]
+                if len(names) > _MERGE_CAP:
+                    merged = (prefix + "、".join(names[:_MERGE_CAP])
+                              + f"等{len(names)}人" + _MERGE_VERB[typ])
                 else:
-                    names = [s[0] for s in slots]
-                    if len(names) > _MERGE_CAP:
-                        merged = (prefix + "、".join(names[:_MERGE_CAP])
-                                  + f"等{len(names)}人" + _MERGE_VERB[typ])
-                    else:
-                        merged = prefix + comb(names)
+                    merged = prefix + comb(names)
         if merged:
             # v27: 合并必须携带 module —— 此前只写 date/type/text, 合并后的
             # 事件模块为空, 模块切片会把「被囚」等集体事件整体漏掉。
@@ -10303,10 +10379,10 @@ def _killed_by_player(f):
                                         reason=mdd.get("reason"),
                                         killer=mdd.get("killer"), imprison=True)
                 # v30: 与主路径同口径 — 凶手为主角时称谓缩为「其」(问题8)
+                # v42 (问题4): 称谓出口与 death_clause 同源 (event_name)
                 kk = mdd.get("killer")
                 if kk is not None:
-                    klabel = f.person_label(kk, date=f.as_of, style="brief") \
-                        or f.name_with_regnal(kk)
+                    klabel = f.event_name(kk, date=f.as_of)
                     if klabel and klabel in clause:
                         clause = clause.replace(klabel, "其")
                 ds = f"{f.name_or(cid)}死于{f.date(mdd.get('date'))}，{clause}。"
