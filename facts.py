@@ -1313,6 +1313,32 @@ class Facts:
         return (c.get("landed_data") or {}).get("government") or ""
 
 
+    def _dead_flavor_consistent(self, fkey, cid, date):
+        """存档烘死的职称键 (`dead_data.flavor`) 与该日政体是否自洽 (v41, 问题1)。
+
+        键形如 `<层级前缀>_<政体前缀>_<性别>[_文化]` (duke_administrative_male_byzantine_group);
+        取键里第一段与第三段之间的政体前缀, 与该日 `_character_government(cid, date)`
+        的政体前缀比对。日期缺失或该日政体不可知时**不采信** (返回 False) ——
+        该键是角色死亡时按末档政体烘死的, 用在早年就是错词。"""
+        if not fkey or date is None:
+            return False
+        parts = str(fkey).split("_")
+        if len(parts) < 3:
+            return True
+        gov_prefix = "_".join(parts[1:-1]) if len(parts) > 3 else parts[1]
+        # 键里可能带文化后缀 (…_byzantine_group), 取到 _male/_female 为止
+        for anchor_word in ("male", "female"):
+            if anchor_word in parts:
+                i = parts.index(anchor_word)
+                gov_prefix = "_".join(parts[1:i])
+                break
+        cur = self._character_government(cid, date)
+        # 该日政体不可知 (早于逐档政体史起点) 时不采信烘死的键 ——
+        # 它是末档政体算的, 用在早期只会把封建期的公爵写成将军。
+        if not cur:
+            return False
+        return L.government_prefix(cur) == gov_prefix
+
     def title(self, tid, date=None):
         """头衔 id → 中文名 + 动态层级词合并: '复兴党流亡委员会' / '开罗伯爵领' /
         '埃及王国' / '图伦苏丹国' / '阿拔斯哈里发国' / '宋大路' / '中华天朝'(霸权级)。
@@ -1702,15 +1728,24 @@ class Facts:
         """角色在 as_of 日期的首要头衔 (tier, tid): 最高层级中最早获得者;
         无头衔 (仅营地) 返回 (None, tid)。
         v36 (用户拍板5): **男爵领 (rank 1) 不入首要头衔** — 头衔材料最低取到州府 (c_),
-        男爵领只在「死于X / 生于X」这类地名处使用; 营地/庄园 (x_, rank 0) 照旧保留。"""
+        男爵领只在「死于X / 生于X」这类地名处使用; 营地/庄园 (x_, rank 0) 照旧保留。
+
+        v41 (问题1) 关键修正: 持有区间按 **as_of 与末档之间**的持有状态算,
+        区间起点可能晚于 as_of (福尔科 1078 年的事件里, 他被 1080 年才到手的
+        热那亚公爵挤出称谓); 故此处再按 as_of 过滤一次 —— 取得日晚于 as_of 的
+        头衔在那一刻**尚未持有**。"""
         held = {}
+        ao = cl.date_key(as_of) if as_of else None
         for tid, ivs in self._hold_intervals(cid, as_of).items():
             if not (ivs and ivs[-1][1] is None):
+                continue
+            gain = ivs[-1][0]
+            if ao is not None and gain and cl.date_key(gain) > ao:
                 continue
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
             if self._TT_RANK.get(key[:2], 0) == 1:
                 continue
-            held[tid] = ivs[-1][0]
+            held[tid] = gain
         if not held:
             return None, None
         items = [(tid, self._TT_RANK.get((self._lt.get(str(tid)) or {}).get("key", "")[:2], 0), g)
@@ -1903,16 +1938,24 @@ class Facts:
         return verb
 
     def government_changes(self, cid=None):
-        """政体变更事实 (v41, 问题1): title history 的事件日 + 逐档政体 → 一句
-        「1086年1月1日诺兰改行行政官制（原封建采邑制）」。
-        数据源: 主头衔 title history 的换主日 (夺位日) + 熔件现行
-        `landed_data.government` + `cache["government_history"]` 的历史变化点。
-        无变化 (或只有一次政体) 时返回 '' —— 无料不下发。"""
+        """政体变更事实 (v41, 问题1): 逐档政体变化点 → 一句
+        「1095年，诺兰由封建采邑制改行行政官制；此后诸领主依次称将军、分区长、专制君主。」
+        数据源: `cache["government_history"]` (cache_lib 逐档记的变化点)。
+
+        无变化 (或只有一次政体) 时返回 '' —— 无料不下发。
+        日期用**变化点所在档期** (如 1095.1.1 → 「1095年」), 不用夺位日 ——
+        夺位 (1086) 与改行行政制 (1094 年中) 是两件事, 混写会读成因果。
+        政体名不用「（原X）」括注形态 (与「名词（名词）」同位语判据冲突)。"""
         pid = self.cache.get("player_id") if cid is None else cid
         if pid is None:
             return ""
         hist = [h for h in (self.cache.get("government_history") or [])
                 if isinstance(h, dict) and h.get("date") and h.get("government")]
+        # v41: 只看到本篇截止日为止的变化点 —— 否则早期十年会预告「1095 年改行
+        # 行政官制」这件尚未发生的事 (as_of 泄漏)。
+        if self.as_of:
+            _ao = cl.date_key(self.as_of)
+            hist = [h for h in hist if cl.date_key(str(h["date"])) <= _ao]
         if len(hist) < 2:
             return ""
         new = hist[-1]
@@ -1921,24 +1964,18 @@ class Facts:
         ogov = GOVERNMENT_ZH.get(str(old["government"]), "")
         if not ngov or ngov == ogov:
             return ""
-        # 头衔在此日易主 → 用 title history 的真事件日 (非快照日)
-        date = str(new["date"])
-        tier, tid = self._primary_title_at(pid, as_of=date)
-        if tid is not None:
-            real = self.gain_reason(pid, tid, date)
-            if real:
-                date = str(date)
-        line = f"{self.date(date)}改行{ngov}"
-        if ogov:
-            line += f"（原{ogov}）"
+        line = f"{self.date(str(new['date']))}，"
+        line += (f"{self.name_or(pid)}由{ogov}改行{ngov}" if ogov
+                 else f"{self.name_or(pid)}改行{ngov}")
         words = []
         for tier in ("duchy", "county", "kingdom"):
             w = self._office_word(tier, str(new["government"]),
-                                  independent=False, female=False, cid=pid)
+                                  independent=False, female=False, cid=pid,
+                                  date=str(new["date"]))
             if w and w not in words:
                 words.append(w)
         if words:
-            line += "；此日起诸领主依次称" + "、".join(words)
+            line += "；此后诸领主依次称" + "、".join(words)
         return line + "。"
 
     # ---- v41 (问题5): 宗族宗支 ----
@@ -2736,7 +2773,13 @@ class Facts:
                 return mo
         c = self._chars.get(str(cid)) or {}
         fkey = (c.get("dead_data") or {}).get("flavor")
-        if fkey:
+        # v41 (问题1) 关键: `dead_data.flavor` 是游戏在角色死亡时**烘死**的词键,
+        # 按末档政体算 (诺兰档: 迪特里希二世死于 1101, flavor 记的是行政制的
+        # `duke_administrative_male_byzantine_group` = 将军), 于是他在 1082 年
+        # 的封建时期事件里也被写成「上洛塔林吉亚将军」。改为: 先按 date 自身算
+        # 职称; 只有当存档 flavor 与本日政体自洽时才采信它 (它仍是最准的
+        # 游戏原词), 否则回落到按政体取词的路径。
+        if fkey and self._dead_flavor_consistent(fkey, cid, anchor):
             v = L.loc(self.table, fkey)
             if v and not v.startswith("$") and not v.startswith("["):
                 if fkey.startswith(self._TIER_FLAVOR_PREFIXES):
@@ -3069,7 +3112,7 @@ class Facts:
             rn = self.title(tid) if tid is not None else ""
             if rn and rn.startswith(("c_", "b_", "x_")):
                 rn = ""
-            out["target"] = rn or self.person_label(tgt, style="brief")
+            out["target"] = rn or self.person_label(tgt, date=self.as_of, style="brief")
         return out
 
     # v37 (问题8): 「乱连N州」的规模上限 —— 超出者多是 escalated 民变 (存档
@@ -3190,8 +3233,12 @@ class Facts:
 
     def kin_label(self, cid, date=None):
         """亲属/世系/妻族专用称谓 (v27) — person_label 的 full 式入口:
-        「[前X，]现职Y 姓名」。"""
-        return self.person_label(cid, date, "full")
+        「[前X，]现职Y 姓名」。
+
+        v41 (问题1): date 缺省取 `self.as_of` —— 传记事实一律按本篇截止日取官职词
+        (封建期的神罗封臣写「上洛塔林吉亚公爵」, 行政期才写「将军」);
+        传入 None 时不再落到缓存里的末档政体。"""
+        return self.person_label(cid, date or self.as_of, "full")
 
     def _minister_office(self, tid):
         """e_minister_* 头衔的职司官职词; 非职司头衔返回 ''。
@@ -3510,7 +3557,7 @@ class Facts:
             return ""
         if self_cid is not None and o == self_cid:
             return "自己"
-        return self.person_label(o, style="brief") or ""
+        return self.person_label(o, date=self.as_of, style="brief") or ""
 
     def secret_topic(self, rec, self_cid=None):
         """隐事主题短语 (不含持有人): 「在张朴主持的乡试中舞弊」/「谋害叠溪寋」/
@@ -3526,7 +3573,7 @@ class Facts:
         tgt = rec.get("target")
         if isinstance(tgt, int):
             tname = "自己" if (self_cid is not None and tgt == self_cid) \
-                else self.person_label(tgt, style="brief")
+                else self.person_label(tgt, date=self.as_of, style="brief")
         else:
             tname = ""
         if tp == "secret_exam_cheater":
@@ -3548,7 +3595,7 @@ class Facts:
             tpl = SECRET_TOPICS.get(tp)
             if not tpl or not isinstance(tgt, int):
                 return ""
-            child = self.person_label(tgt, style="brief") or ""
+            child = self.person_label(tgt, date=self.as_of, style="brief") or ""
             if not child:
                 return ""
             crec = (self.cache.get("characters") or {}).get(str(tgt)) or {}
@@ -3556,7 +3603,7 @@ class Facts:
             rn = ""
             if isinstance(rf, int):
                 rn = "自己" if (self_cid is not None and rf == self_cid) \
-                    else (self.person_label(rf, style="brief") or "")
+                    else (self.person_label(rf, date=self.as_of, style="brief") or "")
             if rn:
                 return tpl.format(target=child, father=rn)
             # 实父判不出 → 不带实父位的简式 (无料不下发)
@@ -3658,7 +3705,7 @@ class Facts:
             if not isinstance(kid, int) or kid == owner or kid in parties:
                 continue
             nm = self.name_with_regnal(kid) if kid == self_cid \
-                else self.person_label(kid, style="brief")
+                else self.person_label(kid, date=self.as_of, style="brief")
             if not nm:
                 continue
             frm = k.get("from")
@@ -3859,7 +3906,7 @@ class Facts:
                     continue
                 out.append({
                     "spouse": sid,
-                    "spouse_label": self.person_label(sid, style="brief")
+                    "spouse_label": self.person_label(sid, date=self.as_of, style="brief")
                                     or self.name_or(sid),
                     "partner": partner,
                     "identity": self.court_service_phrase(partner),
@@ -3939,7 +3986,7 @@ class Facts:
                     # 归并行: 对手方按方向取 (主角握有 → 对象; 他人对主角 → 持有者)
                     ids = [(r["target"] if mine else r["holder"]) for r in rs]
                     names = "、".join(
-                        (self.person_label(i, style="brief") or "某人")
+                        (self.person_label(i, date=self.as_of, style="brief") or "某人")
                         for i in list(dict.fromkeys(ids))[:3])
                     tpl = _FACT_WORDING[
                         "hook_group_held" if mine else "hook_group_over"]
@@ -3947,7 +3994,7 @@ class Facts:
                                             name=name, n=len(rs)))
                     continue
                 r = rs[0]
-                other = self.person_label(r["target"], style="brief") or "某人"
+                other = self.person_label(r["target"], date=self.as_of, style="brief") or "某人"
                 tpl = _FACT_WORDING[
                     "hook_held_strong" if (mine and strong) else
                     "hook_held_weak" if mine else
@@ -3961,7 +4008,7 @@ class Facts:
                     lines.append(tpl.format(actor="主角", target=other,
                                             name=name, since=since))
                 else:
-                    holder = self.person_label(r["holder"], style="brief") or "某人"
+                    holder = self.person_label(r["holder"], date=self.as_of, style="brief") or "某人"
                     lines.append(tpl.format(actor="主角", holder=holder,
                                             name=name, since=since))
             if lines:
@@ -4036,15 +4083,15 @@ class Facts:
         recs.sort(key=lambda r: cl.date_key(r.get("first_seen") or "9999.9.9"))
         former.sort(key=lambda r: cl.date_key(r.get("lost_at") or "9999.9.9"))
         W = _FACT_WORDING
-        plabel = self.person_label(pid, style="brief") or "主角"
+        plabel = self.person_label(pid, date=self.as_of, style="brief") or "主角"
         names = []
         for r in recs:
-            nm = self.person_label(r["slave"], style="brief") or ""
+            nm = self.person_label(r["slave"], date=self.as_of, style="brief") or ""
             if nm:
                 names.append((r, nm))
         fnames = []
         for r in former:
-            nm = self.person_label(r["slave"], style="brief") or ""
+            nm = self.person_label(r["slave"], date=self.as_of, style="brief") or ""
             if nm:
                 fnames.append((r, nm))
         if not names and not fnames:
@@ -4075,7 +4122,7 @@ class Facts:
                 else "（{}起）".format(self._year_only(fs))
             end_y = self._year_only(la) if la else ""
             buyer = r.get("end_owner")
-            bname = self.person_label(buyer, style="brief") \
+            bname = self.person_label(buyer, date=self.as_of, style="brief") \
                 if isinstance(buyer, int) else ""
             if bname:
                 fout.append(W["enslaved_former_sold"].format(
@@ -4141,13 +4188,13 @@ class Facts:
             for v in vids:
                 if isinstance(v, int):
                     # 与好感记录里的当事人核对, 取一致的称谓
-                    cand = self.person_label(v, style="brief") or ""
+                    cand = self.person_label(v, date=self.as_of, style="brief") or ""
                     if cand:
                         vname = cand
                         break
             if not vname:
                 for v in party:
-                    vname = self.person_label(v, style="brief") or ""
+                    vname = self.person_label(v, date=self.as_of, style="brief") or ""
                     if vname:
                         break
             if vname:
@@ -4218,8 +4265,8 @@ class Facts:
             word = L.loc(self.table, str(rec.get("modifier") or ""))
             if not word or not loc_text_ok(word):
                 continue
-            she = self.person_label(owner, style="brief") or ""
-            the = self.person_label(target, style="brief") or ""
+            she = self.person_label(owner, date=self.as_of, style="brief") or ""
+            the = self.person_label(target, date=self.as_of, style="brief") or ""
             if not she or not the:
                 continue
             year = self._year_only(fs) if fs else ""
@@ -4283,11 +4330,11 @@ class Facts:
             start = rec.get("start") or fs
             if not start:
                 continue
-            name = self.person_label(owner, style="brief") or ""
+            name = self.person_label(owner, date=self.as_of, style="brief") or ""
             if not name:
                 continue
             actor = "主角" if target == pid \
-                else (self.person_label(target, style="brief") or "某人")
+                else (self.person_label(target, date=self.as_of, style="brief") or "某人")
             # 同日释放 (脚本 release_from_prison = yes) → 出狱缘由即此
             paroled = False
             for m in (((self.cache.get("characters") or {}).get(str(owner))
@@ -5126,7 +5173,7 @@ class Facts:
         east = (tpl_k in _ASIAN_HERITAGE_TPL) or (tpl_v in _ASIAN_HERITAGE_TPL)
         sphere = "east" if east else "west"
         # v28b: 凶手/行刑者称谓与全篇一致 (官职/称号+名)
-        kname = self.person_label(killer_id, style="brief") \
+        kname = self.person_label(killer_id, date=self.as_of, style="brief") \
             or self.name_or(killer_id, "某人")
         age = self._age_at_death(victim_id, date)
         child = age is not None and age < 8
@@ -5266,7 +5313,7 @@ class Facts:
             out = _death_clause(self.table, reason, None, lambda k: "")
         else:
             # v28b: 施事者用统一称谓 (官职/称号+名), 与全篇称谓一致
-            kname = self.person_label(killer, style="brief") \
+            kname = self.person_label(killer, date=self.as_of, style="brief") \
                 or self.name_or(killer, "某人")
             if reason == "death_execution":
                 _k, zh = self.execution_method(killer, cid, date)
@@ -5278,7 +5325,7 @@ class Facts:
                     out = mzh
             if not out:
                 out = _death_clause(self.table, reason, killer,
-                                    lambda k: self.person_label(k, style="brief")
+                                    lambda k: self.person_label(k, date=self.as_of, style="brief")
                                     or self.name_or(k, "某人"))
         if imprison and out:
             dur = self.imprison_duration(cid, date)
@@ -5575,8 +5622,8 @@ class Facts:
         if not la or not lb:
             return ""
         # v28b: 称谓与全篇一致 (person_label, 官职/称号+名)
-        na = self.person_label(a, style="brief") or self.name_or(a)
-        nb = self.person_label(b, style="brief") or self.name_or(b)
+        na = self.person_label(a, date=self.as_of, style="brief") or self.name_or(a)
+        nb = self.person_label(b, date=self.as_of, style="brief") or self.name_or(b)
         if not na or not nb:
             return ""
         if set(la) & set(lb):
@@ -5598,7 +5645,7 @@ class Facts:
         if not pl:
             return []
         # v28b: 主角与家人称谓与全篇一致 (person_label / kin_label)
-        na = self.person_label(cid, style="brief") or self.name_or(cid)
+        na = self.person_label(cid, date=self.as_of, style="brief") or self.name_or(cid)
         groups = {}   # 对方语言组 -> [id]
         for x in ids:
             try:
@@ -5613,7 +5660,7 @@ class Facts:
             groups.setdefault(tuple(lx), []).append(x)
         out = []
         for key, members in groups.items():
-            names = "、".join(self.person_label(m, style="brief") or self.name_or(m)
+            names = "、".join(self.person_label(m, date=self.as_of, style="brief") or self.name_or(m)
                              for m in members)
             if not names:
                 continue
@@ -6077,7 +6124,7 @@ class Facts:
 
     def _office_name(self, cid):
         """官职名+名: 「交州刺史应偁」 — person_label 的 office 式入口。"""
-        return self.person_label(cid, style="office")
+        return self.person_label(cid, date=self.as_of, style="office")
 
     def _council_scope(self):
         """议会席位取词用的 (政体, 是否帝国级): 帝国级 = 独立 + 最高头衔 ≥ e_。"""
@@ -6133,7 +6180,7 @@ class Facts:
             word = L.council_seat_word(self.table, self._council_tasks,
                                        e.get("type") or "", gov, imperial)
             who = e.get("owner")
-            nm = self.person_label(who, style="brief") if isinstance(who, int) else ""
+            nm = self.person_label(who, date=self.as_of, style="brief") if isinstance(who, int) else ""
             if word and nm:
                 # v29b: 官职与大臣名直连 (「长史延寿」), 不再用「长史（延寿）」
                 # 这类括注同位语 — 现代汉语以「职+名」连写为正 (「宰相吴全略」)。
@@ -6379,21 +6426,23 @@ class Facts:
         nm = self._name_at_date(tid, self.as_of) or self.title_base_name(tid)
         return nm if nm and not nm.startswith(("c_", "b_")) else ""
 
-    def grant_verb(self, granter_cid):
+    def grant_verb(self, granter_cid, date=None):
         """头衔/职位授予动词 (v36, 用户拍板4): 按**授予方政体**取词
-        (天朝/行政=任命, 封建=册封, 部落/宗族=授予…); 取不到用「任命」。"""
+        (天朝/行政=任命, 封建=册封, 部落/宗族=授予…); 取不到用「任命」。
+        v41: date 锚点 — 授予方政体按该日期取。"""
         if not isinstance(granter_cid, int):
             return _style.TITLE_GRANT_VERB_FALLBACK
-        gov = ""
-        rec = (self.cache.get("characters") or {}).get(str(granter_cid)) or {}
-        gov = (rec.get("landed") or {}).get("government") or ""
+        gov = self._character_government(granter_cid, date)
+        if not gov:
+            rec = (self.cache.get("characters") or {}).get(str(granter_cid)) or {}
+            gov = (rec.get("landed") or {}).get("government") or ""
         if not gov:
             gov = ((self._chars.get(str(granter_cid)) or {}).get("landed_data") or {}) \
                 .get("government") or ""
         if not gov:
             # 授予方已死/无地: 退其最高头衔的政体 (皇帝 → 天朝制)
-            ftid = self._former_high_title(granter_cid) \
-                or self._primary_title_at(granter_cid)[1]
+            ftid = self._former_high_title(granter_cid, date) \
+                or self._primary_title_at(granter_cid, as_of=date)[1]
             if ftid is not None:
                 gov = self._title_government(ftid, date)
         key = L.government_prefix(gov) if gov else ""
@@ -6777,9 +6826,11 @@ def _sex_mem_sentence(f, owner_id, mem, info):
     if not isinstance(other_id, int) or other_id == owner_id:
         # 参与槽缺失或指向自己 = 存档退化记录 (见 _PEER_SLOT_TYPES 同源判据)
         return None
-    owner = f.person_label(owner_id, style="brief") \
+    owner = f.person_label(owner_id, date=mem.get("creation_date"),
+                           style="brief") \
         or f.name_with_regnal(owner_id, date=mem.get("creation_date"))
-    other = f.person_label(other_id, style="brief") \
+    other = f.person_label(other_id, date=mem.get("creation_date"),
+                           style="brief") \
         or f.name_with_regnal(other_id, date=mem.get("creation_date"))
     if not owner or not other:
         return None
@@ -6825,9 +6876,10 @@ def _mem_sentence(f, owner_id, mem):
         ids = [i for i in ids if isinstance(i, int) and i != owner_id]
         if not ids:
             return None
-        owner = f.person_label(owner_id, style="brief") \
+        owner = f.person_label(owner_id, date=mem.get("creation_date"),
+                               style="brief") \
             or f.name_with_regnal(owner_id, date=mem.get("creation_date"))
-        names = [f.person_label(i, style="brief")
+        names = [f.person_label(i, date=mem.get("creation_date"), style="brief")
                  or f.name_with_regnal(i, date=mem.get("creation_date"))
                  for i in ids]
         names = [n for n in names if n]
@@ -6838,7 +6890,8 @@ def _mem_sentence(f, owner_id, mem):
     if not tpl:
         return None
     extra_fname = ""
-    owner = f.person_label(owner_id, style="brief") or f.name_with_regnal(
+    owner = f.person_label(owner_id, date=mem.get("creation_date"),
+                           style="brief") or f.name_with_regnal(
         owner_id, date=mem.get("creation_date"))
     parts = mem.get("participants") or {}
     slot = PARTICIPANT_SLOTS.get(mtype)
@@ -6866,7 +6919,7 @@ def _mem_sentence(f, owner_id, mem):
         tpl = MEMORY_TEMPLATES.get("had_sex_spouse") or tpl
     other = ""
     if other_id is not None:
-        other = (f.person_label(other_id, style="brief")
+        other = (f.person_label(other_id, date=f.as_of, style="brief")
                  or f.name_with_regnal(other_id, date=mem.get("creation_date")))
     # v32: 无对手方 → 回退 `<type>_no_other` 模板 (被囚/逃脱/夭折三类都有)
     if not other:
@@ -6901,7 +6954,7 @@ def _mem_sentence(f, owner_id, mem):
             who = kreal if isinstance(kreal, int) else kfather
             if isinstance(who, int) and owner_id is not None \
                     and who != owner_id and kfather != owner_id:
-                wname = f.person_label(who, style="brief") or f.name_or(who)
+                wname = f.person_label(who, date=f.as_of, style="brief") or f.name_or(who)
                 if wname:
                     tpl = tpl.rstrip("。") + "（生父{fname}）。"
                     extra_fname = wname
@@ -6952,7 +7005,7 @@ def _mem_sentence(f, owner_id, mem):
                     if gl:
                         office = f.title_office_text(
                             owner_id, title_tid, mem.get("creation_date")) or title
-                        return f"{owner}受{gl}{f.grant_verb(gcid)}为{office}。"
+                        return f"{owner}受{gl}{f.grant_verb(gcid, mem.get('creation_date'))}为{office}。"
                 return f"{owner}{verb}{title}。"
         else:
             verb = TITLE_LOSS_VERBS.get(reason)
@@ -7095,7 +7148,7 @@ def _death_sentence(f, cid, killer_pronoun=False):
     # 施事者名字缺失时用「某人」 (v28b: 统一占位词, 与 name_or 兜底同源)
     clause = f.death_clause(cid, date=d.get("date"), imprison=True)
     if killer_pronoun and killer is not None:
-        klabel = f.person_label(killer, style="brief") \
+        klabel = f.person_label(killer, date=f.as_of, style="brief") \
             or f.name_with_regnal(killer)
         if klabel and klabel in clause:
             clause = clause.replace(klabel, "其")
@@ -7812,13 +7865,13 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 break
             # v30: 称谓口径与 _mem_sentence 一致 (person_label 不传日期) —
             # 传日期会按事件当日头衔取词, 同篇内同一人出现两种称谓
-            vn = f.person_label(victim, style="brief") \
+            vn = f.person_label(victim, date=f.as_of, style="brief") \
                 or f.name_with_regnal(victim)
             if not vn:
                 continue
             jn = ""
             if r["jailer"] is not None:
-                jn = f.person_label(r["jailer"], style="brief") \
+                jn = f.person_label(r["jailer"], date=f.as_of, style="brief") \
                     or f.name_with_regnal(r["jailer"])
             W = _style.FACT_WORDING
             body = W["prison_jailed"].format(jailer=jn, victim=vn) if jn \
@@ -7944,10 +7997,10 @@ def _std_index(f):
         if str(tgt) not in chars:
             # 病人不在缓存相关集内 —— 这条边进不了任何篇目, 直接跳过 (省索引)
             continue
-        tname = f.person_label(tgt, style="brief") or f.name_with_regnal(tgt)
+        tname = f.person_label(tgt, date=f.as_of, style="brief") or f.name_with_regnal(tgt)
         sname = ""
         if isinstance(src, int) and src != tgt and str(src) in chars:
-            sname = f.person_label(src, style="brief") or f.name_with_regnal(src)
+            sname = f.person_label(src, date=f.as_of, style="brief") or f.name_with_regnal(src)
         if not tname:
             continue
         pair = frozenset((src, tgt)) if isinstance(src, int) else None
@@ -8632,7 +8685,7 @@ def _protagonist(f):
     if poff:
         p["office"] = poff
     # v28b: 称谓统一 — 档案名号句由 facts 一次组好 (biography 不再拼 office+name)
-    p["label"] = f.person_label(pid, style="brief") or p["name"]
+    p["label"] = f.person_label(pid, date=f.as_of, style="brief") or p["name"]
     # v9.1: 主角父名 (先世无考则无)
     pptn = f.patronym(pid)
     if pptn:
@@ -8837,7 +8890,7 @@ def _protagonist(f):
     def _annotate(ids):
         out = []
         for sid in ids:
-            nm = f.kin_label(sid)
+            nm = f.kin_label(sid, f.as_of)
             if not nm:
                 continue
             note = ""
@@ -8846,7 +8899,8 @@ def _protagonist(f):
                                  ("concubine", "妾"), ("former_spouses", "前妻"),
                                  ("former_concubines", "前妾")):
                     if sid in (fd_fam.get(k) or []):
-                        note = f"（原为父{f.kin_label(father_id)}之{label}）"
+                        note = (f"（原为父{f.kin_label(father_id, f.as_of)}"
+                                f"之{label}）")
                         break
             out.append(nm + note)
         return "、".join(out)
@@ -9043,7 +9097,7 @@ def _character_profiles(f):
         if pt:
             prof["prince"] = pt
         # v28b: 称谓统一 — 档案名号句由 facts 一次组好
-        prof["label"] = f.person_label(cid, style="brief") or name
+        prof["label"] = f.person_label(cid, date=f.as_of, style="brief") or name
         # v41 (问题5): 宗族宗支句 (分家与宗族不同名时点明同宗)
         _cl = f.clan_line(cid)
         if _cl:
@@ -9440,7 +9494,7 @@ def _realm_secret_lines(f):
     out = []
     for oid in owners:
         for rec in f.secrets_owned_by(oid, f.as_of):
-            s = f.secret_line(rec, owner_label=f.person_label(oid, style="brief"),
+            s = f.secret_line(rec, owner_label=f.person_label(oid, date=f.as_of, style="brief"),
                               self_cid=pid)
             if not s:
                 continue
@@ -9708,7 +9762,7 @@ def _villain_chains(f):
                         break
             sname = "其妻" if not is_female(victim) else "其夫"
             # v28b: 受害者称谓统一 (官职/称号+名, 按卒日锚点)
-            disp = f.person_label(victim, style="brief") or vname
+            disp = f.person_label(victim, date=f.as_of, style="brief") or vname
             remarry = f"，并于{f.date(mdate)}嫁于{pname}" \
                 if mdate and in_span(mdate) else ""
             # v16: 受害者家人也先遭毒手 → 补注 (父子同刃: 萨洛蒙之子
@@ -9721,7 +9775,7 @@ def _villain_chains(f):
                 kd = murders[kid]
                 if cl.date_key(kd) >= cl.date_key(vdate):
                     continue
-                kname = f.person_label(kid, style="brief") or f.name_or(kid)
+                kname = f.person_label(kid, date=f.as_of, style="brief") or f.name_or(kid)
                 if kname:
                     ksex = "女" if is_female(kid) else "子"
                     kin_note = (f"；其{ksex}{kname}"
@@ -9964,22 +10018,32 @@ def _kin_blood_links(f):
     seen = set()
     for b in sorted(bastards):
         bfam = fam_of(b)
-        bs = {x for x in (bfam.get("primary_spouse") or [])
-              + (bfam.get("spouse") or [])
-              + (bfam.get("former_spouses") or []) if isinstance(x, int)}
+        # 配偶档与情人档分开: 「结为夫妇」只用于真婚事, 非配偶写「私通」
+        # (v41: 旧稿把私情也写成「结为夫妇」, 模型据此把私生子的情人说成夫妻)
+        bsp = {x for x in (bfam.get("primary_spouse") or [])
+               + (bfam.get("spouse") or [])
+               + (bfam.get("former_spouses") or []) if isinstance(x, int)}
+        blov = {x for x in (bfam.get("lover") or []) if isinstance(x, int)}
+        for m in (chars.get(str(b)) or {}).get("memories") or []:
+            if str(m.get("type") or "") in ("became_lovers", "had_sex") \
+                    or str(m.get("type") or "").startswith(_SEX_MEM_PREFIX):
+                for v in (m.get("participants") or {}).values():
+                    if isinstance(v, int) and v != b:
+                        blov.add(v)
         bkids = {x for x in (bfam.get("child") or []) if isinstance(x, int)}
         for s in sorted(legal):
             if s == b:
                 continue
             sfam = fam_of(s)
-            ss = {x for x in (sfam.get("primary_spouse") or [])
-                  + (sfam.get("spouse") or [])
-                  + (sfam.get("former_spouses") or []) if isinstance(x, int)}
+            ssp = {x for x in (sfam.get("primary_spouse") or [])
+                   + (sfam.get("spouse") or [])
+                   + (sfam.get("former_spouses") or []) if isinstance(x, int)}
             skids = {x for x in (sfam.get("child") or []) if isinstance(x, int)}
             pair = tuple(sorted((b, s)))
-            if b not in ss and s not in bs:
+            married = (b in ssp) or (s in bsp)
+            if not married and b not in blov and s not in blov:
                 continue
-            # 关系起始日: 双方婚配/私情记忆中最早者
+            # 关系起始日: 婚配优先 (married 记忆), 否则私情记忆; 取最早
             date = ""
             for m in (chars.get(str(s)) or {}).get("memories") or []:
                 parts = m.get("participants") or {}
@@ -9987,7 +10051,7 @@ def _kin_blood_links(f):
                     continue
                 if (m.get("type") or "") not in (
                         "married", "became_lovers", "had_sex") \
-                        and not str(m.get("type") or "").startswith("had_sex_"):
+                        and not str(m.get("type") or "").startswith(_SEX_MEM_PREFIX):
                     continue
                 d = str(m.get("creation_date") or "")
                 if d and (not date or cl.date_key(d) < cl.date_key(date)):
@@ -9997,8 +10061,8 @@ def _kin_blood_links(f):
             if pair in seen:
                 continue
             seen.add(pair)
-            sn = f.person_label(s, style="brief") or f.name_or(s)
-            bn = f.person_label(b, style="brief") or f.name_or(b)
+            sn = f.person_label(s, date=f.as_of, style="brief") or f.name_or(s)
+            bn = f.person_label(b, date=f.as_of, style="brief") or f.name_or(b)
             if not sn or not bn:
                 continue
             sw = "女" if is_female(s) else "子"
@@ -10006,14 +10070,15 @@ def _kin_blood_links(f):
             mother = (bfam.get("mother") or [None])[0]
             mn = ""
             if isinstance(mother, int) and mother != pid:
-                mn = f.person_label(mother, style="brief") or ""
+                mn = f.person_label(mother, date=f.as_of, style="brief") or ""
             whose = f"{pname}与{mn}之{bw}" if mn else f"{pname}之{bw}"
             date_txt = f"{f.date(date)}，" if date else ""
-            line = (f"{date_txt}{pname}之{sw}{sn}与{bn}结为夫妇；"
+            rel = "结为夫妇" if married else "私通相恋"
+            line = (f"{date_txt}{pname}之{sw}{sn}与{bn}{rel}；"
                     f"{bn}实为{whose}，与{sn}为同父异母兄妹。")
-            if bkids & skids:
+            if married and (bkids & skids):
                 kid = sorted(bkids & skids)[0]
-                kn = f.person_label(kid, style="brief") or f.name_or(kid)
+                kn = f.person_label(kid, date=f.as_of, style="brief") or f.name_or(kid)
                 if kn:
                     line = line.rstrip("。") + f"，二人生有{kn}。"
             out.append(("同父异母联姻", line, True))
@@ -10178,7 +10243,7 @@ def _killed_by_player(f):
                 # v30: 与主路径同口径 — 凶手为主角时称谓缩为「其」(问题8)
                 kk = mdd.get("killer")
                 if kk is not None:
-                    klabel = f.person_label(kk, style="brief") \
+                    klabel = f.person_label(kk, date=f.as_of, style="brief") \
                         or f.name_with_regnal(kk)
                     if klabel and klabel in clause:
                         clause = clause.replace(klabel, "其")
@@ -10473,7 +10538,7 @@ def _plague_facts(f):
             for cid in kin:
                 if f._has_trait_at(cid, typ):
                     hit_kin.append(f.kin_label(cid) if cid != pid
-                                   else (f.person_label(pid, style="brief")
+                                   else (f.person_label(pid, date=f.as_of, style="brief")
                                          or f.name_or(pid)))
         # ② 主角封地/所在郡是否在其感染之列
         inf = {int(x) for x in (e.get("infections") or {}) if str(x).isdigit()}
@@ -10591,7 +10656,7 @@ def _secrets_facts(f):
     for rec in mine:
         (murder if rec.get("type") in SECRET_MURDER_TYPES else held).append(rec)
     out = {}
-    plabel = f.person_label(pid, style="brief") or f.name_or(pid)
+    plabel = f.person_label(pid, date=f.as_of, style="brief") or f.name_or(pid)
     if held:
         # 主角称谓与全篇一致 (时间线/档案同为 person_label)
         lines = f.secret_lines(held, owner_label=plabel, self_cid=pid)
@@ -10605,7 +10670,7 @@ def _secrets_facts(f):
         names = []
         for rec in murder:
             t = rec.get("target")
-            nm = f.person_label(t, style="brief") if isinstance(t, int) else ""
+            nm = f.person_label(t, date=f.as_of, style="brief") if isinstance(t, int) else ""
             if nm:
                 names.append(nm)
         if names:
@@ -10646,7 +10711,7 @@ def _secrets_facts(f):
             groups.setdefault(o, []).append(rec)
     known = []
     for oid, recs in groups.items():
-        owner = f.person_label(oid, style="brief")
+        owner = f.person_label(oid, date=f.as_of, style="brief")
         if not owner:
             continue
         topics = []

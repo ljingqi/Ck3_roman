@@ -1498,32 +1498,17 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
 
     # v41 (问题1): 玩家政体变更史 (改行行政官制等) — 只记变化点 (与
     # player_locations / camp_purposes 同范式, 体量极小); facts 据此出
-    # 「1086年1月1日改行行政官制（原封建采邑制）」这句事实。
+    # 「1095年，诺兰由封建采邑制改行行政官制」这句事实。
+    # 日期取**本档快照日** —— 变更是逐档差分发现的 (实测主角 1087–1094 为
+    # feudal_government, 1095.1.1 档起为 administrative_government);
+    # 早年曾误取主头衔的夺位日 (1086.1.1), 把「夺得神罗」与「改行政制」混成一天。
     if player_id is not None:
         _ld = (chars.get(str(player_id)) or {}).get("landed_data") or {}
         _gov = _ld.get("government") or ""
         if _gov:
             _gh = cache.setdefault("government_history", [])
             if not _gh or _gh[-1].get("government") != _gov:
-                _gd = date_label
-                for _tid in (_ld.get("domain") or []):
-                    _h = (lt.get(str(_tid)) or {}).get("history") or {}
-                    if not isinstance(_h, dict):
-                        continue
-                    for _hd in sorted(_h, key=date_key):
-                        if date_key(_hd) > date_key(_gd):
-                            break
-                        _ev = _h[_hd]
-                        for _e in (_ev if isinstance(_ev, list) else [_ev]):
-                            _hh = _e.get("holder") if isinstance(_e, dict) else _e
-                            try:
-                                _hh = int(_hh) if _hh is not None else None
-                            except (TypeError, ValueError):
-                                _hh = None
-                            if _hh == int(player_id):
-                                _gd = _hd
-                    break
-                _gh.append({"date": _gd, "government": _gov})
+                _gh.append({"date": date_label, "government": _gov})
 
     # v8: 击杀受害者入目标集 (保证刺客列传能取到姓名/档案)
     for _cid in list(targets):

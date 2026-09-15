@@ -538,7 +538,10 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
         「戏剧性事件」只收非揭底链, 揭底链 (托卵承嗣/血脉登基) 改由
         `with_private_chains=True` 放行。
       · 内部档 (`with_real_parentage=True`): 放行「实父X」— 只给《家室列传》
-        《阴私录》《妻族传》这些讲门庭内情的篇目。"""
+        《阴私录》《妻族传》这些讲门庭内情的篇目。
+
+    v41 (问题1): 名号句里的官职词按**本篇截止日**取 (`facts.as_of`), 不用缓存里的
+    现职 —— 封建期的神罗封臣因此写「上洛塔林吉亚公爵」而非行政期的「将军」。"""
     if cid is None:
         p = facts["protagonist"]
     else:
@@ -547,7 +550,13 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
     name = p.get("name") or p.get("name_zh") or ""
     # ---- 名号句 (官职前置: 瑞典国王崔佛·菲利普; 无官职直接用姓名) ----
     # v28b: 称谓统一 — head 用 facts 组好的 person_label; 旧缓存无 label 时回退旧拼法
-    head = p.get("label") or name
+    # v41: 按 as_of 重取一次 (缓存里的 label 用的是末档政体)
+    _fi = facts.get("_facts")
+    _anchor = facts.get("as_of")
+    head = ""
+    if _fi is not None and cid is not None:
+        head = _fi.person_label(cid, date=_anchor, style="brief") or ""
+    head = head or p.get("label") or name
     if not p.get("label"):
         if p.get("office"):
             head = f"{p['office']}{name}"
