@@ -209,13 +209,32 @@ def _usage_line(usage, messages):
             f" (命中率{hit * 100 // inp if inp else 0}%)")
 
 
+# v39: 单次 call_deepseek 的墙钟预算 (三次尝试合计)。上游挂死时逐次 timeout
+# 叠加会把一轮生成拖成几十分钟 (2026-09-14 诺兰实测: 两次生成各白耗 45 分钟),
+# 超出预算即停止重试, 把失败尽快交回流水线。
+CALL_BUDGET_SECONDS = 360
+
+
+def _resp_head(resp, limit=500):
+    """响应体摘要 (单行, 截断) — 上游返回非 OpenAI 形状时留证用。"""
+    try:
+        txt = resp.text or ""
+    except Exception:
+        txt = ""
+    return " ".join(txt.split())[:limit]
+
+
 def call_deepseek(messages, cfg, retries=3):
     """调用 DeepSeek chat/completions, 返回正文文本。
 
     - max_tokens 截断时自动翻倍预算重试 (上限 16000);
     - llm_thinking_disabled 时发送 thinking:disabled 关闭思考模式;
     - 失败退避重试 (3s / 6s ...);
-    - v27: 每次调用把 usage (缓存命中/未命中 token) 落日志, 供上下文瘦身验收。
+    - v27: 每次调用把 usage (缓存命中/未命中 token) 落日志, 供上下文瘦身验收;
+    - v39: 每次尝试落「耗时Ns」; 上游 200 返回非 OpenAI 形状 (无 choices,
+      网关/中转的 error 体) 时不再重发同一 payload —— 直接落 status 与响应体
+      摘要并抛可读异常 (旧行为只抛裸 KeyError: 'choices', 根因无从查证);
+      多次尝试合计超出 CALL_BUDGET_SECONDS 即停。
     """
     messages = clean_prompt_messages(messages)
     if cfg.get("prompt_log_enabled", True):
@@ -227,7 +246,9 @@ def call_deepseek(messages, cfg, retries=3):
     }
     max_tokens = cfg.get("max_tokens", 8000)
     last_err = None
+    t_start = time.monotonic()
     for i in range(retries):
+        t_try = time.monotonic()
         payload = {
             "model": cfg.get("deepseek_model", "deepseek-chat"),
             "messages": messages,
@@ -239,7 +260,21 @@ def call_deepseek(messages, cfg, retries=3):
         try:
             resp = requests.post(url, json=payload, headers=headers, timeout=180)
             resp.raise_for_status()
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception as e:
+                body = _resp_head(resp)
+                log(f"上游响应非 JSON (status={resp.status_code}, "
+                    f"耗时{time.monotonic() - t_try:.0f}s): {body}")
+                raise RuntimeError(
+                    f"上游响应非 JSON (status={resp.status_code}, {e}): {body[:200]}")
+            if not isinstance(data, dict) or not data.get("choices"):
+                body = _resp_head(resp)
+                log(f"上游返回非 OpenAI 形状 (status={resp.status_code}, "
+                    f"耗时{time.monotonic() - t_try:.0f}s): {body}")
+                raise RuntimeError(
+                    f"上游返回非 OpenAI 形状 (status={resp.status_code}): "
+                    f"{body[:200]}")
             log(_usage_line(data.get("usage"), messages))
             choice = data["choices"][0]
             content = (choice.get("message") or {}).get("content") or ""
@@ -263,10 +298,19 @@ def call_deepseek(messages, cfg, retries=3):
             if isinstance(e, requests.HTTPError) and e.response is not None \
                     and e.response.status_code == 400:
                 # 400 = 客户端错误 (上下文超限/参数非法): 同一 payload 重试必败且烧 token
-                body = str(e.response.text)[:300]
-                log(f"DeepSeek 调用失败 (400, 不再重试): {e} | {body}")
+                body = _resp_head(e.response, 300)
+                log(f"DeepSeek 调用失败 (400, 不再重试, "
+                    f"耗时{time.monotonic() - t_try:.0f}s): {e} | {body}")
                 raise
-            log(f"DeepSeek 调用失败 (第{i + 1}/{retries}次): {e}")
+            if isinstance(e, RuntimeError) and "非 OpenAI 形状" in str(e):
+                # 形状错误是上游/网关给出的确定答复: 同一 payload 重发不会有别的结果
+                log("上游答复非 OpenAI 形状, 停止重试")
+                raise
+            log(f"DeepSeek 调用失败 (第{i + 1}/{retries}次, "
+                f"耗时{time.monotonic() - t_try:.0f}s): {e}")
         if i < retries - 1:
+            if time.monotonic() - t_start > CALL_BUDGET_SECONDS:
+                log(f"调用失败累计超过 {CALL_BUDGET_SECONDS}s 预算, 停止重试")
+                break
             time.sleep(3 * (i + 1))
     raise last_err if last_err else Exception("生成失败")

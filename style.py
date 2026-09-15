@@ -381,8 +381,8 @@ FACT_WORDING = {
     # 与性事记忆互为佐证 (记忆给「谁做的」, 修正给「近来仍算近事」这一状态)。
     "carnal_recently_raped": "主角近来遭人强暴，此事五年之内仍算近事。",
     "carnal_opinions_head": "人身侵害与旧主奴关系如下：",
-    # v38 (问题1 追修): 强迫/半强迫之事的**事实行** —— 直接取时间线里那句
-    # 「881年8月28日，X强奸Y。」并补一句后效 (受害方及其亲友由此视施为者为仇)。
+    # v38 (问题1 追修) / v39: 强迫/半强迫之事的**事实行** —— 直接取时间线里那句
+    # 「881年8月28日，X强迫Y性交。」并补一句后效 (受害方及其亲友由此视施为者为仇)。
     # 事实行先立「这是强迫」这一层, 模型才不会把它写成两情相悦。
     "harm_head": "强迫之事如下：",
     "harm_line": "{text}（{after}）",
@@ -677,48 +677,64 @@ MEMORY_TEMPLATES = {
 
 
 # ---------------------------------------------------------------------------
-# v38 (问题1): Carnalitas 性事记忆族 (had_sex_*) 的措辞表
+# v38 (问题1) / v39 (诺兰测试集): Carnalitas 性事记忆族 (had_sex_*) 的措辞表
 # ---------------------------------------------------------------------------
 # 类型键由 Mod 按 `性别关系×主动/被动×体位×射精位置×自愿程度` 组合生成
 # (common/scripted_effects/carn_had_sex_memory_effect.txt, 共 24 键), 逐键写模板
-# 既不可能也不必要 —— 事实层只取「谁对谁做了什么、自愿到什么程度」, 体位与射精
-# 位置属游戏 UI 的露骨描述 (Mod 本地化里即 "我强奸并中出了X"), 不进事实面。
+# 既不可能也不必要 —— 事实层取「谁对谁做了什么、什么体位、自愿到什么程度」。
 #
-# 用户拍板 (2026-09-14): **只记录强迫与非自愿**两类 —— 即 `_noncon` (强奸)
-# 与 `_dubcon` (半推半就); `_consensual` 一律仍按旧口径 (`had_sex` /
-# `had_sex_spouse` / `had_sex_consensual`) 由 `MEMORY_TEMPLATES` 处理。
+# 收录范围 (用户拍板 2026-09-14, 诺兰测试集复核): **只记录强迫与非自愿**两类 ——
+# 即 `_noncon` (强迫) 与 `_dubcon` (半强迫); `_consensual` 一律仍按旧口径
+# (`had_sex` / `had_sex_spouse` / `had_sex_consensual`) 由 `MEMORY_TEMPLATES`
+# 处理, 即**自愿的性行为不进事实面**。
 #
 # 方向铁律 (与 Mod 脚本逐条核对): 类型名里的 `giving_player` 即**施为方**,
-# `receiving_player` 即**受害方** —— 与男女无关 (女性施为时写 `_fm_desc`
-# 「我逆强奸了X并让他中出我」, 仍是 giving 方为主使者)。因此:
+# `receiving_player` 即**受害方** —— 与男女无关 (女性施为时 Mod 写 `_fm_desc`
+# 「我逆强奸了X」, 仍是 giving 方为主使者)。因此:
 #   `_mem_sentence` 先看 `_actor_of_sex_mem()` 判出记忆持有人是施为方还是受害方,
 #   再在这里取对应句式。
+#
+# 体位词 (用户拍板 2026-09-14 二版, 诺兰测试集): 句式统一为
+# 「强迫 / 半强迫 + Mod 体位词」, 不再用「强奸/鸡奸」——
+#   `_noncon` 施为 = 「X强迫Y性交。」, 受害 = 「Y被X强迫性交。」;
+#   `_dubcon` 施为 = 「X半强迫地与Y性交。」, 受害 = 「Y半推半就，与X性交。」。
+# 体位词直取 Mod 记忆键: vaginal→性交 / anal→肛交 / oral→口交。
+# 女方施为的强迫档另取「逆强奸」句 (Mod 的 `_fm_desc` 文案即「我逆强奸了X」);
+# 插入语义只对阴道与肛两档成立, 口交档仍作「强迫…口交」。
+# 射精位置 (cum_inside/outside) 仍不进事实面 —— 那是游戏 UI 的露骨描述。
 SEX_MEM_WORDING = {
     # 施为方视角: {name}=持有人 (施为者), {other}=受害方
     "actor_noncon": {
-        "vaginal": "{name}强奸了{other}。",
-        "anal": "{name}鸡奸了{other}。",
-        "oral": "{name}逼{other}口交。",
-        "base": "{name}强奸了{other}。",
+        "vaginal": "{name}强迫{other}性交。",
+        "anal": "{name}强迫{other}肛交。",
+        "oral": "{name}强迫{other}口交。",
+        "base": "{name}强迫{other}性交。",
     },
     "actor_dubcon": {
-        "vaginal": "{name}半强迫地与{other}交合。",
-        "anal": "{name}半强迫地与{other}鸡奸。",
-        "oral": "{name}半强迫地逼{other}口交。",
-        "base": "{name}半强迫地与{other}交合。",
+        "vaginal": "{name}半强迫地与{other}性交。",
+        "anal": "{name}半强迫地与{other}肛交。",
+        "oral": "{name}半强迫地与{other}口交。",
+        "base": "{name}半强迫地与{other}性交。",
     },
     # 受害方视角: {name}=持有人 (受害者), {other}=施为方
     "victim_noncon": {
-        "vaginal": "{name}为{other}所强奸。",
-        "anal": "{name}为{other}所鸡奸。",
-        "oral": "{name}被迫为{other}口交。",
-        "base": "{name}为{other}所强奸。",
+        "vaginal": "{name}被{other}强迫性交。",
+        "anal": "{name}被{other}强迫肛交。",
+        "oral": "{name}被{other}强迫口交。",
+        "base": "{name}被{other}强迫性交。",
     },
     "victim_dubcon": {
-        "vaginal": "{name}半推半就，与{other}交合。",
-        "anal": "{name}半推半就，与{other}鸡奸。",
-        "oral": "{name}半推半就，为{other}口交。",
-        "base": "{name}半推半就，与{other}交合。",
+        "vaginal": "{name}半推半就，与{other}性交。",
+        "anal": "{name}半推半就，与{other}肛交。",
+        "oral": "{name}半推半就，与{other}口交。",
+        "base": "{name}半推半就，与{other}性交。",
+    },
+    # 女方施为的强迫档 (施为方性别由存档确定性判定, 见 facts._sex_mem_sentence):
+    # Mod 的 `_fm_desc` 即「我逆强奸了X, 让他把鸡巴塞进我的小穴/屁眼」。
+    "actor_reverse_noncon": {
+        "vaginal": "{name}逆强奸{other}，行阴道性交。",
+        "anal": "{name}逆强奸{other}，行肛交。",
+        "base": "{name}逆强奸{other}。",
     },
     # 归并行 (同一受害者被同一人多次 / 同一施为者多次) — 两句各一
     "group_actor": "{name}对{names}行强迫之事（共{n}次）。",

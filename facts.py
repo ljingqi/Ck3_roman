@@ -3704,11 +3704,11 @@ class Facts:
         数据源 = 时间线里模块「强暴凌辱」的事件 (由性事记忆族的 noncon/dubcon 档
         经 `_mem_sentence` 出句), 取「主角为一方当事人」的那些。句式为
 
-            881年8月28日，黔中王朱安仁强奸唐皇帝李润。（受害方及其亲属由此视其为仇）
+            881年8月28日，黔中王朱安仁强迫唐皇帝李润性交。（受害方及其亲属由此视其为仇）
 
-        为什么单列一块: 《阴私录》此前的纪事块只有「谁视主角为曾强奸她」这种
+        为什么单列一块: 《阴私录》此前的纪事块只有「谁视主角为曾行强迫之事」这种
         **他人评断**, 缺「这件事发生过」的确定事实 —— 朱安仁档实测, 模型据此
-        把强奸写成了两情相悦的私通 (「李润的家书」「离宫所历之事」)。
+        把强迫之事写成了两情相悦的私通 (「李润的家书」「离宫所历之事」)。
         括注里的后效由 `carnal_opinions` 的当事人/亲属条数判定; 无此类好感时
         退为「（N年见于记载）」。"""
         pid = self.cache.get("player_id")
@@ -4374,14 +4374,82 @@ class Facts:
         "animal_skull", "VIET_clutter",
     }
     ARTIFACT_MAX = 20
+    # v39: 流转条目 → 「本条之后宝物在谁手里」的角色槽 (逐条语义实测:
+    # 诺兰 1093 档 1773 件宝物的 4256 条流转全类型核对)。
+    # conquest 的 actor 是失主、recipient 是新主 (128 荆棘冠冕 1086.1.1
+    # 海因里希→克里斯托弗); inherited/given/purchased/prize_*/stolen 的新主在
+    # recipient; taken_in_battle/taken_in_siege/claimed_by_house/discovered 在 actor;
+    # created 的新主在 recipient (旧档无 recipient 时退 actor)。
+    # created_before_history 与 reforged 不含归属信息, 不进表 (略过)。
+    ARTIFACT_HOLDER_SLOT = {
+        "conquest": "recipient",
+        "inherited": "recipient",
+        "given": "recipient",
+        "purchased": "recipient",
+        "prize_awarded": "recipient",
+        "prize_created": "recipient",
+        "stolen": "recipient",
+        "taken_in_battle": "actor",
+        "taken_in_siege": "actor",
+        "claimed_by_house": "actor",
+        "discovered": "actor",
+        "created": "recipient",
+    }
 
     def family_artifacts(self):
         """宝物志数据源: 高稀 (名望级起)、相关集持有、且被其他宗族持有过的宝物。
-        返回 [多行文本], 含名称/稀有度/流转史。"""
-        related = _related_ids(self)
-        art = (self.melt.get("artifacts") or {}).get("artifacts") or {}
+        返回 [多行文本], 含名称/稀有度/流转史。
+
+        v39: 十年传记另加 **as_of 归属判定** —— 宝物须在 as_of 之前已归入**本宗族**。
+        旧逻辑只截断流转条目、归属却按最新档判: 诺兰第一个十年 (as_of=1077)
+        因此带出主角 1086.1.1 才夺得的帝国皇冠/查理曼的御座, 同一时代两次组装
+        的篇目由 7 篇变 8 篇。
+        判据用**同宗族**而非 `related`: 后者还含情人/仇人/姻亲 (诺兰档里海因里希·
+        萨利安因 1086 年那桩强迫之事即在其中), 按它判会把「前任皇帝手里的铁王冠」
+        算成主角家宝物。"""
+
         dh = (self.melt.get("dynasties") or {}).get("dynasty_house") or {}
         my_dyn = self.cache.get("dynasty_id")
+        my_pid = self.cache.get("player_id")
+
+        def _dyn_of(cid):
+            """角色所属宗族 id (熔件 dynasty_house → dynasty); 查不到返回 None。"""
+            c = (self.melt.get("living") or {}).get(str(cid)) \
+                or (self.melt.get("dead_unprunable") or {}).get(str(cid)) or {}
+            h = c.get("dynasty_house")
+            return (dh.get(str(h)) or {}).get("dynasty") if isinstance(h, int) else None
+
+        def _is_own_kin(cid):
+            """本宗族: 主角本人, 或与主角同宗族者。"""
+            if not isinstance(cid, int):
+                return False
+            if cid == my_pid:
+                return True
+            d = _dyn_of(cid)
+            return d is not None and my_dyn is not None and d == my_dyn
+
+        def _held_asof(hist, as_of):
+            """as_of 之前是否已归入本宗族 (v39)。as_of 为空 (终传) 时不做此判定。"""
+            if not as_of:
+                return True
+            ao = cl.date_key(as_of)
+            for e in hist:
+                d = e.get("date")
+                if not d or cl.date_key(d) > ao:
+                    continue
+                t = e.get("type") or ""
+                slot = self.ARTIFACT_HOLDER_SLOT.get(t)
+                if not slot:
+                    continue
+                cid = e.get(slot)
+                if not isinstance(cid, int) and t == "created":
+                    cid = e.get("actor")
+                if _is_own_kin(cid):
+                    return True
+            return False
+
+        related = _related_ids(self)
+        art = (self.melt.get("artifacts") or {}).get("artifacts") or {}
         rarity_zh = {"common": "常见", "famed": "著名", "masterwork": "大师级",
                      "illustrious": "名望级", "legendary": "传奇级"}
         out = []
@@ -4398,20 +4466,16 @@ class Facts:
             cross = False
             for e in hist:
                 for key in ("actor", "recipient"):
-                    cid = e.get(key)
-                    if not isinstance(cid, int):
-                        continue
-                    c = (self.melt.get("living") or {}).get(str(cid)) \
-                        or (self.melt.get("dead_unprunable") or {}).get(str(cid)) \
-                        or {}
-                    h = c.get("dynasty_house")
-                    d = (dh.get(str(h)) or {}).get("dynasty") if isinstance(h, int) else None
+                    d = _dyn_of(e.get(key))
                     if d is not None and d != my_dyn:
                         cross = True
                         break
                 if cross:
                     break
             if not cross:
+                continue
+            # v39: as_of 归属判定 —— 该时期前未归入本宗族的宝物整件不收
+            if not _held_asof(hist, self.as_of):
                 continue
             name = a.get("name") or "一件宝物"  # v14: 无名宝物不泄露 id
             rarity = rarity_zh.get(a.get("rarity")) or a.get("rarity") or ""
@@ -6286,11 +6350,13 @@ def sex_mem_info(mtype):
 
 
 def _sex_mem_sentence(f, owner_id, mem, info):
-    """性事记忆 (强迫/半强迫) → 干净中文句 (v38, 问题1)。
+    """性事记忆 (强迫/半强迫) → 干净中文句 (v38, 问题1; v39 体位措辞)。
 
     持有人是施为方还是受害方由 `sex_mem_info` 从键名读出 (与男女无关),
-    对方取 `sex_partner` 槽。体位只在句子动词上分档 (阴道/肛/口), 射精位置
-    与性行为细节不进事实面 (它们是游戏 UI 的露骨描述)。"""
+    对方取 `sex_partner` 槽。体位 (阴道/肛/口) 与自愿程度 (强迫/半强迫)
+    都进句面; v39: 施为方为女性时强迫档另取「逆强奸」句 (Mod 的 `_fm_desc`
+    文案即「我逆强奸了X」), 性别取存档 `female` 字段判定。
+    射精位置与其余性行为细节不进事实面 (它们是游戏 UI 的露骨描述)。"""
     parts = mem.get("participants") or {}
     other_id = parts.get(_SEX_PARTNER_SLOT)
     if not isinstance(other_id, int) or other_id == owner_id:
@@ -6302,7 +6368,12 @@ def _sex_mem_sentence(f, owner_id, mem, info):
         or f.name_with_regnal(other_id, date=mem.get("creation_date"))
     if not owner or not other:
         return None
-    table = _style.SEX_MEM_WORDING.get(f"{info['role']}_{info['consent']}") or {}
+    key = f"{info['role']}_{info['consent']}"
+    # v39: 女方施为的强迫档 —— 插入语义只对阴道与肛两档成立, 口交档仍作「强迫…口交」
+    if info["role"] == "actor" and info["consent"] == "noncon" \
+            and info["act"] in ("vaginal", "anal") and f._is_female(owner_id):
+        key = "actor_reverse_noncon"
+    table = _style.SEX_MEM_WORDING.get(key) or {}
     tpl = table.get(info["act"]) or table.get("base")
     if not tpl:
         return None
@@ -7499,7 +7570,7 @@ def _timeline(f):
                 idents[(_md, norm_type, s)] = {
                     "owner": cid, "parts": dict(parts), "type": mtype}
             # v31 (问题2): 配偶之间的情事换档 — 概览记「夫妻之情」, 模块归「婚配联姻」
-            # v38 (问题1): 强迫/半强迫档不换 —— 「妻子为丈夫所强奸」仍是强迫之事,
+            # v38 (问题1): 强迫/半强迫档不换 —— 「妻子为丈夫所强迫」仍是强迫之事,
             # 不因婚内就归进「夫妻之情」。
             ev_type = norm_type
             if norm_type in ("had_sex", "became_lovers") \
@@ -8143,7 +8214,9 @@ def _protagonist(f):
             v = (ad.get(kind) or {}).get("currency")
             w = L.level_word(f.table, f._bands, kind, v)
             if w:
-                bits.append(f"{label}{w}")
+                # v39: 档位词字面已含标签时只出档位词 —— piety_level_2 = 「虔诚信者」,
+                # 旧写法拼成「虔诚虔诚信者」(诺兰 22:36 请求实测)。
+                bits.append(w if label in w else f"{label}{w}")
         if bits:
             p["status"] = "，".join(bits) + "。"
     # 死亡 (终传时; v11: as_of 早于死期视为在世, 十年传记不泄漏「死于…」)
