@@ -1668,16 +1668,26 @@ class Facts:
             return "camp"
         return ""
 
+    _EAST_ASIAN_ESTATE_TPL = {"han", "chinese", "bai", "yi"}
+
     def estate_kind_word(self, tid, cid=None, date=None):
-        """庄园的汉文类别词: 天朝制/中华文化 → 世族庄园; 日本 → 武家庄园;
-        其余 → 家族庄园 (按头衔政体 + 持有人文化模板判定)。"""
-        gov = self._title_government(tid, date or self.as_of)
+        """庄园的汉文类别词 (v41b 用户拍板1: 用游戏原文): 日本 → 武家庄园;
+        东亚 (汉/中华/白/彝) 或天朝官制 → 世族庄园; 其余 → 世族
+        (`game_concept_noble_family` = 世族, 行政制领地内的强宗头衔)。
+
+        旧实现用「政体 ∈ 中华系 **或** 文化 ∈ 东亚」判定 —— 政体是行政制不等于
+        文化是中华, 于是希腊人行政制的世族头衔被写成中华味的「世族庄园」。"""
         tpl = self.culture_template(cid) if cid is not None else ""
-        if gov in self._CELESTIAL_LIKE_GOVS or tpl in ("han", "chinese", "bai", "yi"):
-            return "世族庄园"
         if tpl == "japanese":
             return "武家庄园"
-        return "家族庄园"
+        if tpl in self._EAST_ASIAN_ESTATE_TPL:
+            return "世族庄园"
+        gov = self._title_government(tid, date or self.as_of)
+        if gov == "celestial_government":
+            return "世族庄园"
+        if tpl in self._KOREAN_ESTATE_TPL:
+            return "家族庄园"
+        return "世族"
 
     def _primary_group(self, held):
         """按持有集计算「主要头衔组」[(gain_date, tid)] (v11): held = {tid: gain_date}
@@ -1938,9 +1948,15 @@ class Facts:
         return verb
 
     def government_changes(self, cid=None):
-        """政体变更事实 (v41, 问题1): 逐档政体变化点 → 一句
-        「1095年，诺兰由封建采邑制改行行政官制；此后诸领主依次称将军、分区长、专制君主。」
-        数据源: `cache["government_history"]` (cache_lib 逐档记的变化点)。
+        """政体变更事实 (v41, 问题1): 逐档政体变化点 → 每一点一句
+        「1087年，诺兰由冒险者改行封建制；此后诸领主依次称公爵、伯爵、专制君主。
+          1095年，诺兰由封建制改行行政制；此后诸领主依次称将军、分区长、专制君主。」
+        数据源: `cache["char_government_history"][cid]` (cache_lib 逐档为每个入
+        目标集角色记录变化点); 旧缓存退 `cache["government_history"]` (玩家专属)。
+
+        v41b (用户 2026-09-15 指正): 前身取**紧邻的上一条**, 早先误取 `hist[0]`
+        (最早那条), 于是 1095 年那次变更被写成「由**冒险者**改行行政官制」——
+        1087–1094 的封建制整段从稿子里消失, 模型遂以为主角从无地直达行政制。
 
         无变化 (或只有一次政体) 时返回 '' —— 无料不下发。
         日期用**变化点所在档期** (如 1095.1.1 → 「1095年」), 不用夺位日 ——
@@ -1949,7 +1965,7 @@ class Facts:
         pid = self.cache.get("player_id") if cid is None else cid
         if pid is None:
             return ""
-        hist = [h for h in (self.cache.get("government_history") or [])
+        hist = [h for h in self._government_history(pid)
                 if isinstance(h, dict) and h.get("date") and h.get("government")]
         # v41: 只看到本篇截止日为止的变化点 —— 否则早期十年会预告「1095 年改行
         # 行政官制」这件尚未发生的事 (as_of 泄漏)。
@@ -1958,25 +1974,45 @@ class Facts:
             hist = [h for h in hist if cl.date_key(str(h["date"])) <= _ao]
         if len(hist) < 2:
             return ""
-        new = hist[-1]
-        old = hist[0]
-        ngov = GOVERNMENT_ZH.get(str(new["government"]), "")
-        ogov = GOVERNMENT_ZH.get(str(old["government"]), "")
-        if not ngov or ngov == ogov:
+        lines = []
+        for i in range(1, len(hist)):
+            old, new = hist[i - 1], hist[i]
+            ngov = self._government_zh(str(new["government"]))
+            ogov = self._government_zh(str(old["government"]))
+            if not ngov or ngov == ogov:
+                continue
+            line = f"{self.date(str(new['date']))}，"
+            line += (f"{self.name_or(pid)}由{ogov}改行{ngov}" if ogov
+                     else f"{self.name_or(pid)}改行{ngov}")
+            words = []
+            for tier in ("duchy", "county", "kingdom"):
+                w = self._office_word(tier, str(new["government"]),
+                                      independent=False, female=False, cid=pid,
+                                      date=str(new["date"]))
+                if w and w not in words:
+                    words.append(w)
+            if words:
+                line += "；此后诸领主依次称" + "、".join(words)
+            lines.append(line + "。")
+        return "".join(lines)
+
+    def _government_history(self, cid):
+        """角色的逐档政体史 [{date, government}] (v41b): 逐角色表优先
+        (`char_government_history`, cache_lib 为每个入目标集角色记录);
+        旧缓存只有玩家表 (`government_history`)。"""
+        ch = self.cache.get("char_government_history") or {}
+        hist = ch.get(str(cid))
+        if isinstance(hist, list) and hist:
+            return hist
+        if cid == self.cache.get("player_id"):
+            return list(self.cache.get("government_history") or [])
+        return []
+
+    def _government_zh(self, gov):
+        """政体中文名 (v41b): 与档案里「政体X」同源 —— 本地化表优先, 兜底表其次。"""
+        if not gov:
             return ""
-        line = f"{self.date(str(new['date']))}，"
-        line += (f"{self.name_or(pid)}由{ogov}改行{ngov}" if ogov
-                 else f"{self.name_or(pid)}改行{ngov}")
-        words = []
-        for tier in ("duchy", "county", "kingdom"):
-            w = self._office_word(tier, str(new["government"]),
-                                  independent=False, female=False, cid=pid,
-                                  date=str(new["date"]))
-            if w and w not in words:
-                words.append(w)
-        if words:
-            line += "；此后诸领主依次称" + "、".join(words)
-        return line + "。"
+        return L.loc(self.table, gov) or GOVERNMENT_ZH.get(gov, "")
 
     # ---- v41 (问题5): 宗族宗支 ----
 
@@ -3269,17 +3305,25 @@ class Facts:
                           "goguryeo", "balhae", "khitan"}
 
     def _estate_holder_word(self, cid):
+        """庄园持有人称谓 (v41b 用户拍板1: 用游戏原文)。
+        东亚三支取自游戏本地化键 (日本 当主/女士, 高丽系 户长/夫人,
+        天朝 乡绅/夫人); 其余 (欧洲/行政制世族) 用 `game_concept_house_head`
+        = 家主 —— 「乡绅」只属天朝分支, 加在希腊皇帝身上会把模型带进中华乡绅门第。"""
         female = self._is_female(cid)
         tpl = self.culture_template(cid) or ""
         if tpl == "japanese":
             key = "estate_holder_female_japanese" if female else "estate_holder_male_japanese"
         elif tpl in self._KOREAN_ESTATE_TPL:
             key = "estate_holder_female_korean" if female else "estate_holder_male_korean"
-        else:
+        elif tpl in self._EAST_ASIAN_ESTATE_TPL:
             key = "celestial_estate_holder_female" if female else "celestial_estate_holder_male"
+        else:
+            key = "game_concept_house_head"
         v = L.loc(self.table, key)
         if v and not v.startswith("$") and not v.startswith("["):
             return v
+        if key == "game_concept_house_head":
+            return "家主"
         return "夫人" if female else "乡绅"
 
     def holder_at(self, tid, date=None):
@@ -6106,14 +6150,17 @@ class Facts:
         s = str(d)
         return s.split(".")[0] + "年"
 
-    def government(self, cid):
-        """政体显示名; v30: 无据返回 '' (曾返回「官制不详」)。"""
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        g = (rec.get("landed") or {}).get("government")
-        if not g:
-            c = self._chars.get(str(cid)) or {}
-            g = (c.get("landed_data") or {}).get("government")
-        return L.loc(self.table, g) or GOVERNMENT_ZH.get(g, "")
+    def government(self, cid, date=None):
+        """政体显示名 (v41b: 按 date 取 —— 政体不是恒定的: 主角 1087–1094 封建,
+        1095 起行政; 旧实现读缓存末档, 十年传记穿越到早年时把冒险者/封建期
+        也写成「行政制」)。
+        v30: 无据返回 '' (曾返回「官制不详」)。"""
+        g = self._character_government(cid, date or self.as_of)
+        if not g and int(self.cache.get("schema") or 1) < 2:
+            # 旧缓存 (schema<2) 无逐档政体史: 回退末档, 与 v41 前行为一致
+            rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+            g = (rec.get("landed") or {}).get("government") or ""
+        return self._government_zh(g)
 
     def motto(self):
         """玩家家族家训 (v7) → 中文。"""
@@ -8722,13 +8769,17 @@ def _protagonist(f):
         cache.get("last_date") or f.as_of or "9999.9.9")
     ld = rec.get("landed") or {}
     gov = ld.get("government")
-    # v28: 政体原始键 (提示词侧按政体换措辞用: 天朝制/行政制=官职轮转)
-    p["government_key"] = gov or ""
     # v11: 无地/有地分支按 as_of 首要头衔判定 (十年传记穿越时, 缓存 landed 是末档数据)
     ptier, ptid = f._primary_title_at(pid)
+    # v41b (用户指正: 「认为他直接从无地变成行政制」): `ld` 是缓存**末档**数据,
+    # 十年传记穿越到早年时政体读错 (1077 写行政制、1087 写行政制, 实为冒险者/封建制)。
+    # 一律按 as_of 取 (逐档政体史), 查不到才回退末档。
+    gov_asof = f._character_government(pid, f.as_of) or gov or ""
+    # v28: 政体原始键 (提示词侧按政体换措辞用: 天朝制/行政制=官职轮转)
+    p["government_key"] = gov_asof
     # v28: 只有**真·无地冒险者营地** (x_d_laamp_/雇佣团/教团) 才走营地分支;
     # 世族庄园 (x_nf_) 与游牧毡帐 (x_c_nomad_) 是家业/驻地, 不走营地分支。
-    if f.title_kind(ptid) == "camp" or gov == "landless_adventurer_government":
+    if f.title_kind(ptid) == "camp" or gov_asof == "landless_adventurer_government":
         # ---- 无地冒险者: 营地 ----
         p["landless"] = True
         camp_tid = ptid if f.title_kind(ptid) == "camp" \
@@ -8738,7 +8789,7 @@ def _protagonist(f):
         else:
             p["camp_name"] = "冒险者营地"
         # 营地细节仅当缓存 landed 确为营地 (非 as_of 穿越) 时渲染
-        if gov == "landless_adventurer_government" and not skip_detail:
+        if gov_asof == "landless_adventurer_government" and not skip_detail:
             laws = ld.get("laws") or []
             if laws:
                 names = []
@@ -8780,16 +8831,27 @@ def _protagonist(f):
         # ---- 有地领主 / 世族 ----
         # v28: 世族庄园 (x_nf_/c_nf_) — 家业身份, 与「无地冒险者营地」分列;
         # 取 as_of 仍在持有的庄园 (十年传记不回退到末档数据)。
-        for _etid, _ivs in (f._hold_intervals(pid) or {}).items():
-            if _ivs and _ivs[-1][1] is None and f._is_estate_title(_etid):
-                p["estate_name"] = f._title_name_at(_etid, f.as_of) or "家族庄园"
-                p["estate_word"] = f.estate_kind_word(_etid, pid)
-                p["estate_holder"] = f._estate_holder_word(pid)
-                # v36 (问题4): 庄园驻地州府 (家业在宾州 — 与官职治所吉昌县两处地方)
-                _ep = f.estate_place_name(pid)
-                if _ep:
-                    p["estate_place"] = _ep
-                break
+        # v41b (用户拍板2: 「只在无地/仅持庄园时写」): 首要头衔为领地 (c_ 及以上)
+        # 时**不写**庄园句 —— 诺兰是皇帝, 旧稿把这句无日期的「世族庄园「诺兰家族」，
+        # 主人称乡绅，庄园在亚琛」摆进档案, 模型便拿它当了 1048 年的产房与
+        # 一生门第; 有地领主的主线由「政体/历任」承担 (冒险者营地 → 帝国)。
+        if ptier is None:
+            for _etid, _ivs in (f._hold_intervals(pid) or {}).items():
+                if _ivs and _ivs[-1][1] is None and f._is_estate_title(_etid):
+                    p["estate_name"] = f._title_name_at(_etid, f.as_of) or "家族庄园"
+                    p["estate_word"] = f.estate_kind_word(_etid, pid)
+                    p["estate_holder"] = f._estate_holder_word(pid)
+                    # v36 (问题4): 庄园驻地州府 (家业在宾州 — 与官职治所吉昌县两处地方)
+                    _ep = f.estate_place_name(pid)
+                    if _ep:
+                        p["estate_place"] = _ep
+                    # v41b: 立族日 (晚于出生才写出 —— 出生后所立的家业不是他的产房;
+                    # 诺兰家族头衔 1094.5.28 created)
+                    _eg = _ivs[-1][0]
+                    _bd = rec.get("birth")
+                    if _eg and _bd and cl.date_key(_eg) > cl.date_key(_bd):
+                        p["estate_since"] = f.date(_eg)
+                    break
         if ld and not skip_detail:
             p["ruler_since"] = f.date(ld.get("became_ruler_date"))
             # v31 (问题8): 首府男爵领由所辖伯爵领蕴含, 折叠后再出「直辖N地」
@@ -8824,7 +8886,7 @@ def _protagonist(f):
             _is_nomad = _dtype == "yurt" or any(
                 f._is_nomad_camp(_t) for _t in (ld.get("domain") or []))
             _is_camp = (not _is_nomad) and (
-                _dtype == "camp" or gov == "landless_adventurer_government")
+                _dtype == "camp" or gov_asof == "landless_adventurer_government")
 
             # v29: 牧群 (游牧货币) 数值不下发; 口粮 (营地补给) 改档位词
             if _dom and _is_camp and _dom.get("provisions") is not None:

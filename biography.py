@@ -643,17 +643,22 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
             lines.append(gov + "。")
         # ---- v28: 世族庄园身份 (中国世族/日本武家/家族地产) ----
         # 与「无地冒险者营地」分列: 营地是无地漂泊, 庄园是有家有业的世族根基
+        # v41b (用户拍板2): 此句只在**无地/仅持庄园**时下发 (facts 侧判据:
+        # 首要头衔为庄园本身) —— 有地领主的主线交给「政体/历任」。
         if p.get("estate_name"):
             # v29b: 持有者称谓改主语句 (「世族庄园「周家族」，主人称乡绅。」),
             # 不用「世族庄园「周家族」（乡绅）」式括注同位语
             # v36 (问题4): 庄园驻地州府一并写出 (庄园在宾州), 与「治所」两处并列
             _place = f"，庄园在{p['estate_place']}" if p.get("estate_place") else ""
+            # v41b: 立族日 (晚于主角出生才立的家业写出年头 —— 「1094年5月28日立
+            # 世族「诺兰家族」，主人称家主，庄园在亚琛。」)
+            _since = f"{p['estate_since']}立" if p.get("estate_since") else ""
             if p.get("estate_holder"):
-                lines.append(f"{p.get('estate_word') or '家族庄园'}"
+                lines.append(f"{_since}{p.get('estate_word') or '家族庄园'}"
                              f"「{p['estate_name']}」，主人称{p['estate_holder']}"
                              f"{_place}。")
             else:
-                lines.append(f"{p.get('estate_word') or '家族庄园'}"
+                lines.append(f"{_since}{p.get('estate_word') or '家族庄园'}"
                              f"「{p['estate_name']}」{_place}。")
     # ---- 官职句 ----
     # v23: p.court_positions 是主角营/廷内**他人任职**花名册 (雇主=主角,
