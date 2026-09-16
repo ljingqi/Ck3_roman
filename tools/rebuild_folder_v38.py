@@ -21,7 +21,7 @@ import cache_lib as cl          # noqa: E402
 import llm                      # noqa: E402
 import pipeline as pl           # noqa: E402
 
-PAT = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json$")
+PAT = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json(?:\.gz)?$")
 
 
 def main():

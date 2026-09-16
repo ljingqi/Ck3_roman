@@ -588,6 +588,15 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
     # ---- v30: 族属变迁句 (问题1 — 「原为哥特人，871年起为诺斯人。」) ----
     if p.get("culture_history"):
         lines.append(p["culture_history"])
+    # ---- v44 (问题1): 家格沿革句 (别立家族 / 家族改名) ----
+    # 程序直出的完整句, 逐条单列 (「原属诺兰氏，1118年4月2日起别立冯·亚琛氏，…」)
+    for ln in (p.get("house_history") or []):
+        if ln:
+            lines.append(ln)
+    # ---- v44 (问题2): 传主链句 (前任/后任传主与继位日) ----
+    for ln in (p.get("succession") or []):
+        if ln:
+            lines.append(ln)
     # ---- v27: 语言句 (母语/兼通) ----
     if p.get("language_line"):
         lines.append(p["language_line"])
@@ -705,12 +714,19 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
         fam_bits.append(f"子女{p['children']}")
     if fam_bits:
         lines.append("，".join(fam_bits) + "。")
-    # v34 (问题8, 用户拍板): 妻室与他人所出、法理父不是主角的孩子 —
-    # 不进「子/女」行, 单列一句, 供《家室列传》作「妻子的子女」交代
+    # v34 (问题8, 用户拍板): 配偶与他人所出、本人不是其父/母的孩子 —
+    # 不进「子/女」行, 单列一句, 供《家室列传》作「配偶的子女」交代
     # (《本纪》不收这条)。写成完整句, 不用括注同位语。
+    # v44 (问题3): 措辞按**本人性别**取 —— 本人为女时这些孩子缺的是母亲,
+    # 旧稿一律写「妻室另育有…法理父并非主角」, 女主亲生的子女因此被读成
+    # 「与丈夫没有关系」(阿德尔海德档整段血脉疑云即由此而来)。
     if cid is None and p.get("wife_other_children") and with_real_parentage:
-        lines.append(f"妻室另育有{p['wife_other_children']}，"
-                     "此数人之法理父并非主角。")
+        if p.get("female"):
+            lines.append(f"夫婿另有子女{p['wife_other_children']}，"
+                         "此数人之法理母并非主角。")
+        else:
+            lines.append(f"妻室另育有{p['wife_other_children']}，"
+                         "此数人之法理父并非主角。")
     # ---- v27/v28: 言语关系句 (程序已判定相通或须通译, 模型照写) ----
     if p.get("language_relation"):
         lines.append(p["language_relation"])
@@ -2070,14 +2086,15 @@ def _names_path(cfg, cache):
 
 
 def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
-                       nickname_override=None):
+                       nickname_override=None, campaign=None):
     """生成传记 Markdown 并写入 out_path。返回 (md_text, facts, articles)。
     decade: 十年传记序号 (第N个十年), None 表示终传或普通在世传记。
     as_of (v11): 数据截止日期 — 十年传记传十年末, 官职/历任/时间线/朝局按此截断。
-    nickname_override (v20): {cid: 绰号} — 十年传记按时代取绰号, 防重跑漂移。"""
+    nickname_override (v20): {cid: 绰号} — 十年传记按时代取绰号, 防重跑漂移。
+    campaign (v44): 同战役全部传主缓存 {player_id: cache} — 传主链事实源。"""
     names_path = _names_path(cfg, cache)
     facts = F.build_facts(cache, melt, names_path, as_of=as_of, decade=decade,
-                          nickname_override=nickname_override)
+                          nickname_override=nickname_override, campaign=campaign)
     articles = build_articles(facts, cache, cfg)
 
     intro_cfg = dict(cfg)

@@ -669,6 +669,54 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 `d3` 仅 `[V42][3]`（窗口内阉/盲记忆并入囚禁行）FAIL，系**窗口边界**旧疾
 （受害者自 1080 年起 house arrest，囚禁记忆在窗口外），与本轮改动无关。
 
+## v44 能力（诺兰六问题：姓氏沿革 / 传主链 / 亲子字段 / 族属沿革 / 冷熔件归档 / 中文名优先）
+
+方案与实施记录：`docs/方案_v44_诺兰六问题.md`。**0 条新增提示词**，六件全部程序端。
+
+1. **家族沿革（私生女别立家族 + 家族/宗族改名）**：阿德尔海德 1118.4.2 别立
+   「冯·亚琛氏」（宗族弗兰肯），1133 年家族改称「冯」，1146 年宗族亦改称「冯」——
+   旧实现把 `dynasty_house/house_name/dynasty_name/name_full` **首见即冻结**，于是
+   她终身被写成「阿德尔海德·诺兰」。现逐档差分记 `house_history`
+   （`{from, house_id, house_name, dynasty_id, dynasty_name}`，别立那一点的日期取游戏
+   `found_date`），`cache_lib.display_name(..., date=)` 按篇截止日取家族名与**族属名序**
+   （1132 年转汉人前是「阿德尔海德·冯·亚琛」，之后才是「冯阿德尔海德」），
+   传主档案新增「家格」沿革句。战役文件夹名取沿革**首点**之名（改名不改目录），
+   传记文件名 `bio_pname` 首次即钉存 —— 两者都不让改名把已有产物「改名重生成」。
+2. **传主链（前任/后任传主）**：新版本玩家死后可从宗族里挑人继位，亲缘判定不足以还原
+   「怎么接上的」。存档 `played_character.legacy` 正是**有序带日期的玩家接替链**
+   （末条的日期＝继位日＝前任死亡当日），逐档入库 `cache["played_legacy"]`；
+   `facts.succession_lines` 出「承继：1117年6月19日，其父、前代传主X崩于当日，
+   传主之位自此归本传主。」（亲缘词由亲属图判定，判不出只写「前代传主X」）。
+   `pipeline.generate_bio` 把**同战役全部传主缓存**传给 facts（`campaign=`）。
+3. **亲子字段按性别取**：`legal_children_ex` 旧实现只认子女的 `father` 字段，女主亲生
+   子女因此全被判成「配偶与他人所出」，程序还替模型写好「此数人之法理父并非主角」——
+   模型由此写出整段「儿子与丈夫没有关系」的血脉疑云（阿德尔海德档实测）。
+   现按本人性别比 `mother`/`father`，措辞亦按性别（「夫婿另有子女X，其法理母并非主角」）。
+4. **族属沿革（法兰克尼亚人 → 汉人）**：`extract_snapshot` 里一处**提前赋值**让紧随其后的
+   逐档差分恒为假，`culture_history` 永远只有首点（对照 `faith_history` 无此赋值故一直正常）。
+   删该行后「族属：原为法兰克尼亚人，1132年起为汉人。」可出；`facts.culture(pid, as_of)`
+   与母语句同样按篇截止日取。
+5. **冷熔件 gzip 归档**：82 份全量熔件 14.12 GB + 80 份记忆边车 1.92 GB → **2.23 + 0.24 GB**
+   （gzip-6 压到 15.3%，读取代价 +0.6s/份；`output/诺兰` 整体 16.31 GB → 2.99 GB）。
+   `cache_lib.open_melt_text` / `melt_file_exists` / `_melt_index_variants` 让全部读取口
+   （`load_melt`/`load_melt_index`/`melt_file_in`/`_iter_melts`/`_backfill_tail_deaths`/
+   `snap.py`）同时认 `.json` 与 `.json.gz`；`pipeline.py compact` 只压「非最新」的熔件与边车
+   （最新一份保持明文），watch/continue 启动即由后台线程跑一轮、此后每 10 分钟补一轮。
+6. **中文名优先（Mod 英文不得顶掉本体中文）**：建表旧序是「根在外层、语言在内层」，
+   于是 Mod `longju_exent` 的 `Mathilde:0 "Matilda"` / `Marie:0 "Marry"` 压掉了游戏本体的
+   `Mathilde: "玛蒂尔德"` / `Marie: "玛丽"`，人物写作 `Matilda·萨伏依`。改为
+   **语言在外层、根在内层**（任何根的中文压过任何根的英文；同语言内仍是 Mod 覆盖本体），
+   `localization.json` schema 升至 3（读到旧表即自动重建）。
+
+回归：`tools\snap.py` 重建快照（阿德尔海德 d1/d2/final + gz 探针、克里斯托弗 final/d4）
+→ `tools\verify_fast.py` 新增 `[V44]` 组；克里斯托弗两篇与 `snap_v43_final` **全 PASS**，
+阿德尔海德各篇只余**改动前就存在**的旧疾（`[2] 实父为自己`、面向已故主角终传的
+`[3]/[6]/[8]` 三条对其在世档不适用）。单元回归 `experiments\verify_v44_unit.py`
+（亲子字段/家格句/传主链/族属取值/同胞长幼）与 `experiments\verify_v44_extract.py`
+（运行期逐档差分，4 个沿革点全部命中）全 PASS。既有缓存补历史：
+`& tools\py.ps1 tools\refresh_house_history.py 诺兰`（纯 `json.load` 重放 82 档，约 48 分钟；
+`--names` 为只按末档重算现值的秒级快修）。
+
 ## 代码纪律（2026-09-10 用户定规）
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
@@ -754,7 +802,7 @@ python tools\check_bio_v35.py [家族] [md名]
 
 | 文件 | 说明 |
 | --- | --- |
-| `pipeline.py` | 主流水线：watch/continue/scan/status/bio/demo-death/rebuild-cache/migrate |
+| `pipeline.py` | 主流水线：watch/continue/scan/status/bio/demo-death/rebuild-cache/index-melts/compact/migrate |
 | `cache_lib.py` | 缓存库 v4：每玩家缓存、姓名合并、本地化名字、反向亲属索引、特质履历、朝局历史 |
 | `localization.py` | 本地化解析（游戏+启用 Mod YML）、省份→伯爵领映射、政体层级词 |
 | `facts.py` | 干净事实渲染层（模型只收中文事实，无裸键值） |
@@ -763,7 +811,7 @@ python tools\check_bio_v35.py [家族] [md名]
 | `htmlview.py` | 宗族阅读页生成器（自包含 index.html，离线可读） |
 | `build_names.py` | 全档角色名映射表（含姓氏，本地化，供姓名合并兜底） |
 | `data/` | 全局表：names.json + localization.json（含来源指纹）+ province_map.json + dynasties.json + currency_levels.json + court_positions.json + council_tasks.json + trait_names.json + trait_tracks.json（各战役共用，v29 起启用 Mod 变化即自动重建） |
-| `output/<宗族>/data/` | 每玩家记忆缓存 + 熔化存档 melt_*.json（v6 起，与缓存同目录） |
+| `output/<宗族>/data/` | 每玩家记忆缓存 + 熔化存档 melt_*.json（v6 起，与缓存同目录；**v44 起冷熔件与其边车 gzip 归档为 `.json.gz`**，最新一份保持明文） |
 | `output/` | 传记输出（按宗族分文件夹） |
 | `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线；`verify_lushi.py` / `verify_tadokoro2.py` / `verify_zhou.py` 为确定性回归） |
 | `tools/enc.ps1` / `tools/py.ps1` | 开发工具链：统一 UTF-8 子进程输出（免中文乱码往返），`& tools\py.ps1 <脚本>` 跑 Python |

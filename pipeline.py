@@ -26,11 +26,14 @@
   python pipeline.py demo-death          # 模拟主角死亡, 演示「死后自动生成」链路
   python pipeline.py rebuild-cache       # 从各战役文件夹熔件重建缓存 (迁移/修复)
   python pipeline.py index-melts         # 预建全部熔件的记忆归档边车 (回溯加速)
+  python pipeline.py compact             # 冷熔件与边车 gzip 归档 (v44: 16GB → 约 2.4GB)
   python pipeline.py migrate             # 迁移 v4: 旧文件夹更名 + 缓存移入 output/<家族>/data/ + 重建
 """
+import gzip
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -108,13 +111,18 @@ def campaign_data_dir(cfg, folder):
 
 
 def melt_file_in(cfg, folder, date, player_id=None):
-    """战役文件夹内该日期的熔件路径: 本玩家既有 _p 文件优先, 否则日期文件。"""
+    """战役文件夹内该日期的熔件路径: 本玩家既有 _p 文件优先, 否则日期文件。
+    v44 (问题5): 冷熔件 gzip 归档后后缀可能是 `.json.gz` —— 返回**实际存在**
+    的那一份 (两份都不在时返回规范 `.json` 路径, 由调用方 isfile 判定)。"""
     d = campaign_data_dir(cfg, folder)
     key = cl.date_filekey(date)
     if player_id is not None:
-        p = os.path.join(d, f"melt_{key}_p{player_id}.json")
-        if os.path.isfile(p):
+        p = cl.melt_file_exists(os.path.join(d, f"melt_{key}_p{player_id}.json"))
+        if p:
             return p
+    p = cl.melt_file_exists(os.path.join(d, f"melt_{key}.json"))
+    if p:
+        return p
     return os.path.join(d, f"melt_{key}.json")
 
 
@@ -177,6 +185,7 @@ def melt_path_for_cache(cfg, cache, date):
         if os.path.isfile(p):
             return p
     p = melt_path(cfg, date)
+    p = cl.melt_file_exists(p) or p
     if cache.get("playthrough_id") and os.path.isfile(p):
         try:
             pt = cl.load_melt(p).get("playthrough_id")
@@ -331,8 +340,19 @@ def folder_display(name):
 
 
 def session_folder_name(cache):
-    """会话文件夹命名基准: 宗族名(氏约定) → 家族名 → 人物名。"""
-    name = cache.get("dynasty_name") or cache.get("house_name") or ""
+    """会话文件夹命名基准: 宗族名(氏约定) → 家族名 → 人物名。
+
+    v44 (问题1): 家族改名后**基准不跟着变** —— 取家族沿革**首点**之名 (开档时的
+    家族/宗族名), 无沿革 (旧缓存) 时才用现值。否则阿德尔海德 1133 年把家族改名
+    「冯」之后, watch 模式下一轮会把新会话文件夹算成「冯」而另建目录, 并把缓存
+    当「新会话首档」从空重建 (见 _process_save 的 dir0 != dir1 分支)。"""
+    pid = cache.get("player_id")
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    hist = [h for h in (rec.get("house_history") or []) if h.get("from")]
+    name = ""
+    if hist:
+        name = hist[0].get("dynasty_name") or hist[0].get("house_name") or ""
+    name = name or cache.get("dynasty_name") or cache.get("house_name") or ""
     if not name:
         pn = cache.get("player_name") or f"玩家{cache.get('player_id')}"
         name = pn
@@ -656,13 +676,22 @@ def _catchup(cfg, cache, continue_mode=False):
 
 def _bio_pname(cache):
     """传记文件名用人物标识 (v13): 显示名+生年, 如「崔佛·菲利普(844)」。
-    同宗同名 (祖孙都叫崔佛) 靠生年区分, 根治十年判重/文件名撞车。"""
+    同宗同名 (祖孙都叫崔佛) 靠生年区分, 根治十年判重/文件名撞车。
+    v44 (问题1): 首次用到即**钉存** `cache["bio_pname"]` —— 传主别立家族/家族改名
+    后 name_full 会随年代变 (阿德尔海德·冯·亚琛 → 冯阿德尔海德), 文件名若跟着变,
+    早先十年的文件就匹配不上重新生成一次 (pipeline._generated_decades_on_disk
+    按这个名字串匹配)。文件名是历史锚点, 显示名在正文里按篇变。"""
+    pinned = cache.get("bio_pname")
+    if pinned:
+        return pinned
     pid = cache.get("player_id")
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
     pname = rec.get("name_full") or rec.get("name_zh") or f"玩家{pid}"
     birth = rec.get("birth") or ""
     by = str(birth).split(".")[0] if birth else ""
-    return f"{pname}({by})" if by and by.isdigit() else pname
+    name = f"{pname}({by})" if by and by.isdigit() else pname
+    cache["bio_pname"] = name
+    return name
 
 
 def output_paths(cfg, cache, continue_mode=False, decade=None):
@@ -726,7 +755,7 @@ def _backfill_tail_deaths(cfg, cache):
     并做名字身份校验防 id 撞号)。返回回填条数。"""
     folder = cache.get("output_folder") or ""
     d = os.path.join(cfg.get("output_dir", ""), folder, "data")
-    pat = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json$")
+    pat = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json(?:\.gz)?$")
     cands = []
     if os.path.isdir(d):
         for fn in os.listdir(d):
@@ -843,7 +872,8 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
             return out_path, None
     md, facts, articles = bio.generate_biography(cache, melt, cfg, out_path=out_path,
                                                  decade=decade, as_of=as_of,
-                                                 nickname_override=nickname_override)
+                                                 nickname_override=nickname_override,
+                                                 campaign=_campaign_caches(cfg, cache))
     # 持久化文件夹绑定 (v14: 只绑定、不覆盖 — output_folder 已存在且目录存在时
     # 不再改写, 修复方案_菲利普2.md 问题2: 旧逻辑把 38696 的绑定从 菲利普2
     # 覆盖成 菲利普5, 但缓存文件与熔件都在 菲利普2, 导致后续按错误绑定找文件夹)
@@ -1353,6 +1383,8 @@ def step_watch(cfg, continue_mode=False):
     _WATCH_SESSION["folder"] = None
     _WATCH_SESSION["player_key"] = None
     _cleanup_tmp_melts(cfg)
+    # v44 (问题5): 冷熔件 gzip 归档在后台进行 (启动跑一遍, 之后每 10 分钟一轮)
+    _ensure_compact_worker(cfg)
     save_dir = cfg.get("save_dir", "")
     baseline = max((s["mtime"] for s in scan_saves(save_dir)), default=0)
     llm.log("监控存档中 (只处理本程序启动后保存的新存档)...")
@@ -1534,8 +1566,9 @@ def step_bio(cfg, player_id=None, decade=None):
 
 def _iter_melts(cfg):
     """遍历全部熔件: (所属战役文件夹或 None, 绝对路径, 日期)。
-    优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。"""
-    pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json$")
+    优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。
+    v44 (问题5): 同时认 `.json` 与 `.json.gz` (冷熔件 gzip 归档)。"""
+    pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz)?$")
     out = []
     out_dir = cfg.get("output_dir", "")
     if os.path.isdir(out_dir):
@@ -1747,7 +1780,8 @@ def step_index_melts(cfg):
     built = skipped = failed = 0
     for _folder, path, date in melts:
         idx_path = cl.melt_index_path(path)
-        if os.path.isfile(idx_path):
+        # v44: 边车可能已被 gzip 归档 (两种后缀都算"已有")
+        if any(os.path.isfile(p) for p in cl._melt_index_variants(path)):
             skipped += 1
             continue
         t0 = time.time()
@@ -1766,6 +1800,102 @@ def step_index_melts(cfg):
         built += 1
         llm.log(f"  {date}: 归档完成 ({time.time() - t0:.0f}s)")
     llm.log(f"归档完成: 新建 {built} 份, 已有 {skipped} 份, 失败 {failed} 份")
+
+
+def _gzip_file(path):
+    """把一份熔件/边车 gzip 归档 (原子写), 返回归档后路径; 已是 .gz 返回原路径。
+
+    v44 (问题5): gzip-6 实测 15.3% (256MB → 39MB, 4.3s/份), 读取只多 0.6s。"""
+    p = str(path)
+    if p.lower().endswith(".gz"):
+        return p
+    tmp = p + ".gz.tmp"
+    with open(p, "rb") as fi, gzip.open(tmp, "wb", compresslevel=6) as fo:
+        shutil.copyfileobj(fi, fo, 8 << 20)
+    out = p + ".gz"
+    os.replace(tmp, out)
+    try:
+        os.remove(p)
+    except OSError:
+        pass
+    return out
+
+
+def _compact_keep_paths(cfg):
+    """各战役文件夹里**保持明文**的熔件路径 (最新一份)。
+
+    每次并入新档、每次生成传记都要读最新一份, 留着明文省一次解压;
+    历史熔件只在回溯/补档/核对时读, 压缩代价可忽略。"""
+    keep = set()
+    by_folder = {}
+    for folder, path, date in _iter_melts(cfg):
+        by_folder.setdefault(folder or "", []).append((cl.date_key(date), path))
+    for _f, items in by_folder.items():
+        keep.add(max(items)[1])
+    return keep
+
+
+def step_compact(cfg):
+    """把冷熔件与记忆归档边车 gzip 归档 (v44 问题5, 可反复运行)。
+
+    实测诺兰档: 熔件 82 份 14.12GB + 边车 80 份 1.92GB → 约 2.4GB。
+    归档后全部读取口 (cache_lib.load_melt / load_melt_index /
+    pipeline.melt_file_in / _iter_melts / _backfill_tail_deaths) 都认两种后缀。
+    返回 (归档份数, 释放字节)。"""
+    melts = _iter_melts(cfg)
+    if not melts:
+        llm.log("未找到 melt 文件, 无需归档")
+        return 0, 0
+    keep = _compact_keep_paths(cfg)
+    targets = []
+    for _folder, path, _date in melts:
+        if path not in keep:
+            targets.append(path)
+        idx = None
+        for cand in cl._melt_index_variants(path):
+            if os.path.isfile(cand):
+                idx = cand
+                break
+        if idx:
+            targets.append(idx)
+    done = freed = 0
+    for p in targets:
+        if p.lower().endswith(".gz"):
+            continue
+        before = os.path.getsize(p)
+        try:
+            out = _gzip_file(p)
+        except Exception as e:
+            llm.log(f"  [归档失败] {os.path.basename(p)}: {e}")
+            continue
+        after = os.path.getsize(out)
+        done += 1
+        freed += max(0, before - after)
+    llm.log(f"冷熔件归档: {done} 份, 释放 {freed / (1 << 30):.2f} GB "
+            f"(最新熔件保持明文, 读取口两种后缀皆认)")
+    return done, freed
+
+
+_COMPACT_THREAD = None
+
+
+def _compact_loop(cfg):
+    """后台归档线程: 启动时跑一遍, 此后每 10 分钟补一轮 (新档并入后旧最新档转入冷区)。"""
+    while True:
+        try:
+            step_compact(cfg)
+        except Exception as e:
+            llm.log(f"  [归档] 失败: {e}")
+        time.sleep(600)
+
+
+def _ensure_compact_worker(cfg):
+    """启动后台归档线程 (watch/continue 共用, 只启动一次; 不阻塞轮询)。"""
+    global _COMPACT_THREAD
+    if _COMPACT_THREAD is not None:
+        return
+    _COMPACT_THREAD = threading.Thread(target=_compact_loop, args=(cfg,), daemon=True)
+    _COMPACT_THREAD.start()
 
 
 def _log_loc_source(cfg):
@@ -1816,6 +1946,8 @@ def main():
         step_rebuild_cache(cfg)
     elif cmd == "index-melts":
         step_index_melts(cfg)
+    elif cmd == "compact":
+        step_compact(cfg)
     elif cmd == "migrate":
         step_migrate(cfg)
     else:

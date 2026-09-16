@@ -801,12 +801,17 @@ class Facts:
     只收本十年 (as_of−10年, as_of] 的事件 (修复方案_汤利五问题.md 决策 1/2)。"""
 
     def __init__(self, cache, melt, names_path, as_of=None, decade=None,
-                 nickname_override=None, cfg=None):
+                 nickname_override=None, cfg=None, campaign=None):
         self.cache = cache
         self.melt = melt
         self.names_path = names_path
         self.as_of = as_of
         self.decade = decade
+        # v44 (问题2): 同战役全部传主缓存 {player_id: cache} — 传主链的前任/后任
+        # 亲缘与名号由此取; 缺省只有本传主自己 (不影响其余事实)。
+        self.campaign = dict(campaign or {})
+        if cache.get("player_id") is not None:
+            self.campaign.setdefault(cache.get("player_id"), cache)
         # v41: 配置 (开关类口径的唯一来源; 缺省读 config.json)
         self.cfg = cfg if cfg is not None else llm.load_config()
         # v41: Carnalitas 事件好感族是否进事实面 (默认关, 见 llm.DEFAULT_CONFIG)
@@ -1019,26 +1024,29 @@ class Facts:
         self._tpl_memo = {}
 
     # ---- 名字 ----
-    def name(self, cid):
+    def name(self, cid, date=None):
         """角色 id → 显示名 (v13 统一出口): 父名制文化 → 名·父名
         (崔佛·富兰克林松, 父名替代家族名); 其余文化按名序 (东方姓在前, 西方名·姓)。
         文化缺失 (玩家/死者) 时经亲属链推断, 详见 cache_lib.display_name。
-        结果按 cid 缓存 (同一次 build_facts 内缓存不可变, 数千次渲染只需算一次)。"""
+        v44 (问题1): date 传本篇截止日 → 家族名取该日沿革之值 (私生女另立家族 /
+        家族改名后, 早年篇用当年之名, 末档篇用今名); 缺省取熔件现值。
+        结果按 (cid, date) 缓存 (同一次 build_facts 内缓存不可变)。"""
         if cid is None:
             return ""
-        c = self._name_cache.get(cid)
+        ck = (cid, date or "")
+        c = self._name_cache.get(ck)
         if c is not None:
             return c
         c = cl.display_name(self.cache, cid, melt=self.melt,
                             names_path=self.names_path, chars=self._chars,
-                            memo=self._tpl_memo)
-        self._name_cache[cid] = c
+                            memo=self._tpl_memo, date=date)
+        self._name_cache[ck] = c
         return c
 
-    def name_or(self, cid, fallback="某人"):
+    def name_or(self, cid, fallback="某人", date=None):
         """角色显示名 (取不到时用史书式的「某人」占位 — v28b: 原「一位人物」口语且
         偏现代; 称谓出口 person_label 对占位一律返回 '', 不把占位写进称谓)。"""
-        n = self.name(cid)
+        n = self.name(cid, date=date)
         return n or fallback
 
     # ---- v17: 世系编号 (II/III 二世标记) ----
@@ -1228,7 +1236,7 @@ class Facts:
             if nick:
                 return f"{nick}{tn}"
             return tn
-        nm = self.name_or(cid)
+        nm = self.name_or(cid, date=date)
         if not nm:
             return nm
         nick = self.nickname(cid)
@@ -2032,22 +2040,216 @@ class Facts:
 
     # ---- v41 (问题5): 宗族宗支 ----
 
-    def clan_line(self, cid):
+    def clan_line(self, cid, date=None):
         """宗族宗支句 (v41, 问题5): 该角色的分家与宗族不同名时给出
         「东盎格利亚为布里奥讷宗族的分支」, 使同一宗族的不同分家能被读成同宗
         (诺兰档: 休·东盎格利亚 与前英格兰国王同属布里奥讷宗族, 旧稿只显示
         分家名「东盎格利亚」, 模型便当他是路人)。
 
         用户 2026-09-15 定规: **不写「主支为谁」** —— 不点名宗族内哪一支为主。
-        宗族名缺失、或分家名与宗族名相同 (即初始家族) 时返回 ''。"""
+        宗族名缺失、或分家名与宗族名相同 (即初始家族) 时返回 ''。
+        v44 (问题1): 家族名按 date 取沿革之值 —— 家族改名后 (冯·亚琛 → 冯)
+        分家名与宗族名同为一字, 此句自然消失, 不再拿旧名说「为X宗族的分支」。"""
         if cid is None:
             return ""
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        dn = house_display(rec.get("dynasty_name") or "")
-        hn = house_display(rec.get("house_name") or "")
+        dn, hn = self._house_names_at(cid, date)
         if not dn or not hn or dn == hn:
             return ""
         return f"{hn}为{dn}宗族的分支。"
+
+    def _house_names_at(self, cid, date=None):
+        """(宗族名, 家族名) 按 date 取家族沿革 (v44 问题1) —— **先宗族后家族**。
+
+        返回显示形 (单字加「氏」, 与 `_dynasty_display` 同口径):
+        前者为宗族名 ($DYNASTY$, 东方名序的姓), 后者为家族/分家名 ($HOUSE$,
+        西方名序的姓)。顺序与 `_dynasty_display(dn, hn)` 的形参一致。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        h, dn = cl._house_names_at(rec, self.melt, date or self.as_of,
+                                   rec.get("house_name") or "",
+                                   rec.get("dynasty_name") or "",
+                                   memo=self._tpl_memo)
+        return house_display(dn or h), house_display(h)
+
+    def house_history_lines(self, cid):
+        """家格沿革句 (v44 问题1): 别立家族与家族改名只有逐档差分能记。
+
+        数据源 = 缓存 `house_history` (cache_lib 逐档差分: 家族 id 或家族/宗族
+        显示名变更点; 别立家族那一点的日期取游戏 `found_date`)。单点/无沿革返回 []。
+        例 (阿德尔海德): '家格：原属诺兰氏，1118年4月2日起别立冯·亚琛氏，属弗兰肯宗族；
+        1133年起改称冯氏。'"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        hist = [h for h in (rec.get("house_history") or []) if h.get("from")]
+        if len(hist) < 2:
+            return []
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        pts = []
+        for h in hist:
+            try:
+                if ao is not None and cl.date_key(h["from"]) > ao:
+                    break
+            except Exception:
+                continue
+            hid = h.get("house_id")
+            hn = house_display(h.get("house_name") or "")
+            dn = house_display(h.get("dynasty_name") or "")
+            if not (hn or dn):
+                continue
+            pts.append((str(h["from"]), hid, hn, dn))
+        if len(pts) < 2:
+            return []
+
+        def _shi(nm):
+            if not nm:
+                return ""
+            return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
+
+        segs = []
+        for i, (d, hid, hn, dn) in enumerate(pts):
+            dm = self.date(d)
+            if not dm or "未知" in dm:
+                dm = d
+            nm = _shi(hn or dn)
+            if i == 0:
+                segs.append(f"原属{nm}")
+                continue
+            p_hid, p_hn, p_dn = pts[i - 1][1], pts[i - 1][2], pts[i - 1][3]
+            new_house = hid != p_hid
+            house_changed = hn != p_hn
+            dyn_changed = dn != p_dn
+            # 宗族名只在「别立家族」或「宗族本身改名」时补出 (避免逐句重复)
+            clan = f"，属{dn}宗族" if dn and hn and dn != hn \
+                and (new_house or dyn_changed) else ""
+            if new_house:
+                segs.append(f"{dm}起别立{nm}{clan}")
+            elif house_changed and dyn_changed:
+                segs.append(f"{dm}起家族与宗族并称{_shi(dn or hn)}")
+            elif house_changed:
+                segs.append(f"{dm}起家族改称{nm}{clan}")
+            elif dyn_changed:
+                segs.append(f"{dm}起宗族改称{_shi(dn)}")
+        return ["家格：" + "，".join(segs) + "。"] if len(segs) > 1 else []
+
+    def _kin_word(self, a, b):
+        """a 对 b 的亲缘称谓 (v44 问题2): 「其父/其母/其子/其女/其兄/其弟/其姊/其妹/
+        其配偶」; 判不出返回 '' (调用方整句省去, 不猜)。"""
+        try:
+            a, b = int(a), int(b)
+        except (TypeError, ValueError):
+            return ""
+        ra = (self.cache.get("characters") or {}).get(str(a)) or {}
+        rb = (self.cache.get("characters") or {}).get(str(b)) or {}
+        fa = ra.get("family") or {}
+        fb = rb.get("family") or {}
+        if b in (fa.get("father") or []) or b in (fa.get("real_father") or []):
+            return "其父"
+        if b in (fa.get("mother") or []):
+            return "其母"
+        if b in (fa.get("child") or []):
+            return "其女" if self._is_female(b) else "其子"
+        if a in (fb.get("father") or []) or a in (fb.get("mother") or []):
+            # a 是 b 的父/母 → b 是 a 的子/女 (按 **b** 的性别取词)
+            return "其女" if self._is_female(b) else "其子"
+        if b in (fb.get("child") or []):
+            # a 是 b 的子/女 → b 是 a 的父/母 (按 **b** 的性别取词)
+            return "其母" if self._is_female(b) else "其父"
+        if b in (fa.get("siblings") or []):
+            # 「b 是 a 的什么」→ 长幼看 **b 是否年长于 a** (v44 修: 曾把
+            # `_older_than(a, b)` 当「b 年长」用, 方向整好反了 —— 诺兰档 10 名
+            # 同胞 10/10 全反, 1079 年生的多萝特娅被写成「其妹」)
+            older = self._older_than(b, a)
+            if older is None:
+                return "其兄弟姊妹"
+            if self._is_female(b):
+                return "其姊" if older else "其妹"
+            return "其兄" if older else "其弟"
+        if b in (fa.get("ever_spouses") or []) or b in (fa.get("spouse") or []) \
+                or b in (fa.get("primary_spouse") or []):
+            return "其配偶"
+        return ""
+
+    def _older_than(self, a, b):
+        """a 是否年长于 b (生年比较); 任一方无生年返回 None。"""
+        ra = (self.cache.get("characters") or {}).get(str(a)) or {}
+        rb = (self.cache.get("characters") or {}).get(str(b)) or {}
+        ba, bb = ra.get("birth"), rb.get("birth")
+        if not ba or not bb:
+            return None
+        try:
+            return cl.date_key(ba) < cl.date_key(bb)
+        except Exception:
+            return None
+
+    # ---- v44 (问题2): 传主链 (前任/后任传主) ----
+
+    def _chain_person(self, cid, date=None):
+        """传主链里的一个人 → 名号文本 (本缓存查不到时用其本人缓存兜底)。"""
+        nm = self.person_label(cid, date=None, style="brief")
+        if not nm:
+            other = self.campaign.get(int(cid)) if str(cid).isdigit() else None
+            if isinstance(other, dict):
+                rec = (other.get("characters") or {}).get(str(cid)) or {}
+                nm = rec.get("name_full") or rec.get("name_zh") or ""
+            if not nm:
+                nm = self.name(cid, date=None)
+        return nm or ""
+
+    def succession_lines(self):
+        """传主链事实 (v44 问题2): 前任/后任传主与继位日。
+
+        数据源 = 存档 `played_character.legacy` (逐档入库为 cache["played_legacy"]),
+        亲缘由本缓存亲属图判定, 名号走 person_label。
+        例: '承继：1117年6月19日，继前代传主邪魔克里斯托弗·诺兰之位（其父，同日崩）。'
+            '后任：1152年3月4日，传主之位归于其子X。'
+        无链/只有本人时返回 []。"""
+        cache = self.cache
+        pid = cache.get("player_id")
+        chain = [e for e in (cache.get("played_legacy") or [])
+                 if isinstance(e, dict) and isinstance(e.get("cid"), int)]
+        if pid is None or len(chain) < 2:
+            return []
+        idx = next((i for i, e in enumerate(chain) if e["cid"] == int(pid)), None)
+        if idx is None:
+            return []
+        out = []
+        if idx > 0:
+            prev = chain[idx - 1]
+            pcid = int(prev["cid"])
+            start = chain[idx].get("date") or ""
+            nm = self._chain_person(pcid)
+            kin = self._kin_word(pid, pcid)
+            pv = self.campaign.get(pcid)
+            death = ""
+            if isinstance(pv, dict):
+                death = ((pv.get("player_death") or {}).get("date")) or ""
+            # 无括注、无同位语括注 (v29b 口径): 「其父、前代传主X崩于当日」
+            lead = f"{kin}、" if kin else ""
+            if death and start and cl.date_key(death) == cl.date_key(start):
+                fate = "崩于当日"
+            elif death:
+                fate = f"崩于{self.date(death)}"
+            else:
+                fate = ""
+            if nm and start:
+                if fate:
+                    out.append(f"承继：{self.date(start)}，{lead}前代传主{nm}{fate}，"
+                               f"传主之位自此归本传主。")
+                else:
+                    out.append(f"承继：{self.date(start)}，本传主继{lead}"
+                               f"前代传主{nm}之位。")
+            elif nm:
+                out.append(f"承继：本传主继{lead}前代传主{nm}之位。")
+        if idx + 1 < len(chain):
+            nxt = chain[idx + 1]
+            ncid = int(nxt["cid"])
+            start = nxt.get("date") or ""
+            nm = self._chain_person(ncid)
+            kin = self._kin_word(pid, ncid)
+            if nm:
+                body = f"{kin}{nm}继为传主。" if kin else f"传主之位归于{nm}。"
+                out.append(f"后任：{self.date(start)}，{body}" if start
+                           else f"后任：其后{body}")
+        return out
+
 
     # ---- v41 (问题6): 共治者 (co-ruler) 称谓 ----
 
@@ -2490,7 +2692,7 @@ class Facts:
         if not self.is_matrilineal(a, b, after=wedding or None, before=before):
             return ""
         mom = a if self._is_female(a) else b
-        label = self._house_label(self._house_of_cid(mom)) or ""
+        label = self._house_label_at(mom, self.as_of) or ""
         if not label:
             return ""
         return f"（入赘婚：所生子女随母方，属{label}）"
@@ -3174,6 +3376,21 @@ class Facts:
             return ""
         return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
 
+    def _house_label_at(self, cid, date=None):
+        """某人**在该日**的家族称谓 (v44 问题1): 沿革点优先, 无沿革回退家族 id 现值。
+
+        入赘婚的「属X氏」写的是**该篇截止日**母方的家族 —— 阿德尔海德 1118 年
+        别立冯·亚琛氏后, 末档篇不得再写「属诺兰氏」。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        if rec.get("house_history"):
+            h, dn = self._house_names_at(cid, date)
+            nm = h or dn
+        else:
+            nm = self._house_label(self._house_of_cid(cid)) if self._house_of_cid(cid) else ""
+        if not nm:
+            return ""
+        return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
+
     def _feud_event_fallback(self, my_houses, other_house, date, other_label):
         """恩怨史事件原文不可读时, 由缓存记忆重建该日句 (程序优先) —
         house_feud_started_memory 的 attacker/victim/house_feud_reason 给出
@@ -3636,7 +3853,11 @@ class Facts:
         存档 `family.father` 含 cid 的孩子 — 不论其是否另有实父 (非婚生亦然),
         这些孩子都算 cid 的子女, 归《本纪》与父亲的家门清单。
         法理父是**别人**的孩子 (妻室与他人所出而不入其户籍者) 不在其中,
-        归《家室列传》作妻子的子女。"""
+        归《家室列传》作妻子的子女。
+        v44 (问题3): 认亲字段**按本人性别取** —— 女性主角取其子女的 `mother`
+        字段。旧实现只认 `father`, 于是女主亲生的子女全被判成「配偶与他人所出」
+        (阿德尔海德档四个子女被写成「此数人之法理父并非主角」, 模型由此得出
+        「主角的儿子与主角的丈夫没有关系」)。"""
         out, _ = self.legal_children_ex(cid)
         return out
 
@@ -3648,17 +3869,26 @@ class Facts:
         kids = [k for k in (fam.get("child") or []) if isinstance(k, int)]
         if not kids:
             return set(), False
+        # v44 (问题3): 本人为母 → 比对孩子 family 的 mother 字段; 为父 → father。
+        # 无性别记载时两者都比 (宁取并集, 不把亲生子女判出门外)。
+        female = self._is_female(cid)
+        want = ["mother"] if female else ["father"]
+        if not female and rec.get("female") is None:
+            want = ["father", "mother"]
         out = set()
         for k in kids:
             kf = ((self.cache.get("characters") or {}).get(str(k)) or {}).get("family") or {}
-            faths = [x for x in (kf.get("father") or []) if isinstance(x, int)]
-            if cid in faths:
-                out.add(k)
+            for w in want:
+                if cid in [x for x in (kf.get(w) or []) if isinstance(x, int)]:
+                    out.add(k)
+                    break
         return out, True
 
     def wife_other_children(self, cid):
-        """妻室与他人所出、且法理父不是 cid 的孩子 (v34, 问题8):
-        这些是《家室列传》里的「妻子的子女」, 不进主角的家门清单。"""
+        """配偶与他人所出、且**本人不是其父/母**的孩子 (v34, 问题8; v44 问题3):
+        这些是《家室列传》里的「配偶的子女」, 不进主角的家门清单。
+        本人为女时比对孩子 `mother` (旧实现一律比对 `father`, 女主亲生子女
+        因此全落进这里)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         fam = rec.get("family") or {}
         legal, has = self.legal_children_ex(cid)
@@ -5990,10 +6220,11 @@ class Facts:
         return out
 
     # ---- v27: 语言风味 (母语 / 兼通 / 言语异同) ----
-    def _culture_language_id(self, cid):
+    def _culture_language_id(self, cid, date=None):
         """角色所属文化的语言 id (language_japonic…); 文化缺失时由文化模板回推。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        cul = rec.get("culture")
+        # v44 (问题4): 文化 id 按 date 取沿革之值 (早年篇的母语与族属须一致)
+        cul = self._culture_id_at(cid, date)
         if cul is None:
             cul = (self._chars.get(str(cid)) or {}).get("culture")
         if cul is not None:
@@ -6009,11 +6240,11 @@ class Facts:
                 return str(lg)
         return ""
 
-    def mother_language(self, cid):
+    def mother_language(self, cid, date=None):
         """母语 (本族语) 中文名: 文化 → language → 本地化; 未知返回 ''。
         CK3 的角色语言表必然含本族语, 其余为习得语言 (Royal Court 语言系统);
         文化完全不可考而角色只通一语时, 该语即其母语。"""
-        lg = self._culture_language_id(cid)
+        lg = self._culture_language_id(cid, date)
         if lg:
             v = L.loc(self.table, f"{lg}_name") or L.loc(self.table, lg) or ""
             if v:
@@ -6023,13 +6254,14 @@ class Facts:
             return langs[0]
         return ""
 
-    def language_sentence(self, cid):
+    def language_sentence(self, cid, date=None):
         """语言事实句 (v27): 「母语日琉语，兼通乌古尔语。」/
-        「通日琉语、乌古尔语。」(母语不可考时); 无语言记录返回 ''。"""
+        「通日琉语、乌古尔语。」(母语不可考时); 无语言记录返回 ''。
+        v44 (问题4): 母语按 date 取 (早年篇不写后来的族属所对应的母语)。"""
         langs = self.languages(cid)
         if not langs:
             return ""
-        ml = self.mother_language(cid)
+        ml = self.mother_language(cid, date)
         if ml and ml in langs:
             others = [x for x in langs if x != ml]
             if others:
@@ -6153,14 +6385,47 @@ class Facts:
         return cl._patronym_of(self.cache, cid, self.melt, self.names_path,
                                chars=self._chars)
 
-    def culture(self, cid):
+    def _culture_id_at(self, cid, date=None):
+        """角色在 date 的文化 id (v44 问题4): 族属沿革点优先, 无沿革取末档现值。
+
+        与 `_character_government` 同口径 —— 十年传记穿越到早年时不得吃末档文化
+        (阿德尔海德 1132 年由法兰克尼亚人转汉人, 早年篇须为法兰克尼亚人)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        hist = [h for h in (rec.get("culture_history") or []) if h.get("from")]
+        if date and hist:
+            dk = cl.date_key(date)
+            pick = hist[0]
+            for h in hist:
+                try:
+                    if cl.date_key(h["from"]) <= dk:
+                        pick = h
+                    else:
+                        break
+                except Exception:
+                    break
+            if pick.get("culture") is not None:
+                return pick["culture"]
+        return rec.get("culture")
+
+    def culture(self, cid, date=None):
         """角色文化 (v11): 缓存/熔件 culture id → 语言推断 → 本地化 → 'X人'。
-        v30: 无据返回 '' — 由调用方整句略去, 不写「族属不详」这类考语。"""
+        v30: 无据返回 '' — 由调用方整句略去, 不写「族属不详」这类考语。
+        v44 (问题4): date 传本篇截止日 → 按族属沿革取该日之值 (早年篇不写末档文化)。"""
+        cul = self._culture_id_at(cid, date)
+        if cul is not None:
+            e = ((self.melt.get("culture_manager") or {}).get("cultures") or {}) \
+                .get(str(cul))
+            tpl = (e or {}).get("culture_template") if isinstance(e, dict) else None
+            if tpl:
+                name = L.loc(self.table, tpl) or CULTURE_TEMPLATE_ZH.get(tpl) or ""
+                if name:
+                    return name if name.endswith("人") else f"{name}人"
         tpl = self.culture_template(cid) or ""
         name = L.loc(self.table, tpl) or CULTURE_TEMPLATE_ZH.get(tpl) or ""
         if name:
             # v11: 族属用「X人」(诺斯人/汉人), 不再用「X族」; 名已以「人」结尾不再追加
             return name if name.endswith("人") else f"{name}人"
+        # v30: 无据返回 '' — 由调用方整句略去, 不写「族属不详」这类考语。
         return ""
 
     def _faith_name(self, fid):
@@ -9103,16 +9368,17 @@ def _protagonist(f):
     melt = f.melt
     pobj = (melt.get("living") or {}).get(str(pid)) or {}
     ad = pobj.get("alive_data") or {}
+    # v44 (问题1): 家族名按本篇截止日取沿革之值 —— 传主别立家族/家族改名后,
+    # 【家族】行、名号句与家格句三处必须同源 (旧稿一律取缓存首见值「诺兰」)。
+    _dn, _hn = f._house_names_at(pid, f.as_of)
     p = {
-        "name": f.name_with_regnal(pid),  # v17: 主角名带世系编号 (与时间线文本同口径)
+        "name": f.name_with_regnal(pid, f.as_of),  # v17: 带世系编号; v44: 按篇截止日
         "name_zh": rec.get("name_zh") or "",
         # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充, 与宗族不同时给出)
-        "house": _dynasty_display(rec.get("dynasty_name") or cache.get("dynasty_name"),
-                                  rec.get("house_name") or cache.get("house_name")),
-        "house_branch": _house_branch(rec.get("dynasty_name") or cache.get("dynasty_name"),
-                                      rec.get("house_name") or cache.get("house_name")),
+        "house": _dynasty_display(_dn, _hn),
+        "house_branch": _house_branch(_dn, _hn),
         "birth": f.date(rec.get("birth")),
-        "culture": f.culture(pid),
+        "culture": f.culture(pid, f.as_of),
         "faith": f.faith(pid),
         # v31 (问题1): 「为人」按类别分句 (性情/才具/阅历…), 不再一顿号串
         "traits": f.traits_sentence(pid, public=True),
@@ -9123,7 +9389,8 @@ def _protagonist(f):
     if langs:
         p["languages"] = "、".join(langs)
     # v27: 语言风味 — 母语/兼通 + 与妻室子女的言语异同
-    p["language_line"] = f.language_sentence(pid)
+    # v44 (问题4): 母语按篇截止日取 (早年篇的族属与母语须一致)
+    p["language_line"] = f.language_sentence(pid, f.as_of)
     p["language_bridge"] = f.language_bridge_line(pid)
     # v28: 与妻室子女的逐人言语关系句 (程序直给「相通/须通译」结论)
     _lrel = f.language_relation_lines(pid)
@@ -9150,6 +9417,14 @@ def _protagonist(f):
     chl = f.culture_history_lines(pid)
     if chl:
         p["culture_history"] = "；".join(chl)
+    # v44 (问题1): 家格沿革 (别立家族 / 家族改名)
+    hhl = f.house_history_lines(pid)
+    if hhl:
+        p["house_history"] = hhl
+    # v44 (问题2): 传主链 (前任/后任传主与继位日)
+    scl = f.succession_lines()
+    if scl:
+        p["succession"] = scl
     # v7: 家族家训 + 宫廷/营地官职
     mot = f.motto()
     if mot:
@@ -11277,15 +11552,16 @@ def _secrets_facts(f):
 
 
 def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
-                nickname_override=None, cfg=None):
+                nickname_override=None, cfg=None, campaign=None):
     """渲染干净事实集。melt 为 dict (已加载)。
     as_of (v11): 传记数据截止日期; 十年传记传十年末, 官职/历任/时间线/朝局按此截断。
     decade (v17): 十年传记序号 — 时间线/概览/摘要/刺客列传只收本十年
     (as_of−10年, as_of]; 终传/在世传 None 收全期。
     nickname_override (v20): {cid: 绰号} 按时代绰号覆盖 (十年传记重跑用)。
-    cfg (v41): 配置 (开关类口径); 缺省读 config.json。"""
+    cfg (v41): 配置 (开关类口径); 缺省读 config.json。
+    campaign (v44): 同战役全部传主缓存 {player_id: cache} — 传主链亲缘/名号用。"""
     f = Facts(cache, melt, names_path, as_of=as_of, decade=decade,
-              nickname_override=nickname_override, cfg=cfg)
+              nickname_override=nickname_override, cfg=cfg, campaign=campaign)
     period = ""
     sources = cache.get("sources") or []
     if sources:
@@ -11302,12 +11578,16 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         pd["reason_zh"] = f.death_clause(
             cache.get("player_id"), date=pd.get("date"),
             reason=pd.get("reason"), killer=pd.get("killer"))
+    # v44 (问题1): 【家族】行同样按本篇截止日取家族沿革 (传主别立家族/改名后,
+    # 共享前缀里的家族名不得停在首见值)
+    _pid0 = cache.get("player_id")
+    _pdn, _phn = f._house_names_at(_pid0, as_of) if _pid0 is not None else ("", "")
     facts = {
         # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充)
-        "house": _dynasty_display(cache.get("dynasty_name"),
-                                  cache.get("house_name")),
-        "house_branch": _house_branch(cache.get("dynasty_name"),
-                                      cache.get("house_name")),
+        "house": _dynasty_display(_pdn or cache.get("dynasty_name"),
+                                  _phn or cache.get("house_name")),
+        "house_branch": _house_branch(_pdn or cache.get("dynasty_name"),
+                                      _phn or cache.get("house_name")),
         "player_name": cache.get("player_name"),
         "player_id": cache.get("player_id"),
         "period": period,
@@ -11342,6 +11622,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # v9: 家族恩怨录 / 宝物志 数据源
         "house_feuds": f.house_feuds(),
         "family_artifacts": f.family_artifacts(),
+        # v44 (问题2): 传主链 (前任/后任传主) — 共享前缀与传主档案之外的出口,
+        # 供 biography 在《本纪》开篇点出「怎么接上的」
+        "succession": f.succession_lines(),
         # v13: Facts 实例引用 (biography 的关系缘由渲染等需要实例方法)
         "_facts": f,
     }

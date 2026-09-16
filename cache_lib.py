@@ -24,6 +24,7 @@ v4 变更 (相对 v3):
      watch/continue 据此分文件夹 (重名 → 哈布斯堡2, 见 pipeline)。
 """
 import copy
+import gzip
 import json
 import os
 import re
@@ -291,6 +292,20 @@ def house_name_zh(melt, house_id):
         return ""
 
 
+def house_found_date(melt, house_id):
+    """家族 id → 建立日 (dynasty_house[<id>].found_date); 无则 ''。
+
+    v44 (问题1): 私生女别立家族时, 逐档差分只能在**下一档**发现变更, 而
+    建立日是存档直给的权威日期 (阿德尔海德 1118.4.2) — 沿革点用它对表。"""
+    if house_id is None:
+        return ""
+    try:
+        dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
+        return (dh.get(str(house_id)) or {}).get("found_date") or ""
+    except Exception:
+        return ""
+
+
 def dynasty_id_of(melt, house_id):
     """家族 id → 所属宗族 id (dynasty_house[<id>].dynasty); 无则 None。"""
     if house_id is None:
@@ -393,8 +408,27 @@ def _merge_dup_pairs(pairs):
     return {k: (v[0] if len(v) == 1 else v) for k, v in d.items()}
 
 
+def open_melt_text(path):
+    """以文本模式打开熔件/边车文件 (兼容 `.json` 与 `.json.gz`)。
+
+    v44 (问题5): 冷熔件 gzip 归档后, 全部读取口统一走这里 —— 调用方不必关心
+    后缀 (实测 gzip-6 压到 15.3%, 读取只多 0.6s)。"""
+    if str(path).lower().endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8")
+    return open(path, encoding="utf-8")
+
+
+def melt_file_exists(path):
+    """给定熔件路径, 返回**实际存在**的那一份 (`.json` 优先, 其次 `.json.gz`);
+    两份都不在返回 None。供拼接路径的调用方收口后缀差异。"""
+    for cand in (str(path), str(path) + ".gz"):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
 def load_melt(path):
-    with open(path, encoding="utf-8") as fp:
+    with open_melt_text(path) as fp:
         data = json.load(fp, object_pairs_hook=_merge_dup_pairs)
     return _sanitize_none(data)
 
@@ -565,6 +599,11 @@ EMPTY_CACHE = {
     # 逐档闩存, 一旦见到永久保留 —— 婚姻离异/丧偶后该条目会从存档消失, 而传记要
     # 写的是当年那桩婚事。key = "<小id>><大id>", value = 首次见于记载的档期。
     "matrilineal_pairs": {},
+    # v44 (问题2): 存档 played_character.legacy = **玩家角色接替链** (有序带日期):
+    # [{"cid": 62045, "date": "1066.9.15"}, {"cid": 16852591, "date": "1117.6.19"}]
+    # 末条即当前传主, 起算日 = 继位日 (前一任死亡当日)。新版本玩家可从宗族里
+    # 挑人继位, 亲缘判定不足以还原「怎么连起来的」, 故此链以存档为准。
+    "played_legacy": [],
 }
 
 
@@ -658,6 +697,11 @@ def char_record(cache, cid):
             "death": None,
             "female": False,       # v26: 性别 (熔件 female 字段只在女性身上出现)
             "dynasty_house": None,
+            # v44 (问题1): [{from, house_id, house_name, dynasty_id, dynasty_name}]
+            # 家族沿革变更点 (首见即记)。私生女另立家族 (如阿德尔海德 1118.4.2
+            # 别立冯·亚琛氏) 与家族改名 (冯·亚琛 → 冯) 都只体现在这里 ——
+            # 逐档差分是唯一来源, 游戏不为改名留任何记忆。
+            "house_history": [],
             "culture": None,
             "culture_history": [],  # v30: [{from, culture}] 族属变更点 (首见即记)
             "faith": None,
@@ -989,7 +1033,70 @@ def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None):
     return f"{rules.get('pm_zh') or ''}{fname}{rules.get('sm_zh') or ''}"
 
 
-def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
+def _house_names_at(rec, melt, date, h, dn, memo=None):
+    """(家族名, 宗族名) —— 按 date 取家族沿革 (v44 问题1)。
+
+    私生女另立家族 (阿德尔海德 1118.4.2 别立冯·亚琛氏) 与家族改名
+    (冯·亚琛 → 冯) 只记在 `rec["house_history"]`; 无沿革 (旧缓存) 或未指定
+    日期时取**熔件现值** —— 缓存里的 house_name/dynasty_name 是首见冻结值,
+    家族改名后即过期, 只作最后兜底。"""
+    hid = rec.get("dynasty_house")
+    hist = [e for e in (rec.get("house_history") or []) if e.get("from")]
+    pick = None
+    if date and hist:
+        dk = date_key(date)
+        pick = hist[0]
+        for e in hist:
+            try:
+                if date_key(e["from"]) <= dk:
+                    pick = e
+                else:
+                    break
+            except Exception:
+                break
+    if pick is not None:
+        return (pick.get("house_name") or h), (pick.get("dynasty_name") or dn)
+    if melt is not None and isinstance(hid, int):
+        memo = memo if memo is not None else {}
+        mk = f"__house_nm_{hid}__"
+        if mk not in memo:
+            memo[mk] = house_name_zh(melt, hid) or ""
+        if memo[mk]:
+            h = memo[mk]
+        dk2 = f"__dyn_nm_{hid}__"
+        if dk2 not in memo:
+            did = dynasty_id_of(melt, hid)
+            memo[dk2] = (dynasty_name_zh(melt, did) or "") if did is not None else ""
+        if memo[dk2]:
+            dn = memo[dk2]
+    return h, dn
+
+
+def _culture_id_at_rec(rec, date):
+    """角色记录在 date 的文化 id (族属沿革点优先); 无沿革/无日期返回 None。
+
+    v44 (问题4): 名序随文化翻档 —— 阿德尔海德 1132 年由法兰克尼亚人转汉人,
+    此前是「名·姓」(阿德尔海德·冯·亚琛), 此后才是「姓+名」(冯阿德尔海德)。
+    只按末档文化取名序, 早年事件会一律按东方名序排。"""
+    hist = [h for h in (rec.get("culture_history") or []) if h.get("from")]
+    if date and hist:
+        dk = date_key(date)
+        pick = hist[0]
+        for h in hist:
+            try:
+                if date_key(h["from"]) <= dk:
+                    pick = h
+                else:
+                    break
+            except Exception:
+                break
+        if pick.get("culture") is not None:
+            return pick["culture"]
+    return None
+
+
+def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
+                 date=None):
     """(v13 唯一出口) 按游戏规则的显示名, 全项目统一调用:
     - 父名制文化 (patronym_rules 有模板) → 「名·父名」(富兰克林·崔佛松), 父名替代家族名;
     - 其它文化按名序: 东方姓在前 (藤原道真/边诚/赵阿足), 西方名·姓 (崔佛·菲利普/巴沙尔·冯·大马士革);
@@ -999,6 +1106,10 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
     - 文化缺失时沿 父系线→同胞→宗族→母→语言 推断 (玩家/死者均覆盖);
     - 推断失败: 只返回给定名, 绝不输出错序的「姓+名」拼接。
     v28: 名字取值链 = 缓存 → **熔件角色** → names.json (跨战役兜底, 战役不符即弃用)。
+    v44 (问题1): date 传本篇截止日 → 家族名按 `house_history` 取该日之值
+    (阿德尔海德 1118-1132 作「阿德尔海德·冯·亚琛」, 1133 起「冯阿德尔海德」);
+    date 缺省取熔件现值。文化变更 (法兰克尼亚人→汉人) 决定名序取家族名还是宗族名,
+    故同一人在东西名序下会换形 (与游戏一致)。
     chars: 预构建的全角色索引 (Facts 已持有), memo: 跨调用共享推断缓存
     (同一次 build_facts 内复用, 避免重复全量宗族扫描)。"""
     if cid is None:
@@ -1008,6 +1119,7 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
     nm = rec.get("name_zh") or ""
     h = rec.get("house_name") or ""
     dn = rec.get("dynasty_name") or ""
+    h, dn = _house_names_at(rec, melt, date, h, dn, memo=memo)
     # v28: **熔件角色优先于 names.json** —— 该表按角色 id 索引且可能来自另一场
     # 战役 (角色 id 只在同一存档内有意义), 熔件里明明有这个人时以本人为准
     # (实测: 陆氏档 16293 本人是汉人「郑良士」, names.json 里同名 id 是
@@ -1037,7 +1149,10 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None):
     if ptn:
         return f"{nm}·{ptn}"
     # 2) 名序: 自身文化 → 亲属推断 → 文化模板反查 (v13)
-    cul = rec.get("culture")
+    # v44 (问题4): date 传本篇截止日时按**族属沿革**取该日文化 —— 名序随文化翻档
+    cul = _culture_id_at_rec(rec, date)
+    if cul is None:
+        cul = rec.get("culture")
     order = name_order_of(melt, cul) if cul is not None else None
     if order is None:
         order = _family_name_order(cache, rec, melt, chars=chars)
@@ -1261,8 +1376,22 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     tl = melt.get("traits_lookup") or []
     # v13: 本快照内共享的姓名推断缓存 (一次 rebuild 数万角色只算一遍)
     _name_memo = {}
-    # v14: 宗族名解析记忆化 (house_id → 宗族名; 旧缓存自愈用)
-    _dyn_memo = {}
+    # v14: 宗族名解析记忆化 (旧缓存自愈用)
+    # v44: 家族名与宗族名分表记忆化 (house id 与 dynasty id 各自成池, 同表会互撞)
+    _hname_memo = {}
+    _dname_memo = {}
+
+    def _house_now(hid):
+        if hid not in _hname_memo:
+            _hname_memo[hid] = house_name_zh(melt, hid) or ""
+        return _hname_memo[hid]
+
+    def _dyn_now(did):
+        if did is None:
+            return ""
+        if did not in _dname_memo:
+            _dname_memo[did] = dynasty_name_zh(melt, did) or ""
+        return _dname_memo[did]
 
     def trait_key(t):
         if isinstance(t, int) and 0 <= t < len(tl):
@@ -1279,6 +1408,21 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 "killer": pdead.get("killer"),
                 "kills": pdead.get("kills") or [],
             }
+        # v44 (问题2): 玩家角色接替链 (存档 played_character.legacy)。
+        # 每档一存 (后档含前档), 条目 = {cid, date}; 末条即当前传主, 其 date =
+        # 继位日 = 前任死亡当日。新版本玩家可从宗族里挑人继位, 故此链是
+        # 「传主之间怎么连起来的」的唯一权威来源。
+        _lg = (melt.get("played_character") or {}).get("legacy") or []
+        _chain = []
+        for _e in _lg:
+            if not isinstance(_e, dict):
+                continue
+            _cid = _e.get("character")
+            if not isinstance(_cid, int):
+                continue
+            _chain.append({"cid": _cid, "date": _e.get("date")})
+        if _chain:
+            cache["played_legacy"] = _chain
 
     # 目标角色集: 玩家 + 家族/家庭 + 记忆参与者 (两轮)
     targets = set()
@@ -1560,6 +1704,14 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 _did = dynasty_id_of(melt, rec["dynasty_house"])
                 if _did is not None:
                     rec["dynasty_name"] = dynasty_name_zh(melt, _did) or None
+                # v44 (问题1): 首见即记家族沿革第一点
+                rec["house_history"] = [{
+                    "from": date_label,
+                    "house_id": rec["dynasty_house"],
+                    "house_name": rec.get("house_name") or "",
+                    "dynasty_id": _did,
+                    "dynasty_name": rec.get("dynasty_name") or "",
+                }]
             if rec["name_zh"]:
                 # v13: name_full 按 display_name 正确名序生成 (chars/memo 复用本快照索引)
                 rec["name_full"] = display_name(cache, cid, melt=melt, chars=chars,
@@ -1578,31 +1730,78 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
         # v26: 性别自愈 — 旧缓存无该字段时按熔件补 (女性才有 female 键, 男性补 False)
         if rec.get("female") is None:
             rec["female"] = bool(c.get("female"))
+        # v44 (问题1): 家族沿革 — 私生女另立家族 (阿德尔海德 1118.4.2 别立冯·亚琛氏)
+        # 与家族/宗族改名 (冯·亚琛 → 冯) 都不是记忆, 逐档差一是唯一来源。
+        # 旧语义 (首见冻结) 使改名后全档人名停在旧名, 此处改为「末档现值 + 变更点」。
+        _hid_now = c.get("dynasty_house")
+        if isinstance(_hid_now, int):
+            _h_now = _house_now(_hid_now)
+            _did_now = dynasty_id_of(melt, _hid_now)
+            _dn_now = _dyn_now(_did_now)
+            if _hid_now != rec.get("dynasty_house") \
+                    or (_h_now and _h_now != rec.get("house_name")) \
+                    or (_dn_now and _dn_now != rec.get("dynasty_name")):
+                _new_house = _hid_now != rec.get("dynasty_house")
+                rec["dynasty_house"] = _hid_now
+                if _h_now:
+                    rec["house_name"] = _h_now
+                if _dn_now:
+                    rec["dynasty_name"] = _dn_now
+                # 别立家族那一点用游戏 found_date (逐档差分只能在下一档发现变更,
+                # 建立日比快照日精确: 阿德尔海德 1118.4.2 而非 1119.1.1)
+                _pt_date = date_label
+                if _new_house:
+                    _fd = house_found_date(melt, _hid_now)
+                    if _fd:
+                        _pt_date = _fd
+                hh = rec.setdefault("house_history", [])
+                if not hh:
+                    hh.append({"from": _pt_date, "house_id": rec["dynasty_house"],
+                               "house_name": rec.get("house_name") or "",
+                               "dynasty_id": _did_now,
+                               "dynasty_name": rec.get("dynasty_name") or ""})
+                elif hh[-1].get("house_id") != rec.get("dynasty_house") \
+                        or hh[-1].get("house_name") != (rec.get("house_name") or "") \
+                        or hh[-1].get("dynasty_name") != (rec.get("dynasty_name") or ""):
+                    hh.append({"from": _pt_date, "house_id": rec["dynasty_house"],
+                               "house_name": rec.get("house_name") or "",
+                               "dynasty_id": _did_now,
+                               "dynasty_name": rec.get("dynasty_name") or ""})
+                if rec.get("name_zh"):
+                    _nm_new = display_name(cache, cid, melt=melt, chars=chars,
+                                           memo=_name_memo)
+                    if _nm_new:
+                        rec["name_full"] = _nm_new
         # v14: 旧缓存自愈 — dynasty_name 缺失 (v14 前缓存) 时按当前 dynasty_house
         # 补解析 (东方名序的姓); 按 house 记忆化, 同宗族数千人只解析一次。
         if rec.get("dynasty_name") is None and rec.get("dynasty_house") is not None:
             _hid = rec["dynasty_house"]
-            if _hid not in _dyn_memo:
-                _did = dynasty_id_of(melt, _hid)
-                _dyn_memo[_hid] = dynasty_name_zh(melt, _did) if _did is not None else ""
-            rec["dynasty_name"] = _dyn_memo[_hid] or None
+            _did = dynasty_id_of(melt, _hid)
+            _dn_fix = _dyn_now(_did)
+            if _dn_fix:
+                rec["dynasty_name"] = _dn_fix
         # 文化/信仰 (v7): 熔件有值即更新 (覆盖文化改信); 缺失时保留最近已知值。
         # 角色死后游戏清空 culture/faith (实测死档约半数被清, 含前代玩家),
         # 缓存里存活期直接读到的 id 即为最直接的来源, facts 层缓存优先读取。
-        if c.get("culture") is not None:
-            rec["culture"] = c.get("culture")
-        # v30: 族属变更记入 culture_history — 与 faith_history 同构 (游戏不为改宗留
-        # 记忆, 逐档差分是唯一来源; 菲利普: 868–870 哥特人 → 871 起诺斯人)
+        # v44 (问题4): **此处不再预赋值** —— 预赋值会让紧随其后的差分恒为假,
+        # 族属沿革 (culture_history) 于是永远只有首点 (实测阿德尔海德
+        # 1132 年法兰克尼亚人→汉人, 缓存里 culture=47 而沿革只有 {1118, 39})。
+        # 信仰沿革无此预赋值, 故一直正常 —— 两处对照即根因。
         _cid_cul = c.get("culture")
         if _cid_cul is not None:
             if rec.get("culture") != _cid_cul:
                 ch = rec.setdefault("culture_history", [])
                 if not ch or ch[-1].get("culture") != _cid_cul:
                     ch.append({"from": date_label, "culture": _cid_cul})
-            rec["culture"] = _cid_cul
+                rec["culture"] = _cid_cul
+                if rec.get("name_zh"):
+                    _nm_cul = display_name(cache, cid, melt=melt, chars=chars,
+                                           memo=_name_memo, date=date_label)
+                    if _nm_cul:
+                        rec["name_full"] = _nm_cul
+        _fid = c.get("faith")
         # v26: 改信记入 faith_history — 游戏不为玩家改信留任何记忆, 逐档差分是唯一
         # 来源 (田所2: 法华宗→艾什尔里派); 快照日一律 1月1日, 渲染只取年份。
-        _fid = c.get("faith")
         if _fid is not None:
             if rec.get("faith") != _fid:
                 fh = rec.setdefault("faith_history", [])
@@ -1839,7 +2038,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # 这种不留记忆的互动唯一的痕迹
     _diff_carnal_opinions(cache, melt, date_label)
     _diff_carnal_modifiers(cache, melt, date_label)
-    return cache
+    # v44: 返回 True (此前 return cache —— 调用方 `if not ok:` 靠「非空 dict 恒真」
+    # 侥幸成立; 打印/日志里则会把整份缓存 dump 出来)
+    return True
 
 
 # v35: 牵制类型黑名单 —— `house_head_hook`(家主权) 是**身份自带**的机制牵制,
@@ -2769,12 +2970,26 @@ def recover_dead_memories_from(melt, cache, cid, chars=None):
 # 回溯缺失时惰性构建一次并持久化, 之后回溯直接读归档 (0.1s 级)。
 
 
+def _melt_index_variants(melt_path):
+    """熔件 → 归档边车的两种可能路径 (`.json` 与 `.json.gz` 各一), 读取时都试。"""
+    p = str(melt_path)
+    low = p.lower()
+    stem = p[:-8] if low.endswith(".json.gz") else (p[:-5] if low.endswith(".json") else p)
+    return [stem + "_idx.json", stem + "_idx.json.gz"]
+
+
 def melt_index_path(melt_path):
     """全量熔件 → 记忆归档边车路径: melt_913_01_01.json → melt_913_01_01_idx.json。
     命名含 _idx, 不会被 _iter_melts / melt_file_in 等按 melt_<日期>(_p<id>)?.json
-    匹配的代码误当成全量熔件。"""
+    匹配的代码误当成全量熔件。
+    v44: 熔件为 `.json.gz` 时边车同名 `.json.gz` (归档随熔件一起压)。"""
     p = str(melt_path)
-    return p[:-5] + "_idx.json" if p.lower().endswith(".json") else p + "_idx.json"
+    low = p.lower()
+    if low.endswith(".json.gz"):
+        return p[:-8] + "_idx.json.gz"
+    if low.endswith(".json"):
+        return p[:-5] + "_idx.json"
+    return p + "_idx.json"
 
 
 def build_melt_index(melt):
@@ -2813,22 +3028,32 @@ def build_melt_index(melt):
 
 
 def save_melt_index(melt_path, melt):
-    """构建并持久化记忆归档边车 (原子写), 返回边车路径。"""
+    """构建并持久化记忆归档边车 (原子写), 返回边车路径。
+    v44: 随熔件后缀 —— 熔件是 `.json.gz` 时边车也写 `.json.gz`。"""
     path = melt_index_path(melt_path)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fp:
-        json.dump(build_melt_index(melt), fp, ensure_ascii=False)
+    if path.lower().endswith(".gz"):
+        with gzip.open(tmp, "wt", encoding="utf-8") as fp:
+            json.dump(build_melt_index(melt), fp, ensure_ascii=False)
+    else:
+        with open(tmp, "w", encoding="utf-8") as fp:
+            json.dump(build_melt_index(melt), fp, ensure_ascii=False)
     os.replace(tmp, path)
     return path
 
 
 def load_melt_index(melt_path):
-    """读取记忆归档边车; 不存在/损坏返回 None。"""
-    try:
-        with open(melt_index_path(melt_path), encoding="utf-8") as fp:
-            return json.load(fp)
-    except Exception:
-        return None
+    """读取记忆归档边车; 不存在/损坏返回 None。
+    v44: 两种后缀都试 —— 归档可能先于熔件被压缩 (或反之)。"""
+    for p in _melt_index_variants(melt_path):
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open_melt_text(p) as fp:
+                return json.load(fp)
+        except Exception:
+            continue
+    return None
 
 
 def _brief_from_index(mid, e):

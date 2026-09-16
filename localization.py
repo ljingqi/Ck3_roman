@@ -330,10 +330,15 @@ def build_localization_table(cfg, lang="simp_chinese", fallback_lang="english"):
     if g:
         roots.append(g)
     roots += enabled_mod_dirs(cfg)
-    for root in roots:
-        if not os.path.isdir(os.path.join(root, "localization")):
-            continue
-        for langdir in (fallback_lang, lang):  # 英文先, 简体中文后 (中文优先)
+    # v44 (问题6): **语言在外层、根在内层** —— 旧顺序 (根外层/语言内层) 让后加载
+    # Mod 的 english 覆盖本体的 simp_chinese (实测 Mod longju_exent 的
+    # `Mathilde:0 "Matilda"` / `Marie:0 "Marry"` 把游戏本体的
+    # `Mathilde: "玛蒂尔德"` / `Marie: "玛丽"` 顶掉, 传记里出现 `Matilda·萨伏依`)。
+    # 现在任何根的中文都压过任何根的英文; 同语言内仍按根序 (Mod 覆盖本体)。
+    for langdir in (fallback_lang, lang):
+        for root in roots:
+            if not os.path.isdir(os.path.join(root, "localization")):
+                continue
             for d in _loc_lang_dirs(root, langdir):
                 for dp, _dn, fns in os.walk(d):
                     for fn in sorted(fns):
@@ -354,7 +359,9 @@ def save_localization_table(cfg, table, raw_templates=None, path=None,
     path = path or _localization_path(cfg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fp:
-        json.dump({"schema": 2, "lang": "simp_chinese", "keys": len(table),
+        # v44 (问题6): schema 3 = 「语言外层、根内层」的合并序 —— 旧表 (schema<=2)
+        # 含 Mod 英文覆盖中文的脏值, 读到即视为过期, 自动重建一次。
+        json.dump({"schema": 3, "lang": "simp_chinese", "keys": len(table),
                    "table": table,
                    "relation_templates": raw_templates or {},
                    # v29: 建表时的来源指纹 (启用 Mod 清单 + 本地化签名)
@@ -375,9 +382,11 @@ def load_localization_table(cfg, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") in (1, 2):
+            if data.get("schema") == 3:
                 cached = data.get("table") or {}
                 old_fp = data.get("fingerprint") or None
+            # v44 (问题6): schema<=2 的表按「英文先、中文后」的旧序合并, 含 Mod
+            # 英文顶掉本体中文的脏值 (Mathilde → Matilda), 一律不采用, 重建。
         except Exception:
             cached, old_fp = {}, None
     if not force and cached:
