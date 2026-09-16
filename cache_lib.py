@@ -559,6 +559,12 @@ EMPTY_CACHE = {
     # v38 (问题1): 角色修正 `carn_recently_raped`(最近被强奸, 5 年) 逐档差分 —
     # 受害方身上唯一带「何时」的信号 (key = "<角色id>>carn_recently_raped")。
     "carnal_modifiers": {},
+    # v43: 母系婚 (入赘) 婚姻对 —— 存档里婚姻线系只在 relations.active_relations
+    # 的 `{"first":A,"second":B,"matrilineal":true}` 条目上出现 (游戏简中把这一档
+    # 叫「母系婚姻」, 交互界面写作「切换入赘」; 规则: 所生子女属**母方**家族)。
+    # 逐档闩存, 一旦见到永久保留 —— 婚姻离异/丧偶后该条目会从存档消失, 而传记要
+    # 写的是当年那桩婚事。key = "<小id>><大id>", value = 首次见于记载的档期。
+    "matrilineal_pairs": {},
 }
 
 
@@ -1821,6 +1827,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     _diff_disease_edges(cache, melt, date_label)
     # v31: 牵制 (hooks) 逐档差分 — 存档只存当前持有的牵制且无创建日
     _diff_hooks(cache, melt, date_label)
+    # v43: 母系婚 (入赘) 婚姻对闩存 — 婚姻线系是《家室列传》「谁入谁家、子女随谁」
+    # 的唯一依据, 存档只在 active_relations 上给这一个标记
+    _latch_matrilineal(cache, melt, date_label)
     # v35: 奴役关系逐档差分 — 把「抓人 → 没为奴隶 → 放出牢房」与「真获释」分开
     _diff_enslavements(cache, melt, date_label)
     # v32: 纳妾类好感 (opinions) 逐档差分 — 「强行纳为侧室」是纳妾唯一带日期的记录
@@ -1845,6 +1854,42 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
 def hook_type_kept(tp):
     """牵制类型是否入库 (v38, 问题2) —— 判据与 facts 侧同源 (style.hook_type_kept)。"""
     return _style.hook_type_kept(tp)
+
+
+def matrilineal_pair_key(a, b):
+    """婚姻对 → 缓存键 (小 id 在前, 与方向无关)。"""
+    return f"{min(int(a), int(b))}>{max(int(a), int(b))}"
+
+
+def _latch_matrilineal(cache, melt, date_label):
+    """母系婚 (入赘) 婚姻对闩存 (v43)。
+
+    存档形如::
+
+        relations.active_relations = [
+            {"first": 33219, "second": 34000, "matrilineal": true}, …]
+
+    语义 (游戏本地化原文):
+      · `game_concept_matrilineal` = 母系; `MARRIAGE_MATRILINEAL_TOGGLE_TOOLTIP`
+        = 「切换入赘」;
+      · `game_concept_matrilineal_desc` = 在母系婚姻中, 出生的孩子将属于
+        **母亲的家族**而不是父亲的。
+
+    条目只在婚姻存续期出现, 故一律闩存 (见过即留): 离异/丧偶后仍能写出当年那桩
+    入赘婚。返回本档新增对数。"""
+    pairs = cache.setdefault("matrilineal_pairs", {})
+    added = 0
+    for e in (melt.get("relations") or {}).get("active_relations") or []:
+        if not isinstance(e, dict) or "matrilineal" not in e:
+            continue
+        a, b = e.get("first"), e.get("second")
+        if not isinstance(a, int) or not isinstance(b, int) or a == b:
+            continue
+        key = matrilineal_pair_key(a, b)
+        if key not in pairs:
+            pairs[key] = date_label
+            added += 1
+    return added
 
 
 def hook_slot_holder(first, second, field):

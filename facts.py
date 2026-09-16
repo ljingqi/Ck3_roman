@@ -2331,6 +2331,170 @@ class Facts:
             return "夫" if fem else "妻"
         return "情人"
 
+    # ---- v43: 婚姻线系 (普通婚 / 母系婚·入赘) ----
+
+    def _common_children(self, a, b, after=None, before=None):
+        """a、b 的共同子女 id 集 (双方亲属集交集), 可按出生日开闭区间过滤。
+
+        `after` 应为**成婚日** —— 婚前所出 (私生) 一律随母方家族, 与婚姻线系无关,
+        拿它当判据会把「主角娶了带私生子的女王」误判成入赘 (诺兰 × 康斯坦恰:
+        兹比格涅夫 1111.8.25 生、9.12 才成婚, 随母方皮雅斯特; 婚后的贝利撒留斯
+        随父方诺兰 —— 该婚实为普通婚)。"""
+        out = set()
+        chars = self.cache.get("characters") or {}
+        try:
+            a, b = int(a), int(b)
+        except (TypeError, ValueError):
+            return out
+        ka = {int(x) for x in (((chars.get(str(a)) or {}).get("family") or {})
+                               .get("child") or []) if isinstance(x, int)}
+        kb = {int(x) for x in (((chars.get(str(b)) or {}).get("family") or {})
+                               .get("child") or []) if isinstance(x, int)}
+        out = ka & kb
+        if after or before:
+            lo = cl.date_key(after) if after else None
+            hi = cl.date_key(before) if before else None
+            keep = set()
+            for k in out:
+                birth = cl.date_key((chars.get(str(k)) or {}).get("birth")
+                                    or "0.0.0")
+                if lo and birth <= lo:
+                    continue
+                if hi and birth > hi:
+                    continue
+                keep.add(k)
+            out = keep
+        return out
+
+    def wedding_date(self, a, b):
+        """a、b 的成婚日 (缓存记忆里最早的一条 married; 查不到返回 '')。"""
+        try:
+            a, b = int(a), int(b)
+        except (TypeError, ValueError):
+            return ""
+        chars = self.cache.get("characters") or {}
+        for owner, other in ((a, b), (b, a)):
+            for mem in ((chars.get(str(owner)) or {}).get("memories") or []):
+                if str(mem.get("type") or "") != "married":
+                    continue
+                parts = mem.get("participants") or {}
+                if parts.get("spouse") != other:
+                    continue
+                d = str(mem.get("creation_date") or "")
+                if d:
+                    return d
+        return ""
+
+    def _spouses_asof(self, cid, ids):
+        """配偶 id 列表按本篇截止日裁剪 (v43)。
+
+        `family.primary_spouse` 是**末档**状态 —— 十年档此前会把八岁女儿的
+        未来丈夫写进 1087 年的《家室列传》(诺兰档: 多萝特娅 1095 年才成婚,
+        d2 篇却已列「夫婿鲁普雷希特」)。成婚日不可考者保留 (不丢数据)。"""
+        ids = list(ids)
+        if not self.as_of:
+            return ids
+        ao = cl.date_key(self.as_of)
+        out = []
+        for s in ids:
+            wd = self.wedding_date(cid, s)
+            if wd and cl.date_key(wd) > ao:
+                continue
+            out.append(s)
+        return out
+
+    def _matrilineal_pairs_live(self):
+        """当前熔件 `relations.active_relations` 里的母系婚对 (惰性建索引, v43)。
+
+        熔件是**当下**最完整的来源 (凡仍存续的母系婚都在), 缓存 `matrilineal_pairs`
+        只是逐档闩存的历史 (补「此后已离异/丧偶」的婚事)。"""
+        memo = getattr(self, "_matri_live", None)
+        if memo is None:
+            memo = set()
+            for e in (self.melt or {}).get("relations", {}).get(
+                    "active_relations") or []:
+                if not isinstance(e, dict) or "matrilineal" not in e:
+                    continue
+                a, b = e.get("first"), e.get("second")
+                if isinstance(a, int) and isinstance(b, int) and a != b:
+                    memo.add(cl.matrilineal_pair_key(a, b))
+            self._matri_live = memo
+        return memo
+
+    def is_matrilineal(self, a, b, after=None, before=None):
+        """a、b 的这桩婚姻是否为**母系婚 (入赘)**; 返回 True/False/None。
+
+        游戏规则 (本地化原文): `game_concept_matrilineal_desc` = 在母系婚姻中,
+        出生的孩子将属于**母亲的家族**而不是父亲的; 交互界面把这一档写作
+        「切换入赘」(`MARRIAGE_MATRILINEAL_TOGGLE_TOOLTIP`)。
+
+        判据三级, 全在程序侧:
+          ① 当前熔件 `relations.active_relations` 的 matrilineal 标记 (惰性索引);
+          ② 缓存 `matrilineal_pairs` —— 同一标记的逐档闩存 (婚姻离异/丧偶后条目
+             会从存档消失, 闩存保证当年那桩婚事仍判得出);
+          ③ 未见标记时按**婚后所生子女的家族归属**判: 父母各有家族且彼此不同时,
+             子女随母方即母系婚 (这正是上述规则的结果), 随父方即普通婚。
+             婚前所出不入判据 (`after`), 因私生一律随母方, 与线系无关。
+        无子女 / 一方无家族 / 两方同族 / 子女家族混杂 → None (判不出即不下发,
+        句面保持普通形态)。"""
+        try:
+            a, b = int(a), int(b)
+        except (TypeError, ValueError):
+            return None
+        if a == b:
+            return None
+        key = cl.matrilineal_pair_key(a, b)
+        if key in self._matrilineal_pairs_live() \
+                or key in (self.cache.get("matrilineal_pairs") or {}):
+            return True
+        kids = self._common_children(a, b, after=after, before=before)
+        if not kids:
+            return None
+        ha, hb = self._house_of_cid(a), self._house_of_cid(b)
+        if ha is None or hb is None or ha == hb:
+            return None
+        mom, dad = (a, b) if self._is_female(a) else (b, a)
+        hm, hd = self._house_of_cid(mom), self._house_of_cid(dad)
+        if hm is None or hd is None or hm == hd:
+            return None
+        n_mom = n_dad = n_other = 0
+        for k in kids:
+            hk = self._house_of_cid(k)
+            if hk == hm:
+                n_mom += 1
+            elif hk == hd:
+                n_dad += 1
+            else:
+                n_other += 1
+        if n_mom and not n_dad and not n_other:
+            return True
+        if n_dad and not n_mom and not n_other:
+            return False
+        return None
+
+    def marriage_lineality_note(self, a, b, wedding=None, before=None):
+        """成婚句/配偶行的程序补注 (v43): 母系婚 (入赘) 补「所生子女随母方, 属X」。
+
+        只标异常那一档 (母系婚) —— 与游戏 UI 只对母系婚给出
+        `MATRILINEAL_WARNING`「该婚姻所生子将属于X的家族」同一口径; 普通婚与判不
+        出者返回 '' (句面即普通形态)。模型由此无需自悟线系规则。
+
+        `wedding` = 成婚日 (传日历记忆的日期; 缺省由 `wedding_date` 回查),
+        `before` = 本篇截止日 (十年传记不把尚未出生的子女算进判据)。"""
+        try:
+            a, b = int(a), int(b)
+        except (TypeError, ValueError):
+            return ""
+        if not wedding:
+            wedding = self.wedding_date(a, b)
+        if not self.is_matrilineal(a, b, after=wedding or None, before=before):
+            return ""
+        mom = a if self._is_female(a) else b
+        label = self._house_label(self._house_of_cid(mom)) or ""
+        if not label:
+            return ""
+        return f"（入赘婚：所生子女随母方，属{label}）"
+
     def _office_word(self, tier, government, independent=False, female=False, tid=None,
                      cid=None, date=None):
         """官职词: (层级, 政体) → 词。天朝/行政/草原行政共用同一套 (刺史/节度使/
@@ -2927,18 +3091,52 @@ class Facts:
             return self.event_name(cid, date)
         return self.person_label(cid, date, "event")
 
-    def _rerender_feud_event(self, raw, date):
+    def _feud_other_house_phrase(self, cid, houses, fallback_label=""):
+        """自指式恩怨句的对手方 → 「{对方家族}族人」(v43)。
+
+        施事者的家族必是该关系对 `houses` 之一 (游戏侧 `HOUSE` 参数即取自
+        CHAR 的家族, 见 `change_house_relation_effect`), 故对手方家族 = 另一个。
+        判不出 (施事者无家族 / houses 不合规) 时返回 ''，整条略去。"""
+        h = self._house_of_cid(cid)
+        others = [x for x in (houses or []) if x != h]
+        if h is None or len(others) != 1:
+            return ""
+        label = self._house_label(others[0]) or fallback_label or ""
+        return f"{label}族人" if label else ""
+
+    def _rerender_feud_event(self, raw, date, houses=None, other_label=""):
         """change_reason 原文 → 两端角色按日期重渲染的干净中文句。
         保留游戏动词 (劫掠了/囚禁了/处决了/成为朋友…), 只替换两端「称号+名」:
         '\x15ONCLICK:CHARACTER,38696 ... \x15high 国王\x15!，\x15high 崔佛...' →
         '瑞典国王崔佛·菲利普劫掠了粤王范承宗'。
-        v29: 结果不可读 (rakaly 哨兵串 'MAX_RECURSIVE_DEPTH' / 未解析键) 时返回 ''。"""
+        v29: 结果不可读 (rakaly 哨兵串 'MAX_RECURSIVE_DEPTH' / 未解析键) 时返回 ''。
+
+        v43 (自指式条目): `murder_attempt` 与 `cuckoldry` 这两个 reason 在游戏脚本里
+        把 `TARGET_CHAR` 传成了 `root` (`00_murder_effects.txt:709`、
+        `00_adultery_effects.txt:129`), 而 root 常就是施事者本人 —— 两端于是烘焙
+        成同一个角色, 渲染出「A试图谋杀A」这种句子。第二个人**没有写进存档**
+        (关系对象只存已渲染的 change_reason), 事后无法还原, 故降级为族级对手方:
+        「A试图谋杀{对方家族}族人」。判不出对方家族时整条略去。"""
         s = str(raw or "")
         if "\x15" not in s or "ONCLICK" not in s:
             return _clean_ck3_loc(s)
+        ids = _FEUD_CHAR_RE.findall(s)
+        self_ref = len(ids) >= 2 and len(set(ids)) == 1
+        other_phrase = ""
+        if self_ref:
+            other_phrase = self._feud_other_house_phrase(int(ids[0]), houses,
+                                                         other_label)
+            if not other_phrase:
+                return ""
+        seen = [0]
+
         def _repl(m):
+            seen[0] += 1
             cid = int(m.group(1))
+            if self_ref and seen[0] == 2:
+                return other_phrase
             return self._feud_role_title(cid, date)
+
         s2 = _FEUD_ROLE_RE.sub(_repl, s)
         return _clean_ck3_loc(s2)
 
@@ -4885,7 +5083,9 @@ class Facts:
                     continue
                 # v14: change_reason 两端角色按事件日期重渲染 (补国号,
                 # 修复方案_菲利普2.md 问题3: 游戏原文只写「国王/王」无国号)
-                txt = self._rerender_feud_event(e.get("change_reason") or "", d)
+                # v43: 传两族 id 与对方族称 —— 自指式条目降级为「{对方家族}族人」
+                txt = self._rerender_feud_event(e.get("change_reason") or "", d,
+                                                houses=hs, other_label=_hlabel)
                 if not txt:
                     # v29: 原文不可读 (rakaly 哨兵串/未解析键) → 缓存记忆重建
                     txt = self._feud_event_fallback(my_houses, other[0], d, _hlabel)
@@ -4964,17 +5164,71 @@ class Facts:
         "created": "recipient",
     }
 
-    def family_artifacts(self):
-        """宝物志数据源: 高稀 (名望级起)、相关集持有、且被其他宗族持有过的宝物。
-        返回 [多行文本], 含名称/稀有度/流转史。
+    # v43: 角色部件宝物 —— 以人类遗骸/身体部件制成者。游戏侧: 处决囚犯可得
+    # 人类头骨座台宝物 (囚犯为宿敌则必得), 宿敌死亡可得头骨高脚杯
+    # (Friends & Foes), 二者都是常见/大师级档 —— 旧的名望级门槛把这类最有
+    # 叙事价值的战利品全挡在《宝物志》之外 (诺兰把谋杀的爱沙尼亚国王的头骨
+    # 铸成高脚杯, 1111 年即成, 却从未进过任何一篇)。
+    ARTIFACT_PART_VISUALS = {"skull_goblet", "human_skull"}
+    ARTIFACT_PART_WORDS = ("头骨", "头颅", "颅骨", "头盖骨", "乳牙")
 
-        v39: 十年传记另加 **as_of 归属判定** —— 宝物须在 as_of 之前已归入**本宗族**。
-        旧逻辑只截断流转条目、归属却按最新档判: 诺兰第一个十年 (as_of=1077)
-        因此带出主角 1086.1.1 才夺得的帝国皇冠/查理曼的御座, 同一时代两次组装
-        的篇目由 7 篇变 8 篇。
-        判据用**同宗族**而非 `related`: 后者还含情人/仇人/姻亲 (诺兰档里海因里希·
-        萨利安因 1086 年那桩强迫之事即在其中), 按它判会把「前任皇帝手里的铁王冠」
-        算成主角家宝物。"""
+    # 宝物描述里的数据函数块: \x15ONCLICK:CHARACTER,id \x15TOOLTIP:... \x15L 名字\x15!\x15!\x15!
+    _ARTIFACT_REF_RE = re.compile(
+        r"\x15ONCLICK:([A-Z_]+),([^\s\x15]+)"
+        r"(?:\s*\x15TOOLTIP:[^\s\x15]+)?"
+        r"\s*\x15L;?\s*(.*?)\x15!\x15!\x15!", re.S)
+
+    def _artifact_material(self, raw, date=None):
+        """宝物描述 → 干净中文「材质」句 (v43)。
+
+        描述里嵌着 `\\x15ONCLICK:CHARACTER,id … \\x15L 名字\\x15!\\x15!\\x15!` 式数据
+        函数块 (头骨高脚杯即「用X的头骨制成」)。这里:
+          · CHARACTER 块改由本项目 `event_name` 按日期重渲染 —— 写出
+            「爱沙尼亚国王特尔·库克」, 而不是游戏烘焙在原文里的短名「特尔」;
+          · 其余块 (信仰/文化/家族/地名) 保留游戏已渲染的中文名;
+          · 残余格式码就地剥除 —— **不走 `_clean_ck3_loc`**: 它的「称号，名字」
+            去逗号规则 (v13) 会把描述里正常的逗号一并吃掉
+            (「精致酒杯，用…」→「精致酒杯用…」)。裸键/哨兵串经 `loc_text_ok`
+            判不可读即返回 ''。"""
+        s = str(raw or "")
+        if not s:
+            return ""
+
+        def _repl(m):
+            kind, key, text = m.group(1), m.group(2), (m.group(3) or "").strip()
+            if kind == "CHARACTER" and str(key).isdigit():
+                nm = self.event_name(int(key), date) or ""
+                if nm:
+                    return nm
+            return text
+
+        s = self._ARTIFACT_REF_RE.sub(_repl, s)
+        s = s.replace("\x15", "")
+        s = re.sub(r"ONCLICK:[A-Z_]+,[^\s]+", "", s)
+        s = re.sub(r"TOOLTIP:[A-Z_]+,[^\s]+", "", s)
+        s = re.sub(r"(?<![A-Za-z])L(?=[;\s])", "", s)
+        s = re.sub(r"high\s*", "", s)
+        s = s.replace("!", "").replace(";", "")
+        s = re.sub(r"\s{2,}", " ", s).strip()
+        s = re.sub(r"(?<=[\u4e00-\u9fff]) (?=[\u4e00-\u9fff])", "", s)
+        return s.rstrip("。") if loc_text_ok(s) else ""
+
+    def _is_part_artifact(self, a, desc=""):
+        """是否「以角色部件制成」的宝物: visuals 类型或描述用词任一命中。"""
+        vis = ((a.get("visuals") or {}).get("type") or "")
+        if vis in self.ARTIFACT_PART_VISUALS:
+            return True
+        blob = f"{a.get('name') or ''}{desc}"
+        return any(w in blob for w in self.ARTIFACT_PART_WORDS)
+
+    def _artifact_candidates(self, as_of):
+        """《宝物志》选材 (v43) —— 返回 [(aid, kind, a, hist)], 已按 as_of 截断。
+
+        两档 (kind):
+          · "relic" 名望级重宝 —— v13/v21 旧口径: 高稀 + 被外族持有过;
+          · "part"  角色部件宝物 —— 本宗族持有的遗骸/部件所制之宝, **不限稀有度**,
+            亦不要求曾入外族之手 (头骨高脚杯是主角自铸的战利品)。
+        归属一律按 as_of 判定 (十年传记不穿越; 见 v39 注释)。"""
 
         dh = (self.melt.get("dynasties") or {}).get("dynasty_house") or {}
         my_dyn = self.cache.get("dynasty_id")
@@ -5018,37 +5272,98 @@ class Facts:
 
         related = _related_ids(self)
         art = (self.melt.get("artifacts") or {}).get("artifacts") or {}
-        rarity_zh = {"common": "常见", "famed": "著名", "masterwork": "大师级",
-                     "illustrious": "名望级", "legendary": "传奇级"}
         out = []
         for aid, a in art.items():
             if not isinstance(a, dict):
                 continue
-            if a.get("rarity") not in self.ARTIFACT_RARITY:
-                continue
             if (a.get("type") or "") in self.ARTIFACT_FILLER_TYPES:
                 continue
-            if a.get("owner") not in related:
-                continue
             hist = (a.get("history") or {}).get("entries") or []
-            cross = False
-            for e in hist:
-                for key in ("actor", "recipient"):
-                    d = _dyn_of(e.get(key))
-                    if d is not None and d != my_dyn:
-                        cross = True
+            # v39: as_of 归属判定 —— 该时期前未归入本宗族的宝物整件不收
+            if not _held_asof(hist, as_of):
+                continue
+            kind = ""
+            if a.get("rarity") in self.ARTIFACT_RARITY \
+                    and a.get("owner") in related:
+                cross = False
+                for e in hist:
+                    for key in ("actor", "recipient"):
+                        d = _dyn_of(e.get(key))
+                        if d is not None and d != my_dyn:
+                            cross = True
+                            break
+                    if cross:
                         break
                 if cross:
-                    break
-            if not cross:
+                    kind = "relic"
+            if not kind and _is_own_kin(a.get("owner")):
+                desc = self._artifact_material(a.get("description"), as_of
+                                               or self.as_of)
+                if self._is_part_artifact(a, desc):
+                    kind = "part"
+            if kind:
+                out.append((aid, kind, a, hist))
+        return out
+
+    def _decade_cutoff(self, decade):
+        """第 decade 个十年的数据截止日 —— 与 pipeline._decade_cutoff 同式
+        (起始年 + decade×10 的年初, 不超过末档), 供跨篇去重回溯复用。"""
+        srcs = self.cache.get("sources") or []
+        last = self.cache.get("last_date")
+        if not srcs:
+            return last
+        try:
+            sy = int(str(srcs[0]).split(".")[0])
+            end = f"{sy + decade * 10}.1.1"
+        except Exception:
+            return last
+        if last and cl.date_key(last) < cl.date_key(end):
+            return last
+        return end
+
+    def _artifacts_written_before(self):
+        """本十年之前各十年篇目**已写过**的宝物 id 集 (v43, 纯函数)。
+
+        取「更早的每个十年截止日重跑同一选材规则」的并集 —— 不往缓存里写
+        「已用宝物」账本, 重跑 / --force / 并发写都不会漂移。
+        终传 (decade 为空) 收全量, 不做此排除 (用户 2026-09-15 拍板:
+        十年传记去重, 终传收全量)。"""
+        if not self.decade or not self.as_of:
+            return set()
+        out = set()
+        for k in range(1, int(self.decade)):
+            cut = self._decade_cutoff(k)
+            if not cut:
                 continue
-            # v39: as_of 归属判定 —— 该时期前未归入本宗族的宝物整件不收
-            if not _held_asof(hist, self.as_of):
+            try:
+                out |= {c[0] for c in self._artifact_candidates(cut)}
+            except Exception:
+                continue
+        return out
+
+    def family_artifacts(self):
+        """《宝物志》数据源 (v43): 甲档名望级重宝 + 乙档角色部件宝物。
+        返回 [多行文本] (名称/稀有度/材质/流转史)。
+
+        v39: 十年传记按 as_of 判归属 (旧逻辑只截断流转条目、归属按最新档判:
+        诺兰第一个十年因此带出主角 1086 年才夺得的帝国皇冠/查理曼的御座)。
+        v43: 十年传记再排除**前面几个十年已写过**的宝物 —— 诺兰第 2/3/4/5 个十年
+        与终传此前是逐字同样的五件, 读多了只剩审美疲劳。"""
+        rarity_zh = {"common": "常见", "famed": "著名", "masterwork": "大师级",
+                     "illustrious": "名望级", "legendary": "传奇级"}
+        written = self._artifacts_written_before()
+        rows = []
+        for aid, kind, a, hist in self._artifact_candidates(self.as_of):
+            if aid in written:
                 continue
             name = a.get("name") or "一件宝物"  # v14: 无名宝物不泄露 id
             rarity = rarity_zh.get(a.get("rarity")) or a.get("rarity") or ""
             # v29b: 稀有度改逗号同位语 (「宝物：X，名望级」), 不用括注
             lines = [f"宝物：{name}，{rarity}"]
+            if kind == "part":
+                mat = self._artifact_material(a.get("description"), self.as_of)
+                if mat:
+                    lines.append(f"材质：{mat}")
             entries = []
             for e in reversed(hist):
                 # v11: as_of 截断 — 十年传记只列该时期前的流转
@@ -5075,7 +5390,7 @@ class Facts:
                     # v30: 曾写「年代久远，创制无考」— 属考据按语, 整条略去
                     # (修复方案_菲利普4.md 问题4: 缺料不成句)
                     pass
-                # v21: 窃得 (玩家/他人盗取) — actor=失主, recipient=得宝者
+                # v21: 窃得 (玩家/他人盗取) — actor=失主,  recipient=得宝者
                 elif t == "stolen" and actor and rec2:
                     entries.append(f"{d}，{rec2}自{actor}处窃得")
                 elif t == "stolen" and actor:
@@ -5085,10 +5400,10 @@ class Facts:
                 # v14: 未知流转类型不直出 key (元注释泄露), 略去
             if entries:
                 lines.append("流转：" + "；".join(entries))
-            out.append("\n".join(lines))
-        # 按流转事件数降序 (流转史丰富者优先) 后限量
-        out.sort(key=lambda x: len(x), reverse=True)
-        return out[: self.ARTIFACT_MAX]
+            # 重宝在前, 部件宝物其次; 档内按流转史丰富度降序
+            rows.append((0 if kind == "relic" else 1, -len(lines), aid, lines))
+        rows.sort(key=lambda x: (x[0], x[1], x[2]))
+        return ["\n".join(r[3]) for r in rows][: self.ARTIFACT_MAX]
 
     # ---- v8.1: 伊斯兰统治者动态国名 (游戏同规则复现) ----
 
@@ -7147,6 +7462,13 @@ def _mem_sentence(f, owner_id, mem):
     # 未补出父亲时不留空括注
     if not extra_fname:
         s = s.replace("（生父）。", "。").replace("（生父）", "")
+    # v43: 成婚句补婚姻线系 —— 母系婚 (入赘) 补「所生子女随母方, 属X家族」,
+    # 普通婚与判不出者句面不变 (与游戏 UI 只标母系那一档同口径)。
+    if mem.get("type") == "married" and other_id is not None:
+        note = f.marriage_lineality_note(owner_id, other_id,
+                                         wedding=mem.get("creation_date"))
+        if note:
+            s = s.rstrip("。") + note + "。"
     return s
 
 
@@ -7238,6 +7560,10 @@ _FEUD_ROLE_RE = re.compile(
     r"(?:\s*\x15TOOLTIP:CHARACTER,\d+)?\s*\x15L\s*"
     r"(?:.*?)\x15!\x15!\x15!\x15!"
 )
+
+# v43: change_reason 里出现过的角色 id —— 两端同人即游戏把 TARGET_CHAR 填成 root
+# 的退化条目 (见 Facts._rerender_feud_event)。
+_FEUD_CHAR_RE = re.compile(r"ONCLICK:CHARACTER,(\d+)")
 
 
 def _death_sentence(f, cid, killer_pronoun=False, annotated=False):
@@ -9025,7 +9351,7 @@ def _protagonist(f):
     if father_id is not None:
         fd_fam = ((cache.get("characters") or {}).get(str(father_id)) or {}).get("family") or {}
 
-    def _annotate(ids):
+    def _annotate(ids, lineality=False):
         out = []
         for sid in ids:
             nm = f.kin_label(sid, f.as_of)
@@ -9040,12 +9366,17 @@ def _protagonist(f):
                         note = (f"（原为父{f.kin_label(father_id, f.as_of)}"
                                 f"之{label}）")
                         break
+            # v43: 母系婚 (入赘) 的配偶行补线系与子女归属
+            if lineality:
+                note += f.marriage_lineality_note(pid, sid, before=f.as_of)
             out.append(nm + note)
         return "、".join(out)
 
     spouse_ids = list(dict.fromkeys(
         _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
-    p["spouses"] = _annotate(spouse_ids)
+    # v43: 成婚日晚于本篇截止日者不列 (末档配偶状态穿越)
+    spouse_ids = f._spouses_asof(pid, spouse_ids)
+    p["spouses"] = _annotate(spouse_ids, lineality=True)
     p["former_spouses"] = _annotate(_asof_ids(f, fam.get("former_spouses") or []))
     # v8: 妾 (正向 concubine + 反向 concubinist, 已在缓存合并去重)
     p["concubines"] = _annotate(_asof_ids(f, fam.get("concubine") or []))
@@ -9272,8 +9603,13 @@ def _character_profiles(f):
         fam = rec.get("family") or {}
         spouse_ids = list(dict.fromkeys(
             _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
+        # v43: 成婚日晚于本篇截止日者不列 (同 _protagonist_facts 口径)
+        spouse_ids = f._spouses_asof(cid, spouse_ids)
         # v27: 亲属一律「头衔+姓名」(kin_label), 不再只给姓名
-        prof["spouses"] = "、".join(f.kin_label(s) for s in spouse_ids if f.name(s))
+        # v43: 母系婚 (入赘) 的配偶逐人补线系与子女归属
+        prof["spouses"] = "、".join(
+            f.kin_label(s) + (f.marriage_lineality_note(cid, s, before=f.as_of) or "")
+            for s in spouse_ids if f.name(s))
         prof["concubines"] = "、".join(
             f.kin_label(s) for s in _asof_ids(f, fam.get("concubine") or []) if f.name(s))
         child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
@@ -10769,8 +11105,12 @@ def _genealogy(f):
         bits = []
         for x in ids:
             n = f.kin_label(x)
-            if n:
-                bits.append(n)
+            if not n:
+                continue
+            # v43: 世系表的配偶行同样标出母系婚 (入赘) 与子女归属
+            if key in ("primary_spouse_key", "side_spouse_key"):
+                n += f.marriage_lineality_note(pid, x, before=f.as_of)
+            bits.append(n)
         if bits:
             lines.append(f"　{label}：{'、'.join(bits)}")
     return lines
