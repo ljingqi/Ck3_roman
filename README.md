@@ -637,6 +637,38 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
 > 缓存需重建一次以带上 `char_government_history`：
 > `& tools\py.ps1 tools\rebuild_folder_v38.py 诺兰`
 
+## v43 能力（婚姻线系 / 《宝物志》跨篇与部件档 / 自指式恩怨句）
+
+方案与实施记录：`docs/方案_v43_婚姻线系与宝物志.md`；游戏侧调研：
+`logs/research_house_relation_selfref.md`。**0 条新增提示词**，全部程序端。
+
+1. **母系婚（入赘）判定**：CK3 只在存档 `relations.active_relations` 上给出
+   `{"first":A,"second":B,"matrilineal":true}` 这一个直接标记（游戏规则原文：
+   「在母系婚姻中，出生的孩子将属于**母亲的家族**而不是父亲的」，交互界面写作
+   「切换入赘」）。`cache_lib._latch_matrilineal` 逐档**闩存**（离异/丧偶后条目会消失，
+   传记要写的却是当年那桩婚事），`facts.is_matrilineal` 三级判据
+   （当前熔件 → 缓存闩存 → **婚后**所生子女的家族归属），判不出即不下发。
+   四处下发口同出「（入赘婚：所生子女随母方，属X氏）」：年表/档案成婚句、
+   主角档案妻室行、《家室列传》亲缘行、终传世系表正妻行。
+   *私生一律随母方、与线系无关*，故第三级只看婚后所出（否则诺兰娶波兰女王会被误判入赘）。
+   既有缓存补键：`& tools\py.ps1 tools\refresh_matrilineal.py 诺兰 62045`。
+2. **《宝物志》跨篇去重 + 角色部件档**：改前第 2/3/4/5 个十年与终传逐字是同样五件名望级
+   重宝。现在`_artifacts_written_before()`（纯函数：对更早每个十年截止日重跑同一选材规则
+   取并集）让十年篇只写本十年**新得**者，终传收全量；无新宝的十年省去该篇。
+   另开乙档「角色部件宝物」（`visuals.type ∈ {skull_goblet, human_skull}` 或描述含
+   头骨/头颅/乳牙；不限稀有度、不要求曾被外族持有），描述里的
+   `ONCLICK:/TOOLTIP:/L` 数据函数块就地清洗并用本项目称谓重渲染
+   （「用爱沙尼亚国王特尔·库克的头骨制成」）。
+3. **自指式恩怨句**（`A试图谋杀A`）：游戏脚本 `00_murder_effects.txt:709` 与
+   `00_adultery_effects.txt:129` 把 `TARGET_CHAR` 填成 `root`，root 恰是行为者本人时
+   两端烘焙成同一角色，第二人**没有写进存档**。渲染层降级为族级对手方：
+   「基里雅科·诺兰试图谋杀库克氏族人」。
+
+回归：`tools\snap.py` 五篇快照 + `tools\verify_fast.py`（新增 `[V43]` 组）
+final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
+`d3` 仅 `[V42][3]`（窗口内阉/盲记忆并入囚禁行）FAIL，系**窗口边界**旧疾
+（受害者自 1080 年起 house arrest，囚禁记忆在窗口外），与本轮改动无关。
+
 ## 代码纪律（2026-09-10 用户定规）
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
