@@ -1907,6 +1907,7 @@ def _compress_file(path, codec="xz", out_path=None):
             pass
         raise
     os.replace(tmp, out)
+    cl.melt_memo_drop(p)   # v49 (O4): 源文件已归档, 记忆里的旧键顺手释放
     return out
 
 
@@ -1953,6 +1954,7 @@ def _recompress_file(path, codec="xz"):
             os.remove(p)
         except OSError:
             pass
+        cl.melt_memo_drop(p)   # v49 (O4)
     return got
 
 

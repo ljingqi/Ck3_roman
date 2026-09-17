@@ -580,6 +580,17 @@ def melt_memo_move(old_path, new_path):
     return True
 
 
+def melt_memo_drop(path):
+    """丢掉某路径的熔件记忆 (压缩归档后源文件消失, 键已不可达 —— 顺手释放)。"""
+    if not _MELT_MEMO_ON:
+        return False
+    key = _melt_memo_key(path)
+    if key is None:
+        return False
+    with _MELT_MEMO_LOCK:
+        return _MELT_MEMO.pop(key, None) is not None
+
+
 def load_melt(path, use_memo=True):
     """读熔件 → dict。重复键合并与 'none'→None 都在 `_merge_dup_pairs` 一趟完成。
 
