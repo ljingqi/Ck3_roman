@@ -892,7 +892,7 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 | # | 位置 | 改法 |
 | --- | --- | --- |
 | 1 | `llm.normalize_zh_punct`（新） | 汉字/中文标点旁的 `, ; : ! ?` 与句末 `.` 改全角；半角双引号按行配对成 `“”`（需个数为偶**且每一个都紧贴中文**，故 JSON 片段/英文缩写不受影响）；`3.5`／`1,000`／`J.P.`／列表 `1.` 原样。幂等 |
-| 2 | `biography._normalize_section` ＋ `intro` ＋ 最终 `md` | 出稿侧确定性收口：开篇一出稿即归一，**同一处掐住「开篇回贴成纪事摘要」那一路**；只过正文，机器可读头注释的 `人物:`/`篇目:`/`十年:` 半角冒号不动（`htmlview` 解析不受影响） |
+| 2 | `biography._normalize_section` ＋ `intro` ＋ 最终 `md` | 出稿侧确定性收口：开篇一出稿即归一，**同一处掐住「开篇回贴成纪事摘要」那一路**；只过正文，机器可读头注释的 `人物:`/`篇目:`/`十年:` 半角冒号不动（`htmlview` 解析不受影响，`verify_v51_unit` 有专门的顺序契约断言） |
 | 3 | `llm.clean_prompt_messages` ＋ `style.py`/`biography.py` 常量 | 提示词侧再归一（`logs/prompts.log` 自身即干净）；源码里的半角标点就地改全角，提示词里只剩一套范例 |
 
 **2. 入赘婚补注简化**：`facts.marriage_lineality_note` 由
@@ -914,7 +914,7 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 `normalize_zh_punct` 后《阴私录》80 处半角 → **0**，全篇无残留（成稿本身按用户
 口径不回修）。
 
-**回归**：`tools/verify_v51_unit.py` **28 PASS**（归正边界／幂等／出稿口／常量静态扫描／
+**回归**：`tools/verify_v51_unit.py` **31 PASS**（归正边界／幂等／出稿口／常量静态扫描／
 `clean_prompt_messages`）；`tools/verify_fast.py` 周氏 889 d2 与诺兰 v43_final **全 PASS**
 （新增 `[V51]` 组；`[V43]` 入赘断言接受新短式与 v51 前长式并加「现行补注为（入赘婚）」的桩检查）。
 **A/B（13 份快照 · v51 前代码 vs v51 后代码，逐条比对 FAIL 集）：无新增、无消失** ——
