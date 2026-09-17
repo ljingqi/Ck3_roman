@@ -540,17 +540,39 @@ class KinScope:
 
     `_article_facts` 是并发调用的（每篇一个线程）, 所以这张表只能是**局部对象**,
     绝不能挂 `Facts` 实例 —— 否则板块之间串味、结果不可复现。
-    「首次」语义 S1 (用户拍板): 该人只要在本板块出现过一次就消费名额, 之后一律干净称谓。
+    「首次」语义 S1 (用户拍板, **字面**): 人名在本板块**任何位置**首次出现即消费名额 ——
+    既有「父X」「子A、B」「俱为X之子女」这类程序亲缘行也算, 故调用方在渲染下一个
+    点名位之前用 `absorb` 把本板块此前各块的文本喂进来。
     `subject` = 该篇传主 (《列传》即好友/仇人本人); 传主本人不加定语。"""
 
-    __slots__ = ("subject", "seen", "stats")
+    __slots__ = ("subject", "seen", "stats", "held", "prior")
 
     def __init__(self, subject=None):
         self.subject = int(subject) if subject is not None else None
         self.seen = set()
-        self.stats = {}
+        self.stats = {}      # 已加定语 {词: 次数} (计量用)
+        self.held = {}       # 本可加定语、因 S1 已在文中出现而压住的 {词: 次数}
+        self.prior = ""      # 本板块此前已下发的文本 (S1 判据面)
 
-    def mark(self, cid, base, facts):
+    def absorb(self, text):
+        """登记本板块**此前已下发**的文本 (S1 字面语义的判据面); 返回 self 供串写。"""
+        if text:
+            self.prior = f"{self.prior}\n{text}" if self.prior else text
+        return self
+
+    def mentioned(self, cid, base, facts, date=None):
+        """该人的称谓或本名是否已在本板块此前的文本里出现过 (S1 判据)。"""
+        if not self.prior:
+            return False
+        if base and base in self.prior:
+            return True
+        try:
+            bare = facts.name(cid, date=date) or ""
+        except Exception:
+            bare = ""
+        return bool(bare) and bare in self.prior
+
+    def mark(self, cid, base, facts, date=None):
         """给 cid 的称谓 base 加定语 (首次才加); 返回最终文本。"""
         if not base or cid is None or self.subject is None:
             return base
@@ -561,6 +583,11 @@ class KinScope:
         if cidi == self.subject or cidi in self.seen:
             return base
         self.seen.add(cidi)
+        if self.mentioned(cidi, base, facts, date=date):
+            w = facts.kin_word_for(cidi, self.subject)
+            if w:
+                self.held[w] = self.held.get(w, 0) + 1
+            return base
         w = facts.kin_word_for(cidi, self.subject)
         if not w:
             return base
@@ -2425,16 +2452,20 @@ class Facts:
         out |= set(self._spouse_back_index().get(int(cid), []))
         return out
 
-    def kin_attrib_label(self, cid, subject=None, date=None, style="brief", scope=None):
+    def kin_attrib_label(self, cid, subject=None, date=None, style="brief",
+                         scope=None, base=None):
         """称谓 + 亲缘定语 (v45 唯一出词口)。
 
         scope 为 None 时**行为与 `person_label` 逐字一致** (向后兼容);
         给了 scope 时, 该人若在本板块是首次出现且与 scope.subject 有可判亲缘,
-        即在称谓前加定语 (「父亲唐皇帝李漼」「姻亲姊妹X」)。"""
-        base = self.person_label(cid, date, style)
+        即在称谓前加定语 (「父亲唐皇帝李漼」「姻亲姊妹X」)。
+        `base` 供调用方传入**已算好**的称谓 (如刺客死者按卒日取的 label),
+        缺省才现取 person_label。"""
+        if base is None:
+            base = self.person_label(cid, date, style)
         if scope is None or not base:
             return base
-        return scope.mark(cid, base, self)
+        return scope.mark(cid, base, self, date=date)
 
 
     def _older_than(self, a, b):

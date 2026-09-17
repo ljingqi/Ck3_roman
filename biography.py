@@ -528,7 +528,8 @@ def _num1(v, nd=1):
         return ""
 
 
-def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chains=False):
+def _profile_lines(facts, cid=None, with_real_parentage=False,
+                   with_private_chains=False, scope=None):
     """主角或某角色的档案 → 自然语言行列表 (v15: 字段表格改散文, 程序直出不改写)。
     首行为名号句: 官职+姓名 + 家族分家/族属/信仰/出生/家训;
     后续每类事实一句, 缺失字段整句省略。cid=None 时用主角。
@@ -541,7 +542,11 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
         《阴私录》《妻族传》这些讲门庭内情的篇目。
 
     v41 (问题1): 名号句里的官职词按**本篇截止日**取 (`facts.as_of`), 不用缓存里的
-    现职 —— 封建期的神罗封臣因此写「上洛塔林吉亚公爵」而非行政期的「将军」。"""
+    现职 —— 封建期的神罗封臣因此写「上洛塔林吉亚公爵」而非行政期的「将军」。
+
+    v45 (档 A): `scope` = 本板块的亲缘定语登记表 (基准人 = 该篇传主)。给了 scope 时
+    名号句改走 `kin_attrib_label` —— 该人若与传主有可判亲缘且是**本板块首见**,
+    称谓前加定语 (「父亲冯·亚琛氏赫尔曼」)。scope 为 None 时逐字不变。"""
     if cid is None:
         p = facts["protagonist"]
     else:
@@ -553,6 +558,7 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
     # v41: 按 as_of 重取一次 (缓存里的 label 用的是末档政体)
     _fi = facts.get("_facts")
     _anchor = facts.get("as_of")
+    _tid = cid if cid is not None else facts.get("player_id")
     head = ""
     if _fi is not None and cid is not None:
         head = _fi.person_label(cid, date=_anchor, style="brief") or ""
@@ -562,6 +568,12 @@ def _profile_lines(facts, cid=None, with_real_parentage=False, with_private_chai
             head = f"{p['office']}{name}"
         elif p.get("prince"):
             head = f"{p['prince']}{name}"
+    # v45 (档 A1): 亲缘定语只在名号句上出现一次 (S1 首见语义在 scope 内判定)
+    if scope is not None and _fi is not None and _tid is not None:
+        _tagged = _fi.kin_attrib_label(_tid, date=_anchor, style="brief",
+                                       scope=scope, base=head)
+        if _tagged:
+            head = _tagged
     bits = []
     h = _house_text(None, p)
     # 家族/宗族: 分家存在或家族名不在显示名中才单列 (西方名·姓已含家族, 不重复)
@@ -830,13 +842,28 @@ def _strip_station(s):
     return _STATION_RE.sub("", s or "")
 
 
-def _assassin_lead_line(k):
+def _kin_tag(facts, scope, cid, base, date=None):
+    """v45 (档 A): 给称谓 base 加亲缘定语 (本板块首见才加; 缺 scope/cid 原样返回)。
+
+    `base` 由调用方传入 —— 刺客死者的称谓按**卒日**取, 不能在这里重算成 as_of 版。"""
+    if scope is None or cid is None or not base:
+        return base
+    fi = facts.get("_facts")
+    if fi is None:
+        return base
+    return fi.kin_attrib_label(cid, date=date, style="brief", scope=scope,
+                               base=base) or base
+
+
+def _assassin_lead_line(k, facts=None, scope=None):
     """刺客列传开篇名录的一行: 「死者：称谓（渠州起事；死于…，被其烧死。）」。
     v30: 同组血亲并列一行 (问题7)。
-    v37 (问题8): 起义领袖补起事州府 — 开篇是独立请求, 无地点则模型会就近安放。"""
+    v37 (问题8): 起义领袖补起事州府 — 开篇是独立请求, 无地点则模型会就近安放。
+    v45 (档 A3): 死者若是传主的亲属, 首见处加亲缘定语 (「死者：姻亲兄弟X（…）」)。"""
     nm = k.get("name") or ""
     off = k.get("office") or ""
     disp = k.get("label") or (f"{off}{nm}" if off else nm)
+    disp = _kin_tag(facts, scope, k.get("id"), disp)
     db = k.get("death") or ""
     for _p in (disp, nm):
         if _p and db.startswith(_p + "死于"):
@@ -858,20 +885,23 @@ def _assassin_lead_line(k):
         else f"死者：{disp}"
 
 
-def _assassin_kill_lines(facts, cache, k):
+def _assassin_kill_lines(facts, cache, k, scope=None):
     """一名死者 (或一组同日而死的血亲) 的档案行: 官职名 + 生卒 + 死句 + 亲缘 + 婚恋。
     返回 ['死者：唐皇帝李漼（死于878年4月9日，被其处决。）', …]。
     v16: 死者行带出生日期 — 防止同名/近名角色被误认 (里瓦朗 vs 里瓦尔:
     生于830年的萨洛蒙亲生子不可能被当成869年私通所出之子)。
     v24: 死因不详不再叠双层括号; 地点标注改受害者所在男爵领独立行。
     v27: 亲缘行改用头衔+姓名 (kin_label), 与家室列传同口径。
-    v30: 血亲同组合为一行 (问题7); 凶手称谓由 facts 缩为「其」(问题8)。"""
+    v30: 血亲同组合为一行 (问题7); 凶手称谓由 facts 缩为「其」(问题8)。
+    v45 (档 A3): 死者行首见处加亲缘定语 (与 facts 侧的「父X」「妻X」行分工:
+    同一板块内该人已在别处点过名的不再加)。"""
     lines = []
     grp = list(k.get("group") or [])
     nm = k["name"]
     off = k.get("office") or ""
     # v28b: 死者称谓用 facts 组好的 label (官职/称号+名), 旧缓存回退 office+name
     disp = k.get("label") or (f"{off}{nm}" if off else nm)
+    disp = _kin_tag(facts, scope, k.get("id"), disp)
     db = k.get("death") or ""
     for _p in (disp, nm):
         if db.startswith(_p + "死于"):
@@ -1011,18 +1041,46 @@ def _name_or(facts, cache, cid):
     return "某人"
 
 
+def _article_subject(facts, cache, key):
+    """该篇的**传主** id (v45 亲缘定语的基准人): 《列传》即好友/仇人本人, 其余篇为主角。
+
+    不能取 `article["subject"]` —— 那是名字字符串 (见 `build_articles`)。"""
+    pid = facts.get("player_id")
+    if key == "friend":
+        try:
+            return _pick_friend(cache, as_of=facts.get("as_of"))[0]
+        except Exception:
+            return pid
+    if key == "enemy":
+        try:
+            return _enemy_for_facts(facts, cache)
+        except Exception:
+            return pid
+    return pid
+
+
 def _article_facts(facts, cache, key, section=None):
     """按文章取事实文本块 dict: {块名: 文本}。
-    v11: 刺客列传按板块取料 — 开篇给压缩名录 (群像总览), 各纪事给对应时段切片。"""
+    v11: 刺客列传按板块取料 — 开篇给压缩名录 (群像总览), 各纪事给对应时段切片。
+    v45: 开头建**本板块专属**的亲缘定语登记表 `KinScope` (局部对象 —— 本函数是
+    并发调用的, 挂 Facts 上会串味), 基准人 = 该篇传主。"""
     pid = facts.get("player_id")
     pname = (facts["protagonist"] or {}).get("name") or ""
     blocks = {}
+    # ---- v45: 每板块一份亲缘定语登记表 (「首次」语义 S1: 该名字在本板块出现过即消费名额) ----
+    subject = _article_subject(facts, cache, key)
+    scope = F.KinScope(subject) if subject is not None else None
     # ---- v34 (问题1/5): 主角档案与逐年摘要由共享前缀改为按篇下发 ----
     # 内部档 (含「实父X」与揭底链) 只给讲门庭内情的篇目; 其余篇目拿公开档。
     private_boards = ("jiashi", "secrets", "qizu")
-    _set_block(blocks, "传主档案",
-               "\n".join(_protagonist_archive_lines(facts,
-                                                    private=key in private_boards)))
+    # v45: 《列传》两篇的「传主档案」由下面分支用传主本人的档案覆盖 (biography.py
+    # 好友/仇人分支), 这里不重复生成 —— 否则白算一遍, 还会把主角一家的名字记进
+    # 本板块的亲缘名额 (S1 字面语义) 而挤掉真正的首见位。
+    if key not in ("friend", "enemy") or subject is None:
+        _set_block(blocks, "传主档案",
+                   "\n".join(_protagonist_archive_lines(facts,
+                                                        private=key in private_boards,
+                                                        scope=scope)))
     if key == "benji":
         # v27: 开篇与纪事按模块切片, 两块料不相交
         # v34 (问题5): 不再附【主角大事摘要】(与下面的【大事年表】逐字重复,
@@ -1041,8 +1099,8 @@ def _article_facts(facts, cache, key, section=None):
             blocks["说明"] = link
     elif key in ("friend", "enemy"):
         sk = _sec_key(section)
-        cid = (_pick_friend(cache, as_of=facts.get("as_of"))[0] if key == "friend"
-               else _enemy_for_facts(facts, cache))
+        # v45: 复用入口已解析的篇传主 (此前在此重算一次)
+        cid = subject
         if cid is not None:
             lines, events = _subject_facts(facts, cid)
             # v27: 开篇只给传主档案 + 关系缘由; 纪事给传主行迹 + 模块切片年表
@@ -1106,6 +1164,10 @@ def _article_facts(facts, cache, key, section=None):
         spouse_ids = _family_ids_by_kind(cache, "spouse")
         pick = ([c for c in sorted(fam_ids) if c in spouse_ids] if sk == "lead"
                 else [c for c in sorted(fam_ids) if c not in spouse_ids])
+        # v45 (档 A1, S1 字面语义): 先登记本板块此前的文本 —— 传主档案的家世行
+        # (「夫婿X」「子A、B」) 已经点过名的人, 逐人条目头不再重复加亲缘定语。
+        if scope is not None:
+            scope.absorb("\n".join(blocks.values()))
         for cid in pick:
             p = facts["characters"].get(str(cid))
             if not p or not p.get("name"):
@@ -1113,7 +1175,8 @@ def _article_facts(facts, cache, key, section=None):
             # v34 (问题1): 家室列传是内宅档 — 子女档案放行「实父X」
             # (《本纪》等公开篇目仍只写法理谱系)
             fam_lines.append("\n".join(
-                _profile_lines(facts, cid, with_real_parentage=True)))
+                _profile_lines(facts, cid, with_real_parentage=True,
+                               scope=scope)))
             ev = p.get("events") or []
             if ev:
                 fam_lines.append("  " + "\n  ".join(ev))
@@ -1182,6 +1245,11 @@ def _article_facts(facts, cache, key, section=None):
                 if isinstance(p.get("employee"), int):
                     related.add(p["employee"])
         if sk == "lead":
+            # v45 (档 A2, S1): 要员名录前先登记本板块此前的文本 (传主档案的家世行 /
+            # 天下大势 / 官职任免), 名录里的家人姻亲只在**首见**时加亲缘定语。
+            if scope is not None:
+                scope.absorb("\n".join(blocks.values()))
+            _fi = facts.get("_facts")
             for cid, rec in (cache.get("characters") or {}).items():
                 if len(names) >= 60:
                     break
@@ -1193,7 +1261,13 @@ def _article_facts(facts, cache, key, section=None):
                 if any(m["type"] in POLITICAL_TYPES for m in rec.get("memories") or []) \
                         or prof.get("titles_held"):
                     # v13: prof["name"] 已是统一显示名 (名·姓/姓+名/父名), 不再拼家族前缀
+                    # v45: 改经统一称谓出口并接亲缘定语 (「女婿X」「姻亲兄弟Y」);
+                    # 无称谓 (占位名) 时回落裸显示名
                     full = prof["name"]
+                    if _fi is not None and scope is not None:
+                        full = _fi.kin_attrib_label(
+                            int(cid), date=facts.get("as_of"), style="brief",
+                            scope=scope) or full
                     if full not in names:
                         names.append(full)
         if names:
@@ -1219,11 +1293,15 @@ def _article_facts(facts, cache, key, section=None):
                                                      for k in killed)
             head = (style.FACT_WORDING["assassin_lead"].format(
                 n=n_victims, killer=plabel) if plabel else "")
+            # v45 (档 A3, S1): 先登记本板块此前的文本 (传主档案), 死者名录里
+            # 已在别处点过名的亲属不再加亲缘定语
+            if scope is not None:
+                scope.absorb("\n".join(blocks.values()))
             if sec_key == "lead":
                 # v11 开篇: 压缩名录 (死者名 + 生卒死因), 供群像总览, 不再整块铺 168 人档案
                 parts = [head] if head else []
                 for k in killed:
-                    parts.append(_assassin_lead_line(k))
+                    parts.append(_assassin_lead_line(k, facts, scope))
                 _set_block(blocks, "刀下诸魂", "\n".join(parts))
             else:
                 # 各纪事: 按时段切片给完整档案 (v14 新口径: 官职名+亲缘+婚恋;
@@ -1231,7 +1309,7 @@ def _article_facts(facts, cache, key, section=None):
                 sl = (section or {}).get("slice")
                 picked = killed[sl[0]:sl[1]] if sl else killed
                 parts = [head] if head else []
-                parts += ["\n".join(_assassin_kill_lines(facts, cache, k))
+                parts += ["\n".join(_assassin_kill_lines(facts, cache, k, scope))
                           for k in picked]
                 _set_block(blocks, "刀下诸魂", "\n\n".join(parts))
     elif key == "youxia":
@@ -1428,12 +1506,13 @@ def _section_req(text, facts):
     return text
 
 
-def _protagonist_archive_lines(facts, private=False):
+def _protagonist_archive_lines(facts, private=False, scope=None):
     """主角档案块 (v34, 问题5): 从共享前缀移出, 按篇下发。
     private=True 放行揭底链 (托卵承嗣/血脉登基) 与「实父」行 —
-    只给《家室列传》《阴私录》这类讲门庭内情的篇目。"""
+    只给《家室列传》《阴私录》这类讲门庭内情的篇目。
+    v45: scope = 本板块的亲缘定语登记表 (基准人 = 该篇传主)。"""
     return _profile_lines(facts, None, with_real_parentage=private,
-                          with_private_chains=private)
+                          with_private_chains=private, scope=scope)
 
 
 def _shared_facts_block(facts):
@@ -1501,7 +1580,11 @@ def build_intro_messages(facts, cfg, articles=None):
     # v34 (问题5): 总纲是唯一点评一生大势的篇目, 主角档案随总纲下发
     # (共享前缀已不再注入档案); 总纲讲的是全局, 用公开档 — 揭底隐情归
     # 《家室列传》《阴私录》, 由篇目预告点出而不在此处说破。
-    shared = _render_block("【人物档案】", _protagonist_archive_lines(facts)) \
+    # v45 (档 A): 总纲的档案块另建一份亲缘定语登记表 (基准人 = 主角; 本人名号句不
+    # 加定语)。与各篇的 scope 互不相干 —— 总纲是独立请求。
+    shared = _render_block("【人物档案】",
+                           _protagonist_archive_lines(
+                               facts, scope=F.KinScope(facts.get("player_id")))) \
         + "\n\n" + shared
     # 文章预告: 用实际文章标题 (好友/仇人姓名已定; v5 支持任意篇数)
     CN_NUMS = "一二三四五六七八九"
