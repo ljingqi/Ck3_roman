@@ -874,6 +874,38 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 全组 PASS —— 1090 档正是 v41「封建期称谓不得用行政制词」的严格断面。
 **成稿未重跑**（用户拍板）。
 
+## v50 修正（结仇缘由闩存：新档起缘由不再随关系方死亡丢失）
+
+研究见 `docs/研究_v50_关系缘由闩存.md`（含新档可用性实测、落地表、验收与回归）。
+
+**问题**（v47 查明、v48 §6 步骤 6）：游戏只在 `opinions.active_opinions` 里为**当前存续**的
+关系保留成因键 `scripted_relations.reason`（如 `rival_called_me_a_disgrace` =
+「X指责Y是他们家族的耻辱」），关系一方死亡或关系解除后条目连同 reason 一起消失；而生成只载
+**最新一份**熔件 → 「结仇早、对方已死」的仇人一律读不到缘由，v47 起干脆不进仇人池。
+
+**新档实测（能不能用）**：田所2 战役逐档走 22 档 —— 仇怨类关系 **4/4 对首见即带 reason**
+（`potential_*` 不是关系、本就不带）；缘由随条目在 1–13 年后消失（881→882、888→889、893→894），
+**故只要在并入的那一刻闩存就永久保住**。
+
+| # | 位置 | 改法 |
+| --- | --- | --- |
+| 1 | `cache_lib.EMPTY_CACHE`（schema 4→5） | 新增 `relation_reasons`；旧缓存由 `load_cache` 的 `setdefault` 自动补空 dict，**无迁移脚本** |
+| 2 | `cache_lib._latch_relation_reasons`（新）＋ `extract_snapshot` 调用 | 逐档并入时把涉主角且带 `reason` 的条目闩存为 `"<owner>\|<target>\|<kind>" → {reason, involved, first_seen}`；首见即留、不覆盖（后档只刷 `last_seen`） |
+| 3 | `facts._cached_opinion_index`（新）＋ `relation_reasons` | 熔件与闩存逐 kind 合并：熔件带 reason 时以熔件为准（键序与旧实现逐字一致），熔件缺该 kind 或未带 reason 时用闩存补缺；`as_of` 时间门不变 |
+
+**实测回放**（`experiments/verify_v50_replay.py`，诺兰 赖因霍尔德）：用 `melt_1130` 跑一行闩存后，
+生成档 `melt_1148`（该对 0 条）的 `[enemy_lead] 结仇缘由` 首句变为
+「**赖因霍尔德·菲尔内堡指责冯阿德尔海德是他们家族的耻辱。**」，`_enemy_has_cause` 由
+`False → True`，d3 仇人篇传主由黑罗尔德回到赖因霍尔德 —— 缘由句是游戏原文，不再靠模型自造。
+
+**回归**：既有缓存无闩存数据 → **改动前后 A/B 逐字节一致**（`tools/snapdiff.py`：
+1148.1.1 档事实面 **0/15** 块、679 961 字节；终传档事实面 **0/15** ＋ 提示词面 **0/14**、
+742 431 字节）；`tools/verify_fast.py` / `experiments/verify_v44_unit.py` 全 PASS；
+`experiments/verify_v50_unit.py` **27 PASS**；`snap.py --assert` 的 FAIL 集改动前后逐条相同
+（1148.1.1 档 4 条，终传档 5 条 —— 多出的 `[8] 终传主角档案有职衔` 亦为既有）。
+**不改提示词**。按用户口径**不重建/不回填旧缓存**（可选后手：对旧战役跑 `rebuild-cache`
+重放熔件即可补回，因冷熔件在 v49 起全部保留）。
+
 ## v49 提速与归档（加载性能：解析 −62% / 单档 58.5 → ≈23 s / 冷档换 xz）
 
 研究见 `docs/研究_v49_加载性能与优化.md`（含逐环节实测分解与 §8 实施记录）；
