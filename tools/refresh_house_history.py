@@ -268,7 +268,7 @@ def main():
         bak = path + ".bak-v44"
         if not os.path.isfile(bak):
             shutil.copy2(path, bak)
-        cl.save_cache(cache, path)      # 原子写 + 与运行期同格式 (indent=1)
+        cl.save_cache(cache, path)      # 原子写 + 与运行期同格式 (v49: 紧凑分隔符)
         print(f"   已写入 {path} (备份 {os.path.basename(bak)})")
     print(f"总耗时 {time.time() - t_all:.0f}s")
     return 0
