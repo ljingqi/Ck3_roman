@@ -346,6 +346,53 @@ KIN_WORDS = {
     "sister_in_law":     ("relation_sisterinlaw", "姻亲姊妹"),
     "step_son":          ("relation_stepson", "继子"),
     "step_daughter":     ("relation_stepdaughter", "继女"),
+    # ---- v45b: 中式亲属细分 (40 词, 判据见 docs/研究_v45b_中式亲属.md §1.2) ----
+    # 组 A 父母之同胞: 伯叔按与父母的生年, 舅/姑/姨按父系/母系与性别
+    "uncle_pat_older":   ("", "伯父"),
+    "uncle_pat_younger": ("", "叔父"),
+    "uncle_mat":         ("", "舅父"),
+    "aunt_pat":          ("", "姑母"),
+    "aunt_mat":          ("", "姨母"),
+    "uncle":             ("relation_uncle", "叔舅"),      # 回落: 长幼不可判
+    "aunt":              ("relation_aunt", "姑姨"),        # 回落: 父母边不可判
+    # 组 B 同胞之子女: 兄弟之子女 → 侄, 姊妹之子女 → 甥
+    "nephew_brother":    ("", "侄子"),
+    "niece_brother":     ("", "侄女"),
+    "nephew_sister":     ("", "外甥"),
+    "niece_sister":      ("", "外甥女"),
+    "nephew":            ("NEPHEW", "侄甥"),               # 回落: 同胞性别不可判
+    "niece":             ("NIECE", "侄甥女"),
+    # 组 C 子女之子女: 子之子女 → 孙, 女之子女 → 外孙
+    "grandson_son":      ("GRANDSON", "孙子"),
+    "granddaughter_son": ("GRANDDAUGHTER", "孙女"),
+    "grandson_daughter": ("", "外孙子"),
+    "granddaughter_daughter": ("", "外孙女"),
+    "grandson":          ("relation_grandson", "（外）孙"),      # 回落: 中间人性别不可判
+    "granddaughter":     ("relation_granddaughter", "（外）孙女"),
+    # 组 D 堂表 (姑表算表: 只有伯叔之子女为堂)
+    "cousin_pat_brother_older":   ("", "堂兄"),
+    "cousin_pat_brother_younger": ("", "堂弟"),
+    "cousin_pat_sister_older":    ("", "堂姐"),
+    "cousin_pat_sister_younger":  ("", "堂妹"),
+    "cousin_mat_brother_older":   ("", "表兄"),
+    "cousin_mat_brother_younger": ("", "表弟"),
+    "cousin_mat_sister_older":    ("", "表姐"),
+    "cousin_mat_sister_younger":  ("", "表妹"),
+    "cousin_pat_brother": ("", "堂兄弟"),                  # 回落: 长幼不可判
+    "cousin_pat_sister":  ("", "堂姊妹"),
+    "cousin_mat_brother": ("", "表兄弟"),
+    "cousin_mat_sister":  ("", "表姊妹"),
+    "cousin_male":        ("COUSIN_MALE", "堂表兄弟"),      # 回落: 堂/表侧不可判
+    "cousin_female":      ("relation_cousin_female", "堂表姊妹"),
+    # 组 E 配偶之父母 (按配偶性别取词; 游戏无键者自造)
+    "mother_in_law":     ("", "岳母"),
+    "husband_father":    ("", "公公"),
+    "husband_mother":    ("", "婆婆"),
+    # 组 F 同胞之配偶 (按同胞性别 + 长幼取词; 游戏无键者自造)
+    "sister_in_law_older":   ("", "嫂"),
+    "sister_in_law_younger": ("", "弟媳"),
+    "brother_in_law_older":  ("", "姐夫"),
+    "brother_in_law_younger": ("", "妹夫"),
 }
 
 _KIN_TEXT_CACHE = {}
@@ -366,6 +413,13 @@ KIN_SHORT = {
 def kin_word_short(key):
     """亲缘键 → 旁称单字 (父/母/兄/姊…); 未收录者回落双音节词。"""
     return KIN_SHORT.get(key) or kin_text(key)
+
+
+def kin_texts():
+    """**词表白名单** (v45b): 全部可出定语词形 = 双音节表 ∪ 史传单字表。
+
+    单一定义处 —— 断言 (「标注词都在词表内」) 与实现同源, 扩表时不会漏改判据。"""
+    return {kin_text(k) for k in KIN_WORDS} | set(KIN_SHORT.values())
 
 
 def kin_text(key):
@@ -440,13 +494,49 @@ def _married(fam_a, a_id, b_id, chars):
     return False
 
 
-def kin_key(cache, subject, cid, chars=None, spouse_back=None):
-    """subject 相对 cid 的**亲缘关系键** (v45): 'father'/'brother_older'/'father_in_law'…
+def kin_rev_index(chars):
+    """反向边索引 (v45b): {sib: {cid: [对端…]}, kid: {cid: [对端…]}}。
 
-    判据见 `docs/研究_v45_亲缘定语.md` §2.3 (游戏本地化词 + 中文长幼);
-    **判不出返回 ''** (不猜)。纯函数: 只读缓存, 不依赖熔件, 可秒级断言。
-    词形分两档由调用方取: `kin_text(key)` = 双音节定语词 (父亲/兄长/岳父),
-    `KIN_SHORT` = 史传单字 (父/兄/岳父, 供「其父」「其兄」这类旁称)。
+    缓存里同胞/子女边可能只写在对端记录上 (实测同向缺失不少), 故一律**双向并集**;
+    建一次 O(N) 供整次 build 复用 (由 `Facts._kin_rev` 持有)。
+    纯函数: 只读角色表。
+
+    **子女反查只认法理父/母 (`father`/`mother`), 不含 `real_father`** ——
+    与 v34 的公开谱系口径一致 (实父只在《家室列传》《阴私录》等内部档出现):
+    被托卵的孩子在公开篇目里不算「儿子」, 否则会与档案的「子A、B」行自相矛盾
+    (实测诺兰档: 黑罗尔德·沙特努瓦 real_father=主角而法理父是别人)。"""
+    sib, kid = {}, {}
+    for k, rec in (chars or {}).items():
+        if not str(k).isdigit() or not isinstance(rec, dict):
+            continue
+        try:
+            cid = int(k)
+        except ValueError:
+            continue
+        fam = rec.get("family") or {}
+        for x in (fam.get("siblings") or []):
+            if isinstance(x, int) and x != cid:
+                sib.setdefault(x, []).append(cid)   # x 的同胞里有 cid
+        for x in (fam.get("child") or []):
+            if isinstance(x, int):
+                kid.setdefault(cid, []).append(x)   # cid 的子女里有 x
+        for key in ("father", "mother"):
+            for x in (fam.get(key) or []):
+                if isinstance(x, int):
+                    kid.setdefault(x, []).append(cid)   # cid 是 x 的子女
+    return {"sib": sib, "kid": kid}
+
+
+def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
+    """subject 相对 cid 的**亲缘关系键** (v45/v45b): 'father'/'cousin_pat_brother_older'…
+
+    判据见 `docs/研究_v45_亲缘定语.md` §2.3 与 `docs/研究_v45b_中式亲属.md` §1.2/§2.1;
+    **判不出返回 ''** (不猜)。纯函数: 只读缓存 (+ 可选的预建反向索引), 不依赖熔件,
+    可秒级断言。判定序 = 血亲优先 (序 A):
+      1 度 (父母 → 子女 → 同胞 → 配偶) → 孙辈 → 父母之同胞 → 同胞之子女 → 堂表
+      → 配偶之父母 → 女婿/儿媳 → 同胞之配偶 / 配偶之同胞 → 继子女
+    词形分两档由调用方取: `kin_text(key)` = 双音节定语词 (父亲/伯父/表姐),
+    `KIN_SHORT` = 史传单字 (供「其父」「其兄」这类旁称)。
     subject 为 None、cid 为 None、或二者同一人时返回 ''。"""
     if subject is None or cid is None:
         return ""
@@ -457,34 +547,83 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None):
     if s == c:
         return ""
     chars = chars if chars is not None else (cache.get("characters") or {})
+    if rev is None:
+        rev = kin_rev_index(chars)
+    rev_sib = rev.get("sib") or {}
+    rev_kid = rev.get("kid") or {}
     rs = chars.get(str(s)) or {}
     rc = chars.get(str(c)) or {}
     fs = rs.get("family") or {}
-    fc = rc.get("family") or {}
     c_female = _female_rec(rc)
+    s_female = _female_rec(rs)
 
-    def _sp(cid_):
-        """cid_ 的现配偶集 (含反向边)。"""
-        fam = (chars.get(str(cid_)) or {}).get("family") or {}
-        out = spouses_now_family(fam)
-        if spouse_back:
-            out |= set(spouse_back.get(int(cid_)) or [])
+    def _fam(x):
+        return (chars.get(str(x)) or {}).get("family") or {}
+
+    def _ids(fam, key):
+        return [k for k in (fam.get(key) or []) if isinstance(k, int)]
+
+    def _fath(x):
+        f = _fam(x)
+        return set(_ids(f, "father")) | set(_ids(f, "real_father"))
+
+    def _moth(x):
+        return set(_ids(_fam(x), "mother"))
+
+    def _sibs(x):
+        out = set(_ids(_fam(x), "siblings")) | set(rev_sib.get(int(x)) or [])
+        out.discard(int(x))
         return out
 
+    def _kids(x):
+        return set(_ids(_fam(x), "child")) | set(rev_kid.get(int(x)) or [])
+
+    def _sp(x):
+        """x 的现配偶集 (含反向边)。"""
+        out = spouses_now_family(_fam(x))
+        if spouse_back:
+            out |= set(spouse_back.get(int(x)) or [])
+        return out
+
+    def _female(x):
+        return _female_rec(chars.get(str(x)) or {})
+
+    def _older(a, b):
+        """a 是否年长于 b (生年比较); 任一方无生年返回 None。"""
+        return _older_rec(chars.get(str(a)) or {}, chars.get(str(b)) or {})
+
+    def _cousin(side, female, older):
+        """堂/表词形: side ∈ {'pat','mat',None}; female=c 性别; older=c 是否年长于 s。"""
+        if female is None:
+            return ""
+        if side is None:                      # 堂/表侧不可判 (连接人性别无记载)
+            return "cousin_female" if female else "cousin_male"
+        pat = side == "pat"
+        if older is None:
+            if pat:
+                return "cousin_pat_sister" if female else "cousin_pat_brother"
+            return "cousin_mat_sister" if female else "cousin_mat_brother"
+        if female:
+            if pat:
+                return "cousin_pat_sister_older" if older else "cousin_pat_sister_younger"
+            return "cousin_mat_sister_older" if older else "cousin_mat_sister_younger"
+        if pat:
+            return "cousin_pat_brother_older" if older else "cousin_pat_brother_younger"
+        return "cousin_mat_brother_older" if older else "cousin_mat_brother_younger"
+
     # 1) 父 / 母 (含实父)
-    if c in (fs.get("father") or []) or c in (fs.get("real_father") or []):
+    if c in _fath(s):
         return "father"
-    if c in (fs.get("mother") or []):
+    if c in _moth(s):
         return "mother"
-    # 2) 子 / 女 (正反两向: c 是我的子女, 或我是 c 的父/母)
-    if c in (fs.get("child") or []) or s in (fc.get("father") or []) \
-            or s in (fc.get("mother") or []):
+    # 2) 子 / 女 (正反两向)
+    if c in _kids(s):
         if c_female is None:
             return ""            # 性别不可判 → 不标 (子/女二选一必错一半)
         return "daughter" if c_female else "son"
     # 3) 同胞 + 长幼 (生年缺失 → 回落游戏词「兄弟」/「姊妹」)
-    if c in (fs.get("siblings") or []) or s in (fc.get("siblings") or []):
-        older = _older_rec(rc, rs)          # c 是否年长于 subject
+    if c in _sibs(s):
+        older = _older(c, s)                # c 是否年长于 subject
         if older is None:
             return "sister" if c_female else "brother"
         if c_female:
@@ -496,44 +635,103 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None):
         if c_female is None:
             return "spouse"
         return "wife" if c_female else "husband"
-    # 5) 岳父 (配偶之父; 游戏 UI 同口径, 不分传主性别)
-    for sid in sp_s:
-        sf = (chars.get(str(sid)) or {}).get("family") or {}
-        if c in (sf.get("father") or []):
-            return "father_in_law"
-    # 6) 女婿 / 儿媳 (子女的配偶)
-    for k in (fs.get("child") or []):
-        if not isinstance(k, int):
+    # 5) 孙辈 (我的子女的子女; 中间人性别定孙/外孙)
+    for k in sorted(_kids(s)):
+        if c in _kids(k):
+            if c_female is None:
+                return ""
+            kf = _female(k)
+            if kf is None:
+                return "granddaughter" if c_female else "grandson"
+            if kf:
+                return "granddaughter_daughter" if c_female else "grandson_daughter"
+            return "granddaughter_son" if c_female else "grandson_son"
+    # 6) 父母之同胞: 父系 → 伯父/叔父 (比父生年) 或 姑母; 母系 → 舅父/姨母
+    for p in sorted(_fath(s)):
+        if c in _sibs(p):
+            if c_female is None:
+                return ""
+            if c_female:
+                return "aunt_pat"
+            older = _older(c, p)            # c 比 p (父) 年长 → 伯父
+            if older is None:
+                return "uncle"              # 长幼不可判 → 叔舅
+            return "uncle_pat_older" if older else "uncle_pat_younger"
+    for p in sorted(_moth(s)):
+        if c in _sibs(p):
+            if c_female is None:
+                return ""
+            return "aunt_mat" if c_female else "uncle_mat"
+    # 7) 同胞之子女: 兄弟之子女 → 侄; 姊妹之子女 → 甥
+    for sb in sorted(_sibs(s)):
+        if c in _kids(sb):
+            if c_female is None:
+                return ""
+            sbf = _female(sb)
+            if sbf is None:
+                return "niece" if c_female else "nephew"
+            if sbf:
+                return "niece_sister" if c_female else "nephew_sister"
+            return "niece_brother" if c_female else "nephew_brother"
+    # 8) 堂表: 父母的同胞之子女 (父之兄弟之子女 → 堂; 父之姊妹 / 母系 → 表)
+    for p in sorted(_fath(s)):
+        for u in sorted(_sibs(p)):
+            if u == s or c not in _kids(u):
+                continue
+            uf = _female(u)
+            side = "pat" if uf is False else ("mat" if uf is True else None)
+            return _cousin(side, c_female, _older(c, s))
+    for p in sorted(_moth(s)):
+        for u in sorted(_sibs(p)):
+            if u == s or c not in _kids(u):
+                continue
+            return _cousin("mat", c_female, _older(c, s))
+    # 9) 配偶之父母 (按**配偶性别**取词: 女 → 岳父/岳母, 男 → 公公/婆婆)
+    for sid in sorted(sp_s):
+        sf = _fam(sid)
+        father_side = c in _fath(sid)
+        if not father_side and c not in _moth(sid):
             continue
-        kf = (chars.get(str(k)) or {}).get("family") or {}
-        if _married(kf, k, c, chars):
+        sf_sex = _female(sid)
+        if sf_sex is None:
+            # 配偶性别不可判 → 取传主性别的反面 (原版 CK3 为一男一女)
+            sf_sex = (not s_female) if s_female is not None else None
+        if sf_sex is None:
+            return ""                       # 两方性别都不可判 → 不标
+        if sf_sex:
+            return "father_in_law" if father_side else "mother_in_law"
+        return "husband_father" if father_side else "husband_mother"
+    # 10) 女婿 / 儿媳 (子女的配偶)
+    for k in sorted(_kids(s)):
+        if _married(_fam(k), k, c, chars):
             return "daughter_in_law" if c_female else "son_in_law"
-    # 7) 姻亲兄弟 / 姻亲姊妹 (配偶的同胞, 或同胞的配偶)
-    for sid in sp_s:
-        sf = (chars.get(str(sid)) or {}).get("family") or {}
-        if c in (sf.get("siblings") or []):
+    # 11) 同胞之配偶 (嫂/弟媳/姐夫/妹夫, 按同胞性别+长幼) 与 配偶之同胞 (姻亲)
+    for sb in sorted(_sibs(s)):
+        if _married(_fam(sb), sb, c, chars) or c in _sp(sb):
+            sbf = _female(sb)
+            older = _older(sb, s)           # 同胞比 subject 年长?
+            if sbf is not None and older is not None:
+                if sbf:
+                    return "brother_in_law_older" if older else "brother_in_law_younger"
+                return "sister_in_law_older" if older else "sister_in_law_younger"
             return "sister_in_law" if c_female else "brother_in_law"
-    for sb in (fs.get("siblings") or []):
-        if not isinstance(sb, int):
-            continue
-        sbf = (chars.get(str(sb)) or {}).get("family") or {}
-        if _married(sbf, sb, c, chars) or c in _sp(sb):
+    for sid in sorted(sp_s):
+        if c in _sibs(sid):
             return "sister_in_law" if c_female else "brother_in_law"
-    # 8) 继子 / 继女 (配偶的子女, 且不是我的子女)
-    for sid in sp_s:
-        sf = (chars.get(str(sid)) or {}).get("family") or {}
-        if c in (sf.get("child") or []) and c not in (fs.get("child") or []):
+    # 12) 继子 / 继女 (配偶的子女, 且不是我的子女)
+    for sid in sorted(sp_s):
+        if c in _kids(sid) and c not in _kids(s):
             return "step_daughter" if c_female else "step_son"
     return ""
 
 
-def kin_word(cache, subject, cid, chars=None, spouse_back=None):
-    """`kin_key` 的**双音节定语词**形态 (v45): 父亲/兄长/岳父/姻亲姊妹…
+def kin_word(cache, subject, cid, chars=None, spouse_back=None, rev=None):
+    """`kin_key` 的**双音节定语词**形态 (v45): 父亲/伯父/表姐/姻亲姊妹…
 
     用户 2026-09-16 拍板「有双音节词用双音节词」—— 定语一律走这一档;
     旁称 (「其父」) 走 `kin_word_short`。判不出返回 '' (不猜)。"""
     return kin_text(kin_key(cache, subject, cid, chars=chars,
-                            spouse_back=spouse_back))
+                            spouse_back=spouse_back, rev=rev))
 
 
 class KinScope:
@@ -2449,7 +2647,14 @@ class Facts:
         chars 一律取**缓存的**角色表 —— 亲属图由缓存持有 (熔件 family_data 常为空),
         只在缓存缺记录时才由 kin_key 内部回落。"""
         return kin_word(self.cache, subject, cid,
-                        spouse_back=self._spouse_back_index())
+                        spouse_back=self._spouse_back_index(),
+                        rev=self._kin_rev_index())
+
+    def _kin_rev_index(self):
+        """反向同胞/子女索引 (v45b; 惰性建一次, 供 `kin_key` 双向并集)。"""
+        if getattr(self, "_kin_rev", None) is None:
+            self._kin_rev = kin_rev_index(self.cache.get("characters") or {})
+        return self._kin_rev
 
     def _spouse_back_index(self):
         """反向配偶索引 {cid: [配偶id…]} (v45): 缓存里配偶边可能只写在对端记录上
