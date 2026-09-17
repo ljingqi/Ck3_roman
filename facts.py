@@ -3540,13 +3540,21 @@ class Facts:
            落空。改取**卒前一日**, 语义即「按卒前的身分称呼」。
         ② **主角的卒档不在 `characters[pid].death`**: 它记在 `cache["player_death"]`,
            旧稿因此对主角取不到卒日 → 落到 `as_of` (终传为 None → 熔件当前档,
-           已是卒后) → 终传里主角自己的 `office`/`label` 退成裸名。此处一并回读。"""
-        if date:
-            return date
+           已是卒后) → 终传里主角自己的 `office`/`label` 退成裸名。此处一并回读。
+
+        v46 (问题1): ①的漏口补上 —— 旧实现 `if date: return date` 让**显式传入**
+        的日期绕过卒前一日回退, 于是十年篇 (as_of=1128/1133/1138, 晚于卒日) 里
+        已死者被读成「当日不在职」, `_full_label` 再拿他一生最高头衔补成
+        「**前**神圣罗马帝国皇帝X」(实测诺兰档 62045 等 8 人)。语义仍是
+        「死者按卒时身分称呼」: 显式日期晚于卒日时折到卒前一日。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         dd = (rec.get("death") or {}).get("date")
         if not dd and cid == self.cache.get("player_id"):
             dd = (self.cache.get("player_death") or {}).get("date")
+        if date:
+            if dd and cl.date_key(date) >= cl.date_key(dd):
+                return _day_before(dd)          # v46: 卒日/卒后日期 → 按卒时身分
+            return date
         if dd and (not self.as_of or cl.date_key(dd) <= cl.date_key(self.as_of)):
             return _day_before(dd)
         return self.as_of
@@ -4266,31 +4274,36 @@ class Facts:
         形态「前拜占庭皇帝，安卡拉伯爵君士坦丁十一」; 现头衔缺失时只写
         「前高昌国王毗伽庞特勤」。同一头衔 (同一 tid) 的今昔两种叫法不算前头衔 —
         塔坦尼·布兰 现职「可萨布兰部可敦」, 其 881–893 年的 3981 就是同一头衔的
-        前身, 一律只写现职。无头衔者按父/母头衔取王子/公主称号。"""
+        前身, 一律只写现职。无头衔者按父/母头衔取王子/公主称号。
+
+        v46 (问题1): 现职/前头衔/前头衔文本**三处共用同一个 anchor**
+        (`_anchor_date`, 卒后日期折到卒前一日) —— 旧稿三处各自用入参 date,
+        死者于是被读成「当日无现职」而把一生最高头衔提升成「前头衔」。"""
+        anchor = self._anchor_date(cid, date)
         # 现职为空时不存在「现头衔」, 不能把「最近一段最高位持有」当成现职排除掉
         # (否则 毗伽庞特勤 的 高昌 会被自己挤掉, 只剩更低的 喀喇沙尔公国)。
-        cur_tid = self._current_title_tid(cid, date) if cur else None
+        cur_tid = self._current_title_tid(cid, anchor) if cur else None
         cur_rank = 0
         if cur_tid is not None:
             key = (self._lt.get(str(cur_tid)) or {}).get("key") or ""
             cur_rank = self._TT_RANK.get(key[:2], 0)
-        former_tid = self._former_high_title(cid, date, exclude_tid=cur_tid)
+        former_tid = self._former_high_title(cid, anchor, exclude_tid=cur_tid)
         f_rank = 0
         if former_tid is not None:
             key = (self._lt.get(str(former_tid)) or {}).get("key") or ""
             f_rank = self._TT_RANK.get(key[:2], 0)
         if cur and former_tid is not None and f_rank > cur_rank:
-            ft = self._former_title_text(cid, former_tid, date)
+            ft = self._former_title_text(cid, former_tid, anchor)
             if ft and ft != cur:
                 return f"前{ft}，{cur}{nm}"
             return f"{cur}{nm}"
         if cur:
             return f"{cur}{nm}"
         if former_tid is not None:
-            ft = self._former_title_text(cid, former_tid, date)
+            ft = self._former_title_text(cid, former_tid, anchor)
             if ft:
                 return f"前{ft}{nm}"
-        pw = self.prince_title(cid, date)
+        pw = self.prince_title(cid, anchor)
         if pw:
             return f"{pw}{nm}"
         return nm
