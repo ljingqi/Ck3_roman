@@ -840,21 +840,32 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     # v21: 时代末熔件存在即显式覆盖 (含空绰号) — 该时代无绰号时清空,
     # 防末档绰号泄漏进早期十年 (郭靖 1197 年才得「欺诈者」, 第1个十年
     # as_of=1189 不得出现该绰号)。
+    # v49 (O5): 优先用缓存里的 nickname_history (并入时按档锁存) —— 旧实现为取
+    # 一个字符串要整份载入该时代末档熔件 (244 MiB 档实测 6–18 s)。旧缓存无沿革
+    # 时仍回退读熔件 (口径不变)。
     nickname_override = None
     if decade and as_of:
         last = cache.get("last_date")
         if last and cl.date_key(as_of) < cl.date_key(last):
-            try:
-                p_era = melt_path_for_cache(cfg, cache, as_of)
-                if os.path.isfile(p_era):
-                    era = cl.load_melt(p_era)
-                    pid = cache.get("player_id")
-                    nick = ((era.get("living") or {}).get(str(pid)) or {}).get(
-                        "nickname_text")
-                    nickname_override = {pid: str(nick).strip()}
-                    llm.log(f"  按时代取绰号 ({as_of}): {nick!r}")
-            except Exception as e:
-                llm.log(f"  按时代取绰号失败: {e}")
+            pid = cache.get("player_id")
+            rec = (cache.get("characters") or {}).get(str(pid)) or {}
+            nick = cl.nickname_at(rec, as_of)
+            src = "缓存沿革"
+            if nick is None:
+                src = "时代熔件"
+                try:
+                    p_era = melt_path_for_cache(cfg, cache, as_of)
+                    if os.path.isfile(p_era):
+                        era = cl.load_melt(p_era)
+                        raw = ((era.get("living") or {}).get(str(pid)) or {}).get(
+                            "nickname_text")
+                        nick = str(raw).strip() if raw is not None else ""
+                except Exception as e:
+                    llm.log(f"  按时代取绰号失败: {e}")
+                    nick = None
+            if nick is not None:
+                nickname_override = {pid: str(nick).strip()}
+                llm.log(f"  按时代取绰号 ({as_of}, {src}): {nick!r}")
     house, fname = output_paths(cfg, cache, continue_mode=continue_mode, decade=decade)
     out_dir = os.path.join(cfg.get("output_dir", ""), house)
     out_path = os.path.join(out_dir, fname)

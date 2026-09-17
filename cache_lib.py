@@ -624,6 +624,25 @@ def mem_ids_of(char_obj):
     return (c.get("dead_data") or {}).get("memories") or []
 
 
+def nickname_at(rec, as_of=None):
+    """v49 (O5): 该角色在 as_of 时点的绰号 (查 `nickname_history` 变更点)。
+
+    返回 ''=该时点无绰号, None=无沿革/时点早于首点 (调用方回退读熔件)。
+    as_of 为空时取沿革末值 (现值)。"""
+    nh = (rec or {}).get("nickname_history") or []
+    if not nh:
+        return None
+    if not as_of:
+        return nh[-1].get("nickname") or ""
+    val = None
+    for pt in nh:
+        if date_key(pt.get("from") or "0.0.0") <= date_key(as_of):
+            val = pt.get("nickname") or ""
+        else:
+            break
+    return val
+
+
 def find_player(melt):
     cpc = melt.get("currently_played_characters") or []
     if cpc:
@@ -866,6 +885,11 @@ def char_record(cache, cid):
             "culture_history": [],  # v30: [{from, culture}] 族属变更点 (首见即记)
             "faith": None,
             "faith_history": [],   # v26: [{from, faith}] 改信变化点 (首见即记)
+            # v49 (O5): [{from, nickname}] 绰号变化点 (首见即记, 含空串 = 无绰号)。
+            # 十年传记的「按时代取绰号」原要为此整份载入该时代末档熔件 —— 244 MiB
+            # 档实测 6–18 s 只为取一个字符串; 锁存后直接读缓存。实测 living 角色
+            # 恒有 nickname_text 键 (空串=无绰号), 故目标集里每人至少一点。
+            "nickname_history": [],
             "traits": [],
             "trait_history": {},    # {特质key: [{from, to, first}]} 获得/消失区间 (v4)
             "trait_xp": [],         # v32: [{from, traits, xp}] 轨道 XP 样本 (与 traits 对齐)
@@ -1968,6 +1992,17 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 if not fh or fh[-1].get("faith") != _fid:
                     fh.append({"from": date_label, "faith": _fid})
             rec["faith"] = _fid
+        # v49 (O5): 绰号变化点 —— 游戏只在**当前**存档的 nickname_text 里给绰号,
+        # 旧档一旦被压缩/清理, 十年前那篇传记就只能拿到末档绰号 (v20/v21 的老问题:
+        # 郭靖 1197 年才得「欺诈者」, 第 1 个十年不得出现)。原实现靠"重读该时代
+        # 末档熔件"解决, 代价是整份解析; 此处按档锁存, 之后十年传记直接查沿革。
+        # 键存在即记 (含空串: 该时代无绰号时清空, 与 v21 同日径)。
+        if "nickname_text" in c:
+            _nick = c.get("nickname_text")
+            _nick = "" if _nick is None else str(_nick)
+            _nh = rec.setdefault("nickname_history", [])
+            if not _nh or _nh[-1].get("nickname") != _nick:
+                _nh.append({"from": date_label, "nickname": _nick})
         # v11: 语言 (alive_data.languages): 同 culture 处理 — 有值即更新,
         # 缺失 (死后 alive_data 被清) 保留最近已知值, 供父名/族属推断与「语言」行。
         langs = (c.get("alive_data") or {}).get("languages") or []
