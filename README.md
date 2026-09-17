@@ -874,7 +874,63 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 全组 PASS —— 1090 档正是 v41「封建期称谓不得用行政制词」的严格断面。
 **成稿未重跑**（用户拍板）。
 
-## 代码纪律（2026-09-10 用户定规）
+## v49 提速与归档（加载性能：解析 −62% / 单档 58.5 → ≈23 s / 冷档换 xz）
+
+研究见 `docs/研究_v49_加载性能与优化.md`（含逐环节实测分解与 §8 实施记录）；
+体积策略见 `docs/方案_v48_熔化存档保留策略.md`。每项一个提交。
+
+**1. 单档「熔化→并入」逐项实测（诺兰 1148，244.6 MiB 熔件 / 153 MB 缓存）**
+
+| 环节 | v49 前 | v49 后 | 做法 |
+| --- | ---: | ---: | --- |
+| rakaly 熔化 | 3.3 s | **1.5 s** | `melt_save` stdout 直写文件（旧写法先把 244 MiB JSON 攒在内存里） |
+| 解析新档 `load_melt` | 18.3 s | **5.9 s** | 快路重复键合并 ＋ `'none'` 清扫折入同一趟 ＋ 二进制整读 ＋ **解析期 `gc.disable()`** |
+| 回溯上一档 | 18.2 s | **0.5 s** | 并入 X 时顺手为 X 建边车（`_prebuild_melt_index`），下一档回溯直接读边车 |
+| 建＋落边车 | 4.1 s | 3.2 s | 边车一律 `.json.gz`（43 → 5.6 MiB） |
+| 写缓存 | 8.5 s | **5.8 s** | `save_cache` 紧凑分隔符（体积 −40.7%） |
+| 合计（可归因） | **58.5 s** | **≈23 s** | 墙钟 60 → ≈25 s |
+
+解析那 12.4 s 里最大的单项是**自动 GC**：`object_pairs_hook` 是 Python 函数时 C 扫描器
+要为每个对象建 pair 列表并回调，途中反复触发 gen2 全图回收（实测 10.8 s → 关掉后 6.0 s，
+峰值内存不变）。`load_melt` 现在解析期间关 GC、出栈即恢复。
+
+**2. 其它加载面**
+
+- **熔件记忆（LRU=2）**：同一进程内反复载同一份熔件直接复用（命中 0.00 s，未命中 ≈7 s）——
+  后台传记线程对同一位传主的多篇十年传记不必每篇重解析；watch 刚并入的档还能从临时路径
+  跟到归位路径。两份常驻 2636 MiB / 峰值 3861 MiB，**小内存机可 `ROMAN_MELT_MEMO=0` 关掉**。
+- **绰号按档锁存**：`nickname_history` 进角色记录，十年传记的「按时代取绰号」不再整份载入
+  该时代末档（−6.6~7.5 s/篇；旧缓存无沿革时仍回退读熔件，口径不变）。
+- **`build_facts` 只有 2.2–2.5 s** —— 慢从来不在 facts 层。
+
+**3. 冷档改 xz 归档（`pipeline.py compact [--gz]`）**
+
+`.json.xz` 为冷档默认格式（`config.compact_codec`），体积降到 gzip 的 **61.5%**
+（实测 `melt_1108` 26.39 → 16.22 MiB，边车 3.18 → 2.11 MiB），解压 0.46 → 1.22 s/244 MiB；
+**最新一份仍留明文**，故日常单档耗时 ±0。压缩走**往返 sha1 校验**（压完解回来逐块比对，
+不一致就删半成品、留原件并报错）—— 熔件是 60 年存档的唯一副本，宁可不省也不能压坏。
+存量 `.json.gz` 会被解压重压成 xz（幂等，可反复运行）；`--gz` 只作用于未压缩的明文，
+**不会**把已有 xz 涨回去。全部读取口（`load_melt` / `load_melt_index` / `melt_file_in` /
+`_iter_melts` / `_backfill_tail_deaths` / `snap.py` / `refresh_*` / `build_names`）三种后缀皆认。
+
+**4. 冗余清理（`tools/cleanup_junk.py`，默认只列，`--apply` 才删）**
+
+清 `player_*.json.bak-v*`、`.corrupt.*`、`cache/_bak_*`、`cache/_auto2.json`、
+孤儿边车、`_上轮_*.md`、残留临时熔件。首轮清 **12 项 739.6 MiB**
+（诺兰 `.bak-v43/v44` 271.9 ＋ `cache/_bak_nuolan_v40` 273.7 ＋ `cache/_auto2.json` 161.5 ＋
+周氏2 备份 16.1 ＋ 旧稿 0.3）。**注意**：`cache/_bak_*` 里的 `player_*.json` 会被
+`all_caches` 递归扫到，属于「选路隐患」，删掉更安全。
+
+**5. 回归**（`experiments/verify_v49_unit.py` 34 项全 PASS）
+
+- `load_melt` 新实现与旧实现在 1148（明文）/1147（gz）上**全量 `==` 一致**，残留 `'none'` 0；
+- **事实面零变化**：用改动前源码（rev `a5561d9`）对同一 cache/melt 落快照，
+  `tools/snapdiff.py --facts-only` → **0/15 块变化（逐字节一致）**；
+- `tools/verify_fast.py` / `experiments/verify_v44_unit.py` 全 PASS；
+- `tools/snap.py ... --assert` 的 4 条 FAIL 经比对为**改动前既有**（与 v49 无关，待另立一轮）：
+  括注同位语、`实父为自己`、阉/盲记忆窗口、灭门死因年表。
+
+
 
 - **每次破坏性改动前必须先 commit**：动手改 `facts.py` / `biography.py` / `cache_lib.py` /
   `pipeline.py` / `llm.py` 等生产代码之前，先把当前工作树提交为一个检查点，
@@ -969,7 +1025,7 @@ python tools\check_bio_v35.py [家族] [md名]
 | `htmlview.py` | 宗族阅读页生成器（自包含 index.html，离线可读） |
 | `build_names.py` | 全档角色名映射表（含姓氏，本地化，供姓名合并兜底） |
 | `data/` | 全局表：names.json + localization.json（含来源指纹）+ province_map.json + dynasties.json + currency_levels.json + court_positions.json + council_tasks.json + trait_names.json + trait_tracks.json（各战役共用，v29 起启用 Mod 变化即自动重建） |
-| `output/<宗族>/data/` | 每玩家记忆缓存 + 熔化存档 melt_*.json（v6 起，与缓存同目录；**v44 起冷熔件与其边车 gzip 归档为 `.json.gz`**，最新一份保持明文） |
+| `output/<宗族>/data/` | 每玩家记忆缓存 + 熔化存档 melt_*.json（v6 起，与缓存同目录；**v49 起冷熔件与其边车以 xz 归档为 `.json.xz`**（旧档可能是 v44 的 `.json.gz`，读取口三种后缀皆认），最新一份保持明文） |
 | `output/` | 传记输出（按宗族分文件夹） |
 | `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线；`verify_lushi.py` / `verify_tadokoro2.py` / `verify_zhou.py` 为确定性回归） |
 | `tools/enc.ps1` / `tools/py.ps1` | 开发工具链：统一 UTF-8 子进程输出（免中文乱码往返），`& tools\py.ps1 <脚本>` 跑 Python |
