@@ -31,6 +31,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 
 import localization
 import llm
@@ -474,23 +475,117 @@ def melt_file_exists(path):
     return None
 
 
-def load_melt(path):
+# ---------------------------------------------------------------------------
+# v49 (O4): 进程内熔件记忆
+# ---------------------------------------------------------------------------
+# 同一进程内反复载入**同一份**熔件的路径实测不少:
+#   - 后台传记线程对同一位传主的 N 篇十年传记, 每篇都 load_latest_melt 同一份
+#     最新档 (5 篇 = 5 × 6 s 白读);
+#   - 终传先读 last_date 那一档, 再读"死亡尾年"那一档 (两份不同档, LRU=2 兜住);
+#   - watch 刚并入的档 (临时路径 → 归位后路径, 靠 melt_memo_move 跟过去)。
+# 键 = (绝对路径, 大小, mtime_ns): 文件被重压/替换/改写后自动失效。
+# 上限 2 份: 单份 244 MiB 档的 dict ≈ 1.3 GB 工作集 (实测), 两份 ≈ 2.6 GB。
+# 内存吃紧的机器可设环境变量 ROMAN_MELT_MEMO=0 关闭 (或调 set_melt_memo()).
+_MELT_MEMO = OrderedDict()          # key -> (size, mtime_ns, dict)
+_MELT_MEMO_MAX = 2
+_MELT_MEMO_ON = os.environ.get("ROMAN_MELT_MEMO", "1").lower() not in ("0", "false", "no")
+_MELT_MEMO_LOCK = threading.Lock()
+
+
+def set_melt_memo(enabled):
+    """开关熔件记忆 (关闭时清空已缓存的两份)。返回新状态。"""
+    global _MELT_MEMO_ON
+    _MELT_MEMO_ON = bool(enabled)
+    if not _MELT_MEMO_ON:
+        melt_memo_clear()
+    return _MELT_MEMO_ON
+
+
+def melt_memo_clear():
+    """清空熔件记忆, 返回清掉的份数。"""
+    with _MELT_MEMO_LOCK:
+        n = len(_MELT_MEMO)
+        _MELT_MEMO.clear()
+    return n
+
+
+def melt_memo_stats():
+    """(是否启用, 已缓存份数, 上限)。"""
+    return _MELT_MEMO_ON, len(_MELT_MEMO), _MELT_MEMO_MAX
+
+
+def _melt_memo_key(path):
+    try:
+        st = os.stat(os.path.abspath(path))
+    except OSError:
+        return None
+    return (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+
+
+def _melt_memo_get(key):
+    with _MELT_MEMO_LOCK:
+        hit = _MELT_MEMO.get(key)
+        if hit is None:
+            return None
+        _MELT_MEMO.move_to_end(key)
+        return hit[2]
+
+
+def _melt_memo_put(key, data):
+    with _MELT_MEMO_LOCK:
+        _MELT_MEMO[key] = (key[1], key[2], data)
+        _MELT_MEMO.move_to_end(key)
+        while len(_MELT_MEMO) > _MELT_MEMO_MAX:
+            _MELT_MEMO.popitem(last=False)
+
+
+def melt_memo_move(old_path, new_path):
+    """熔件归位/改名后把记忆里的键跟过去 (os.replace 保 mtime 与内容)。
+
+    必须在 `os.replace` **之前**调用 (那时源文件还在, 才能取到 size/mtime)。
+    返回是否跟成功。"""
+    if not _MELT_MEMO_ON:
+        return False
+    old_key = _melt_memo_key(old_path)
+    if old_key is None:
+        return False
+    with _MELT_MEMO_LOCK:
+        hit = _MELT_MEMO.pop(old_key, None)
+        if hit is None:
+            return False
+        _MELT_MEMO[(os.path.abspath(new_path), old_key[1], old_key[2])] = hit
+        _MELT_MEMO.move_to_end((os.path.abspath(new_path), old_key[1], old_key[2]))
+    return True
+
+
+def load_melt(path, use_memo=True):
     """读熔件 → dict。重复键合并与 'none'→None 都在 `_merge_dup_pairs` 一趟完成。
 
     v49 (O2): **解析期间关掉自动 GC** —— 干净进程单次加载实测 244 MiB 档
     10.7 s → 5.9 s (峰值内存不变, 2325 MiB)。原因: object_pairs_hook 是 Python
     函数时, C 扫描器要为每个对象建 pair 列表并回调, 途中反复触发 gen0/1/2 回收,
     而此刻对象图已上千万节点, 每次 gen2 都要遍历全图; 纯 C 解析只在末尾承担一次。
-    出栈立刻恢复; JSON 无环, 途中产生的都是引用计数即可释放的垃圾, 无泄漏风险。"""
+    出栈立刻恢复; JSON 无环, 途中产生的都是引用计数即可释放的垃圾, 无泄漏风险。
+
+    v49 (O4): `use_memo` 时走进程内熔件记忆 (命中直接返回同一份 dict, 见
+    `_MELT_MEMO` 注释) —— 熔件内容只读 (全树无一处回写), 故可安全共享。"""
+    key = _melt_memo_key(path) if (use_memo and _MELT_MEMO_ON) else None
+    if key is not None:
+        hit = _melt_memo_get(key)
+        if hit is not None:
+            return hit
     raw = _read_melt_bytes(path)
     gc_was_on = gc.isenabled()
     if gc_was_on:
         gc.disable()
     try:
-        return json.loads(raw, object_pairs_hook=_merge_dup_pairs)
+        data = json.loads(raw, object_pairs_hook=_merge_dup_pairs)
     finally:
         if gc_was_on:
             gc.enable()
+    if key is not None:
+        _melt_memo_put(key, data)
+    return data
 
 
 def _db(melt):

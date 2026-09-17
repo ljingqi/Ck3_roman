@@ -172,6 +172,7 @@ def _move_melt_into(cfg, folder, date, player_id, tmp_path):
         except OSError:
             pass
     else:
+        cl.melt_memo_move(tmp_path, target)  # v49 (O4): 熔件记忆跟到归位路径
         os.replace(tmp_path, target)
     return target
 
@@ -1849,6 +1850,7 @@ def _gzip_file(path):
     with open(p, "rb") as fi, gzip.open(tmp, "wb", compresslevel=6) as fo:
         shutil.copyfileobj(fi, fo, 8 << 20)
     out = p + ".gz"
+    cl.melt_memo_move(p, out)   # v49 (O4): 压缩后同一内容仍可命中记忆 (边车无记忆, 空转)
     os.replace(tmp, out)
     try:
         os.remove(p)
