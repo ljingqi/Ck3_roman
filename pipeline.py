@@ -657,6 +657,7 @@ def _catchup(cfg, cache, continue_mode=False):
                 cache = cl.load_cache(
                     find_cache_path(cfg, player_id, melt.get("playthrough_id")) or "",
                     fresh=True)
+            _prebuild_melt_index(mp, melt)   # v49 (O1): 下一档回溯直接读边车
             new_deaths = []
             if cl.extract_snapshot(cache, melt, s["date"], _new_deaths=new_deaths):
                 _recover_dead_memories(cfg, cache, new_deaths)
@@ -960,7 +961,8 @@ def _process_save(cfg, save, continue_mode=False):
                 cache["output_folder"] = folder
                 new_deaths = []
                 cl.extract_snapshot(cache, melt, date, _new_deaths=new_deaths)
-        _move_melt_into(cfg, folder, date, player_id, tmp)
+        mp = _move_melt_into(cfg, folder, date, player_id, tmp)
+        _prebuild_melt_index(mp, melt)   # v49 (O1): 下一档回溯直接读边车
         _recover_dead_memories(cfg, cache, new_deaths)
         save_session_cache(cfg, cache, continue_mode)
         llm.log(f"  并入 {date}: 玩家 {cache.get('player_name')} (id={cache.get('player_id')}), "
@@ -973,6 +975,30 @@ def _process_save(cfg, save, continue_mode=False):
         except OSError:
             pass
         raise
+
+
+def _prebuild_melt_index(mp, melt):
+    """v49 (O1): 并入 X 档时顺手为 X 建记忆归档边车。
+
+    回溯读的恒定是「死期之前最近的一档」: 一档存档里的死者必死在上一档之后,
+    所以 X+1 档并入时的回溯读的就是 X。旧流程把 X 的边车留到那一刻才惰性构建,
+    于是每档都白付一次 X 的整份解析 (实测 244 MiB 档 18.2 s; 建+落边车只要 4 s)。
+    并入 X 时 melt 已在内存, 此刻建边车不再需要额外解析。
+
+    已存在则跳过; 失败只记日志 —— 边车是派生件, 缺了仍会走原惰性路径。"""
+    if not mp or not melt or not os.path.isfile(mp):
+        return None
+    try:
+        if any(os.path.isfile(p) for p in cl._melt_index_variants(mp)):
+            return None
+        t0 = time.time()
+        path = cl.save_melt_index(mp, melt)
+        llm.log(f"  [边车] {os.path.basename(mp)} 记忆归档已预建 "
+                f"({time.time() - t0:.0f}s)")
+        return path
+    except Exception as e:
+        llm.log(f"  [边车] {os.path.basename(mp)} 预建失败: {e}")
+        return None
 
 
 def _recover_dead_memories(cfg, cache, new_deaths=None):
