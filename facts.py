@@ -1035,6 +1035,27 @@ def _day_before(d):
         return d
 
 
+def _hist_value_at(hist, date, key):
+    """沿革表 `[{from, <key>}]` → date 当日之值 (v47, 供文化/信仰沿革共用)。
+
+    与 `_culture_id_at` 同语义: 早于首点的日期取首点 (族属/信仰沿革的首点即
+    已知最早之值); 无日期或无表返回 None (由调用方回退现值)。"""
+    pts = [h for h in (hist or []) if h.get("from")]
+    if not date or not pts:
+        return None
+    dk = cl.date_key(date)
+    pick = pts[0]
+    for h in pts:
+        try:
+            if cl.date_key(h["from"]) <= dk:
+                pick = h
+            else:
+                break
+        except Exception:
+            break
+    return pick.get(key)
+
+
 def _death_reason(table, reason):
     """死因 key → 中文: v11 先查雅化表 (游戏腔/坏文本), 再本地化, 最后兜底表。"""
     if not reason:
@@ -1798,6 +1819,46 @@ class Facts:
         self._gov_cache[ck] = gov
         return gov
 
+    def _gov_for_word(self, cid, tid, date):
+        """称谓取词用的政体 (v47): 头衔该日政体 → 本人该日政体 → **死者卒档政体**。
+
+        头衔政体是从该日**时任持有者**身上取的 —— 一个人刚失去头衔的那一天,
+        持有者已换成后任, 于是「前X」路径上的政体变成后任的 (诺兰档实测:
+        海因里希 1056–1086 在位, 取词日 1056 早于他的政体史起点 1073, 头衔
+        政体又是夺取者当日的无地冒险者政体 —— 两头落空, 前衔退成通用
+        「前神圣罗马帝国皇帝」, 而游戏口径是 `emperor_feudal_male_german`=凯撒)。
+
+        末一段只对**已死、且完全没有逐档政体史**的角色生效 (日期不晚于卒日):
+        游戏把卒时政体烘在 `dead_data.government` 里, 人死后不再更换政体,
+        故它是可据的史料; 比「政体不可知」退成通用词更贴近游戏口径。
+        它**不**参与 `_dead_flavor_consistent` 的自洽判定 —— 那条路径仍只认
+        逐档史 (v41 的「不拿末档政体冒充封建期」不变)。"""
+        gov = self._title_government(tid, date) if tid is not None else ""
+        if gov:
+            return gov
+        gov = self._character_government(cid, date)
+        if gov:
+            return gov
+        hist = self._gov_history(cid)
+        if hist:
+            # date 早于该角色政体史起点: 按**已知最早**的政体称呼 (与族属沿革
+            # `_hist_value_at` 的「早于首点取首点」同口径)。旧实现此处返回通用词,
+            # 于是海因里希 1056–1073 的神罗任期被写成「前神圣罗马帝国皇帝」,
+            # 而按文化+政体应为 `emperor_feudal_male_german`=凯撒。
+            first = hist[0].get("government") or ""
+            if first:
+                return first
+            return ""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        dd = (rec.get("death") or {}).get("date")
+        if not dd:
+            dd = (self._chars.get(str(cid)) or {}).get("death") or {}
+            dd = dd.get("date") if isinstance(dd, dict) else None
+        if not dd or (date and cl.date_key(date) > cl.date_key(dd)):
+            return ""
+        return ((self._chars.get(str(cid)) or {}).get("dead_data") or {}) \
+            .get("government") or ""
+
     def _holder_at_or_now(self, title, tid, date):
         """头衔在 date 的持有者; date 晚于末档时用熔件当前 holder。"""
         if date is not None:
@@ -1807,6 +1868,21 @@ class Facts:
         h = title.get("holder")
         return int(h) if isinstance(h, int) else None
 
+    def _gov_history(self, cid):
+        """角色的逐档政体史 (v47): 本缓存优先; 本缓存没有时借用同战役其他传主
+        缓存里的同一份观测史 (只借不合并 —— 政体史是逐档观测出来的, 每份缓存
+        只记自己经历过的那些人, 见 docs/研究_v47_统治者头衔动态.md §3)。"""
+        if cid is None:
+            return []
+        hist = (self.cache.get("char_government_history") or {}).get(str(cid)) or []
+        if hist:
+            return hist
+        for _pc in (self.campaign or {}).values():
+            _h = (_pc.get("char_government_history") or {}).get(str(cid)) or []
+            if _h:
+                return _h
+        return []
+
     def _character_government(self, cid, date=None):
         """角色在 date 的政体 (v41): 逐档政体史优先, 熔件现状兜底。
 
@@ -1815,7 +1891,7 @@ class Facts:
         (调用方回退通用词), 也不拿末档政体冒充历史。"""
         if cid is None:
             return ""
-        hist = (self.cache.get("char_government_history") or {}).get(str(cid)) or []
+        hist = self._gov_history(cid)
         if hist and date:
             dk = cl.date_key(date)
             hit = ""
@@ -2884,7 +2960,9 @@ class Facts:
 
     def _ruler_word_at(self, cid, tid, date):
         """领地阶段统治者称呼词 (v24): 依 (文化词族 × 层级 × 政体 × 独立 × 性别)
-        取游戏口径词 — 与 official_title 同源, 供历任阶段行使用。"""
+        取游戏口径词 — 与 official_title 同源, 供历任阶段行使用。
+        v47: 政体走 `_gov_for_word` (头衔政体 → 本人政体 → 死者卒档政体),
+        使「前X」在失去头衔当日也能按本人文化+政体出词。"""
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         tier = ""
         for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
@@ -2893,7 +2971,7 @@ class Facts:
                 break
         if not tier:
             return ""
-        gov = self._title_government(tid, date)
+        gov = self._gov_for_word(cid, tid, date)
         female = self._is_female(cid)
         return self._office_word(tier, gov, independent=self._is_independent(cid),
                                  female=female, tid=tid, cid=cid, date=date)
@@ -3385,23 +3463,92 @@ class Facts:
 
     _FLAVOR_TIER = {"hegemon": "hegemony"}
 
-    def _culture_entry(self, cid):
-        """角色文化的 culture_manager 条目 (含 name_list / heritage)。"""
+    # ---- v47: 死者文化/信仰的取回 —— 存档里 culture/faith 是**可选键** ----
+    # CK3 官方 wiki (Modding#Contents_of_the_gamestate_file) 明文: 角色记录里
+    # `culture=`/`faith=` 在写了 `dynasty_house` 时**可选**, 缺省即取该家族的
+    # 文化/信仰; 家族记录本身不带这两个字段, 值沿 `historical` + `head_of_house`
+    # 的**族长链由近及远**取第一个显式值 (社区参考实现 CK3-history-extractor
+    # `house.rs::get_culture/get_faith` 逐字如此)。所以死者记录里缺 culture
+    # 不是「没有」, 而是「等于家族值」—— 这正是游戏总能显示死者文化/信仰的机制。
+    # 见 docs/研究_v47_文化信仰存档来源.md §1。
+    def _house_of(self, cid):
+        """角色家族 id (缓存优先, 熔件角色对象兜底); 无家族返回 None。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        hid = rec.get("dynasty_house")
+        if hid is None:
+            hid = (self._chars.get(str(cid)) or {}).get("dynasty_house")
+        try:
+            return int(hid) if hid is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _house_default(self, cid, field):
+        """家族缺省值 (游戏口径): 沿族长链由近及远取第一个**显式** `field` 值。
+
+        field = 'culture' / 'faith'。家族值按家族记忆化 (同一家族的成员共用一次
+        求解)。取不到返回 None —— 调用方照旧回退「无据」。"""
+        hid = self._house_of(cid)
+        if hid is None:
+            return None
+        memo = getattr(self, "_house_memo", None)
+        if memo is None:
+            memo = {}
+            self._house_memo = memo
+        per = memo.setdefault(field, {})
+        if hid in per:
+            return per[hid]
+        houses = (self.melt.get("dynasties") or {}).get("dynasty_house") or {}
+        h = houses.get(str(hid)) or {}
+        leaders = []
+        for x in (h.get("historical") or []):
+            try:
+                leaders.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        head = h.get("head_of_house")
+        try:
+            head = int(head) if head is not None else None
+        except (TypeError, ValueError):
+            head = None
+        if head is not None and head not in leaders:
+            leaders.append(head)
+        val = None
+        for lid in reversed(leaders):
+            v = (self._chars.get(str(lid)) or {}).get(field)
+            if v is not None:
+                val = v
+                break
+        per[hid] = val
+        return val
+
+    def _culture_entry(self, cid, date=None):
+        """角色文化的 culture_manager 条目 (含 name_list / heritage)。
+
+        v47: 值链改为**按日期**取并补上「家族缺省」兜底 ——
+          沿革表 (`culture_history`) → 本篇缓存现值 → 熔件角色对象 → 家族缺省。
+        旧实现只读本篇缓存的 `culture` 现值: 死者(尤其跨传主引用时)该字段被
+        存档剪除, 于是 flavorization 全失配、静默降级成通用称谓词
+        (诺兰档实测: 克里斯托弗的「巴西琉斯」→「皇帝」, 见
+        docs/研究_v47_统治者头衔动态.md §2)。"""
         if cid is None:
             return {}
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        cul = rec.get("culture")
+        cul = self._culture_id_at(cid, date)
         if cul is None:
             cul = (self._chars.get(str(cid)) or {}).get("culture")
+        if cul is None:
+            cul = self._house_default(cid, "culture")
         if cul is None:
             return {}
         e = ((self.melt.get("culture_manager") or {}).get("cultures") or {}) \
             .get(str(cul))
         return e if isinstance(e, dict) else {}
 
-    def _faith_tags(self, cid):
-        """角色信仰 → (faith tag, religion tag)。"""
-        fid = self._faith_id(cid) if cid is not None else None
+    def _faith_tags(self, cid, date=None):
+        """角色信仰 → (faith tag, religion tag)。
+
+        v47: 按 date 取 (信仰沿革 `faith_history` → 现值 → 家族缺省) —— 与
+        `_culture_entry` 同口径; 死者记录里 `faith` 同样会被存档剪除。"""
+        fid = self._faith_id(cid, date) if cid is not None else None
         if fid is None:
             return "", ""
         rel = self.melt.get("religion") or {}
@@ -3450,8 +3597,8 @@ class Facts:
             gender = "female" if self._is_female(cid) else "male"
         if gov is None:
             gov = self._title_government(tid, date) if tid is not None else ""
-        ce = self._culture_entry(cid)
-        ftag, rtag = self._faith_tags(cid)
+        ce = self._culture_entry(cid, date)
+        ftag, rtag = self._faith_tags(cid, date)
         title_key = ""
         if tid is not None:
             title_key = ((self._lt.get(str(tid)) or {}).get("key") or "")
@@ -3461,8 +3608,8 @@ class Facts:
         if not independent and tid is not None:
             lid, ltid = self._top_liege_of(cid, tid)
             if lid is not None and int(lid) != int(cid):
-                lce = self._culture_entry(lid)
-                lft, lrt = self._faith_tags(lid)
+                lce = self._culture_entry(lid, date)
+                lft, lrt = self._faith_tags(lid, date)
                 top = {"government": (self._title_government(ltid, date)
                                       if ltid else ""),
                        "name_list": lce.get("name_list") or "",
@@ -4060,14 +4207,18 @@ class Facts:
         if tid is None:
             return ""
         gain = None
-        for (g, _l, _lt) in (self._hold_intervals(cid, date).get(tid) or []):
-            gain = g
+        loss = None
+        for (g, l, _lt) in (self._hold_intervals(cid, date).get(tid) or []):
+            gain, loss = g, l
             break
         end = date or self.as_of
         mid = self._span_mid(gain, end)
         nm = self._name_at_date(tid, mid) or self._name_at_date(
             tid, end) or self.title_base_name(tid)
-        w = self._ruler_word_at(cid, tid, gain)
+        # v47: 词取**任期中点**之政体 (名字本来就用中点) —— 任期首日可能还在
+        # 无地冒险者政体上 (克里斯托弗 1086.1.1 夺得神罗, 政体史到 1087 才观察到
+        # 封建制), 拿首日取词会把「前神圣罗马帝国巴西琉斯」降成通用「皇帝」。
+        w = self._ruler_word_at(cid, tid, self._span_mid(gain, loss or end))
         if nm and w and not nm.endswith(w):
             return f"{nm}{w}"
         return nm
@@ -6238,13 +6389,22 @@ class Facts:
                         "shia_religion", "ibadi_religion"}
     _NO_RELIGIOUS_HEAD = 4294967295  # 0xFFFFFFFF = 无宗教领袖
 
-    def _faith_id(self, cid):
-        """角色信仰 id: 缓存优先, 回退最新熔件角色对象。"""
+    def _faith_id(self, cid, date=None):
+        """角色信仰 id: 信仰沿革 (date) → 缓存现值 → 熔件角色对象 → 家族缺省。
+
+        v47: 存档里 `faith` 与 `culture` 同为**可选键** (缺省 = 家族信仰), 死者
+        记录里常被剪除。旧实现只读现值, 于是死者的信仰在 flavorization 的
+        `faiths`/`religions` 条件里失配、且教义类判定 (人祭等) 一并落空。"""
+        if cid is None:
+            return None
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        fid = rec.get("faith")
+        fid = _hist_value_at(rec.get("faith_history"), date, "faith")
         if fid is None:
-            c = self._chars.get(str(cid)) or {}
-            fid = c.get("faith")
+            fid = rec.get("faith")
+        if fid is None:
+            fid = (self._chars.get(str(cid)) or {}).get("faith")
+        if fid is None:
+            fid = self._house_default(cid, "faith")
         return fid
 
     def faith_doctrines(self, cid):
@@ -6986,22 +7146,12 @@ class Facts:
         """角色在 date 的文化 id (v44 问题4): 族属沿革点优先, 无沿革取末档现值。
 
         与 `_character_government` 同口径 —— 十年传记穿越到早年时不得吃末档文化
-        (阿德尔海德 1132 年由法兰克尼亚人转汉人, 早年篇须为法兰克尼亚人)。"""
+        (阿德尔海德 1132 年由法兰克尼亚人转汉人, 早年篇须为法兰克尼亚人)。
+        v47: 取值体例抽到 `_hist_value_at` (与信仰沿革共用)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        hist = [h for h in (rec.get("culture_history") or []) if h.get("from")]
-        if date and hist:
-            dk = cl.date_key(date)
-            pick = hist[0]
-            for h in hist:
-                try:
-                    if cl.date_key(h["from"]) <= dk:
-                        pick = h
-                    else:
-                        break
-                except Exception:
-                    break
-            if pick.get("culture") is not None:
-                return pick["culture"]
+        cul = _hist_value_at(rec.get("culture_history"), date, "culture")
+        if cul is not None:
+            return cul
         return rec.get("culture")
 
     def culture(self, cid, date=None):
@@ -10943,7 +11093,15 @@ def _sub_relation_loc(f, s, owner, target, extra=None):
         ("[TARGET_CHARACTER.GetShortUIName|U]", tname),
         ("[TARGET_CHARACTER.GetShortUIName]", tname),
         ("[TARGET_CHARACTER.GetShortUINameNoTooltip]", tname),
+        # v47: 第三人槽 (involved_character, 如「虐待其配偶X」的 X) —— 旧实现只
+        # 认 Possessive 形, 非 Possessive 的 `[TARGET_CHARACTER_2.GetShortUIName]`
+        # 落到末尾的正则清空, 于是句子里的人名被吃掉
+        # (「…虐待其配偶，后者是…的亲属」，见 docs/研究_v47_结仇缘由缺失.md §5)。
+        ("[TARGET_CHARACTER_2.GetShortUIName|U]", xname),
+        ("[TARGET_CHARACTER_2.GetShortUINameNoTooltip]", xname),
+        ("[TARGET_CHARACTER_2.GetShortUIName]", xname),
         ("[TARGET_CHARACTER_2.GetShortUINamePossessive]", xname or tname),
+        ("[TARGET_CHARACTER_2.GetHerHisYour]", "其"),
         ("[TARGET_CHARACTER.GetShortUINamePossessiveNoTooltip]", tname),
         ("[TARGET_CHARACTER.GetShortUINamePossessive]", tname),
         ("[CHARACTER.GetHerHisYour]", "其"),
@@ -10961,10 +11119,16 @@ def _sub_relation_loc(f, s, owner, target, extra=None):
 
 def _player_murder_map(f):
     """主角谋杀集: {victim_id: 谋杀日期} — successful_murder 记忆 ∪ 死亡记录
-    killer==主角 (供 _villain_chains / relation_cause_lines 共用)。"""
+    killer==主角 (供 _villain_chains / relation_cause_lines 共用)。
+    v47: 结果按 Facts 实例记忆化 —— 仇人池的「有无因由」判定会反复问它
+    (每次 _enemy_for_facts 一次), 全量扫记忆不必重做。"""
+    memo = getattr(f, "_murder_map_memo", None)
+    if memo is not None:
+        return memo
     cache = f.cache
     pid = cache.get("player_id")
     if pid is None:
+        f._murder_map_memo = {}
         return {}
     chars = cache.get("characters") or {}
     prec = chars.get(str(pid)) or {}
@@ -10982,6 +11146,7 @@ def _player_murder_map(f):
         d = (rec.get("death") or {}).get("date")
         if d and (rec.get("death") or {}).get("killer") == pid:
             murders.setdefault(int(cid), d)
+    f._murder_map_memo = murders
     return murders
 
 

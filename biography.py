@@ -285,14 +285,46 @@ def _enemy_deeds(cache, cid, as_of=None, since=None):
     return n
 
 
-def _select_primary_enemy(cache, as_of=None, since=None):
+def _enemy_has_cause(facts, cid, rel_date):
+    """候选仇人是否有**可用的结仇/死敌缘由** (v47, 用户拍板3)。
+
+    缘由只有两个程序来源:
+      ① 游戏 `opinions.active_opinions.scripted_relations.reason` 的本地化句
+         (`facts.relation_reasons`);
+      ② 直算因由 (`facts.relation_cause_lines`: 亲属被主角谋杀 / 配偶与主角
+         私通 / 托卵承嗣)。
+    两者皆无者**不进仇人池** —— 否则模型手里只有一个日期, 只能自造
+    (诺兰档 赖因霍尔德 1126.12.4 一例: 缘由键随对方死亡被游戏清掉, 成稿里
+    第 1 篇自编「起于粮道」、第 3 篇整篇《列传》写「史载极简」并穷举猜测;
+    见 docs/研究_v47_结仇缘由缺失.md §3)。"""
+    gi = facts.get("_facts") if isinstance(facts, dict) else None
+    if gi is None:
+        return True          # 无事实层 (旧快照/纯缓存调用) 时不设此门槛
+    try:
+        if gi.relation_reasons(int(cid), ("rival", "grudge", "nemesis")):
+            return True
+    except Exception:
+        pass
+    try:
+        if rel_date and F.relation_cause_lines(gi, int(cid), rel_date):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _select_primary_enemy(cache, as_of=None, since=None, allow=None):
     """主仇人 (v11/v26): 与主角结仇/结怨/死敌的对手, 先按「与本篇相关」筛 —
     在世 (卒于 as_of 之后) 或 本十年内有作为 (since ≤ 事迹日 ≤ as_of); 再按
     总事迹分降序, 同分在世优先、结怨最早。
     v26: 原「记忆条数 >5 + 在世优先」让无事迹的在世路人胜出 (田所 890 年选中
     只有丧亲记忆的菅原类子, 而非结怨更早且六次登位的秦皇帝崔慎由)。
+    v47: `allow(cid, rel_date)` 为可选硬门槛 —— 无因由者出池 (见
+    `_enemy_has_cause`)。
     since 为十年传记窗口下界 (终传为 None)。"""
     dates = _enemy_dates(cache)
+    if allow is not None:
+        dates = {c: d for c, d in dates.items() if allow(c, d)}
     if as_of:
         dates = {c: d for c, d in dates.items()
                  if cl.date_key(d) <= cl.date_key(as_of)}
@@ -323,7 +355,8 @@ def _select_primary_enemy(cache, as_of=None, since=None):
 
 def _enemy_for_facts(facts, cache):
     """仇人人选 — 文章标题与正文共用同一入口 (防标题/正文不一致)。
-    十年传记传窗口下界 since, 终传/在世传记不传。"""
+    十年传记传窗口下界 since, 终传/在世传记不传。
+    v47: 加「无因由者出池」硬门槛 (用户拍板3, 见 `_enemy_has_cause`)。"""
     as_of = facts.get("as_of")
     since = None
     if as_of and facts.get("decade"):
@@ -331,7 +364,10 @@ def _enemy_for_facts(facts, cache):
             since = f"{int(str(as_of).split('.')[0]) - 10}.1.1"
         except Exception:
             since = None
-    return _select_primary_enemy(cache, as_of=as_of, since=since)
+    allow = None
+    if facts.get("_facts") is not None:
+        allow = lambda c, d: _enemy_has_cause(facts, c, d)   # noqa: E731
+    return _select_primary_enemy(cache, as_of=as_of, since=since, allow=allow)
 
 
 def _family_ids(cache):
