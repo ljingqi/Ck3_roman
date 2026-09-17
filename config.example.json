@@ -10,6 +10,7 @@
   "cache_dir": "<项目目录>/cache (仅迁移用, v4 起缓存位于 output/<家族>/data/)>",
   "output_dir": "<项目目录>/output",
   "log_dir": "<项目目录>/logs",
+  "log_console_detail": false,
   "poll_interval_seconds": 3600,
   "compact_codec": "xz",
   "max_tokens": 12800,
