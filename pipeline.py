@@ -2001,7 +2001,10 @@ def step_compact(cfg, codec=None):
         if idx:
             targets.append(idx)
     done = freed = 0
-    for p in targets:
+    n_targets = len([p for p in targets if not p.lower().endswith(want)])
+    llm.log(f"冷熔件归档 ({codec}): 待处理 {n_targets} 份 "
+            f"(已 {want} 的跳过; 最新熔件保持明文)")
+    for i, p in enumerate(targets, 1):
         if p.lower().endswith(want):
             continue
         try:
@@ -2015,6 +2018,9 @@ def step_compact(cfg, codec=None):
         after = os.path.getsize(out)
         done += 1
         freed += max(0, before - after)
+        llm.log(f"  [{i}/{n_targets}] {os.path.basename(out)} "
+                f"{before / 1048576:.1f} → {after / 1048576:.1f} MiB "
+                f"({after / before * 100:.0f}%)")
     llm.log(f"冷熔件归档 ({codec}): {done} 份, 释放 {freed / (1 << 30):.2f} GB "
             f"(最新熔件保持明文, 读取口三种后缀皆认)")
     return done, freed

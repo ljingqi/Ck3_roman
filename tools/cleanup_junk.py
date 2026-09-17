@@ -72,14 +72,15 @@ def collect(root, no_bak=False):
     if os.path.isdir(cache_dir):
         for fn in sorted(os.listdir(cache_dir)):
             p = os.path.join(cache_dir, fn)
-            if os.path.isdir(p) and (fn.startswith("_bak_") or fn.startswith("v4")):
+            # 只清 `_bak_*` 备份目录 (cache/v46anc 里放的是脚本, 不动)
+            if os.path.isdir(p) and fn.startswith("_bak_"):
                 n = b = 0
                 for dp, _dn, fns in os.walk(p):
                     for f in fns:
                         n += 1
                         b += os.path.getsize(os.path.join(dp, f))
                 out.append((p, f"旧缓存目录 ({n} 文件)", b))
-            elif os.path.isfile(p) and fn.startswith("_") and fn.endswith(".json"):
+            elif os.path.isfile(p) and fn == "_auto2.json":
                 out.append((p, "旧自动缓存", os.path.getsize(p)))
     return out
 
