@@ -51,7 +51,7 @@ def _house_names(m, hid):
 
 def _date_label(fn):
     lab = fn[len("melt_"):].split("_idx")[0]
-    for suf in (".json.gz", ".json"):
+    for suf in (".json.gz", ".json.xz", ".json"):
         if lab.endswith(suf):
             lab = lab[:-len(suf)]
     lab = re.sub(r"_p\d+$", "", lab)
@@ -61,7 +61,8 @@ def _date_label(fn):
 def _melts_in(data):
     return sorted(
         f for f in os.listdir(data)
-        if f.startswith("melt_") and "_idx" not in f and f.endswith((".json", ".json.gz"))
+        if f.startswith("melt_") and "_idx" not in f
+        and f.endswith((".json", ".json.gz", ".json.xz"))
         and "_p" not in f)
 
 

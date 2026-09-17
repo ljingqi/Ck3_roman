@@ -11,6 +11,7 @@
   "output_dir": "<项目目录>/output",
   "log_dir": "<项目目录>/logs",
   "poll_interval_seconds": 3600,
+  "compact_codec": "xz",
   "max_tokens": 12800,
   "temperature": 1.1,
   "prompt_log_enabled": true,

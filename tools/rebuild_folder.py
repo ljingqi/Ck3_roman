@@ -31,7 +31,7 @@ def _melts_in(data_dir):
     import re
     global _MELT_RE
     if _MELT_RE is None:
-        _MELT_RE = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz)?$")
+        _MELT_RE = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz|\.xz)?$")
     out = []
     for fn in os.listdir(data_dir):
         m = _MELT_RE.match(fn)

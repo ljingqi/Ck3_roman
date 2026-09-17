@@ -27,6 +27,7 @@ import copy
 import gc
 import gzip
 import json
+import lzma
 import os
 import re
 import threading
@@ -445,21 +446,31 @@ def _merge_dup_pairs(pairs):
 
 
 def open_melt_text(path):
-    """以文本模式打开熔件/边车文件 (兼容 `.json` 与 `.json.gz`)。
+    """以文本模式打开熔件/边车文件 (兼容 `.json` / `.json.gz` / `.json.xz`)。
 
     v44 (问题5): 冷熔件 gzip 归档后, 全部读取口统一走这里 —— 调用方不必关心
     后缀 (实测 gzip-6 压到 15.3%, 读取只多 0.6s)。
+    v49 (方案①): 再加 `.json.xz` (冷档默认压缩格式, 体积为 gzip 的 61.5%,
+    解压 1.22 s vs 0.46 s/244 MiB)。
     v49 (O2): 只要 dict 的读取口 (`load_melt` / `load_melt_index`) 改走二进制
     `_read_melt_bytes` (快 0.5 s/档); 需要文本句柄的调用方仍用本函数。"""
-    if str(path).lower().endswith(".gz"):
+    low = str(path).lower()
+    if low.endswith(".xz"):
+        return lzma.open(path, "rt", encoding="utf-8")
+    if low.endswith(".gz"):
         return gzip.open(path, "rt", encoding="utf-8")
     return open(path, encoding="utf-8")
 
 
 def _read_melt_bytes(path):
-    """二进制整读熔件/边车 (`.json` 与 `.json.gz` 都认)。v49 (O2): `json.loads(bytes)`
-    由 C 解析器自己解 UTF-8, 比文本模式少一层增量解码器 (实测省 ≈0.5 s/244 MiB 档)。"""
-    if str(path).lower().endswith(".gz"):
+    """二进制整读熔件/边车 (`.json` / `.json.gz` / `.json.xz` 都认)。v49 (O2):
+    `json.loads(bytes)` 由 C 解析器自己解 UTF-8, 比文本模式少一层增量解码器
+    (实测省 ≈0.5 s/244 MiB 档)。"""
+    low = str(path).lower()
+    if low.endswith(".xz"):
+        with lzma.open(path, "rb") as fp:
+            return fp.read()
+    if low.endswith(".gz"):
         with gzip.open(path, "rb") as fp:
             return fp.read()
     with open(path, "rb") as fp:
@@ -467,12 +478,23 @@ def _read_melt_bytes(path):
 
 
 def melt_file_exists(path):
-    """给定熔件路径, 返回**实际存在**的那一份 (`.json` 优先, 其次 `.json.gz`);
-    两份都不在返回 None。供拼接路径的调用方收口后缀差异。"""
-    for cand in (str(path), str(path) + ".gz"):
+    """给定熔件基准路径 (`...melt_<日期>.json`), 返回**实际存在**的那一份
+    (明文优先, 其次 `.gz`, 再次 `.xz`); 都不在返回 None。
+    供拼接路径的调用方收口后缀差异 (v49 方案①: 三种后缀)。"""
+    for cand in (str(path), str(path) + ".gz", str(path) + ".xz"):
         if os.path.isfile(cand):
             return cand
     return None
+
+
+def melt_stem(path):
+    """熔件/边车路径去掉压缩后缀 (`x.json.xz` → `x.json`; 无后缀原样)。v49。"""
+    p = str(path)
+    low = p.lower()
+    for suf in (".xz", ".gz"):
+        if low.endswith(suf):
+            return p[:-len(suf)]
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -3165,26 +3187,31 @@ def recover_dead_memories_from(melt, cache, cid, chars=None):
 # 回溯缺失时惰性构建一次并持久化, 之后回溯直接读归档 (0.1s 级)。
 
 
+def _index_stem(melt_path):
+    """熔件路径 → 边车命名基准 (去掉压缩后缀与 `.json`)。`a/melt_900_01_01.json.gz`
+    → `a/melt_900_01_01`。v49。"""
+    p = melt_stem(melt_path)
+    return p[:-5] if p.lower().endswith(".json") else p
+
+
 def _melt_index_variants(melt_path):
-    """熔件 → 归档边车的两种可能路径 (`.json` 与 `.json.gz` 各一), 读取时都试。"""
-    p = str(melt_path)
-    low = p.lower()
-    stem = p[:-8] if low.endswith(".json.gz") else (p[:-5] if low.endswith(".json") else p)
-    return [stem + "_idx.json", stem + "_idx.json.gz"]
+    """熔件 → 归档边车的三种可能路径 (`.json` / `.json.gz` / `.json.xz`), 读取时都试。"""
+    stem = _index_stem(melt_path)
+    return [stem + "_idx.json", stem + "_idx.json.gz", stem + "_idx.json.xz"]
 
 
 def melt_index_path(melt_path):
     """全量熔件 → 记忆归档边车路径: melt_913_01_01.json → melt_913_01_01_idx.json。
     命名含 _idx, 不会被 _iter_melts / melt_file_in 等按 melt_<日期>(_p<id>)?.json
     匹配的代码误当成全量熔件。
-    v44: 熔件为 `.json.gz` 时边车同名 `.json.gz` (归档随熔件一起压)。"""
+    v44: 熔件为 `.json.gz` 时边车同名 `.json.gz` (归档随熔件一起压)。
+    v49 (方案①): `.json.xz` 时边车同名 `.json.xz`。"""
     p = str(melt_path)
     low = p.lower()
-    if low.endswith(".json.gz"):
-        return p[:-8] + "_idx.json.gz"
-    if low.endswith(".json"):
-        return p[:-5] + "_idx.json"
-    return p + "_idx.json"
+    for suf in (".xz", ".gz"):
+        if low.endswith(suf):
+            return _index_stem(p) + "_idx.json" + suf
+    return _index_stem(p) + "_idx.json"
 
 
 def build_melt_index(melt):
@@ -3224,15 +3251,22 @@ def build_melt_index(melt):
 
 def save_melt_index(melt_path, melt):
     """构建并持久化记忆归档边车 (原子写), 返回边车路径。
-    v44: 随熔件后缀 —— 熔件是 `.json.gz` 时边车也写 `.json.gz`。"""
+    v44: 随熔件后缀 —— 熔件是 `.json.gz` 时边车也写 `.json.gz`。
+    v49 (方案①): 熔件 `.json.xz` 时边车同类。
+    v49: 紧凑分隔符 (与玩家缓存同口径; 读者一律 json.loads)。"""
     path = melt_index_path(melt_path)
     tmp = path + ".tmp"
-    if path.lower().endswith(".gz"):
+    idx = build_melt_index(melt)
+    low = path.lower()
+    if low.endswith(".xz"):
+        with lzma.open(tmp, "wt", encoding="utf-8") as fp:
+            json.dump(idx, fp, ensure_ascii=False, separators=(",", ":"))
+    elif low.endswith(".gz"):
         with gzip.open(tmp, "wt", encoding="utf-8") as fp:
-            json.dump(build_melt_index(melt), fp, ensure_ascii=False)
+            json.dump(idx, fp, ensure_ascii=False, separators=(",", ":"))
     else:
         with open(tmp, "w", encoding="utf-8") as fp:
-            json.dump(build_melt_index(melt), fp, ensure_ascii=False)
+            json.dump(idx, fp, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp, path)
     return path
 

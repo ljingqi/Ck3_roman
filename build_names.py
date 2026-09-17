@@ -27,7 +27,7 @@ def _latest_melt():
     """取日期最新的一份熔件: 战役文件夹 output/<家族>/data/ 优先, 兼容旧根目录。
     v28: 本表按角色 id 索引, **只在同一战役内有效** — 默认选最新日期仅为兜底,
     推荐显式传本战役熔件: `python build_names.py output/<家族>/data/melt_<日期>.json`。"""
-    pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz)?$")
+    pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz|\.xz)?$")
     best, best_path = None, None
     dirs = []
     out = os.path.join(HERE, "output")

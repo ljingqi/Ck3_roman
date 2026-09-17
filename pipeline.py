@@ -26,11 +26,13 @@
   python pipeline.py demo-death          # 模拟主角死亡, 演示「死后自动生成」链路
   python pipeline.py rebuild-cache       # 从各战役文件夹熔件重建缓存 (迁移/修复)
   python pipeline.py index-melts         # 预建全部熔件的记忆归档边车 (回溯加速)
-  python pipeline.py compact             # 冷熔件与边车 gzip 归档 (v44: 16GB → 约 2.4GB)
+  python pipeline.py compact [--gz]     # 冷熔件与边车压缩归档 (v49 方案①: 默认 xz, 约 1.4GB)
   python pipeline.py migrate             # 迁移 v4: 旧文件夹更名 + 缓存移入 output/<家族>/data/ + 重建
 """
 import gzip
+import hashlib
 import json
+import lzma
 import os
 import re
 import shutil
@@ -112,8 +114,9 @@ def campaign_data_dir(cfg, folder):
 
 def melt_file_in(cfg, folder, date, player_id=None):
     """战役文件夹内该日期的熔件路径: 本玩家既有 _p 文件优先, 否则日期文件。
-    v44 (问题5): 冷熔件 gzip 归档后后缀可能是 `.json.gz` —— 返回**实际存在**
-    的那一份 (两份都不在时返回规范 `.json` 路径, 由调用方 isfile 判定)。"""
+    v44 (问题5): 冷熔件归档后后缀可能是 `.json.gz`; v49 (方案①) 还可能是
+    `.json.xz` —— 返回**实际存在**的那一份 (都不在时返回规范 `.json` 路径,
+    由调用方 isfile 判定)。"""
     d = campaign_data_dir(cfg, folder)
     key = cl.date_filekey(date)
     if player_id is not None:
@@ -757,7 +760,7 @@ def _backfill_tail_deaths(cfg, cache):
     并做名字身份校验防 id 撞号)。返回回填条数。"""
     folder = cache.get("output_folder") or ""
     d = os.path.join(cfg.get("output_dir", ""), folder, "data")
-    pat = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json(?:\.gz)?$")
+    pat = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json(?:\.gz|\.xz)?$")
     cands = []
     if os.path.isdir(d):
         for fn in os.listdir(d):
@@ -1615,8 +1618,8 @@ def step_bio(cfg, player_id=None, decade=None):
 def _iter_melts(cfg):
     """遍历全部熔件: (所属战役文件夹或 None, 绝对路径, 日期)。
     优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。
-    v44 (问题5): 同时认 `.json` 与 `.json.gz` (冷熔件 gzip 归档)。"""
-    pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz)?$")
+    v44 (问题5): 同时认 `.json` 与 `.json.gz`; v49 (方案①) 再加 `.json.xz`。"""
+    pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz|\.xz)?$")
     out = []
     out_dir = cfg.get("output_dir", "")
     if os.path.isdir(out_dir):
@@ -1850,24 +1853,104 @@ def step_index_melts(cfg):
     llm.log(f"归档完成: 新建 {built} 份, 已有 {skipped} 份, 失败 {failed} 份")
 
 
-def _gzip_file(path):
-    """把一份熔件/边车 gzip 归档 (原子写), 返回归档后路径; 已是 .gz 返回原路径。
+def _compress_file(path, codec="xz", out_path=None):
+    """把冷熔件/边车压缩归档 (原子写 + **往返 sha1 校验**, 通过后才删原件)。
 
-    v44 (问题5): gzip-6 实测 15.3% (256MB → 39MB, 4.3s/份), 读取只多 0.6s。"""
+    v44 (问题5): gzip-6 —— 256 MB → 39 MB (15.3%), 4.3 s/份。
+    v49 (方案①): 默认 xz (lzma preset 6) —— 244 MiB 档 37.1 MB → 22.8 MB
+    (gzip 的 61.5%), 压缩 46 s, 解压 1.22 s (gzip 0.46 s)。冷档只在回溯/补档/重导
+    时读, 用一次性后台 CPU 换 39% 体积; 最新一份始终留明文 (见 _compact_keep_paths)。
+
+    往返校验不可省: 这批熔件是 60 年存档的唯一副本, 宁可少省也不能压坏 ——
+    压完解回来逐块比 sha1, 不一致就删掉半成品、保留原件并报错。
+    已是 `.gz`/`.xz` 且非迁移用途时原样返回。"""
     p = str(path)
-    if p.lower().endswith(".gz"):
-        return p
-    tmp = p + ".gz.tmp"
-    with open(p, "rb") as fi, gzip.open(tmp, "wb", compresslevel=6) as fo:
-        shutil.copyfileobj(fi, fo, 8 << 20)
-    out = p + ".gz"
-    cl.melt_memo_move(p, out)   # v49 (O4): 压缩后同一内容仍可命中记忆 (边车无记忆, 空转)
-    os.replace(tmp, out)
+    low = p.lower()
+    if out_path is None:
+        if low.endswith((".gz", ".xz")):
+            return p
+        out_path = p + (".xz" if codec == "xz" else ".gz")
+    out = str(out_path)
+    if os.path.isfile(out):
+        return out
+    tmp = out + ".tmp"
+    use_xz = str(codec).lower() == "xz"
+    h_in = hashlib.sha1()
     try:
-        os.remove(p)
-    except OSError:
-        pass
+        with open(p, "rb") as fi:
+            opener = (lzma.open(tmp, "wb", preset=6) if use_xz
+                      else gzip.open(tmp, "wb", compresslevel=6))
+            with opener as fo:
+                while True:
+                    buf = fi.read(8 << 20)
+                    if not buf:
+                        break
+                    h_in.update(buf)
+                    fo.write(buf)
+        h_out = hashlib.sha1()
+        creader = (lzma.open(tmp, "rb") if use_xz else gzip.open(tmp, "rb"))
+        with creader as fc:
+            while True:
+                buf = fc.read(8 << 20)
+                if not buf:
+                    break
+                h_out.update(buf)
+        if h_in.digest() != h_out.digest():
+            raise RuntimeError("往返 sha1 不一致")
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    os.replace(tmp, out)
     return out
+
+
+def _recompress_file(path, codec="xz"):
+    """把一份冷档/边车归档成目标格式, **成功后删原件** (方案①迁移用)。
+
+    - 明文 → 直接压缩 (校验通过后删明文);
+    - `.gz` → 解压到临时明文, 再压成 `.xz` (校验通过后删临时件与旧 `.gz`);
+    - 已是目标格式 → 原样返回。
+    返回归档后的路径。"""
+    p = str(path)
+    low = p.lower()
+    want = ".xz" if str(codec).lower() == "xz" else ".gz"
+    if low.endswith(want):
+        return p
+    if low.endswith(".xz") and want == ".gz":
+        # 只升不降: `compact --gz` 只作用于未压缩的明文, 不把已存的 xz 重新涨回去
+        # (否则手滑跑一次 --gz 就要再花一小时迁回来)
+        return p
+    if not low.endswith((".gz", ".xz")):
+        out = _compress_file(p, codec)
+        if out != p:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        return out
+    out = cl.melt_stem(p) + want
+    if os.path.isfile(out):
+        return out
+    tmp_plain = p + ".mig.tmp"
+    reader = lzma.open(p, "rb") if low.endswith(".xz") else gzip.open(p, "rb")
+    try:
+        with reader as fi, open(tmp_plain, "wb") as fo:
+            shutil.copyfileobj(fi, fo, 8 << 20)
+        got = _compress_file(tmp_plain, codec, out_path=out)
+    finally:
+        try:
+            os.remove(tmp_plain)
+        except OSError:
+            pass
+    if got == out:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    return got
 
 
 def _compact_keep_paths(cfg):
@@ -1884,13 +1967,18 @@ def _compact_keep_paths(cfg):
     return keep
 
 
-def step_compact(cfg):
-    """把冷熔件与记忆归档边车 gzip 归档 (v44 问题5, 可反复运行)。
+def step_compact(cfg, codec=None):
+    """把冷熔件与记忆归档边车压缩归档 (v44 问题5, 可反复运行)。
 
-    实测诺兰档: 熔件 82 份 14.12GB + 边车 80 份 1.92GB → 约 2.4GB。
-    归档后全部读取口 (cache_lib.load_melt / load_melt_index /
-    pipeline.melt_file_in / _iter_melts / _backfill_tail_deaths) 都认两种后缀。
+    v44: gzip-6 —— 诺兰 82 份熔件 14.12GB + 80 份边车 1.92GB → 约 2.4GB。
+    v49 (方案①): 默认改用 xz (lzma preset 6, 可用 config.compact_codec 或
+    `compact --gz` 改回) —— 体积再降到 gzip 的 61.5%; 已是 `.gz` 的存量档案会被
+    解压重压成 `.xz` (迁移), 已达标者跳过, 故可反复运行。
+    归档后全部读取口 (cache_lib.load_melt / load_melt_index / pipeline.melt_file_in
+    / _iter_melts / _backfill_tail_deaths) 都认三种后缀。
     返回 (归档份数, 释放字节)。"""
+    codec = (codec or cfg.get("compact_codec") or "xz").lower()
+    want = ".xz" if codec == "xz" else ".gz"
     melts = _iter_melts(cfg)
     if not melts:
         llm.log("未找到 melt 文件, 无需归档")
@@ -1909,19 +1997,21 @@ def step_compact(cfg):
             targets.append(idx)
     done = freed = 0
     for p in targets:
-        if p.lower().endswith(".gz"):
+        if p.lower().endswith(want):
             continue
-        before = os.path.getsize(p)
         try:
-            out = _gzip_file(p)
+            before = os.path.getsize(p)
+            out = _recompress_file(p, codec)
         except Exception as e:
             llm.log(f"  [归档失败] {os.path.basename(p)}: {e}")
+            continue
+        if out == p:
             continue
         after = os.path.getsize(out)
         done += 1
         freed += max(0, before - after)
-    llm.log(f"冷熔件归档: {done} 份, 释放 {freed / (1 << 30):.2f} GB "
-            f"(最新熔件保持明文, 读取口两种后缀皆认)")
+    llm.log(f"冷熔件归档 ({codec}): {done} 份, 释放 {freed / (1 << 30):.2f} GB "
+            f"(最新熔件保持明文, 读取口三种后缀皆认)")
     return done, freed
 
 
@@ -1996,7 +2086,9 @@ def main():
     elif cmd == "index-melts":
         step_index_melts(cfg)
     elif cmd == "compact":
-        step_compact(cfg)
+        # v49 (方案①): 默认 xz; `compact --gz` 可退回 gzip (压缩快 10 倍, 体积大 63%)
+        codec = "gz" if "--gz" in sys.argv else None
+        step_compact(cfg, codec=codec)
     elif cmd == "migrate":
         step_migrate(cfg)
     else:
