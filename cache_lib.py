@@ -749,11 +749,11 @@ def memory_brief(mem_id, e):
 
 
 # ---------------------------------------------------------------------------
-# 缓存库 (schema 3: 每玩家一份缓存)
+# 缓存库 (schema 5: 每玩家一份缓存)
 # ---------------------------------------------------------------------------
 
 EMPTY_CACHE = {
-    "schema": 4,
+    "schema": 5,
     "player_id": None,
     "player_name": None,
     "house_name": None,       # 家族名 (边), 姓名字显示用
@@ -806,6 +806,16 @@ EMPTY_CACHE = {
     # 逐档闩存, 一旦见到永久保留 —— 婚姻离异/丧偶后该条目会从存档消失, 而传记要
     # 写的是当年那桩婚事。key = "<小id>><大id>", value = 首次见于记载的档期。
     "matrilineal_pairs": {},
+    # v50 (v47 方案 B): 结仇/结交缘由闩存 —— 游戏只在 `opinions.active_opinions`
+    # 里为**当前仍存在**的关系保留 `scripted_relations.<kind>.reason` (成因键,
+    # 本地化模板见 `data/localization.json` → `relation_templates`), 关系一方死亡
+    # 或关系解除后条目连同 reason 一起从存档消失: 诺兰 1126.12.4 的结仇在
+    # 1127/1130 档带 `rival_called_me_a_disgrace`, 1143 档 (对象 1142.9.8 卒) 起
+    # 0 条; 田所2 战役四对 rival/grudge 的 reason 也分别在 1~13 年后随条目消失。
+    # 生成所用熔件恒为**最新**档, 故「结仇早、对方已死」的仇人一律读不到缘由 ——
+    # 逐档并入时把涉主角的 reason 闩存 (首见即留, 不覆盖), 生成时作熔件的回退源。
+    # key = "<owner>|<target>|<kind>" (方向与存档一致, 互为仇敌时两条各存)。
+    "relation_reasons": {},
     # v44 (问题2): 存档 played_character.legacy = **玩家角色接替链** (有序带日期):
     # [{"cid": 62045, "date": "1066.9.15"}, {"cid": 16852591, "date": "1117.6.19"}]
     # 末条即当前传主, 起算日 = 继位日 (前一任死亡当日)。新版本玩家可从宗族里
@@ -2261,6 +2271,10 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     _diff_enslavements(cache, melt, date_label)
     # v32: 纳妾类好感 (opinions) 逐档差分 — 「强行纳为侧室」是纳妾唯一带日期的记录
     _diff_opinions(cache, melt, date_label)
+    # v50 (v47 方案 B): 结仇/结交缘由闩存 (同一数据源 opinions.active_opinions) —
+    # 游戏只在关系存续期保留 `scripted_relations.<kind>.reason`, 关系一方死亡后
+    # 条目连同缘由一起消失, 而生成只用最新一份熔件 → 见过即留, 供 facts 回退读
+    _latch_relation_reasons(cache, melt, date_label)
     # v38 (问题1/问题4): Carnalitas 事件好感 (强奸/奴役/逼良为娼/前主奴) 与
     # `carn_recently_raped` 修正逐档差分 — 它们自带 start_date, 也是「出售奴隶」
     # 这种不留记忆的互动唯一的痕迹
@@ -2318,6 +2332,68 @@ def _latch_matrilineal(cache, melt, date_label):
         if key not in pairs:
             pairs[key] = date_label
             added += 1
+    return added
+
+
+def relation_reason_key(owner, target, kind):
+    """关系缘由闩存键 (v50) —— 方向与存档一致 (<owner>|<target>|<kind>)。"""
+    return f"{int(owner)}|{int(target)}|{kind}"
+
+
+def _latch_relation_reasons(cache, melt, date_label):
+    """关系缘由闩存 (v50, v47 方案 B; 纯程序, 不碰提示词)。
+
+    存档形如::
+
+        opinions.active_opinions = [
+            {"owner": 16852591, "target": 33595411,
+             "scripted_relations": {"rival": {"flags": "AA==",
+                                              "reason": "rival_called_me_a_disgrace"}}}, …]
+
+    `reason` 是游戏自己写下的成因键 (本地化模板见 `data/localization.json` →
+    `relation_templates`: `rival_called_me_a_disgrace` = 「X指责Y是他们家族的
+    耻辱」), 但它只在**关系存续期**存在: 关系一方死亡或关系解除后, 条目连同
+    reason 一起从存档消失 (诺兰 1127/1130 档有、1143 档起无; 田所2 四对
+    rival/grudge 实测 reason 分别在 1~13 年后随条目消失)。传记生成只载**最新**
+    一份熔件供全部十年使用, 于是「结仇早、对方已死」的缘由永久读不到 —— 故在
+    逐档并入时闩存: 首见即留, 之后只刷新 `last_seen`, 不覆盖最早的 reason。
+
+    只收**涉主角**的条目 (控体积: 全档 5.6 万条 scripted_relations, 涉主角个位数);
+    无 `reason` 的条目 (potential_rival / elder / disciple 等, 全档约 0.2% 的
+    rival 亦无) 不入库 —— 「有因由」与「确无因由」的区别留给生成侧判据。
+    返回本档新增条数。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return 0
+    hist = cache.setdefault("relation_reasons", {})
+    added = 0
+    for o in (melt.get("opinions") or {}).get("active_opinions") or []:
+        if not isinstance(o, dict):
+            continue
+        owner, target = o.get("owner"), o.get("target")
+        if not isinstance(owner, int) or not isinstance(target, int):
+            continue
+        if owner != pid and target != pid:
+            continue
+        srs = o.get("scripted_relations")
+        if not isinstance(srs, dict):
+            continue
+        for kind, v in srs.items():
+            if not isinstance(v, dict) or not v.get("reason"):
+                continue
+            key = relation_reason_key(owner, target, kind)
+            rec = hist.get(key)
+            if rec is None:
+                inv = v.get("involved_character")
+                hist[key] = {
+                    "owner": owner, "target": target, "kind": str(kind),
+                    "reason": str(v["reason"]),
+                    "involved": inv if isinstance(inv, int) else None,
+                    "first_seen": date_label,
+                }
+                added += 1
+            else:
+                rec["last_seen"] = date_label
     return added
 
 
