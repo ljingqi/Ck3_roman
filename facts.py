@@ -19,6 +19,7 @@ import re
 import datetime
 import hashlib
 import random
+import threading
 
 import llm
 import cache_lib as cl
@@ -1145,7 +1146,9 @@ class Facts:
         self._mem_date_cache = {}  # v34b: 头衔记忆事实日 (tid, cid, d, reason, type)
         self._label_cache = {}   # v28b: 人物称谓 (cid, date, style) -> 文本
         # v45 (档 B): 事件句构造期的称谓出词登记 (见 log_names/index_names)
-        self._name_logs = []     # 生效中的登记器栈 (可嵌套)
+        # 登记栈**按线程**分份 —— 板块期并发调用 (`biography.py` 的 ThreadPool)
+        # 时, 别人的出词不得混进本行 (混进就会把定语插错地方)。
+        self._tls = threading.local()
         self.name_index = {}     # 行文本 -> [[cid, label], …] (按出词顺序)
         # v16: 游戏关系原因 (opinions.active_opinions 索引, 惰性构建)
         self._opinion_index = None
@@ -3940,6 +3943,15 @@ class Facts:
         if info.get("target"):
             parts.append(f"反抗{info['target']}")
         return f"{who}{'，'.join(parts)}。" if parts else ""
+
+    @property
+    def _name_logs(self):
+        """本线程生效中的出词登记器栈 (可嵌套; 见 `log_names`)。"""
+        st = getattr(self._tls, "logs", None)
+        if st is None:
+            st = []
+            self._tls.logs = st
+        return st
 
     def log_names(self):
         """v45 (档 B): 开启本行的称谓出词登记 (上下文管理器, 可嵌套)。
