@@ -1986,8 +1986,11 @@ def _compact_keep_paths(cfg):
     return keep
 
 
-def step_compact(cfg, codec=None):
+def step_compact(cfg, codec=None, quiet_if_idle=True):
     """把冷熔件与记忆归档边车压缩归档 (v44 问题5, 可反复运行)。
+
+    quiet_if_idle (v51): 无事可做时是否静默控制台 —— 后台归档线程用默认 True
+    (每 10 分钟一轮, 无新档时不必刷屏), 手动 `compact` 传 False 留一行确认。
 
     v44: gzip-6 —— 诺兰 82 份熔件 14.12GB + 80 份边车 1.92GB → 约 2.4GB。
     v49 (方案①): 默认改用 xz (lzma preset 6, 可用 config.compact_codec 或
@@ -2016,9 +2019,12 @@ def step_compact(cfg, codec=None):
             targets.append(idx)
     done = freed = 0
     # v51: 只对待处理项编号 (旧稿用 targets 全量下标配待处理总数, 打出 [477/3]);
-    # 无待处理时一行不打 (后台归档线程每 10 分钟跑一轮, 静默即「无事可做」)。
+    # 无事可做时不再打两行 (后台归档线程每 10 分钟跑一轮) —— 控制台只在手动
+    # `compact` 时留一行确认 (quiet_if_idle=False), 文件里一律留一行明细。
     todo = [p for p in targets if not p.lower().endswith(want)]
     if not todo:
+        llm.log(f"冷熔件归档 ({codec}): 无需归档 "
+                f"(共 {len(targets)} 份已达标或为最新一份)", detail=quiet_if_idle)
         return 0, 0
     llm.log(f"冷熔件归档 ({codec}): 待处理 {len(todo)} 份 "
             f"(已 {want} 的跳过; 最新熔件保持明文)")
@@ -2115,7 +2121,8 @@ def main():
     elif cmd == "compact":
         # v49 (方案①): 默认 xz; `compact --gz` 可退回 gzip (压缩快 10 倍, 体积大 63%)
         codec = "gz" if "--gz" in sys.argv else None
-        step_compact(cfg, codec=codec)
+        # v51: 手动运行留一行「无事可做」的确认 (后台线程仍静默)
+        step_compact(cfg, codec=codec, quiet_if_idle=False)
     elif cmd == "migrate":
         step_migrate(cfg)
     else:
