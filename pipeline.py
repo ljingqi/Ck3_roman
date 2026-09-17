@@ -410,6 +410,10 @@ def find_latest_session_folder(name, output_dir):
 # 运行内同一玩家沿用本次运行文件夹, 换玩家(新局)再新建; continue 不走此逻辑。
 _WATCH_SESSION = {"active": False, "folder": None, "player_key": None}
 
+# v51: 监控空转时控制台的报平安间隔 (轮数; 60s 轮询下 30 轮 ≈ 半小时一次)。
+# 明细轮次仍逐轮写入 logs/journal.log。
+IDLE_HEARTBEAT_ROUNDS = 30
+
 
 def resolve_output_folder(cfg, cache, continue_mode=False):
     """纯函数: 该缓存应使用的会话文件夹 (不修改缓存)。
@@ -1066,7 +1070,8 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
                     n = cl.recover_dead_memories_from(idx_or_melt, cache, int(cid))
                 if n:
                     llm.log(f"  [回溯] 角色 {cid} ({rec.get('name_zh') or rec.get('name_full') or ''}) "
-                            f"死于{ddate}, 从{src}档{('归档' if via_index else '')}恢复 {n} 条记忆")
+                            f"死于{ddate}, 从{src}档{('归档' if via_index else '')}恢复 {n} 条记忆",
+                            detail=True)
                     recovered += 1
             except Exception as e:
                 llm.log(f"  [回溯失败] 角色 {cid}: {e}")
@@ -1088,14 +1093,14 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
                 n = cl.recover_dead_memories_from(melt, cache, int(cid), chars=chars)
                 if n:
                     llm.log(f"  [回溯] 角色 {cid} ({rec.get('name_zh') or rec.get('name_full') or ''}) "
-                            f"死于{ddate}, 从{src}档恢复 {n} 条记忆")
+                            f"死于{ddate}, 从{src}档恢复 {n} 条记忆", detail=True)
                     recovered += 1
             except Exception as e:
                 llm.log(f"  [回溯失败] 角色 {cid}: {e}")
         try:
             # v12: 惰性构建并持久化归档 — 今后回溯直接读边车索引
             cl.save_melt_index(mp, melt)
-            llm.log(f"  [归档] {os.path.basename(mp)} 记忆归档已生成")
+            llm.log(f"  [归档] {os.path.basename(mp)} 记忆归档已生成", detail=True)
         except Exception as e:
             llm.log(f"  [归档失败] {os.path.basename(mp)}: {e}")
     if recovered:
@@ -1472,6 +1477,8 @@ def step_watch(cfg, continue_mode=False):
     last_date = None       # 上次已处理日期 (同日期重存/轮转副本不重复并入)
     last_player = None     # 上次处理存档的玩家名 (换玩家 = 新局, 允许同日期重现)
     watch_anchor = None    # watch 模式: 首个新档建立的玩家缓存 (此后每轮只查该战役)
+    idle_rounds = 0        # v51: 连续「无新存档」轮数 — 控制台只在空闲首轮与
+                           # 每 IDLE_HEARTBEAT 轮各报一次, 其余进日志文件
     while True:
         try:
             s = _newest_save(save_dir)
@@ -1510,8 +1517,15 @@ def step_watch(cfg, continue_mode=False):
                         llm.log(f"  处理失败, 下轮重试: {os.path.basename(s['path'])}: {e}")
             if processed:
                 llm.log(f"并入 {processed} 个新档")
+                idle_rounds = 0
             else:
-                llm.log("无新存档")
+                # v51: 空转不再每轮刷屏 (60s 轮询时旧稿每分钟一行), 控制台留心跳
+                idle_rounds += 1
+                msg = f"无新存档 (已空转 {idle_rounds} 轮)"
+                if idle_rounds == 1 or idle_rounds % IDLE_HEARTBEAT_ROUNDS == 0:
+                    llm.log(msg)
+                else:
+                    llm.log(msg, detail=True)
             # 后台传记检查只查当前战役:
             # continue = 启动时定死的锚点 (有新档并入时跟随该档玩家, 防继位漏检);
             # watch = 新档建立的战役 (watch_anchor); 旧战役的缓存一律不扫
@@ -2001,12 +2015,14 @@ def step_compact(cfg, codec=None):
         if idx:
             targets.append(idx)
     done = freed = 0
-    n_targets = len([p for p in targets if not p.lower().endswith(want)])
-    llm.log(f"冷熔件归档 ({codec}): 待处理 {n_targets} 份 "
+    # v51: 只对待处理项编号 (旧稿用 targets 全量下标配待处理总数, 打出 [477/3]);
+    # 无待处理时一行不打 (后台归档线程每 10 分钟跑一轮, 静默即「无事可做」)。
+    todo = [p for p in targets if not p.lower().endswith(want)]
+    if not todo:
+        return 0, 0
+    llm.log(f"冷熔件归档 ({codec}): 待处理 {len(todo)} 份 "
             f"(已 {want} 的跳过; 最新熔件保持明文)")
-    for i, p in enumerate(targets, 1):
-        if p.lower().endswith(want):
-            continue
+    for k, p in enumerate(todo, 1):
         try:
             before = os.path.getsize(p)
             out = _recompress_file(p, codec)
@@ -2018,9 +2034,9 @@ def step_compact(cfg, codec=None):
         after = os.path.getsize(out)
         done += 1
         freed += max(0, before - after)
-        llm.log(f"  [{i}/{n_targets}] {os.path.basename(out)} "
+        llm.log(f"  [{k}/{len(todo)}] {os.path.basename(out)} "
                 f"{before / 1048576:.1f} → {after / 1048576:.1f} MiB "
-                f"({after / before * 100:.0f}%)")
+                f"({after / before * 100:.0f}%)", detail=True)
     llm.log(f"冷熔件归档 ({codec}): {done} 份, 释放 {freed / (1 << 30):.2f} GB "
             f"(最新熔件保持明文, 读取口三种后缀皆认)")
     return done, freed

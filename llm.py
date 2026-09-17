@@ -96,13 +96,18 @@ _LOG_DIR = None
 LOG_FILE = None
 PROMPT_LOG = None
 PROMPT_LOG_MAX_BYTES = 5 * 1024 * 1024
+# v51: 高频明细行 (逐份归档尺寸、逐角色回溯、逐角色存档) 默认只进日志文件,
+# 控制台留出真正需要盯的行; config.json 置 log_console_detail=true 可全量打印。
+DETAIL_CONSOLE = False
 
 
 def _init_log_paths():
-    global _LOG_DIR, LOG_FILE, PROMPT_LOG
+    global _LOG_DIR, LOG_FILE, PROMPT_LOG, DETAIL_CONSOLE
     try:
         with open(os.path.join(SCRIPT_DIR, "config.json"), encoding="utf-8") as f:
-            d = (json.load(f).get("log_dir") or "").strip()
+            c = json.load(f)
+            d = (c.get("log_dir") or "").strip()
+            DETAIL_CONSOLE = bool(c.get("log_console_detail", False))
     except Exception:
         d = ""
     _LOG_DIR = d or os.path.join(SCRIPT_DIR, "logs")
@@ -113,10 +118,15 @@ def _init_log_paths():
 _init_log_paths()
 
 
-def log(msg):
+def log(msg, *, detail=False):
+    """写一行日志: 一律落 logs/journal.log。
+
+    detail=True 表示高频明细行 (逐份/逐人粒度) —— 默认不打印到控制台;
+    config.json 的 log_console_detail 置 true 时与普通行一样打印。"""
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     line = f"[{ts}] {msg}"
-    print(line, flush=True)
+    if not detail or DETAIL_CONSOLE:
+        print(line, flush=True)
     try:
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
         with _LOG_LOCK:
@@ -163,15 +173,79 @@ def clean_number_spaces(text):
     return text
 
 
+# --- v51: 半角标点归正 -------------------------------------------------------
+# 组装侧模板与事实层一律用全角标点, 模型偶有整篇半角漂移 (2026-09-17 沙蒂永终传
+# 《阴私录》一篇 80 处半角逗号/冒号/分号, 其余五篇全 0)。凡**与汉字或中文标点
+# 相邻**的半角标点一律改全角; 数字与拉丁字母旁的半角标点原样保留
+# (3.5 / 1,000 / J.P. / Markdown 有序列表 1. 皆不受影响)。
+_ZH_NEIGHBOR = ("\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+                "\u3000-\u303f\uff00-\uffef"
+                "\u2018\u2019\u201c\u201d\u2026\u2014")
+_ZH_CLASS = f"[{_ZH_NEIGHBOR}]"
+_ZH_RE = re.compile(_ZH_CLASS)
+_HALF2FULL = {",": "，", ";": "；", ":": "：", "!": "！", "?": "？"}
+_PUNCT_SIDE_RES = [
+    (re.compile(rf"(?<={_ZH_CLASS}){re.escape(a)}|{re.escape(a)}(?={_ZH_CLASS})"), b)
+    for a, b in _HALF2FULL.items()
+]
+# 句点只看**前一侧**: 汉字/中文标点后的 . 是句号; 「J.P.」「3.5」前一侧是
+# 拉丁字母或数字, 原样。
+_PERIOD_RE = re.compile(rf"(?<={_ZH_CLASS})\.")
+
+
+def _pair_halfwidth_quotes(line):
+    """行内半角双引号按奇偶配成 “”; 不满足条件时原样返回。
+
+    条件 (缺一不动): 个数为偶数, 且**每一个**半角引号都紧贴汉字/中文标点 ——
+    这样 JSON 片段、英文缩写里的半角引号不会被误配对, 而「他说"好",再来」
+    「可"知情"与"握柄"」这类中文引号照改。"""
+    idx = [i for i, ch in enumerate(line) if ch == '"']
+    if not idx or len(idx) % 2:
+        return line
+    for i in idx:
+        before = line[i - 1] if i else ""
+        after = line[i + 1] if i + 1 < len(line) else ""
+        if not (_ZH_RE.match(before) or _ZH_RE.match(after)):
+            return line
+    out, opening = [], True
+    for ch in line:
+        if ch == '"':
+            out.append("“" if opening else "”")
+            opening = not opening
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def normalize_zh_punct(text):
+    """中文文本的半角标点归正 (v51, 幂等)。
+
+    改 , ; : ! ? 与句末 . 为全角, 半角双引号按行配对成 “”; 数字/拉丁文旁的
+    半角标点保持原样。引号配对先做 —— 这样「闷响:…折断".」里紧贴右引号的
+    半角句点也能认出来。出稿侧 (板块/总纲/终稿) 与提示词侧
+    (clean_prompt_messages) 各过一遍 —— 出稿侧保证成品干净, 提示词侧保证模型
+    只见一套标点范例。"""
+    if not text:
+        return text
+    out = text
+    if '"' in out:
+        out = "\n".join(_pair_halfwidth_quotes(ln) for ln in out.split("\n"))
+    for pat, rep in _PUNCT_SIDE_RES:
+        out = pat.sub(rep, out)
+    out = _PERIOD_RE.sub("。", out)
+    return out
+
+
 def clean_prompt_messages(messages):
-    """提示词侧数字↔汉字空格清理; 原列表不修改, 返回新列表。"""
+    """提示词侧规整: 数字↔汉字空格清理 + 半角标点归正 (v51);
+    原列表不修改, 返回新列表。"""
     if not messages:
         return messages or []
     cleaned = []
     for m in messages:
         c = m.get("content")
         if isinstance(c, str):
-            c = clean_number_spaces(c)
+            c = normalize_zh_punct(clean_number_spaces(c))
         cleaned.append({**m, "content": c})
     return cleaned
 

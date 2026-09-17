@@ -3284,11 +3284,16 @@ class Facts:
         return None
 
     def marriage_lineality_note(self, a, b, wedding=None, before=None):
-        """成婚句/配偶行的程序补注 (v43): 母系婚 (入赘) 补「所生子女随母方, 属X」。
+        """成婚句/配偶行的程序补注 (v43 起, v51 简化): 母系婚 (入赘) 补「入赘婚」。
 
         只标异常那一档 (母系婚) —— 与游戏 UI 只对母系婚给出
         `MATRILINEAL_WARNING`「该婚姻所生子将属于X的家族」同一口径; 普通婚与判不
-        出者返回 '' (句面即普通形态)。模型由此无需自悟线系规则。
+        出者返回 '' (句面即普通形态)。
+
+        v51 (用户拍板): 补注与普通婚一样只写线系名 —— 旧稿逐行写全
+        「（入赘婚：所生子女随母方，属X氏）」太长, 且把母方家族名重复进每一处;
+        「入赘婚」一词本身即含「所生子女随母方」之义 (CK3 简中同用此词),
+        故不再另附家族名, 也不再依赖母方家族名解析成功。
 
         `wedding` = 成婚日 (传日历记忆的日期; 缺省由 `wedding_date` 回查),
         `before` = 本篇截止日 (十年传记不把尚未出生的子女算进判据)。"""
@@ -3300,11 +3305,7 @@ class Facts:
             wedding = self.wedding_date(a, b)
         if not self.is_matrilineal(a, b, after=wedding or None, before=before):
             return ""
-        mom = a if self._is_female(a) else b
-        label = self._house_label_at(mom, self.as_of) or ""
-        if not label:
-            return ""
-        return f"（入赘婚：所生子女随母方，属{label}）"
+        return "（入赘婚）"
 
     def _office_word(self, tier, government, independent=False, female=False, tid=None,
                      cid=None, date=None):
@@ -4065,8 +4066,9 @@ class Facts:
     def _house_label_at(self, cid, date=None):
         """某人**在该日**的家族称谓 (v44 问题1): 沿革点优先, 无沿革回退家族 id 现值。
 
-        入赘婚的「属X氏」写的是**该篇截止日**母方的家族 —— 阿德尔海德 1118 年
-        别立冯·亚琛氏后, 末档篇不得再写「属诺兰氏」。"""
+        v51: 入赘婚补注已简化为「（入赘婚）」, 不再随句下发母方家族名 —— 本方法
+        暂时没有调用点, 保留以备将来要写「属X氏」时按篇截止日取词 (阿德尔海德
+        1118 年别立冯·亚琛氏后, 末档篇不得再写「属诺兰氏」)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         if rec.get("house_history"):
             h, dn = self._house_names_at(cid, date)
@@ -8545,8 +8547,9 @@ def _mem_sentence_body(f, owner_id, mem):
     # 未补出父亲时不留空括注
     if not extra_fname:
         s = s.replace("（生父）。", "。").replace("（生父）", "")
-    # v43: 成婚句补婚姻线系 —— 母系婚 (入赘) 补「所生子女随母方, 属X家族」,
-    # 普通婚与判不出者句面不变 (与游戏 UI 只标母系那一档同口径)。
+    # v43: 成婚句补婚姻线系 —— 母系婚 (入赘) 补「入赘婚」,
+    # 普通婚与判不出者句面不变 (与游戏 UI 只标母系那一档同口径; v51 简化见
+    # marriage_lineality_note)。
     if mem.get("type") == "married" and other_id is not None:
         note = f.marriage_lineality_note(owner_id, other_id,
                                          wedding=mem.get("creation_date"))
@@ -8622,8 +8625,10 @@ def sanitize_fact_text(text, where=""):
                 _SANITIZE_LOG["samples"].append(d)
         try:
             import llm as _llm
+            # v51: 逐块明细只进日志文件 (一次生成可达数十条), 收尾合计见
+            # biography.generate_biography 的「干净事实兜底共丢弃 N 行」。
             _llm.log(f"干净事实兜底: 丢弃含裸键的行 {len(dropped)} 条"
-                     f" (来自 {where or '未知块'}): {dropped[0][:80]}")
+                     f" (来自 {where or '未知块'}): {dropped[0][:80]}", detail=True)
         except Exception:
             pass
     return "\n".join(kept)

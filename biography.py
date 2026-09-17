@@ -1953,6 +1953,9 @@ def _normalize_section(text, sec_title, article_title=""):
     body = _strip_markdown_tables("\n".join(out)).strip()
     body = _strip_meta_notes(body)
     body = llm.clean_number_spaces(body)
+    # v51: 半角标点归正 —— 出稿处确定性收口 (模型偶有整篇半角漂移; 此处同时
+    # 掐住「开篇正文回贴成纪事摘要」那一路, 见 logs 里 33 处半角的来源)。
+    body = llm.normalize_zh_punct(body)
     # 评点剥离后可能残留孤立空行, 压缩
     body = re.sub(r"\n{3,}", "\n\n", body)
     if not saw:
@@ -2190,27 +2193,27 @@ def build_articles(facts, cache, cfg):
     articles = [
         {"key": "benji", "title": f"本纪·{pname}", "subject": None,
          "theme": "人物生平",
-         "focus": "以公开行迹为限: 家世、执掌之地、战和囚狱、家门添丁",
+         "focus": "以公开行迹为限：家世、执掌之地、战和囚狱、家门添丁",
          "sections": mk_sections("benji")},
     ]
     if friend is not None:
         articles.append({"key": "friend", "title": f"列传·{fname or '好友'}",
                          "subject": fname, "theme": "好友传记（最亲近同僚的一生）",
-                         "focus": "以传主生平为限, 主角只在二人交游处出场",
+                         "focus": "以传主生平为限，主角只在二人交游处出场",
                          "sections": mk_sections("friend")})
     if enemy is not None:
         articles.append({"key": "enemy", "title": f"列传·{ename or '仇人'}",
                          "subject": ename, "theme": "仇人传记（一生劲敌）",
-                         "focus": "以传主一生行迹与结仇由头为限, 客观平实",
+                         "focus": "以传主一生行迹与结仇由头为限，客观平实",
                          "sections": mk_sections("enemy")})
     articles.extend([
         {"key": "jiashi", "title": "家室列传", "subject": None,
          "theme": "妻室子女的门庭画卷",
-         "focus": "写门庭内情: 结缡、情事脉络、子女来历与血脉之争",
+         "focus": "写门庭内情：结缡、情事脉络、子女来历与血脉之争",
          "sections": mk_sections("jiashi")},
         {"key": "chaoju", "title": "朝局风云录", "subject": None,
          "theme": "朝局官制沉浮",
-         "focus": "写主角所处政权的朝局与疆域, 及其在其中的升沉",
+         "focus": "写主角所处政权的朝局与疆域，及其在其中的升沉",
          "sections": mk_sections("chaoju")},
     ])
     # v9: 家族恩怨录 / 宝物志 — 插在中间 (家室列传之后, 朝局风云录之前)
@@ -2218,13 +2221,13 @@ def build_articles(facts, cache, cfg):
         articles.insert(4, {"key": "feuds", "title": "家族恩怨录",
                             "subject": None,
                             "theme": "与主角家族关系不和的家族恩怨",
-                            "focus": "写仇怨的来龙去脉: 开战、胜负、夺地、对方处境与关系档位",
+                            "focus": "写仇怨的来龙去脉：开战、胜负、夺地、对方处境与关系档位",
                             "sections": mk_sections("feuds")})
     if facts.get("family_artifacts"):
         articles.insert(5, {"key": "artifacts", "title": "宝物志",
                             "subject": None,
                             "theme": "主角家族所藏重宝的流转历史",
-                            "focus": "写每件重宝的来历与流转, 以物见人",
+                            "focus": "写每件重宝的来历与流转，以物见人",
                             "sections": mk_sections("artifacts")})
     # v5: 刺客列传 (主角杀 >5 人); v11: 按击杀数动态拆纪事板块
     # (<30 不拆 1 个纪事; 30–59 拆 2 个; ≥60 拆 3 个; 已剔除 lowborn)
@@ -2233,14 +2236,14 @@ def build_articles(facts, cache, cfg):
         articles.append({
             "key": "assassins", "title": "刺客列传·刀下诸魂",
             "subject": None, "theme": f"被主角所杀 {len(killed)} 人的合传",
-            "focus": "为每名死者立小传: 其生平、与主角的交集、死时情状",
+            "focus": "为每名死者立小传：其生平、与主角的交集、死时情状",
             "sections": _assassin_sections(len(killed))})
     # v5: 游侠列传 (无地冒险者)
     if facts.get("protagonist", {}).get("landless"):
         articles.append({
             "key": "youxia", "title": "游侠列传·行纪",
             "subject": None, "theme": "萍踪浪迹的漂泊行纪",
-            "focus": "按行纪次序写漂泊: 每至一地的时间、所驻之地、与当地势力的交集",
+            "focus": "按行纪次序写漂泊：每至一地的时间、所驻之地、与当地势力的交集",
             "sections": mk_sections("youxia")})
     # v5: 妻族传 (妻妾含公主头衔/中华皇帝之女·姐妹)
     if facts.get("imperial_spouses"):
@@ -2255,7 +2258,7 @@ def build_articles(facts, cache, cfg):
         articles.append({
             "key": "qunying", "title": "群英录·朝堂要员",
             "subject": None, "theme": "同朝要员的群像",
-            "focus": "写同朝要员的名录与浮沉, 以主角为坐标",
+            "focus": "写同朝要员的名录与浮沉，以主角为坐标",
             "sections": mk_sections("qunying")})
     # v28: 阴私录 (条件生成 — 有非谋杀隐事 / 家人近臣隐事 / 把柄 才开篇,
     # 避免「27 桩谋杀之秘」这类只与《刺客列传》重复的战役白付两次调用)
@@ -2266,7 +2269,7 @@ def build_articles(facts, cache, cfg):
             # v35 (问题2): 旧 focus 写「自何时见载」, 与板块要求一起逼模型产出
             # 「见载年」这一元数据; 数据给不齐时就编出「本篇未著其年」。现只写话题,
             # 年份由事实层的「N年见于记载」给足。
-            "focus": "写隐事的揭底: 何事、涉及何人、事在何年、有谁知情",
+            "focus": "写隐事的揭底：何事、涉及何人、事在何年、有谁知情",
             "sections": mk_sections("secrets")})
     return articles
 
@@ -2306,6 +2309,7 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     intro = llm.call_deepseek(build_intro_messages(facts, cfg, articles),
                               intro_cfg).strip()
     intro = llm.clean_number_spaces(intro)
+    intro = llm.normalize_zh_punct(intro)
     intro = _strip_meta_notes(intro)
 
     sec_cfg = dict(cfg)
@@ -2353,6 +2357,9 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
                 sections[(ak, sk)] = body
 
     md = _assemble(facts, intro, leads, sections, articles)
+    # v51: 成品再收一道 (幂等) —— 兜住终传附录等程序直出段; 只过正文 md,
+    # 下面的机器可读头注释 (人物: / 篇目: / 十年:) 保持半角冒号不动。
+    md = llm.normalize_zh_punct(md)
     # v29: 本地化未命中审计 — 启用 Mod 后哪些键还没读进来, 一次生成后即可查
     try:
         n = F.L.write_miss_report(cfg)
