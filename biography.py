@@ -568,12 +568,18 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
             head = f"{p['office']}{name}"
         elif p.get("prince"):
             head = f"{p['prince']}{name}"
-    # v45 (档 A1): 亲缘定语只在名号句上出现一次 (S1 首见语义在 scope 内判定)
+    # v45 (档 A1): 亲缘定语只在名号句上出现一次 (名额表内判定)
     if scope is not None and _fi is not None and _tid is not None:
         _tagged = _fi.kin_attrib_label(_tid, date=_anchor, style="brief",
                                        scope=scope, base=head)
         if _tagged:
             head = _tagged
+    # v45 (名额判据面): 本档案的家世行 (「父X」「子A、B」「妻室Y」) **已经写明**亲缘 ——
+    # 这些人此后在本板块不再重复加定语 (用户拍板: 只有带亲缘词的提及才算已点名)。
+    # 只在渲染的档案就是本板块传主时做 (家人档案的家世行讲的是他自己的亲属)。
+    if scope is not None and _fi is not None and _tid is not None \
+            and _tid == scope.subject:
+        scope.seed(p.get("kin_ids"), _fi)
     bits = []
     h = _house_text(None, p)
     # 家族/宗族: 分家存在或家族名不在显示名中才单列 (西方名·姓已含家族, 不重复)
@@ -789,10 +795,11 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     return lines
 
 
-def _subject_facts(facts, cid):
-    """某角色(好友/仇人)的档案+事件 (公开档: 不写实父)。"""
+def _subject_facts(facts, cid, scope=None):
+    """某角色(好友/仇人)的档案+事件 (公开档: 不写实父)。
+    v45: 传 scope 时该档案的家世行据此预占本板块的亲缘名额 (KinScope.seed)。"""
     p = facts["characters"].get(str(cid)) or {}
-    lines = _profile_lines(facts, cid)
+    lines = _profile_lines(facts, cid, scope=scope)
     events = p.get("events") or []
     return lines, events
 
@@ -1041,6 +1048,87 @@ def _name_or(facts, cache, cid):
     return "某人"
 
 
+# ---- v45 (档 B): 行内亲缘定语 ----
+# 行内「已写明亲缘」的标记 (只收**不会与头衔撞车**的多字词): 记忆句/死句里
+# 亲属由 `Facts._kin_word` 出「其父」「其兄」式旁称, 家世行出「妻室」「子」式标记。
+# 单字「子/女/父/母」故意不收 —— 头衔里的「皇子」「国皇女」「王子」会把它们撞上。
+_KIN_MARKS = (
+    "其父", "其母", "其子", "其女", "其兄", "其弟", "其姊", "其妹", "其妻",
+    "其夫", "其配偶", "其岳父", "其女婿", "其儿媳", "其姻亲兄弟", "其姻亲姊妹",
+    "其继子", "其继女", "妻室", "夫婿", "男宠", "前妻", "前夫", "前妾",
+    "前男宠", "子女", "实父", "兄弟姊妹", "岳父", "女婿", "儿媳",
+    "姻亲兄弟", "姻亲姊妹", "继子", "继女",
+)
+_KIN_MARK_RE = re.compile("|".join(_KIN_MARKS))
+
+
+def _names_for_line(facts, line):
+    """取该行 facts 侧登记的 (cid, 称谓) 表 + 行内偏移量 (v45 档 B)。
+
+    索引键是**句本体**; 下发时可能被套上「日期，」前缀 (隐事/恩怨/家人行迹),
+    故精确命中失败时, 只在标点之后试几段后缀 (最多 24 字)。"""
+    idx = facts.get("name_index") or {}
+    hit = idx.get(line)
+    if hit is not None:
+        return hit, 0
+    for i in range(len(line) - 1):
+        if i >= 24:
+            break
+        if line[i] in "，；。、 ":
+            hit = idx.get(line[i + 1:])
+            if hit is not None:
+                return hit, i + 1
+    return None, 0
+
+
+def _kin_tag_line(facts, scope, line):
+    """v45 (档 B): 行内**首见**人名前加亲缘定语 (无名额/无亲缘/已写明者原样返回)。"""
+    if scope is None or not line:
+        return line
+    fi = facts.get("_facts")
+    if fi is None:
+        return line
+    names, off = _names_for_line(facts, line)
+    if not names:
+        return line
+    scan = off
+    for cid, label in names:
+        if not label:
+            continue
+        i = line.find(label, scan)
+        if i < 0:
+            # 索引记的是**构造期**的出词, 有的并未留在成句里 (死句把凶手称谓换成
+            # 「其」等) —— 该行没出现这个称谓, 不占名额
+            continue
+        w = scope.word_for(cid, fi)
+        if not w:
+            scan = i + len(label)
+            continue
+        # 行内该处已带亲缘词 (「其父X」) → 关系已经写明, 名额已占, 不再重复插词
+        if _KIN_MARK_RE.search(line[max(off, i - 12):i]):
+            scan = i + len(label)
+            continue
+        line = f"{line[:i]}{w}{line[i:]}"
+        scan = i + len(w) + len(label)
+    return line
+
+
+def _tag_blocks(facts, scope, blocks):
+    """v45 (档 B): 按**块序**给已建块的行内首见人名加定语 (幂等)。
+
+    在 A 点位 (要员名录/死者行) 标记之前先跑一遍, 使名额按**阅读顺序**消费 ——
+    年表里已经点名的人, 不会在后面的名录里再抢到这一次定语。"""
+    if scope is None:
+        return blocks
+    for k, v in list(blocks.items()):
+        if not isinstance(v, str) or k in scope.tagged:
+            continue
+        scope.tagged.add(k)
+        blocks[k] = "\n".join(_kin_tag_line(facts, scope, ln)
+                              for ln in v.split("\n"))
+    return blocks
+
+
 def _article_subject(facts, cache, key):
     """该篇的**传主** id (v45 亲缘定语的基准人): 《列传》即好友/仇人本人, 其余篇为主角。
 
@@ -1102,7 +1190,7 @@ def _article_facts(facts, cache, key, section=None):
         # v45: 复用入口已解析的篇传主 (此前在此重算一次)
         cid = subject
         if cid is not None:
-            lines, events = _subject_facts(facts, cid)
+            lines, events = _subject_facts(facts, cid, scope)
             # v27: 开篇只给传主档案 + 关系缘由; 纪事给传主行迹 + 模块切片年表
             # (此前开篇与纪事各拿一整套, 逐字节相同)
             if sk == "lead":
@@ -1164,10 +1252,8 @@ def _article_facts(facts, cache, key, section=None):
         spouse_ids = _family_ids_by_kind(cache, "spouse")
         pick = ([c for c in sorted(fam_ids) if c in spouse_ids] if sk == "lead"
                 else [c for c in sorted(fam_ids) if c not in spouse_ids])
-        # v45 (档 A1, S1 字面语义): 先登记本板块此前的文本 —— 传主档案的家世行
-        # (「夫婿X」「子A、B」) 已经点过名的人, 逐人条目头不再重复加亲缘定语。
-        if scope is not None:
-            scope.absorb("\n".join(blocks.values()))
+        # v45 (档 B, 阅读顺序): 先把此前的块 (传主档案等) 行内人名标好, 再标逐人条目头
+        _tag_blocks(facts, scope, blocks)
         for cid in pick:
             p = facts["characters"].get(str(cid))
             if not p or not p.get("name"):
@@ -1245,10 +1331,8 @@ def _article_facts(facts, cache, key, section=None):
                 if isinstance(p.get("employee"), int):
                     related.add(p["employee"])
         if sk == "lead":
-            # v45 (档 A2, S1): 要员名录前先登记本板块此前的文本 (传主档案的家世行 /
-            # 天下大势 / 官职任免), 名录里的家人姻亲只在**首见**时加亲缘定语。
-            if scope is not None:
-                scope.absorb("\n".join(blocks.values()))
+            # v45 (档 B, 阅读顺序): 年表/隐事行的行内人名先标, 再标要员名录
+            _tag_blocks(facts, scope, blocks)
             _fi = facts.get("_facts")
             for cid, rec in (cache.get("characters") or {}).items():
                 if len(names) >= 60:
@@ -1293,10 +1377,8 @@ def _article_facts(facts, cache, key, section=None):
                                                      for k in killed)
             head = (style.FACT_WORDING["assassin_lead"].format(
                 n=n_victims, killer=plabel) if plabel else "")
-            # v45 (档 A3, S1): 先登记本板块此前的文本 (传主档案), 死者名录里
-            # 已在别处点过名的亲属不再加亲缘定语
-            if scope is not None:
-                scope.absorb("\n".join(blocks.values()))
+            # v45 (档 A3/B, 阅读顺序): 先标此前块的行内人名, 再标死者名录
+            _tag_blocks(facts, scope, blocks)
             if sec_key == "lead":
                 # v11 开篇: 压缩名录 (死者名 + 生卒死因), 供群像总览, 不再整块铺 168 人档案
                 parts = [head] if head else []
@@ -1442,6 +1524,9 @@ def _article_facts(facts, cache, key, section=None):
             _set_block(blocks, "家人近臣隐事", "\n".join(mid_lines))
             if sec.get("events"):
                 blocks["隐事纪年"] = "\n".join(sec["events"])
+    # ---- v45 (档 B): 全板块收尾 —— 按块序给行内首见人名加亲缘定语 ----
+    # (A 点位在构建期已标过; 这里补年表/隐事/恩怨等**行内**点名位)
+    _tag_blocks(facts, scope, blocks)
     return blocks
 
 

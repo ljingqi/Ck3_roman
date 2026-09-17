@@ -540,37 +540,58 @@ class KinScope:
 
     `_article_facts` 是并发调用的（每篇一个线程）, 所以这张表只能是**局部对象**,
     绝不能挂 `Facts` 实例 —— 否则板块之间串味、结果不可复现。
-    「首次」语义 S1 (用户拍板, **字面**): 人名在本板块**任何位置**首次出现即消费名额 ——
-    既有「父X」「子A、B」「俱为X之子女」这类程序亲缘行也算, 故调用方在渲染下一个
-    点名位之前用 `absorb` 把本板块此前各块的文本喂进来。
+    「首次」语义 (用户拍板): 同一人在本板块只加一次定语; **已带亲缘词**的点名
+    (传主档案的家世行「父X」「子A、B」「妻室Y」) 视为已交代, 由 `seed` 预先占用
+    名额 —— 于是「裸名先行」处 (朝中要员名录/廷中僚属任免/刺客死者行) 照加,
+    「子X」这类既有亲缘行则不重复。
     `subject` = 该篇传主 (《列传》即好友/仇人本人); 传主本人不加定语。"""
 
-    __slots__ = ("subject", "seen", "stats", "held", "prior")
+    __slots__ = ("subject", "seen", "stats", "held", "tagged")
 
     def __init__(self, subject=None):
         self.subject = int(subject) if subject is not None else None
         self.seen = set()
         self.stats = {}      # 已加定语 {词: 次数} (计量用)
-        self.held = {}       # 本可加定语、因 S1 已在文中出现而压住的 {词: 次数}
-        self.prior = ""      # 本板块此前已下发的文本 (S1 判据面)
+        self.held = {}       # 家世行已交代、因而未再加的 {词: 次数} (计量用)
+        self.tagged = set()  # 已做过行内插词的块名 (档 B 幂等用)
 
-    def absorb(self, text):
-        """登记本板块**此前已下发**的文本 (S1 字面语义的判据面); 返回 self 供串写。"""
-        if text:
-            self.prior = f"{self.prior}\n{text}" if self.prior else text
+    def seed(self, ids, facts=None):
+        """预占名额: 这些人的亲缘**已经写明** (档案家世行), 本板块不再重复加定语。
+
+        返回 self 供串写。`facts` 给了才统计 `held` (计量用, 不影响出词)。"""
+        for cid in (ids or []):
+            if not isinstance(cid, int):
+                try:
+                    cid = int(cid)
+                except (TypeError, ValueError):
+                    continue
+            if cid == self.subject or cid in self.seen:
+                continue
+            self.seen.add(cid)
+            if facts is not None:
+                w = facts.kin_word_for(cid, self.subject)
+                if w:
+                    self.held[w] = self.held.get(w, 0) + 1
         return self
 
-    def mentioned(self, cid, base, facts, date=None):
-        """该人的称谓或本名是否已在本板块此前的文本里出现过 (S1 判据)。"""
-        if not self.prior:
-            return False
-        if base and base in self.prior:
-            return True
+    def word_for(self, cid, facts):
+        """首次出现 → 返回该人的亲缘定语词并占名额; 否则返回 ''。
+
+        v45 (档 B) 的行内插词入口 (与 `mark` 共用一张名额表)。"""
+        if cid is None or self.subject is None:
+            return ""
         try:
-            bare = facts.name(cid, date=date) or ""
-        except Exception:
-            bare = ""
-        return bool(bare) and bare in self.prior
+            cidi = int(cid)
+        except (TypeError, ValueError):
+            return ""
+        if cidi == self.subject or cidi in self.seen:
+            return ""
+        self.seen.add(cidi)
+        w = facts.kin_word_for(cidi, self.subject)
+        if not w:
+            return ""
+        self.stats[w] = self.stats.get(w, 0) + 1
+        return w
 
     def mark(self, cid, base, facts, date=None):
         """给 cid 的称谓 base 加定语 (首次才加); 返回最终文本。"""
@@ -583,11 +604,6 @@ class KinScope:
         if cidi == self.subject or cidi in self.seen:
             return base
         self.seen.add(cidi)
-        if self.mentioned(cidi, base, facts, date=date):
-            w = facts.kin_word_for(cidi, self.subject)
-            if w:
-                self.held[w] = self.held.get(w, 0) + 1
-            return base
         w = facts.kin_word_for(cidi, self.subject)
         if not w:
             return base
@@ -1128,6 +1144,9 @@ class Facts:
         self._regnal_cache = {}  # v17: 世系编号 (cid, tid, date) -> 序号
         self._mem_date_cache = {}  # v34b: 头衔记忆事实日 (tid, cid, d, reason, type)
         self._label_cache = {}   # v28b: 人物称谓 (cid, date, style) -> 文本
+        # v45 (档 B): 事件句构造期的称谓出词登记 (见 log_names/index_names)
+        self._name_logs = []     # 生效中的登记器栈 (可嵌套)
+        self.name_index = {}     # 行文本 -> [[cid, label], …] (按出词顺序)
         # v16: 游戏关系原因 (opinions.active_opinions 索引, 惰性构建)
         self._opinion_index = None
         self._rel_reason_cache = {}
@@ -3922,6 +3941,32 @@ class Facts:
             parts.append(f"反抗{info['target']}")
         return f"{who}{'，'.join(parts)}。" if parts else ""
 
+    def log_names(self):
+        """v45 (档 B): 开启本行的称谓出词登记 (上下文管理器, 可嵌套)。
+
+        用法: `with f.log_names() as lg: text = _mem_sentence(...)` →
+        `f.index_names(text, lg)` 把这一行与它用到的 (cid, label) 记进 `name_index`。
+        有了这张表, 板块期就能把人名**确切地**改写成「定语+人名」, 不必对已烘定
+        的字符串做正则猜测 (档 C 的同名子串误插问题由此消失)。"""
+        return _NameLog(self)
+
+    def index_names(self, text, log):
+        """把一行文本与它用到的 (cid, label) 登记进 `name_index`。"""
+        if text and log is not None and log.items:
+            self.name_index[text] = [list(x) for x in log.items]
+        return text
+
+    def _log_label(self, cid, label):
+        """`person_label` 出词时向所有生效的登记器各记一条 (v45 档 B)。"""
+        if not label or not self._name_logs:
+            return
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return
+        for lg in self._name_logs:
+            lg.items.append((cid, label))
+
     def person_label(self, cid, date=None, style="full"):
         """人物称谓统一入口 (v28b)。style:
         - "full": 家室/世系 (kin_label) — 「[前X，]现职Y 姓名」;
@@ -3937,9 +3982,12 @@ class Facts:
             return ""
         key = (int(cid), date or "", style)
         if key in self._label_cache:
-            return self._label_cache[key]
+            out = self._label_cache[key]
+            self._log_label(cid, out)
+            return out
         out = self._person_label_uncached(cid, date, style)
         self._label_cache[key] = out
+        self._log_label(cid, out)
         return out
 
     def _person_label_uncached(self, cid, date, style):
@@ -4570,7 +4618,14 @@ class Facts:
 
     def secret_line(self, rec, owner_label=None, knowers=True, self_cid=None):
         """隐事一行 (v28b): 「{owner}有一桩隐事：{topic}（涉及X，自Y年见载）；
-        知情者：A、B（同年）。」— 隐事与知情者同句, 一眼看出谁知道了哪桩事。"""
+        知情者：A、B（同年）。」— 隐事与知情者同句, 一眼看出谁知道了哪桩事。
+        v45 (档 B): 外层包一层出词登记 (整行一次登记 —— 一行一位持有人)。"""
+        with self.log_names() as lg:
+            out = self._secret_line_body(rec, owner_label=owner_label,
+                                         knowers=knowers, self_cid=self_cid)
+        return self.index_names(out, lg)
+
+    def _secret_line_body(self, rec, owner_label=None, knowers=True, self_cid=None):
         s = self.secret_sentence(rec, owner_label=owner_label, self_cid=self_cid)
         if not s or not knowers:
             return s
@@ -4585,7 +4640,18 @@ class Facts:
               （涉及唐皇帝李漼，873年见载），知情者：卢从度（自875年起）。」
 
         持有人只写一次, 每桩自带见载年与自己的知情者; 单桩时与 secret_line 同形
-        (「陆荣廷有隐事：…」)。返回 [str] (无可用主题时返回 [])。"""
+        (「陆荣廷有隐事：…」)。返回 [str] (无可用主题时返回 [])。
+        v45 (档 B): 外层包一层出词登记 (每行单独登记, 供板块期插亲缘定语)。"""
+        with self.log_names() as lg:
+            out = self._secret_lines_body(recs, owner_label=owner_label,
+                                          self_cid=self_cid,
+                                          with_knowers=with_knowers)
+        for ln in (out or []):
+            self.index_names(ln, lg)
+        return out
+
+    def _secret_lines_body(self, recs, owner_label=None, self_cid=None,
+                           with_knowers=True):
         items = [r for r in (recs or []) if isinstance(r, dict)]
         if not items:
             return []
@@ -7853,7 +7919,36 @@ def _mem_sentence(f, owner_id, mem):
     v38 (问题1): Carnalitas 性事族 (had_sex_*) 按前缀族解析 —— 强迫 (noncon)
     与半强迫 (dubcon) 出句, 其余自愿档仍走旧模板。
     v40: 性病传播当次的自愿档是**唯一特例** —— 出体位句并在句末补
-    「（X把病传染给了Y）」(见 `_std_note_for`)。"""
+    「（X把病传染给了Y）」(见 `_std_note_for`)。
+    v45 (档 B): 外层包一层出词登记 —— 本句用到的每个 (cid, 称谓) 记进
+    `f.name_index[本句]`, 供板块期在**确切位置**插入亲缘定语。"""
+    with f.log_names() as lg:
+        out = _mem_sentence_body(f, owner_id, mem)
+    return f.index_names(out, lg)
+
+
+class _NameLog:
+    """v45 (档 B): 一行的称谓出词登记器 (栈式 —— 嵌套时各层都收到)。"""
+
+    __slots__ = ("f", "items")
+
+    def __init__(self, f):
+        self.f = f
+        self.items = []          # [(cid, label), …] 按出词顺序
+
+    def __enter__(self):
+        self.f._name_logs.append(self)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.f._name_logs.remove(self)
+        except ValueError:
+            pass
+        return False
+
+
+def _mem_sentence_body(f, owner_id, mem):
     mtype = mem.get("type")
     # ---- v38: Carnalitas 性事族 (含多数无逐键模板者) ----
     if isinstance(mtype, str) and mtype.startswith(_SEX_MEM_PREFIX):
@@ -8133,6 +8228,16 @@ _FEUD_CHAR_RE = re.compile(r"ONCLICK:CHARACTER,(\d+)")
 
 
 def _death_sentence(f, cid, killer_pronoun=False, annotated=False):
+    """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
+
+    v45 (档 B): 外层包一层出词登记 (同 `_mem_sentence`)。"""
+    with f.log_names() as lg:
+        out = _death_sentence_body(f, cid, killer_pronoun=killer_pronoun,
+                                   annotated=annotated)
+    return f.index_names(out, lg)
+
+
+def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False):
     """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
     v22: death_execution 且行刑者已知时, 处决方式按当时可用选项稳定伪随机
     (斩首/做成神秘的肉/犬决/烧死/食人/献祭) — 存档只记「处决」, 不再千篇一律。
@@ -9953,10 +10058,13 @@ def _protagonist(f):
     # v43: 成婚日晚于本篇截止日者不列 (末档配偶状态穿越)
     spouse_ids = f._spouses_asof(pid, spouse_ids)
     p["spouses"] = _annotate(spouse_ids, lineality=True)
-    p["former_spouses"] = _annotate(_asof_ids(f, fam.get("former_spouses") or []))
+    _former_sp = _asof_ids(f, fam.get("former_spouses") or [])
+    p["former_spouses"] = _annotate(_former_sp)
     # v8: 妾 (正向 concubine + 反向 concubinist, 已在缓存合并去重)
-    p["concubines"] = _annotate(_asof_ids(f, fam.get("concubine") or []))
-    p["former_concubines"] = _annotate(_asof_ids(f, fam.get("former_concubines") or []))
+    _conc = _asof_ids(f, fam.get("concubine") or [])
+    p["concubines"] = _annotate(_conc)
+    _fconc = _asof_ids(f, fam.get("former_concubines") or [])
+    p["former_concubines"] = _annotate(_fconc)
     child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
     # v34 (问题8, 用户拍板): 家门清单列**主角是法理父亲的**全部子女
     # (非婚生亦在内); 法理父是别人的孩子 (妻室与他人所出) 不进本纪的门门清单,
@@ -9986,6 +10094,13 @@ def _protagonist(f):
         f.kin_label(x) for x in (fam.get("mother") or []) if f.name(x))
     p["siblings"] = "、".join(
         f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
+    # v45 (档 B): 本档案家世行**已点名**的亲属 id 集 —— 板块期据此判定
+    # 「此人的亲缘已经写明」, 后面不再重复加定语 (KinScope.seed)。
+    p["kin_ids"] = sorted({int(x) for x in (
+        list(spouse_ids) + list(_former_sp) + list(_conc) + list(_fconc)
+        + list(child_ids) + list(_wife_other or ())
+        + list(fam.get("father") or []) + list(fam.get("mother") or [])
+        + list(fam.get("siblings") or [])) if isinstance(x, int)})
     # v5: 自定义角色 (无谱系) — 家世通用文本覆盖
     if f.is_custom_start(pid):
         p["custom_start"] = True
@@ -9995,6 +10110,8 @@ def _protagonist(f):
         rfname = f.kin_label(rf)
         if rfname:
             p["real_father"] = rfname
+            if isinstance(rf, int):
+                p["kin_ids"] = sorted(set(p["kin_ids"]) | {rf})
     # 主角历任 (v11: 主要头衔演进)
     ht = f.held_titles(pid)
     if ht:
@@ -10188,6 +10305,7 @@ def _character_profiles(f):
             for s in spouse_ids if f.name(s))
         prof["concubines"] = "、".join(
             f.kin_label(s) for s in _asof_ids(f, fam.get("concubine") or []) if f.name(s))
+        _conc_ids = list(_asof_ids(f, fam.get("concubine") or []))
         child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
         prof["children"] = "、".join(f.kin_label(c) for c in child_ids)
         # v26: 子女按性别分列 (「子A、B，女C、D」) — 此前只有无性别混排列表,
@@ -10221,6 +10339,12 @@ def _character_profiles(f):
             rfname = f.kin_label(rf)
             if rfname:
                 prof["real_father"] = rfname
+        # v45 (档 B): 本档案家世行已点名的亲属 id 集 (见 _protagonist_facts 同名字段)
+        prof["kin_ids"] = sorted({int(x) for x in (
+            list(spouse_ids) + list(_conc_ids) + list(child_ids)
+            + list(fam.get("father") or []) + list(fam.get("mother") or [])
+            + list(fam.get("siblings") or [])
+            + ([rf] if isinstance(rf, int) else [])) if isinstance(x, int)})
         ht = f.held_titles(cid)
         if ht:
             prof["titles_held"] = "；".join(ht)
@@ -11896,6 +12020,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "protagonist": _protagonist(f),
         "timeline": _timeline(f),
         "characters": _character_profiles(f),
+        # v45 (档 B): 行文本 -> [[cid, 称谓], …] —— 事件句/隐事句的行内出词登记
+        # (与 f 同一对象, 后续构建器继续往里记)。板块期据此在确切位置插亲缘定语。
+        "name_index": f.name_index,
         "realm": _realm_facts(f),
         "player_death": pd,
         "last_date": cache.get("last_date"),
