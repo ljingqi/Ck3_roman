@@ -3251,21 +3251,22 @@ def build_melt_index(melt):
 
 def save_melt_index(melt_path, melt):
     """构建并持久化记忆归档边车 (原子写), 返回边车路径。
+
     v44: 随熔件后缀 —— 熔件是 `.json.gz` 时边车也写 `.json.gz`。
-    v49 (方案①): 熔件 `.json.xz` 时边车同类。
+    v49 (O8): 边车是派生件, **一律写压缩档** —— 最新熔件为明文时旧的写法会落下
+    一份明文边车 43 MiB (写 2.1 s), 现在写 `.json.gz` (5.6 MiB, 写 1.2 s, 读 +0.07 s);
+    冷档的边车随熔件后缀, 之后 compact 后台再升成 xz。
     v49: 紧凑分隔符 (与玩家缓存同口径; 读者一律 json.loads)。"""
-    path = melt_index_path(melt_path)
+    base = melt_index_path(melt_path)
+    low = base.lower()
+    path = base if low.endswith((".gz", ".xz")) else base + ".gz"
     tmp = path + ".tmp"
     idx = build_melt_index(melt)
-    low = path.lower()
-    if low.endswith(".xz"):
+    if path.lower().endswith(".xz"):
         with lzma.open(tmp, "wt", encoding="utf-8") as fp:
             json.dump(idx, fp, ensure_ascii=False, separators=(",", ":"))
-    elif low.endswith(".gz"):
-        with gzip.open(tmp, "wt", encoding="utf-8") as fp:
-            json.dump(idx, fp, ensure_ascii=False, separators=(",", ":"))
     else:
-        with open(tmp, "w", encoding="utf-8") as fp:
+        with gzip.open(tmp, "wt", encoding="utf-8") as fp:
             json.dump(idx, fp, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp, path)
     return path

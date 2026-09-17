@@ -67,16 +67,19 @@ def read_save_envelope(path):
 
 
 def melt_save(cfg, save_path, out_path):
-    """rakaly json 熔化存档 → out_path。"""
+    """rakaly json 熔化存档 → out_path。
+
+    v49 (O7): stdout 直写目标文件 (旧为 capture_output=True —— 244 MiB JSON 先在
+    内存里攒一份再落盘, 白占 244 MiB 峰值内存与一次拷贝); stderr 仍收着报错。"""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     rakaly = cfg.get("rakaly_path") or ""
     if not rakaly or not os.path.isfile(rakaly):
         raise RuntimeError(f"rakaly 不存在: {rakaly} (请在 config.json 配置 rakaly_path)")
-    proc = subprocess.run([rakaly, "json", save_path], capture_output=True, timeout=900)
+    with open(out_path, "wb") as fp:
+        proc = subprocess.run([rakaly, "json", save_path], stdout=fp,
+                              stderr=subprocess.PIPE, timeout=900)
     if proc.returncode != 0:
         raise RuntimeError(f"rakaly 失败: {proc.stderr.decode('utf-8', 'replace')[:200]}")
-    with open(out_path, "wb") as fp:
-        fp.write(proc.stdout)
     return out_path
 
 

@@ -928,7 +928,8 @@ python tools\verify_v35.py [快照] [--player=38670]
 python tools\check_bio_v35.py [家族] [md名]
                                    :: v35 成稿自查 (考据腔/奴役/动态病名)
 
-:: 提速基建（开发/验收用；熔件 100–125MB，载一次要 1–3 分钟，不要反复整载）
+:: 提速基建（开发/验收用；熔件 176MB 均值/最大 245MB，`load_melt()` 单档 ≈6s（v49 后），
+:: 不要反复整载 —— 「1–3 分钟」是 v44 前的旧口径，实测见 docs/研究_v49_加载性能与优化.md）
 :: 纪律见技能 .agents/skills/snapshot-testing —— 先看有没有现成 melt/snap，有就直接用；
 :: 断言跑在快照上；rebuild-cache 测试期禁用（改用 rebuild_folder.py）；不删熔件重熔。
 & tools\py.ps1 tools\snap.py 周氏 38673 889.1.1 2   :: 落 facts 快照（含各篇 blocks 与逐请求提示词）
