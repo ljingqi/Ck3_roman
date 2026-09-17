@@ -110,10 +110,14 @@ def main():
         return 0
     import shutil
     done = freed = 0
-    for p, kind, _size in items:
+    for p, kind, size0 in items:
         try:
-            size = os.path.getsize(p) if os.path.isfile(p) else 0
+            size = size0
             if os.path.isdir(p):
+                size = 0
+                for dp, _dn, fns in os.walk(p):
+                    for f in fns:
+                        size += os.path.getsize(os.path.join(dp, f))
                 shutil.rmtree(p)
             else:
                 os.remove(p)
