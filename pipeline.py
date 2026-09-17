@@ -1103,6 +1103,16 @@ def _cross_check_deaths(cfg, melt, current_player):
                 "killer": dd.get("killer"),
                 "kills": dd.get("kills") or [],  # v8: 刺客列传数据源之一
             }
+            # v45 (用户指正): 终传触发的前提就是「最新一档的扮演角色已不是前代传主」,
+            # 故此刻本档的 played_character.legacy **必定含后任传主** —— 把这条链
+            # 抄进前代缓存, 前代终传才能写出「后任：…其子X继为传主」。
+            # (前代缓存的最后一次并入停在他在位的那一档, 其 played_legacy 只到自己。)
+            _lg = (melt.get("played_character") or {}).get("legacy") or []
+            _chain = [{"cid": e.get("character"), "date": e.get("date")}
+                      for e in _lg
+                      if isinstance(e, dict) and isinstance(e.get("character"), int)]
+            if _chain:
+                prev["played_legacy"] = _chain
             cl.save_cache(prev, path)
             llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 死于 {dd.get('date')}, "
                     f"原因 {dd.get('reason')} — 待生成终传")
