@@ -913,6 +913,20 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 **不会**把已有 xz 涨回去。全部读取口（`load_melt` / `load_melt_index` / `melt_file_in` /
 `_iter_melts` / `_backfill_tail_deaths` / `snap.py` / `refresh_*` / `build_names`）三种后缀皆认。
 
+**已执行的全库迁移**（2026-09-17）：`index-melts` 补齐 2 份缺失边车 → `compact` 处理 **476 份**
+（232 熔件 ＋ 244 边车，最新档保持明文），耗时 **1 h 41 min**、释放 **1.59 GB**、**0 份失败**：
+
+| | 迁移前 | 迁移后 |
+| --- | ---: | ---: |
+| `output/诺兰/data` | 3.00 GiB | **1.90 GiB** |
+| └ 冷熔件（81 份） | 2043 MiB gz | **1258 MiB xz**（61–63%） |
+| └ 边车（82 份） | ≈241 MiB gz | **167 MiB xz**（66–71%） |
+| └ 最新明文（1 份） | 245 MiB | 245 MiB（不动） |
+| `output/` 全库 | 6.34 GiB | **4.48 GiB**（含清冗余 739.6 MiB） |
+| 残留 `.json.gz` | — | **0 份**（476 份 `.json.xz`） |
+
+日常代价 ±0（新档仍是明文）；冷档读取 +0.7 s/次（1147 档 gz 7.4 s → xz 8.14 s）。
+
 **4. 冗余清理（`tools/cleanup_junk.py`，默认只列，`--apply` 才删）**
 
 清 `player_*.json.bak-v*`、`.corrupt.*`、`cache/_bak_*`、`cache/_auto2.json`、
