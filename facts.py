@@ -1371,6 +1371,9 @@ class Facts:
         self.name_index = {}     # 行文本 -> [[cid, label], …] (按出词顺序)
         # v16: 游戏关系原因 (opinions.active_opinions 索引, 惰性构建)
         self._opinion_index = None
+        # v50: 缓存里的关系缘由 (cache["relation_reasons"], 惰性构建) —— 熔件里
+        # 该关系条目已随一方死亡/关系解除消失时, 用它回退 (见 relation_reasons)
+        self._cached_opinion_idx = None
         self._rel_reason_cache = {}
         # v11: 语言 → 文化模板列表 反查索引 (同一语言多文化共享, 如 language_norse
         # 同时被 norman/norse 持有; 推断时优先有父名规则的模板)
@@ -6814,6 +6817,34 @@ class Facts:
         self._opinion_index = idx
         return idx
 
+    def _cached_opinion_index(self):
+        """缓存里的关系缘由 (v50) → 与 `_player_opinion_index` 同形的
+        `{(owner, target): {kind: {"reason":…, "involved_character":…}}}`。
+
+        来源 = `cache_lib._latch_relation_reasons` 逐档闩存的
+        `cache["relation_reasons"]` (key `"<owner>|<target>|<kind>"`): 游戏只在
+        关系存续期写 `scripted_relations.<kind>.reason`, 而关系一方死亡或关系解除
+        后条目连缘由一起消失 (v47 §1.3), 生成所用最新熔件因此读不到早年结仇的缘由。
+        惰性构建, 只读涉主角的那几条。"""
+        if self._cached_opinion_idx is not None:
+            return self._cached_opinion_idx
+        idx = {}
+        for rec in (self.cache.get("relation_reasons") or {}).values():
+            if not isinstance(rec, dict):
+                continue
+            owner, target, kind = rec.get("owner"), rec.get("target"), rec.get("kind")
+            reason = rec.get("reason")
+            if not isinstance(owner, int) or not isinstance(target, int) \
+                    or not kind or not reason:
+                continue
+            idx.setdefault((owner, target), {})[kind] = {
+                "reason": reason,
+                "involved_character": rec.get("involved"),
+                "_first_seen": rec.get("first_seen"),
+            }
+        self._cached_opinion_idx = idx
+        return idx
+
     def _rel_mem_date(self, cid, mem_types):
         """主角↔cid 间某类关系的最早记忆日期 (≤ as_of), 用于游戏原因的时间门 —
         十年传记不把 as_of 之后才形成的关系泄漏进早期。"""
@@ -6846,20 +6877,31 @@ class Facts:
         """游戏自带的关系原因句 (v16): 主角↔cid 的 scripted_relations.reason
         → 本地化中文句 (角色名占位符已替换)。kinds: 关系类型集
         (rival/grudge/nemesis/friend/soulmate/...)。返回去重后的 [句]。
-        时间门: 仅当该类型关系有 ≤ as_of 的记忆时才渲染 (防十年泄漏)。"""
+        时间门: 仅当该类型关系有 ≤ as_of 的记忆时才渲染 (防十年泄漏)。
+
+        v50 (v47 方案 B): 熔件里查不到该对条目时, 回退读逐档闩存的
+        `cache["relation_reasons"]` —— 关系一方死亡或关系解除后, 游戏会把条目
+        连同 reason 一起清掉 (v47 §1.3), 而生成只用最新一份熔件, 于是早年结仇的
+        缘由本来永久读不到。判据: 同一 kind 上熔件带 reason 时以熔件为准 (最新
+        状态), 熔件缺该 kind 或该条目未带 reason 时用闩存补缺。"""
         if cid == self.cache.get("player_id"):
             return []
         idx = self._player_opinion_index()
+        cached = self._cached_opinion_index()
         pid = self.cache.get("player_id")
         out = []
         seen = set()
         for pair in ((cid, pid), (pid, cid)):
-            sr = idx.get(pair)
-            if not isinstance(sr, dict):
-                continue
-            for kind, v in sr.items():
-                if kind not in kinds or not isinstance(v, dict):
-                    continue
+            # 熔件在前: 它带 reason 的 kind 一律以熔件为准 (键序也保持原样);
+            # 熔件缺该 kind 或该条目没带 reason 时, 用闩存的旧缘由补缺
+            merged = {}
+            for kind, v in (idx.get(pair) or {}).items():
+                if kind in kinds and isinstance(v, dict) and v.get("reason"):
+                    merged[kind] = v
+            for kind, v in (cached.get(pair) or {}).items():
+                if kind in kinds and isinstance(v, dict) and kind not in merged:
+                    merged[kind] = v
+            for kind, v in merged.items():
                 reason = v.get("reason")
                 if not reason:
                     continue
