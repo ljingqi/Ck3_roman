@@ -2111,6 +2111,36 @@ class Facts:
             return s  # 直写名 (青徐 等) 原样返回
         return base
 
+    def _name_source_key(self, tid, date):
+        """头衔在某日期所用名的**来源键** (v52): `title_name_data.title_history_names`
+        中该日生效的键 (dynn_title_tang / h_china / 直写名 …); 无更名史返回 ''。
+
+        用途: 判「这个国号是不是宗族/王朝名」—— 中华皇朝 (h_china) 的国号在
+        汉/晋/隋/唐/宋… 之间轮转, 只有这类键 (`dynn_title_*`) 才配「大」字前缀。"""
+        tnd = (self._lt.get(str(tid)) or {}).get("title_name_data") or {}
+        best = None
+        if date:
+            for h in (tnd.get("title_history_names") or []):
+                try:
+                    if h.get("date") and cl.date_key(str(h["date"])) <= cl.date_key(str(date)):
+                        best = h.get("name")
+                except Exception:
+                    continue
+        return str(best or "")
+
+    def _is_short_title(self, tid):
+        """游戏「简称」头衔? (landed_titles 的 `definite_form = yes`, v52)
+
+        这类头衔的定位名自带国号/层级词 (神圣罗马帝国/拜占庭帝国/教宗国/达尔·伊斯兰),
+        取词时一律用本名, 不再追加层级词。"""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        if not key:
+            return False
+        try:
+            return key in L.short_titles()
+        except Exception:
+            return False
+
     def _title_name_at(self, tid, date, cid=None):
         """头衔在某日期的完整名 (v11): 按日期名 + 层级词 (独立王国=国)。
         cid 提供时按该角色当前独立性取词 (历任/朝局用)。
@@ -5855,7 +5885,16 @@ class Facts:
 
     def _prince_style_from_title(self, ptier, ptid, date, child, owner):
         """(层级, 头衔) + 持有人 → 「前缀 + 王子词」 (v36 抽出; 政体取头衔侧,
-        独立与否取持有人)。取不到基名返回 ''。"""
+        独立与否取持有人)。取不到基名返回 ''。
+
+        v52 (问题3, 用户拍板): 前缀**一律用头衔本名, 不再拼层级词** ——
+        「西法兰克王国公主」→「西法兰克公主」、「阿基坦王国公主」→「阿基坦公主」、
+        「大理国皇子」→「大理皇子」。两处例外:
+          · 皇朝级 (h_) 且国号是王朝名 (`title_history_names` 里的 `dynn_title_*`,
+            如汉/晋/隋/唐/宋) → 前缀加「大」: 「大唐皇女 / 大唐皇子」(用户拍板例);
+          · 游戏「简称」头衔 (`definite_form = yes`, 神圣罗马帝国/拜占庭帝国/教宗国)
+            与名称已含国号者保持本名, 不叠词也不加「大」(旧稿曾写出
+            「神圣罗马帝国国皇女」「神圣罗马帝国帝国公主」)。"""
         pgov = self._title_government(ptid, date)
         pbase = self._name_at_date(ptid, date or self.as_of) or self.title_base_name(ptid)
         if not pbase:
@@ -5864,17 +5903,15 @@ class Facts:
         rn = self.realm_name(ptid)
         if rn:
             prefix = rn
-        elif pgov in self._CELESTIAL_LIKE_GOVS and independent \
-                and ptier in ("kingdom", "empire", "hegemon"):
-            # 独立天朝制: 王国/帝国=国, 皇朝=皇朝 (大理国 / 唐皇朝)
-            w = L.loc(self.table, {"kingdom": "kingdom_celestial_chinese_independent",
-                                   "empire": "empire_celestial_chinese_independent",
-                                   "hegemon": "hegemony_celestial_chinese"}[ptier])
-            prefix = f"{pbase}{w}" if (w and not w.startswith("$")
-                                       and not w.startswith("[")) else pbase
+        elif ptier == "hegemon" and pgov in self._CELESTIAL_LIKE_GOVS \
+                and not self._is_short_title(ptid) \
+                and not _STATE_SUFFIX_RE.search(pbase) \
+                and self._name_source_key(ptid, date).startswith("dynn_"):
+            # 中华皇朝: 国号随王朝轮转 (唐/宋/秦…) → 「大唐」「大宋」
+            prefix = pbase if pbase.startswith("大") else f"大{pbase}"
         else:
-            pword = L.tier_word(self.table, pgov, ptier)
-            prefix = f"{pbase}{pword}" if pword else pbase
+            # v52: 省层级词 (国/路/皇朝/王国/帝国一律不拼), 简称头衔直接用本名
+            prefix = pbase
         word = self._prince_word(ptier, pgov, independent, self._is_female(child))
         # 称号已并入显示名时不叠前缀 (绰号「时尚王子」+ 父为国主 → 防「新罗国王子时尚王子金晸」;
         # 与 _tenno_prince_word 的同名守卫同口径)

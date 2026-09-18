@@ -26,6 +26,7 @@
   python localization.py mods         # 列启用 Mod 的本地化覆盖与来源指纹 (v29)
   python localization.py province     # 重建省份映射
   python localization.py dynasties    # 重建宗族/家族定义表 (v14)
+  python localization.py shorts       # 重建「简称」头衔表 (v52: definite_form=yes)
   python localization.py traits       # 重建特质显示名/类别表 + 轨道表 (v29/v31/v32)
   python localization.py tracks       # 只重建特质 XP 轨道表 (v32)
   python localization.py hooks        # 重建牵制类型表 (v31)
@@ -492,6 +493,100 @@ def save_province_map(cfg, mapping, path=None):
         json.dump({"schema": 2, "entries": len(mapping), "map": mapping},
                   fp, ensure_ascii=False)
     return path
+
+
+# ---------------------------------------------------------------------------
+# 「简称」头衔表 (v52, 问题3): landed_titles 的 definite_form = yes
+# ---------------------------------------------------------------------------
+# 游戏口径: 头衔界面的「简称」开关 (`TITLE_CUSTOMIZATION_DEFINITE_FORM: "简称"`,
+# 英文 "Short Name", 日文「短縮形」) 对应 `common/landed_titles/*.txt` 里的
+# `definite_form = yes` —— 这类头衔的定位名**自带国号/层级词** (e_hre=神圣罗马帝国、
+# e_byzantium=拜占庭帝国、k_papal_state=教宗国、h_dar_al_islam=达尔·伊斯兰),
+# 游戏拼名时**不再**追加 `$TIER$`; 未标记者只有地名 (k_aquitaine=阿基坦,
+# k_france=法兰西), 由 `TITLE_TIERED_NAME = "$NAME$$TIER|U$"` 拼出「阿基坦王国」。
+# 本表供「公主/王子称号」前缀取词判定用 (v52: 前缀一律省层级词, 简称头衔保持本名)。
+
+def _short_titles_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "short_titles.json")
+
+
+_TITLE_KEY_PREFIXES = ("h_", "e_", "k_", "d_", "c_", "b_")
+
+
+def _parse_landed_titles_short(path, out):
+    """收一份 landed_titles.txt 里 `definite_form = yes` 的头衔键 (游戏+Mod)。"""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as fp:
+            txt = fp.read()
+    except Exception:
+        return
+    stack = []
+    for ln in txt.splitlines():
+        m = re.match(r"^\s*([a-z0-9_]+)\s*=\s*\{", ln)
+        if m:
+            stack.append(m.group(1))
+            continue
+        if "definite_form" in ln and "yes" in ln:
+            for k in reversed(stack):
+                if k.startswith(_TITLE_KEY_PREFIXES):
+                    out.add(k)
+                    break
+        for ch in ln:
+            if ch == "}" and stack:
+                stack.pop()
+
+
+def build_short_titles(cfg):
+    """游戏 + Mod 的 landed_titles → definite_form 头衔键集合 (v52)。"""
+    out = set()
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        for dp, _dn, fns in os.walk(root):
+            if "landed_titles" not in dp or "localization" in dp:
+                continue
+            for fn in sorted(fns):
+                if fn.endswith(".txt"):
+                    _parse_landed_titles_short(os.path.join(dp, fn), out)
+    return out
+
+
+def save_short_titles(cfg, titles, path=None):
+    path = path or _short_titles_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump({"schema": 1, "entries": len(titles),
+                   "titles": sorted(titles)}, fp, ensure_ascii=False)
+    return path
+
+
+def load_short_titles(cfg, force=False):
+    path = _short_titles_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1:
+                return set(data.get("titles") or [])
+        except Exception:
+            pass
+    titles = build_short_titles(cfg)
+    save_short_titles(cfg, titles, path)
+    return titles
+
+
+_SHORT_TITLES = None
+
+
+def short_titles(cfg=None):
+    """简称头衔键集合 (模块级单例; 首次调用建表并落 data/short_titles.json)。"""
+    global _SHORT_TITLES
+    if _SHORT_TITLES is None:
+        _SHORT_TITLES = load_short_titles(cfg or llm.load_config())
+    return _SHORT_TITLES
 
 
 def load_province_map(cfg, force=False):
@@ -1958,6 +2053,15 @@ def main():
         p = save_dynasty_table(cfg, t)
         print(f"宗族/家族定义表已重建: {p} "
               f"(宗族 {len(t['dynasties'])} 条, 家族 {len(t['houses'])} 条)")
+    elif cmd == "shorts":
+        s = build_short_titles(cfg)
+        p = save_short_titles(cfg, s)
+        dist = {}
+        for k in s:
+            dist[k[:2]] = dist.get(k[:2], 0) + 1
+        print(f"简称头衔表已重建: {p} ({len(s)} 个)")
+        print("  层级分布: " + "、".join(f"{k}{dist.get(k, 0)}"
+                                        for k in _TITLE_KEY_PREFIXES))
     elif cmd == "check":
         g = game_dir(cfg)
         mods = enabled_mod_dirs(cfg)
