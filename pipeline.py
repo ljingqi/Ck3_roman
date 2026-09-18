@@ -616,40 +616,64 @@ def player_char_name(name):
     return str(name).rsplit("，", 1)[-1].rsplit(",", 1)[-1].strip()
 
 
-def _catchup(cfg, cache, continue_mode=False):
-    """补录当前战役的新档 (仅当信封角色名与缓存玩家名一致, 否则不熔化直接跳过)。
-    新档 = 日期新于缓存 last_date 且 mtime 晚于缓存文件写入时刻 (上次运行已见过的
-    老档一律不扫不记录, 防误读历史战役存档)。返回处理数。"""
+def _pending_catchup_saves(cfg, cache):
+    """当前战役待补录的存档列表 (信封预过滤后, 尚未熔化)。"""
     pid = cache.get("player_id")
     my_name = player_char_name(cache.get("player_name"))
     save_dir = cfg.get("save_dir", "")
-    # 缓存文件写入时刻 = 上次运行已处理完这些存档的分界; 晚于它的存档才是「新档」
     cache_path = find_cache_path(cfg, pid, cache.get("playthrough_id"))
     cache_mtime = os.path.getmtime(cache_path) if cache_path else 0.0
-    processed = 0
+    last_dk = cl.date_key(cache.get("last_date") or "0.0.0")
+    sources = set(cache.get("sources") or [])
+    out = []
     for s in scan_saves(save_dir):
-        if s["date"] in (cache.get("sources") or []):
+        if s["date"] in sources:
             continue
-        if cl.date_key(s["date"]) <= cl.date_key(cache.get("last_date") or "0.0.0"):
+        if cl.date_key(s["date"]) <= last_dk:
             continue
         if cache_mtime and s["mtime"] <= cache_mtime:
-            continue  # 上次运行已见过的存档, 不补录
-        # 信封级预过滤: 角色名不一致 → 其它战役/其它人物, 不熔化不记录
+            continue
         if my_name and player_char_name(s["player"]) != my_name:
             llm.log(f"  [跳过] {s['date']} {s['player']} 非本战役人物, 不读")
             continue
+        out.append(s)
+    return out
+
+
+def _catchup(cfg, cache, continue_mode=False):
+    """补录当前战役的新档 (仅当信封角色名与缓存玩家名一致, 否则不熔化直接跳过)。
+    新档 = 日期新于缓存 last_date 且 mtime 晚于缓存文件写入时刻 (上次运行已见过的
+    老档一律不扫不记录, 防误读历史战役存档)。返回处理数。
+
+    v53 (问题5): 先数出待补录总数, 每档打 `补录 i/N` 与粗算 ETA, 减少「没反应」的错觉。"""
+    pid = cache.get("player_id")
+    pending = _pending_catchup_saves(cfg, cache)
+    total = len(pending)
+    if total:
+        llm.log(f"补录开始: 待处理 {total} 档")
+    processed = 0
+    t0 = time.time()
+    for i, s in enumerate(pending, 1):
+        eta = ""
+        if processed:
+            elapsed = time.time() - t0
+            remain = elapsed / processed * (total - i + 1)
+            eta = f", 约剩 {remain / 60:.0f} 分钟" if remain >= 60 else f", 约剩 {remain:.0f} 秒"
         # 熔件入战役文件夹 output/<家族>/data/ (同一战役的继位玩家共用)
         folder = resolve_output_folder(cfg, cache, continue_mode)
         mp = melt_file_in(cfg, folder, s["date"], pid)
         if os.path.isfile(mp) and melt_player_id(mp) not in (None, pid):
             mp = None  # 日期文件属他人战役, 需重新熔化
         if not mp or not os.path.isfile(mp):
-            llm.log(f"  熔化 {os.path.basename(s['path'])} ({s['magic']}) ...")
+            llm.log(f"  补录 {i}/{total} 熔化 {os.path.basename(s['path'])} "
+                    f"({s['magic']}){eta} ...")
             try:
                 mp = _melt_save_into(cfg, folder, s["date"], pid, s["path"])
             except Exception as e:
                 llm.log(f"  熔化失败: {e}")
                 continue
+        else:
+            llm.log(f"  补录 {i}/{total} 读取 {s['date']}{eta} ...")
         try:
             melt = cl.load_melt(mp)
         except Exception as e:
@@ -668,13 +692,15 @@ def _catchup(cfg, cache, continue_mode=False):
                 cache = cl.load_cache(
                     find_cache_path(cfg, player_id, melt.get("playthrough_id")) or "",
                     fresh=True)
+                pid = player_id
             _prebuild_melt_index(mp, melt)   # v49 (O1): 下一档回溯直接读边车
             new_deaths = []
             if cl.extract_snapshot(cache, melt, s["date"], _new_deaths=new_deaths):
                 _recover_dead_memories(cfg, cache, new_deaths)
                 save_session_cache(cfg, cache, continue_mode)
                 processed += 1
-                llm.log(f"  并入 {s['date']}: 相关人物 {len(cache['characters'])}")
+                llm.log(f"  补录 {i}/{total} 并入 {s['date']}: "
+                        f"相关人物 {len(cache['characters'])}")
                 _cross_check_deaths(cfg, melt, player_id)
         except Exception as e:
             llm.log(f"  [跳过] {s['date']} 处理失败: {e}")
@@ -1381,15 +1407,40 @@ def _bio_worker_loop(cfg):
 # ---------------------------------------------------------------------------
 
 def _cleanup_tmp_melts(cfg):
-    """清理残留的临时熔件 (上次异常退出遗留的 .tmp_melt_*.json)。"""
+    """清理残留的临时熔件 (上次异常退出遗留的 .tmp_melt_*.json / 归档中断的 .xz.tmp)。
+
+    v53 (问题5): 归档线程中断会留下 `melt_*.json.xz.tmp` (或 .gz.tmp / .mig.tmp),
+    启动时清掉, 避免把半成品当成进度、下轮再压一遍抢磁盘。"""
+    dirs = []
     data_dir = cfg.get("data_dir", "")
     if os.path.isdir(data_dir):
-        for fn in os.listdir(data_dir):
-            if fn.startswith(".tmp_melt_") and fn.endswith(".json"):
-                try:
-                    os.remove(os.path.join(data_dir, fn))
-                except OSError:
-                    pass
+        dirs.append(data_dir)
+    out_dir = cfg.get("output_dir", "")
+    if os.path.isdir(out_dir):
+        for folder in os.listdir(out_dir):
+            d = os.path.join(out_dir, folder, "data")
+            if os.path.isdir(d):
+                dirs.append(d)
+    n = 0
+    for d in dirs:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for fn in names:
+            low = fn.lower()
+            if not ((fn.startswith(".tmp_melt_") and fn.endswith(".json"))
+                    or low.endswith(".xz.tmp")
+                    or low.endswith(".gz.tmp")
+                    or low.endswith(".mig.tmp")):
+                continue
+            try:
+                os.remove(os.path.join(d, fn))
+                n += 1
+            except OSError:
+                pass
+    if n:
+        llm.log(f"清理残留临时熔件 {n} 份")
 
 
 def _newest_save(save_dir):
@@ -1443,7 +1494,10 @@ def step_watch(cfg, continue_mode=False):
     _WATCH_SESSION["player_key"] = None
     _cleanup_tmp_melts(cfg)
     # v44 (问题5): 冷熔件 gzip 归档在后台进行 (启动跑一遍, 之后每 10 分钟一轮)
-    _ensure_compact_worker(cfg)
+    # v53 (问题5): continue 有爆发式补录, 归档线程让路 —— 等 _catchup 完成后再启动,
+    # 避免 rakaly/load_melt 与 xz preset 6 抢单核和磁盘。watch 无爆发补录, 仍启动即归档。
+    if not continue_mode:
+        _ensure_compact_worker(cfg)
     save_dir = cfg.get("save_dir", "")
     baseline = max((s["mtime"] for s in scan_saves(save_dir)), default=0)
     llm.log("监控存档中 (只处理本程序启动后保存的新存档)...")
@@ -1461,12 +1515,13 @@ def step_watch(cfg, continue_mode=False):
                     f"家族={cache.get('house_name')}, 最后存档={cache.get('last_date')})")
             n = _catchup(cfg, cache, continue_mode=True)
             if n:
-                llm.log(f"补录并入 {n} 个新档")
+                llm.log(f"补录完成: 并入 {n} 个新档")
             else:
                 llm.log("补录完成: 当前战役无新档")
             continue_anchor = cache
         else:
             llm.log("续传模式: 暂无缓存, 等同 watch (首个新存档建立战役)")
+        _ensure_compact_worker(cfg)
     # 启动时检查: continue 用当前战役缓存; watch 无战役不检查 (首个新档建立战役后再查)
     if continue_anchor:
         _auto_bio(cfg, _campaign_caches(cfg, continue_anchor))

@@ -4,6 +4,8 @@
 用法：
     & tools\\tools\\py.ps1 tools\\rebuild_folder.py 马克龙 [玩家id]
 
+不传玩家 id 时重建该文件夹下全部 `player_*.json`（斯卡利茨三传主各一份）。
+
 为什么要有它：`pipeline.py rebuild-cache` 遍历 `output/` 下**全部**战役文件夹的熔件
 （实测上百份，每份 1–3 分钟，数小时）；迭代时只需要重建当前在看的那一个战役。
 
@@ -59,37 +61,60 @@ def main():
         return 2
     print(f"{folder}: {len(melds)} 份熔件 ({melds[0][1]} → {melds[-1][1]})", flush=True)
 
-    first = cl.load_melt(melds[0][0])
-    pid = only_pid or cl.find_player(first)
-    if pid is None:
-        print("熔件里没有玩家角色")
-        return 2
-    del first
-    cache_path = os.path.join(data_dir, f"player_{pid}.json")
-    prev = {}
-    if os.path.isfile(cache_path):
-        try:
-            with open(cache_path, encoding="utf-8") as fp:
-                prev = json.load(fp) or {}
-        except Exception:
-            prev = {}
-    cache = cl.new_cache()
-    for k in ("player_death", "bio_generated", "bio_decades", "playthrough_id"):
-        if prev.get(k):
-            cache[k] = prev[k]
-    cache["output_folder"] = prev.get("output_folder") or folder
+    if only_pid is not None:
+        pids = [only_pid]
+    else:
+        pids = []
+        for fn in os.listdir(data_dir):
+            if fn.startswith("player_") and fn.endswith(".json"):
+                try:
+                    pids.append(int(fn[len("player_"):-len(".json")]))
+                except ValueError:
+                    continue
+        pids.sort()
+        if not pids:
+            first = cl.load_melt(melds[0][0])
+            pid = cl.find_player(first)
+            del first
+            if pid is None:
+                print("熔件里没有玩家角色")
+                return 2
+            pids = [pid]
+    jobs = []
+    for pid in pids:
+        cache_path = os.path.join(data_dir, f"player_{pid}.json")
+        prev = {}
+        if os.path.isfile(cache_path):
+            try:
+                with open(cache_path, encoding="utf-8") as fp:
+                    prev = json.load(fp) or {}
+            except Exception:
+                prev = {}
+        cache = cl.new_cache()
+        cache["player_id"] = pid
+        for k in ("player_death", "bio_generated", "bio_decades", "playthrough_id"):
+            if prev.get(k):
+                cache[k] = prev[k]
+        cache["output_folder"] = prev.get("output_folder") or folder
+        jobs.append((pid, cache_path, cache))
+        print(f"重建 player_{pid}", flush=True)
 
-    for path, date in melds:
+    # 一份熔件同时写入全部传主缓存 (v53: 斯卡利茨三传主, 避免同一档解压三次)
+    total = len(melds)
+    for i, (path, date) in enumerate(melds, 1):
         melt = cl.load_melt(path)
-        cl.extract_snapshot(cache, melt, date)
-        print(f"  {date}: 角色 {len(cache['characters'])}, "
-              f"牵制 {len(cache.get('hooks') or {})}, "
-              f"隐事 {len(cache.get('secrets_history') or {})}", flush=True)
+        bits = []
+        for pid, _cp, cache in jobs:
+            cl.extract_snapshot(cache, melt, date)
+            bits.append(f"{pid}:{len(cache['characters'])}")
+        print(f"  {i}/{total} {date}  角色 {' / '.join(bits)}", flush=True)
         del melt
-    pipe._recover_dead_memories(cfg, cache)
-    cl.save_cache(cache, cache_path)
-    print(f"已写入: {cache_path} "
-          f"(角色 {len(cache['characters'])}, 牵制 {len(cache.get('hooks') or {})})")
+
+    for pid, cache_path, cache in jobs:
+        pipe._recover_dead_memories(cfg, cache)
+        cl.save_cache(cache, cache_path)
+        print(f"已写入: {cache_path} "
+              f"(角色 {len(cache['characters'])}, 牵制 {len(cache.get('hooks') or {})})")
     return 0
 
 

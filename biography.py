@@ -513,12 +513,44 @@ def _key_events_block(facts, key, section, limit=4, subject=None):
     return "【本板块大事】\n" + "\n".join(e["text"] for e in picked)
 
 
-def _lead_digest(text, limit=260, tail=180):
+_LEAD_QUOTE_RE = re.compile(r"[「『“\"]([^」』”\"]{1,40})[」』”\"]")
+_LEAD_LATIN_RE = re.compile(r"[A-Za-z]")
+_LEAD_SENT_SPLIT_RE = re.compile(r"(?<=[。！？])")
+
+
+def _sanitize_lead_digest(digest, facts_text=""):
+    """开篇摘要净化 (v53 问题2): 引号内含拉丁字母、且该片段未出现在本请求事实文本
+    中的句子整句去掉。幻觉专名 (如「添加IP」) 由此从纪事回灌材料里消失;
+    事实里真有的拉丁专名保留。纯函数、幂等。"""
+    t = (digest or "").strip()
+    if not t:
+        return t
+    facts = facts_text or ""
+    sents = [s for s in _LEAD_SENT_SPLIT_RE.split(t) if s]
+    kept = []
+    for s in sents:
+        drop = False
+        for m in _LEAD_QUOTE_RE.finditer(s):
+            frag = (m.group(1) or "").strip()
+            if not frag or not _LEAD_LATIN_RE.search(frag):
+                continue
+            if frag not in facts:
+                drop = True
+                break
+        if not drop:
+            kept.append(s)
+    return "".join(kept).strip()
+
+
+def _lead_digest(text, limit=260, tail=180, facts_text=""):
     """开篇摘要 (v27, 移植 <另一项目> magazine.py:1746): 「前缀 + …… + 结尾」。
     中段不再回贴开篇全文 (实测每请求 1,000~1,800 字符); 保留结尾段,
-    防「纯前缀截断切掉案件/事件的结局与主线事实」。"""
+    防「纯前缀截断切掉案件/事件的结局与主线事实」。
+    v53 (问题2): 截取后再净化一次, 幻觉拉丁专名不进纪事请求。"""
     t = re.sub(r"[#*_>`~\-]", " ", text or "")
     t = re.sub(r"\s+", " ", t).strip()
+    # 先净化再截取: 否则引号跨省略号被切开, 幻觉专名漏网。
+    t = _sanitize_lead_digest(t, facts_text)
     if len(t) <= limit + tail:
         return t
     head = t[:limit].rstrip("，。；：、 ")
@@ -890,6 +922,9 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # ---- 任历句 (v28b: 加冒号断句 — 原「历任867年任X」年月与「历任」粘连) ----
     if p.get("titles_held"):
         lines.append(f"历任：{p['titles_held']}。")
+    # ---- v53 (问题3): 天命局势一行 ----
+    if p.get("dynastic_cycle"):
+        lines.append(p["dynastic_cycle"] + "。")
     # ---- 现状句 (status 以「年X岁」开头时并入「现」字成散文句) ----
     if p.get("status"):
         st = p["status"]
@@ -1501,11 +1536,16 @@ def _article_facts(facts, cache, key, section=None):
                                                      for k in killed)
             head = (style.FACT_WORDING["assassin_lead"].format(
                 n=n_victims, killer=plabel) if plabel else "")
+            # v53 (问题4): 诛灭世族族级摘要置于名录之前
+            purges = facts.get("family_purges") or []
+            purge_txt = "；".join(purges) + "。" if purges else ""
             # v45 (档 A3/B, 阅读顺序): 先标此前块的行内人名, 再标死者名录
             _tag_blocks(facts, scope, blocks)
             if sec_key == "lead":
                 # v11 开篇: 压缩名录 (死者名 + 生卒死因), 供群像总览, 不再整块铺 168 人档案
                 parts = [head] if head else []
+                if purge_txt:
+                    parts.append(purge_txt)
                 for k in killed:
                     parts.append(_assassin_lead_line(k, facts, scope))
                 _set_block(blocks, "刀下诸魂", "\n".join(parts))
@@ -1515,6 +1555,8 @@ def _article_facts(facts, cache, key, section=None):
                 sl = (section or {}).get("slice")
                 picked = killed[sl[0]:sl[1]] if sl else killed
                 parts = [head] if head else []
+                if purge_txt:
+                    parts.append(purge_txt)
                 parts += ["\n".join(_assassin_kill_lines(facts, cache, k, scope))
                           for k in picked]
                 _set_block(blocks, "刀下诸魂", "\n\n".join(parts))
@@ -1871,7 +1913,7 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
         title=title, focus=article.get("focus") or article.get("theme") or "",
         sec_title=section["title"], sec_req=section["req"],
         lead_title=article["sections"][0]["title"],
-        lead_digest=_lead_digest(lead_text))
+        lead_digest=_lead_digest(lead_text, facts_text=facts_txt))
     return [{"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg}]
 

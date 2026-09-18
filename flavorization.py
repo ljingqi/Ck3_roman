@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm                 # noqa: E402
 import localization as L    # noqa: E402
 
-_SCHEMA = 1
+_SCHEMA = 2   # v53: 条目含 obligation_flags, 合同义务旗标可求值
 _TABLE = None
 
 
@@ -119,11 +119,13 @@ def build_flavorization(cfg):
                 # 这类**限定头衔**的条目 (不判就会让全欧公爵都叫「布列塔尼公爵」),
                 # 另有 flag / holding / domicile_type / 契约义务旗标 / de_jure_liege /
                 # council_position / 单值 faith 等条件。
+                # v53 (问题1): `_subject_contract_obligation_flags` 改可求值,
+                # 不再标 unsupported (天朝国王级观察使/经略使/都护靠它分档)。
+                obligation_flags = _list_of(items, "subject_contract_obligation_flags")
                 unsupported = bool(
                     items.get("flag") or items.get("domicile_type")
                     or items.get("holding") or items.get("council_position")
                     or items.get("faith")
-                    or items.get("_subject_contract_obligation_flags")
                     or items.get("_de_jure_liege"))
                 if special not in ("holder", ""):
                     unsupported = True   # 教宗/议员/太后/王子等由既有分支渲染
@@ -141,6 +143,7 @@ def build_flavorization(cfg):
                     "faiths": _list_of(items, "faiths"),
                     "religions": _list_of(items, "religions"),
                     "titles": _list_of(items, "titles"),
+                    "obligation_flags": obligation_flags,
                     "rules": rules,
                     "unsupported": unsupported,
                 }
@@ -186,7 +189,7 @@ def table(cfg=None):
 
 def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             faith="", religion="", title_key="", independent=True, top=None,
-            cfg=None):
+            obligation_flags=None, cfg=None):
     """按游戏规则取词: 返回**本地化键** (块名) 或 ''。
 
     与游戏同序: priority 高者先试, 全部条件命中即取 (governments / name_lists /
@@ -194,7 +197,9 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
     条目在建表时已标 unsupported)。`titles` 是**限定头衔**条件 — 只有传入的
     title_key 在其中时才命中 (不传即跳过这类条目)。`independent` 用于
     only_vassals/only_independent 两条规则; `top` 传入最高领主的同名字段后,
-    未显式写 `top_liege = no` 的条目改按最高领主判定 (游戏默认行为)。"""
+    未显式写 `top_liege = no` 的条目改按最高领主判定 (游戏默认行为)。
+    v53: `obligation_flags` 是角色当时封臣合同解码出的义务旗标列表
+    (如 celestial_province_standard); 条目要求旗标时须有交集才命中。"""
     fl = table(cfg)
     ents = (fl.get("entries") or {})
     if not ents:
@@ -250,6 +255,13 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             continue
         if rules.get("only_vassals") and independent:
             continue
+        # v53 (问题1): 合同义务旗标 — 条目列出的旗标须与角色当时旗标有交集。
+        # 条目未列旗标则不限; 角色无旗标时这类条目跳过 (回退无旗标的总督/节度使)。
+        want_flags = e.get("obligation_flags") or []
+        if want_flags:
+            have = set(obligation_flags or [])
+            if not have.intersection(want_flags):
+                continue
         best_key, best_pri = e["key"], prio
     return best_key
 

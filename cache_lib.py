@@ -821,6 +821,10 @@ EMPTY_CACHE = {
     # 末条即当前传主, 起算日 = 继位日 (前一任死亡当日)。新版本玩家可从宗族里
     # 挑人继位, 亲缘判定不足以还原「怎么连起来的」, 故此链以存档为准。
     "played_legacy": [],
+    # v53 (问题1): 封臣合同变化点 {cid: [{date, liege, flags}]}
+    "char_vassal_history": {},
+    # v53 (问题3): 天命循环阶段变化点 [{date, phase, start}]
+    "dynastic_cycle_history": [],
 }
 
 
@@ -1545,6 +1549,110 @@ def real_father_of(melt, cid, chars=None, sec_candidates=None):
 # 单档提取 (v4: 每玩家缓存 + 姓名合并 + 亲属/特质/朝局)
 # ---------------------------------------------------------------------------
 
+# v53 (问题1): 天朝封臣合同组 `celestial_vassal` 的 contracts 顺序
+# (subject_contract_groups.txt) — 索引 2 = celestial_provinces。
+_CELESTIAL_PROVINCE_INDEX = 2
+_CELESTIAL_PROVINCE_FLAGS = (
+    "celestial_province_standard",       # 0 观察使
+    "celestial_province_industrial",     # 1 观察使
+    "celestial_province_metropolitan",   # 2 观察使
+    "celestial_province_military",       # 3 经略使
+    "celestial_province_protectorate",   # 4 都护
+)
+
+
+def _contract_levels_map(levels):
+    """熔件 `levels: [N, {"3": 2}, …]` → {int index: int value}。"""
+    out = {}
+    if not isinstance(levels, list):
+        return out
+    for item in levels:
+        if not isinstance(item, dict):
+            continue
+        for k, v in item.items():
+            try:
+                out[int(k)] = int(v)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def vassal_obligation_flags(contract):
+    """一份封臣合同 → 义务旗标列表 (目前只解码 celestial_provinces)。
+
+    熔件常省略默认档 (index 2 缺失 = 0 = celestial_province_standard)。
+    非天朝合同组返回 []。"""
+    if not isinstance(contract, dict):
+        return []
+    group = str(contract.get("contract_group") or "")
+    if group != "celestial_vassal":
+        return []
+    lv = _contract_levels_map(contract.get("levels"))
+    idx = lv.get(_CELESTIAL_PROVINCE_INDEX, 0)
+    if 0 <= idx < len(_CELESTIAL_PROVINCE_FLAGS):
+        return [_CELESTIAL_PROVINCE_FLAGS[idx]]
+    return []
+
+
+def _vassal_snapshot(melt):
+    """本档封臣合同 → {vassal_id: {liege, flags}}。"""
+    out = {}
+    db = (melt.get("vassal_contracts") or {}).get("database") or {}
+    for rec in db.values():
+        if not isinstance(rec, dict):
+            continue
+        v = rec.get("vassal")
+        if v is None:
+            continue
+        try:
+            vid = int(v)
+        except (TypeError, ValueError):
+            continue
+        liege = rec.get("liege")
+        try:
+            liege = int(liege) if liege is not None else None
+        except (TypeError, ValueError):
+            liege = None
+        out[vid] = {"liege": liege, "flags": vassal_obligation_flags(rec)}
+    return out
+
+
+def dynastic_cycle_phase(melt):
+    """当前天命循环阶段 {phase, start}；无局势返回 None。
+
+    路径: situation_manager.database 里 type=dynastic_cycle 的条目,
+    再经 sub_region_refs 落到 situation_sub_region_manager.database.<id>.phase。"""
+    sm = (melt.get("situation_manager") or {}).get("database") or {}
+    sit_id = None
+    for k, v in sm.items():
+        if isinstance(v, dict) and v.get("type") == "dynastic_cycle":
+            sit_id = k
+            refs = v.get("sub_region_refs") or []
+            break
+    else:
+        return None
+    srm = (melt.get("situation_sub_region_manager") or {}).get("database") or {}
+    rec = None
+    if refs:
+        rec = srm.get(str(refs[0]))
+    if rec is None:
+        rec = srm.get(str(sit_id)) if sit_id is not None else None
+    if rec is None:
+        for v in srm.values():
+            if isinstance(v, dict) and v.get("situation") is not None:
+                rec = v
+                break
+    if not isinstance(rec, dict):
+        return None
+    phase = rec.get("phase") or {}
+    if not isinstance(phase, dict):
+        return None
+    ptype = phase.get("type") or ""
+    if not ptype:
+        return None
+    return {"phase": str(ptype), "start": str(phase.get("start_date") or "")}
+
+
 def player_domicile(melt, domain, cid):
     """玩家毡帐/庄园条目 (v26): 牧群(herd)/口粮(provisions) 只存于
     domiciles.database, landed_data 里没有 — 按 owner_title 命中玩家领地
@@ -1563,16 +1671,54 @@ def player_domicile(melt, domain, cid):
     return None
 
 
+def _record_vassal_and_cycle(cache, melt, date_label):
+    """记下本档封臣合同变化点与天命阶段 (v53)。
+
+    同战役他传主熔件也要走这条路: 马丁早年节度使合同只存在于亨利档,
+    重建马丁缓存时那些熔件因 player_id 不一致被整档跳过, 不在这里落盘
+    终传就拼不出 910 的封臣史。"""
+    _vassal_now = _vassal_snapshot(melt)
+    _phase = dynastic_cycle_phase(melt)
+    if _phase:
+        _ph = cache.setdefault("dynastic_cycle_history", [])
+        if not _ph or _ph[-1].get("phase") != _phase.get("phase"):
+            _ph.append({"date": date_label, "phase": _phase.get("phase") or "",
+                        "start": _phase.get("start") or date_label})
+    _vh_all = cache.setdefault("char_vassal_history", {})
+    # 只记本传主 + 已入库角色 + 已有封臣史的人, 不把全天朝封臣写进缓存。
+    want = {int(k) for k in _vh_all if str(k).isdigit()}
+    pid = cache.get("player_id")
+    if pid is not None:
+        try:
+            want.add(int(pid))
+        except (TypeError, ValueError):
+            pass
+    for k in (cache.get("characters") or {}):
+        try:
+            want.add(int(k))
+        except (TypeError, ValueError):
+            continue
+    _vh_ids = want or set(_vassal_now)
+    for vid in _vh_ids:
+        _vc = _vassal_now.get(vid)
+        _v_liege = (_vc or {}).get("liege") if _vc else None
+        _v_flags = (_vc or {}).get("flags") or []
+        _vh = _vh_all.setdefault(str(vid), [])
+        if _vc is not None:
+            if (not _vh or _vh[-1].get("liege") != _v_liege
+                    or (_vh[-1].get("flags") or []) != _v_flags):
+                _vh.append({"date": date_label, "liege": _v_liege,
+                            "flags": list(_v_flags)})
+        elif _vh and _vh[-1].get("liege") is not None:
+            _vh.append({"date": date_label, "liege": None, "flags": []})
+    return _vassal_now
+
+
 def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     """把一个存档快照并入缓存。返回 False 表示玩家不一致被拒绝。
     _new_deaths: 可选列表, 本次并入「首次记录死亡」的角色 id (int) 会追加进来,
     供调用方只对「新死亡」角色做死档记忆回溯, 避免每轮全量扫描 (v9)。"""
     player_id = find_player(melt)
-    if cache["player_id"] is not None and player_id is not None \
-            and cache["player_id"] != player_id:
-        print(f"  [跳过] 档期 {date_label} 玩家 {player_id} 与缓存玩家 "
-              f"{cache['player_id']} 不一致")
-        return False
     # v28: 战役校验 — 角色 id 跨战役复用 (867 自定义角色恒为 38701/38682),
     # 仅凭玩家 id 无法拦住「另一场战役的熔件并进本缓存」。两边都有战役号
     # 且不同即拒收 (调用方一律按 playthrough_id 选缓存, 这里是最后一道防线)。
@@ -1580,6 +1726,11 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     _mpt = melt.get("playthrough_id")
     if _cpt and _mpt and str(_cpt) != str(_mpt):
         print(f"  [跳过] 档期 {date_label} 战役 {_mpt} 与缓存战役 {_cpt} 不一致")
+        return False
+    if cache["player_id"] is not None and player_id is not None \
+            and cache["player_id"] != player_id:
+        # v53: 同战役他传主熔件仍记封臣史/天命 (马丁终传要用亨利档的早年合同)
+        _record_vassal_and_cycle(cache, melt, date_label)
         return False
     if cache["player_id"] is None:
         cache["player_id"] = player_id
@@ -1911,6 +2062,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # 就近安放到主角家业所在 —— 旧稿「居慈州境内」/新稿「宾州人」)。
     for _base in uprising_title_bases(melt).values():
         targets.add(int(_base["holder"]))
+
+    # v53 (问题1/3): 封臣合同 + 天命阶段 (本传主熔件完整并入时也走同一入口)
+    _record_vassal_and_cycle(cache, melt, date_label)
 
     for cid in sorted(targets):
         c = chars.get(str(cid))

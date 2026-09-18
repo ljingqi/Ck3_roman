@@ -564,14 +564,15 @@ TITLE_GAIN_VERBS = {
 }
 
 
-# v34b: reason=created 的两档语 — 采游戏自身口径 (character_memories_1.txt 的
-# `var:reason ?= flag:created` + `var:landed_title = { any_past_holder = { this !=
-# scope:owner } }`): 头衔此前另有主人 (废弃期后重立) → desc_created「在一段废弃期后」;
-# 无前主 (首次出现) → desc_created_first「作为一个新头衔」。判定入口
-# Facts.title_had_other_holder (facts._mem_sentence 用)。
+# v34b / v53: reason=created 分三档 —
+#   first    无前主 → 「创建」(游戏 desc_created_first「作为一个新头衔」)
+#   restored 前主同宗族 → 「重建」(真复辟, 游戏 desc_created「在一段废弃期后」)
+#   founded  前主异宗族且 hegemon 级 → 「开创」(天朝宣称天命、新朝坐旧头衔)
+# 判定入口 Facts.created_verb_kind。
 TITLE_GAIN_CREATED_VERBS = {
     "first": "创建",
     "restored": "重建",
+    "founded": "开创",   # v53: 异宗族重立 hegemon (h_china 宣称天命)
 }
 
 
@@ -898,6 +899,8 @@ EXECUTION_OPTIONS = (
     ("provisions", "做成神秘的肉充作口粮"),     # EXECUTION_PROVISIONS 做成神秘的肉
 )
 
+# v53 (问题4): 诛灭世族专用, 不进 EXECUTION_OPTIONS 随机池。
+EXECUTION_PURGE = ("purge", "连坐处死")
 
 EXECUTION_ORDER = {k: i for i, (k, _v) in enumerate(EXECUTION_OPTIONS)}
 
