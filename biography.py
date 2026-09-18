@@ -1978,6 +1978,65 @@ _META_FIXUPS = ((re.compile(r"[，,]{2,}"), "，"),
                 (re.compile(r"^[。；;！？，,\s]+$"), ""))
 
 
+def _fix_kin_roles(text, facts, cache):
+    """v52 (问题1): 把「亲属词 + 人名」里对不上档案的亲属词改回正确词。
+
+    起因: 总纲是模型文本, 却要被逐字注入每一篇开篇当材料 —— 第 4 个十年总纲把
+    妻室写成「母亲阿基坦公主年轻者希尔德加德·加洛林…却为他生下四子二女」,
+    本纪开篇据此把她当成了传主的母亲。此处只改**紧贴人名的那个亲属词**
+    (窗口 12 字内取最后一个亲属词), 与档案不符才改, 对得上则一字不动; 幂等。
+
+    纯函数 (不依赖熔件): 亲属词表与「人→正确词」都由 cache 亲属图判定。"""
+    if not text:
+        return text
+    pid = cache.get("player_id")
+    fi = (facts or {}).get("_facts")
+    if pid is None or fi is None:
+        return text
+    fam = ((cache.get("characters") or {}).get(str(pid)) or {}).get("family") or {}
+    kids = set(fam.get("child") or []) | set(fam.get("siblings") or [])
+    others = []
+    for key in ("primary_spouse", "spouse", "former_spouses", "concubine",
+                "former_concubines", "father", "mother"):
+        others.extend(fam.get(key) or [])
+    others.extend(sorted(kids))
+    chars = cache.get("characters") or {}
+    all_words = F.kin_texts()
+    out = text
+    for other in dict.fromkeys(int(x) for x in others
+                               if isinstance(x, int) or str(x).isdigit()):
+        rec = chars.get(str(other)) or {}
+        names = [rec.get("name_full"), rec.get("name_zh"),
+                 (facts.get("characters", {}).get(str(other)) or {}).get("name")]
+        names = [n for n in dict.fromkeys(names) if n]
+        if not names:
+            continue
+        try:
+            true_word = F.kin_word(cache, other, pid, chars=chars)
+        except Exception:
+            true_word = ""
+        if not true_word:
+            continue
+        for nm in names:
+            i = out.find(nm)
+            while i != -1:
+                win = out[max(0, i - 12):i]
+                best_w, best_p = "", -1
+                for w in all_words:
+                    if not w or w == true_word:
+                        continue
+                    j = win.rfind(w)
+                    if j > best_p:
+                        best_w, best_p = w, j
+                if best_w:
+                    at = max(0, i - 12) + best_p
+                    out = out[:at] + true_word + out[at + len(best_w):]
+                    i = out.find(nm, at + len(true_word))
+                else:
+                    i = out.find(nm, i + 1)
+    return out
+
+
 def _strip_meta_notes(text):
     """删去「资料不载/史无可考/…」这类考据按语 (程序端收尾, 不改提示词)。
 
@@ -2406,6 +2465,9 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     intro = llm.clean_number_spaces(intro)
     intro = llm.normalize_zh_punct(intro)
     intro = _strip_meta_notes(intro)
+    # v52 (问题1): 总纲要逐字注入各篇开篇 —— 注入前把与人名对不上的亲属词改回
+    # (「母亲X」而 X 是妻室 → 「妻子X」), 防一处口误变成全篇 6 次"事实"。
+    intro = _fix_kin_roles(intro, facts, cache)
 
     sec_cfg = dict(cfg)
     sec_cfg["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)
@@ -2417,6 +2479,8 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
             body = _normalize_section(text, article["sections"][0]["title"],
                                       article["title"])
             body = re.sub(r"(?<!\n)\n(?!\n)", "\n\n", body)
+            # v52 (问题1): 成稿正文同做亲属词归正 (紧贴人名的错词才改)
+            body = _fix_kin_roles(body, facts, cache)
             return article["key"], body
         except Exception as e:
             llm.log(f"首段《{article['title']}》生成失败: {e}")
@@ -2435,8 +2499,9 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
             msg = build_section_messages(article, section, facts, cache,
                                          leads[article["key"]], cfg)
             text = llm.call_deepseek(msg, sec_cfg).strip()
-            return article["key"], section["key"], _normalize_section(
-                text, section["title"], article["title"])
+            return article["key"], section["key"], _fix_kin_roles(
+                _normalize_section(text, section["title"], article["title"]),
+                facts, cache)
         except Exception as e:
             llm.log(f"板块《{section['title']}》生成失败: {e}")
             return (article["key"], section["key"],

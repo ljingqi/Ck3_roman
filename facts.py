@@ -1292,6 +1292,14 @@ _STATE_SUFFIX_RE = re.compile(
     r"(帝国|王国|汗国|大公国|公国|侯国|伯国|苏丹国|哈里发国|酋长国|"
     r"教宗国|属邦|皇朝|王朝|行台|天朝|国|邦|朝)$")
 
+# v52 (问题1): 「出身自定、无谱系」的存档 flag (见 Facts.is_custom_start) ——
+# 脚本化无地冒险者/自建角色: 存档不给父母, 也没有 ruler_designer_characters 条目。
+_NO_GENEALOGY_FLAGS = {
+    "do_not_generate_starting_family",
+    "special_laamp_char",
+    "has_scripted_appearance",
+}
+
 # v16: 王子词覆盖 — 本地化表把封建王国之女写成「郡主」(唐制亲王之女的东亚
 # 封号), 西式王国/帝国之女在传记里一律写「公主」; 天朝制的 皇女/郡主/公女
 # 属刻意东亚风味, 不在覆盖之列 (见 _prince_word)。
@@ -1545,6 +1553,32 @@ class Facts:
                 self._custom_starts.add(int(x))
             except Exception:
                 pass
+        # v52 (问题1): 无谱系判据扩展 —— 「自定义开局」之外还有**脚本化无地冒险者**:
+        # 斯卡利茨档 15403 既不在 ruler_designer_characters 里, 存档也没有父/母记录,
+        # 但 `alive_data.variables` 带 do_not_generate_starting_family / special_laamp_char
+        # / has_scripted_appearance 三个 flag。旧判据漏掉这一档, 于是本纪开篇的
+        # 「家族渊源」位无料可写 —— 模型把总纲里「孩子的母亲」当成了他的母亲。
+        for _cid, _c in self._chars.items():
+            if not isinstance(_c, dict):
+                continue
+            try:
+                _i = int(_cid)
+            except (TypeError, ValueError):
+                continue
+            _fd = _c.get("family_data") or {}
+            if _fd.get("father") or _fd.get("mother"):
+                continue
+            _fam = (((self.cache.get("characters") or {}).get(str(_i)) or {})
+                    .get("family") or {})
+            if _fam.get("father") or _fam.get("mother"):
+                continue
+            _flags = set()
+            for _e in (((_c.get("alive_data") or {}).get("variables") or {})
+                       .get("data") or []):
+                if isinstance(_e, dict) and _e.get("flag"):
+                    _flags.add(str(_e["flag"]))
+            if _flags & _NO_GENEALOGY_FLAGS:
+                self._custom_starts.add(_i)
         # v13: 姓名渲染缓存 (一次 build_facts 内缓存不可变)
         self._name_cache = {}
         self._tpl_memo = {}
@@ -8101,7 +8135,11 @@ class Facts:
         return self.name_order(cid) in cl.EASTERN_NAME_ORDERS
 
     def is_custom_start(self, cid):
-        """是否为自定义角色开局 (ruler_designer_characters)。"""
+        """是否「出身自定、无谱系」的角色 (v52 扩展)。
+
+        命中 = 在 `ruler_designer_characters` 里 (玩家自建角色), **或** 存档里既无
+        父/母记录、又带脚本化开局 flag (无地冒险者等)。命中者本纪开篇按
+        `style.PROMPTS["custom_start_note"]` 写「起于何时何地、如何发迹」。"""
         return int(cid) in self._custom_starts
 
     def is_administrative(self, cid):
