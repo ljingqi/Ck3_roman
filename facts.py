@@ -1966,6 +1966,12 @@ class Facts:
             name = key
         if key.startswith("x_"):  # 无地营地/教团等特殊头衔: 只给名字
             return self._specific_name(tid) or name
+        # v52 (问题2): 无地冒险者营地 (`d_laamp_*`) 的层级词取游戏键
+        # `<tier>_landless_adventurer_camp` (= 营地), **任何日期**都不落到通用
+        # 「公国」—— 旧稿 866 年取不到政体时写出「私生子大队公国」。
+        if self.title_kind(tid) == "camp":
+            w = self._camp_tier_word(tid)
+            return f"{name}{w}" if w and not _STATE_SUFFIX_RE.search(name) else name
         # v13: 朝廷职司 (尚书省六部/御史台/枢密院, e_minister_*) — 官职非诸侯,
         # 只给名字 (吏部/御史台), 不追加「帝国/行台」层级词。
         if key.startswith("e_minister_"):
@@ -2049,6 +2055,9 @@ class Facts:
                 break
         if not tier:
             return ""
+        # v52 (问题2): 营地层级词走游戏键 (营地), 不吃 flavorization 的封建层级词
+        if self.title_kind(tid) == "camp":
+            return self._camp_tier_word(tid)
         if cid is not None:
             w = self._flavor_word("title", tier, cid, tid=tid, gov=government,
                                   date=date)
@@ -2334,7 +2343,7 @@ class Facts:
         if max_tier >= 4:  # k_ 及以上: 只记首要
             t0 = tops[0]
             return [(t0[2], t0[0])]
-        camps = [it for it in majors if (self._lt.get(str(it[0])) or {}).get("key", "").startswith("x_")]
+        camps = [it for it in majors if self.title_kind(it[0]) == "camp"]
         picked = tops[:1] + [c for c in camps if c != tops[0]]
         return [(g, t) for t, _r, g in sorted(picked, key=lambda it: cl.date_key(it[2]))]
 
@@ -2425,13 +2434,16 @@ class Facts:
             parts = []
             for t in ids:
                 key = (self._lt.get(str(t)) or {}).get("key") or ""
-                if key.startswith("x_"):
+                if key.startswith("x_") or self.title_kind(t) == "camp":
                     # v24: 营地阶段用游戏口径 (营地宗旨词: 头目/领袖/队长…);
                     # 词取不到时回退旧式「X之主」防失名。
                     # v26: 游牧毡帐 (x_c_nomad_*) 不给冒险者宗旨词, 只写毡帐名。
                     # v28: 家族庄园 (x_nf_*) 是家业而非无地营帐, 用持有者词
                     # (乡绅/当主/户长) 并标注庄园类别。
-                    nm = self._name_in_span(t, d, end, cid) or ""
+                    # v52 (问题2): 无地冒险者营地真键是 `d_laamp_*` (非 x_ 前缀),
+                    # 判据改走 `title_kind`; 持有者行只用营地**本名** (不含「营地」
+                    # 层级词), 与领地「象州伯爵 / 象州伯爵领」的分工同构。
+                    nm = self._name_at_date(t, d) or self.title_base_name(t)
                     if self._is_nomad_camp(t):
                         parts.append(nm)
                         continue
@@ -3017,6 +3029,33 @@ class Facts:
             return v
         return ""
 
+    def _camp_holder_word_default(self, female=False):
+        """营地宗旨未知时的持有者词 (v52): 游戏键
+        `duke_landless_adventurer_{male|female}_camp` (= 队长)。"""
+        for k in (f"duke_landless_adventurer_{'female' if female else 'male'}_camp",
+                  "duke_landless_adventurer_male_camp"):
+            v = L.loc(self.table, k)
+            if v and not v.startswith("$") and not v.startswith("["):
+                return v
+        return ""
+
+    def _camp_tier_word(self, tid):
+        """无地冒险者营地的**层级词** (v52, 问题2): 游戏键
+        `<tier>_landless_adventurer_camp` (`duchy_landless_adventurer_camp` = 营地)。
+        缺键返回 '' —— 营地头衔一律不叠领地层级词 (旧稿写出「私生子大队公国」)。"""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        tier = ""
+        for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
+            if key.startswith(pfx):
+                tier = tv
+                break
+        if not tier:
+            return ""
+        v = L.loc(self.table, f"{tier}_landless_adventurer_camp")
+        if v and not v.startswith("$") and not v.startswith("["):
+            return v
+        return ""
+
     def title_by_key(self, key):
         if not key:
             return None
@@ -3322,6 +3361,14 @@ class Facts:
         帝国=关白/王国=帅/郡县=国司/堡=郡司 (修复方案_汤利五问题.md 问题2);
         tid 传入时, 天皇座 (k_chrysanthemum_throne) 持有人直称「天皇」。"""
         gov = government or ""
+        # v52 (问题2): 无地冒险者营地的持有者称呼走游戏键
+        # (`duke_landless_adventurer_camp_<宗旨>` = 头目/领袖/队长…; 宗旨未知回退
+        # `duke_landless_adventurer_male_camp` = 队长), 不再落到封建官职词「公爵」。
+        if tid is not None and self.title_kind(tid) == "camp":
+            w = self._camp_holder_word(cid, date) if cid is not None else ""
+            if not w:
+                w = self._camp_holder_word_default(female)
+            return w if (w and not w.startswith(("$", "["))) else ""
         # v30: 游戏 flavorization 优先 (修复方案_菲利普4.md 问题2) — 文化专属层级词
         # 压过政体通用词: 诺斯公国 = 雅尔 (count_feudal_male_norse, tier=duchy,
         # priority 30) 而非 duke_tribal_male 大酋长 (26)。未命中才走既有链。
@@ -12048,7 +12095,9 @@ def _protagonist_stations(f):
                 continue
             end = (iv[1] if len(iv) > 1 else None) or f.as_of \
                 or cache.get("last_date")
-            nm = f._name_in_span(tid, g, end, pid) or ""
+            # v52 (问题2): 持有者行只用营地本名 (不含「营地」层级词),
+            # 与历任阶段行同口径 —— 旧稿此处写出「私生子大队公国头目」。
+            nm = f._name_at_date(tid, g) or f.title_base_name(tid) or ""
             w = f._camp_holder_word(pid, g)
             base = f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else "")
             if base:
