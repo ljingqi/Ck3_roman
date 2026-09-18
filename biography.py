@@ -405,8 +405,11 @@ def _murder_link_line(facts, key=None, section_key=None):
 
 
 def _has_assassins(facts):
-    """本剧是否会生成《刺客列传》(主角击杀 >5 人)。"""
-    return len(facts.get("killed") or []) > 5
+    """本剧是否会生成《刺客列传》(本统计周期内主角击杀 ≥1 人)。
+
+    v52 (问题4, 用户拍板): 门槛由「>5」改为「≥1」—— 十年窗口内只杀一人的十年
+    同样要为刀下之鬼立传 (斯卡利茨第 3 个十年 5 人, 旧口径整篇不生成)。"""
+    return len(facts.get("killed") or []) >= 1
 
 
 def _family_ids_by_kind(cache, kind):
@@ -2143,15 +2146,20 @@ def _timeline_event_priority(body, pname):
 
 def _assassin_sections(n):
     """刺客列传板块 (v11): 按击杀数动态拆纪事 — <30 拆 1 个纪事, 30–59 拆 2 个,
-    ≥60 拆 3 个; 每个纪事按死亡先后等分切片 (防提示词过大吃掉模型注意力)。"""
+    ≥60 拆 3 个; 每个纪事按死亡先后等分切片 (防提示词过大吃掉模型注意力)。
+    v52 (问题4): 1–2 人时开篇改用单人立传要求 (`lead_one`) —— 「诸人群像」
+    在只有一名死者时无从落笔。"""
     if n >= 60:
         mids = ["mid1", "mid2", "mid3"]
     elif n >= 30:
         mids = ["mid1", "mid2"]
     else:
         mids = ["mid"]
+    lead_req = style.SECTION_REQ["assassins"]["lead"]
+    if n <= 2:
+        lead_req = (style.SECTION_REQ["assassins"].get("lead_one") or lead_req)
     secs = [{"key": "lead", "title": style.SECTION_TITLES["assassins"]["lead"],
-             "req": style.SECTION_REQ["assassins"]["lead"]}]
+             "req": lead_req}]
     chunk = (n + len(mids) - 1) // len(mids)
     for i, k in enumerate(mids):
         lo, hi = i * chunk, min((i + 1) * chunk, n)
@@ -2229,10 +2237,10 @@ def build_articles(facts, cache, cfg):
                             "theme": "主角家族所藏重宝的流转历史",
                             "focus": "写每件重宝的来历与流转，以物见人",
                             "sections": mk_sections("artifacts")})
-    # v5: 刺客列传 (主角杀 >5 人); v11: 按击杀数动态拆纪事板块
+    # v5: 刺客列传 (主角击杀 ≥1 人); v11: 按击杀数动态拆纪事板块
     # (<30 不拆 1 个纪事; 30–59 拆 2 个; ≥60 拆 3 个; 已剔除 lowborn)
     killed = facts.get("killed") or []
-    if len(killed) > 5:
+    if _has_assassins(facts):
         articles.append({
             "key": "assassins", "title": "刺客列传·刀下诸魂",
             "subject": None, "theme": f"被主角所杀 {len(killed)} 人的合传",
