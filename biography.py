@@ -2001,7 +2001,12 @@ def _fix_kin_roles(text, facts, cache):
         others.extend(fam.get(key) or [])
     others.extend(sorted(kids))
     chars = cache.get("characters") or {}
-    all_words = F.kin_texts()
+    # v52: 只用**双音节**亲属词做"错词"候选 —— 单字词 (子/父/母…) 会与替换结果
+    # 自身重叠 (「妻子」里含「子」), 逐次替换永不收敛 (实测死循环)。
+    all_words = {F.kin_text(k) for k in F.KIN_WORDS}
+    all_words = {w for w in all_words if w and len(w) >= 2}
+    # 「妻室」是本项目档案行用的配偶词 (不在 kin 表内), 也要能纠
+    all_words |= {"妻室"}
     out = text
     for other in dict.fromkeys(int(x) for x in others
                                if isinstance(x, int) or str(x).isdigit()):
@@ -2012,14 +2017,17 @@ def _fix_kin_roles(text, facts, cache):
         if not names:
             continue
         try:
-            true_word = F.kin_word(cache, other, pid, chars=chars)
+            # kin_word(cache, A, B) = 「B 相对 A」的词 (实测口径): 取 other 相对 pid
+            true_word = F.kin_word(cache, pid, other, chars=chars)
         except Exception:
             true_word = ""
         if not true_word:
             continue
         for nm in names:
             i = out.find(nm)
-            while i != -1:
+            guard = 0
+            while i != -1 and guard < 8:
+                guard += 1
                 win = out[max(0, i - 12):i]
                 best_w, best_p = "", -1
                 for w in all_words:
@@ -2031,7 +2039,7 @@ def _fix_kin_roles(text, facts, cache):
                 if best_w:
                     at = max(0, i - 12) + best_p
                     out = out[:at] + true_word + out[at + len(best_w):]
-                    i = out.find(nm, at + len(true_word))
+                    i = out.find(nm, at + len(true_word) + len(nm))
                 else:
                     i = out.find(nm, i + 1)
     return out

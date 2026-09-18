@@ -7630,7 +7630,7 @@ class Facts:
                     z = _dyn
             if spans:
                 lines.append(f"{z}（{'；'.join(spans)}）")
-        # v32 (问题2): 轨道进档履历 — 「不法之徒·强盗（自872年起进至二阶）」
+        # v32 (问题2) / v52 (问题6): 轨道进档履历 — 「不法之徒·强盗（自872年起）」
         lines.extend(self.trait_level_history(cid))
         return lines
 
@@ -7646,10 +7646,11 @@ class Facts:
         return TRAIT_ZH.get(key, "")
 
     def trait_level_history(self, cid):
-        """轨道进档履历 (v32, 问题2): 「<特质>·<轨道>（自X年起进至N阶）」。
+        """轨道进档履历 (v32, 问题2; v52, 问题6): 「<特质>·<轨道>（自X年起，Y年益进）」。
 
         逐 `rec["trait_xp"]` 样本差分: 某轨道首次跨过下一个阈值即记一条 (as_of 截断)。
-        与特质履历同源 (都只到年 — 年度快照日内粒度无意义)。"""
+        与特质履历同源 (都只到年 — 年度快照日内粒度无意义)。v52 起不再写「进至N阶」
+        这类档位序数词 (游戏无此术语)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         samples = [s for s in (rec.get("trait_xp") or []) if isinstance(s, dict)]
         if not samples:
