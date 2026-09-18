@@ -474,11 +474,28 @@ _ANCHOR_MODULES = ("起家发迹", "失位让土", "开战兴兵", "战和胜负
                    "丧偶之痛", "夭折", "谋害人命")
 
 
-def _key_events_block(facts, key, section, limit=4):
+def _subject_events(facts, key, events, subject=None):
+    """v52 (问题5): 《列传》的大事/年表只收**传主本人**参与的事件。
+
+    旧稿按「与主角相关」取料, 于是主角救阿齐兹 (另一人) 的事件漏进《列传·阿金》
+    的【本板块大事】与相关年表, 模型把两个阿拉伯名字合流, 写出「一箭射来…
+    阿金由此逃过一劫」。判据: 句面出现传主姓名 (程序给出的称谓一律含姓名);
+    传主姓名不可考时整块不收 (宁缺勿串味)。非《列传》篇原样返回。"""
+    if key not in ("friend", "enemy") or subject is None:
+        return events
+    name = ((facts.get("characters") or {}).get(str(subject)) or {}).get("name") or ""
+    if not name:
+        return []
+    return [e for e in events if name in (e.get("text") or "")]
+
+
+def _key_events_block(facts, key, section, limit=4, subject=None):
     """【本板块大事】卡片 (v27): 本板块切片里含主角名或高戏剧模块的前 N 条,
-    按日期升序排列, 置于消息尾部作取材锚点。无切片返回空串。"""
+    按日期升序排列, 置于消息尾部作取材锚点。无切片返回空串。
+    v52 (问题5): 《列传》篇先按传主参与过滤 (见 `_subject_events`)。"""
     evs = F.slice_events(facts.get("timeline") or [], key, _sec_key(section),
                          exclude=_has_assassins(facts))
+    evs = _subject_events(facts, key, evs, subject)
     if not evs:
         return ""
     pname = (facts.get("protagonist") or {}).get("name") or ""
@@ -544,6 +561,62 @@ def _relation_reasons(facts, cache, cid, types):
 # ---------------------------------------------------------------------------
 # 事实块渲染 (只输出干净中文)
 # ---------------------------------------------------------------------------
+
+def _feud_sentences(facts, cache, cid, reasons, rel_date):
+    """v52 (问题5, 用户拍板): 游戏缘由句 → 带地点与收口的完整句。
+
+    句式: 「在<地>，<游戏缘由句>，<仇家简称>由此与他结怨（<结怨日>）。」
+      · 地点取缘由句里**先被点名**的一方当时的驻地 (`facts.station_place`; 只有本档
+        玩家有逐档驻地轨迹), 无据则省去「在XX，」;
+      · 收口补代词 (仇家与他 = 主角; 性别取缓存) 与结怨记忆日 (无则省括注)。
+    无游戏缘由 (缘由只从记忆句来) 时返回 [] —— 调用方保持旧式记忆句。
+    """
+    gi = (facts or {}).get("_facts")
+    pid = cache.get("player_id")
+    if gi is None or pid is None or not reasons:
+        return []
+    plabels = [((cache.get("characters") or {}).get(str(pid)) or {}).get("name_full"),
+               ((cache.get("characters") or {}).get(str(pid)) or {}).get("name_zh"),
+               gi.person_label(pid, date=rel_date, style="brief"),
+               gi.name_with_regnal(pid, rel_date) or "",
+               (facts.get("protagonist") or {}).get("name") or ""]
+    elabels = [((cache.get("characters") or {}).get(str(cid)) or {}).get("name_full"),
+               ((cache.get("characters") or {}).get(str(cid)) or {}).get("name_zh"),
+               gi.person_label(cid, date=rel_date, style="brief"),
+               gi.name_with_regnal(cid, rel_date) or "",
+               ((facts.get("characters") or {}).get(str(cid)) or {}).get("name") or ""]
+    plabels = [x for x in plabels if x]
+    elabels = [x for x in elabels if x]
+    elabel = elabels[0] if elabels else ""
+    if not elabel:
+        return []
+    pfemale = bool(((cache.get("characters") or {}).get(str(pid)) or {}).get("female"))
+    date_z = gi.date(rel_date) if rel_date else ""
+
+    def _pos(text, labels):
+        best = None
+        for lb in labels:
+            i = text.find(lb)
+            if i != -1 and (best is None or i < best):
+                best = i
+        return best
+
+    out = []
+    for s in reasons:
+        body = (s or "").strip().rstrip("。")
+        if not body:
+            continue
+        pp = _pos(body, plabels)
+        ep = _pos(body, elabels)
+        place = ""
+        if pp is not None and (ep is None or pp <= ep):
+            place = gi.station_place(pid, rel_date) or ""
+        tail = f"{elabel}由此与{'她' if pfemale else '他'}结怨"
+        if date_z:
+            tail += f"（{date_z}）"
+        out.append(f"{'在' + place + '，' if place else ''}{body}，{tail}。")
+    return out
+
 
 def _house_text(facts, p=None):
     """家族文本 (v14 自然语言): 宗族名 + 分家。
@@ -1239,8 +1312,11 @@ def _article_facts(facts, cache, key, section=None):
                 _prof = facts.get("characters", {}).get(str(cid)) or {}
                 ev = _prof.get("events_subjectless") or events
                 _set_block(blocks, "传主行迹", "\n".join(ev))
-                tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
-                                 exclude=_has_assassins(facts))
+                tl = F.slice_events(facts.get("timeline") or [], key, sk,
+                                    exclude=_has_assassins(facts))
+                # v52 (问题5): 传主篇年表只收传主本人参与的事件 (防第三者串味)
+                tl = _subject_events(facts, key, tl, cid)
+                tl = [e["text"] for e in tl]
                 if tl:
                     blocks["相关年表"] = "\n".join(tl)
             # v13: 结友/结仇缘由 (双通道修复后必有记忆; 兜底同朝共事者给说明)
@@ -1269,9 +1345,18 @@ def _article_facts(facts, cache, key, section=None):
                 gi = facts.get("_facts")
                 causes = []
                 if gi:
-                    causes.extend(gi.relation_reasons(
-                        cid, ("rival", "grudge", "nemesis")))
                     rd = _enemy_dates(cache).get(cid)
+                    # v52 (问题5, 用户拍板): 缘由句带地点与收口 —
+                    # 「在巴尔米拉，亨利在路上抢劫了阿金，阿金由此与他结怨（875年7月28日）。」
+                    feud = _feud_sentences(
+                        facts, cache, cid,
+                        gi.relation_reasons(cid, ("rival", "grudge", "nemesis")),
+                        rd)
+                    causes.extend(feud)
+                    if feud:
+                        # 同一桩关系的「X与Y结怨」记忆句已并进上句, 不再并列出
+                        rs = [x for x in rs
+                              if not re.search(r"(结怨|结仇|死敌)", x or "")]
                     if rd:
                         causes.extend(F.relation_cause_lines(gi, cid, rd))
                 all_r = causes + [x for x in rs if x not in causes]
@@ -1743,7 +1828,8 @@ def build_lead_messages(article, facts, cache, intro, cfg):
         # v30: 曾写「本篇传主的先世资料未载」+「以资料载明者为限」, 前者被逐字照抄;
         # 现只写「怎么写」——自定义开局的谱系在档案里本就没有父/母行, 程序端已是无料。
         custom_note = style.PROMPTS["custom_start_note"]
-    events_block = _key_events_block(facts, key, sec)
+    events_block = _key_events_block(facts, key, sec,
+                                     subject=_article_subject(facts, cache, key))
     user_msg = style.PROMPTS["lead_user"].format(
         shared=_shared_facts_block(facts), theme=_decade_theme_note(facts),
         intro=intro, custom_note=custom_note, subject_note=subject_note,
@@ -1776,7 +1862,8 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
         rule_block=_rule_block(style_name, key in style.SECRET_BOARDS))
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = _subject_note(article, facts)
-    events_block = _key_events_block(facts, key, section)
+    events_block = _key_events_block(facts, key, section,
+                                     subject=_article_subject(facts, cache, key))
     user_msg = style.PROMPTS["mid_user"].format(
         shared=_shared_facts_block(facts), theme=_decade_theme_note(facts),
         subject_note=subject_note, facts=facts_txt,

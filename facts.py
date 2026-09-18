@@ -939,8 +939,9 @@ def _strip_subject_prefix(text, label):
     return head + rest
 
 
-# v32 (马克龙问题2): 轨道档位词 (进第 N 档 = 已过第 N 个阈值)
-_LEVEL_WORDS = ("", "一阶", "二阶", "三阶", "四阶", "五阶", "六阶", "七阶")
+# v52 (问题6, 用户拍板): 原 `_LEVEL_WORDS`（"一阶/二阶…"）已删 —— 游戏没有这套
+# 档位序数术语（游戏概念只有「特质路线 / 特质经验」），档位由年份跨度与按档改名的
+# 特质名承担; 见 `_trait_display` / `trait_level_history`。
 
 
 def _trait_level_name(key, xp):
@@ -7430,14 +7431,19 @@ class Facts:
         return out
 
     def _trait_display(self, key, z, xpmap):
-        """特质名 + 子轨道括注 (v32, 问题2): 「不法之徒（强盗一阶、窃贼一阶）」。
+        """特质名 + 子轨道括注 (v32, 问题2): 「不法之徒（强盗、窃贼、掠夺者）」。
 
         只列**已进档**的轨道 (XP ≥ 首个阈值); 一档未进的轨道不写 (否则每个持轨道
-        特质的人都拖一串「未入」)。无轨道/未进档时原样返回特质名。"""
+        特质的人都拖一串「未入」)。单轨特质不附括注 (轨道名与特质名同源, 写了是重复)。
+        v52 (问题6, 用户拍板「直接删」): 不再写「一阶/二阶」等档位序数词 —— 游戏
+        没有这套术语 (游戏只有「特质路线/特质经验」概念), 档位由年份跨度与
+        按档改名的特质名承担。"""
         if not z:
             return z
         m = (xpmap or {}).get(key) or {}
         rows = (L.trait_track_table().get("tracks") or {}).get(key) or []
+        if len(rows) <= 1:
+            return z
         bits = []
         for r in rows:
             v = m.get(r["track"])
@@ -7452,8 +7458,7 @@ class Facts:
             nm = L.loc(self.table, "trait_track_" + str(r["track"])) or ""
             if not nm:
                 continue
-            word = _LEVEL_WORDS[lv] if lv < len(_LEVEL_WORDS) else f"{lv}阶"
-            bits.append(f"{nm}{word}")
+            bits.append(nm)
         if not bits:
             return z
         return f"{z}（{'、'.join(bits)}）"
@@ -7658,10 +7663,13 @@ class Facts:
             if not base or not tn:
                 continue
             steps = []
-            for lv, frm in rows:
-                word = _LEVEL_WORDS[lv] if lv < len(_LEVEL_WORDS) else f"{lv}阶"
-                steps.append(f"自{self._year_only(frm)}起进至{word}")
-            lines.append(f"{base}·{tn}（{'，'.join(steps)}）")
+            for i, (lv, frm) in enumerate(rows):
+                yr = self._year_only(frm)
+                # v52 (问题6): 只记入轨年份, 不写「进至一阶」这类档位序数词
+                steps.append(f"自{yr}起" if i == 0 else f"{yr}益进")
+            # 单轨特质的轨道名与特质名同源 (「老练的旅行者·老练的旅行者」) — 不叠
+            name = f"{base}·{tn}" if len(tracks.get(key) or []) > 1 else base
+            lines.append(f"{name}（{'，'.join(steps)}）")
         return lines
 
     @staticmethod
@@ -8217,6 +8225,32 @@ class Facts:
         c = self._chars.get(str(cid)) or {}
         loc = (c.get("alive_data") or {}).get("location") or {}
         return loc.get("location") if isinstance(loc, dict) else loc
+
+    def station_place(self, cid, date=None):
+        """角色在某日期所在之地的头衔名 (v52, 问题5: 结仇句的「在XX」)。
+
+        只对**本档玩家**有据 (`cache["player_locations"]` 是逐档并入的驻地轨迹,
+        他角色存档不存地点史): 取不晚于 date 的最近一点 → 省份→伯爵领→头衔名。
+        无轨迹/无映射返回 '' (调用方省去「在XX，」)。"""
+        pid = self.cache.get("player_id")
+        if pid is None or cid is None or int(cid) != int(pid):
+            return ""
+        lim = cl.date_key(str(date)) if date else None
+        best = None
+        for loc in (self.cache.get("player_locations") or []):
+            d = loc.get("date")
+            if not d:
+                continue
+            if lim is not None and cl.date_key(str(d)) > lim:
+                continue
+            if best is None or cl.date_key(str(d)) >= cl.date_key(str(best.get("date") or "")):
+                best = loc
+        if best is None:
+            return ""
+        county = self.county_at_province(best.get("province"))
+        if county is None:
+            return ""
+        return self.title(county) or ""
 
     def victim_place(self, cid):
         """受害者所在地 (v24): 其死亡前后最近可知的男爵领名。
@@ -11221,6 +11255,13 @@ def _sub_relation_loc(f, s, owner, target, extra=None):
     subs = (
         ("[CHARACTER.GetShortUIName|U]", oname),
         ("[CHARACTER.GetShortUIName]", oname),
+        # v52 (问题5 伴随修复): 记录拥有者的 Possessive / NoTooltip 两形此前无对应
+        # 替换项, 落到末尾的正则被整段清空 —— 于是「[TARGET]剥夺了[CHARACTER
+        # 的Possessive]政治地位…」渲染成「剥夺了的政治地位」(仲宣结仇缘由原样)。
+        # 中文无词形变化, 一律用原名; 三类标签在 22k 条模板里共 892 处。
+        ("[CHARACTER.GetShortUINamePossessive]", oname),
+        ("[CHARACTER.GetShortUINamePossessiveNoTooltip]", oname),
+        ("[CHARACTER.GetShortUINameNoTooltip]", oname),
         ("[TARGET_CHARACTER.GetShortUIName|U]", tname),
         ("[TARGET_CHARACTER.GetShortUIName]", tname),
         ("[TARGET_CHARACTER.GetShortUINameNoTooltip]", tname),
