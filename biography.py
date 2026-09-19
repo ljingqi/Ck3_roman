@@ -2500,6 +2500,29 @@ def _names_path(cfg, cache):
     return os.path.join(cfg.get("data_dir", ""), "names.json")
 
 
+def reign_start(cache):
+    """该传主的**即位日** (v55-7): 存档 `played_character.legacy` 链里本人的 date。
+
+    链逐档入库为 `cache["played_legacy"]`, 形如
+    `[{cid:15403, date:'867.1.1'}, {cid:33572063, date:'918.10.19'},
+      {cid:16801023, date:'923.1.14'}]` —— 本人的 date 即其继位日
+    (父崩当日继位者与前任死期同日)。此值写进 md 头部注释的「执政」字段,
+    供 htmlview 按**执政顺序**排角色与下拉框 (生年只是兜底近似)。
+
+    缺链 / 本人不在链中 → 返回 '' (头部略去该字段, 阅读页回退生年)。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return ""
+    try:
+        want = int(pid)
+    except (TypeError, ValueError):
+        return ""
+    for e in cache.get("played_legacy") or []:
+        if isinstance(e, dict) and e.get("cid") == want:
+            return str(e.get("date") or "")
+    return ""
+
+
 def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
                        nickname_override=None, campaign=None):
     """生成传记 Markdown 并写入 out_path。返回 (md_text, facts, articles)。
@@ -2604,9 +2627,12 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     # v8: 头部注释带 人物/出生/篇目/十年, 供 htmlview 分组与十年标注。
     # v28: 只留 htmlview 真正要用的字段 (人物/人物ID/战役ID/出生/篇目/十年) —
     # 「数据来源: CK3 年度存档快照」与「生成时间」这类元信息不再写入文档。
+    # v55-7: 增「执政」= 即位日 (played_legacy 链), 供阅读页按执政顺序排角色;
+    # 旧文件无此字段, htmlview 回退生年, 故新旧混排仍有世代序。
     pp = facts["protagonist"] or {}
     person = pp.get("name") or facts.get("player_name") or ""
     birth = pp.get("birth") or ""
+    reign = reign_start(cache)
     if decade:
         piece = f"第{decade}个十年传记"
     elif facts.get("player_death"):
@@ -2617,6 +2643,7 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
               + (f" | 战役ID: {cache.get('playthrough_id')}"
                  if cache.get("playthrough_id") else "")
               + (f" | 出生: {birth}" if birth else "")
+              + (f" | 执政: {reign}" if reign else "")
               + f" | 篇目: {piece}"
               + (f" | 十年: {decade}" if decade else "")
               + " -->\n\n")

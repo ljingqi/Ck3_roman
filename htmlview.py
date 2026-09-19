@@ -15,6 +15,8 @@ import re
 import sys
 import threading
 
+import cache_lib as cl   # v55-7: 日期键与 cache_lib.date_key 同一口径 (勿另写一份解析)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 FILE_RE = re.compile(r"^(.+_(?:终传|传记)(?:_第\d+个十年)?_\d+_\d{2}_\d{2}|demo_.+)\.md$")
@@ -356,6 +358,7 @@ def _parse_header(text):
         i = re.search(r"人物ID:\s*(\d+)", ln)
         b = re.search(r"出生:\s*(\d+)年", ln)
         t = re.search(r"战役ID:\s*([^|]+)", ln)
+        g = re.search(r"执政:\s*(\d+\.\d+\.\d+)", ln)
         if m:
             out["person"] = m.group(1).strip()
         if p:
@@ -368,6 +371,8 @@ def _parse_header(text):
             out["birth_year"] = int(b.group(1))
         if t:
             out["playthrough_id"] = t.group(1).strip()
+        if g:
+            out["reign"] = g.group(1)
         break
     return out
 
@@ -410,13 +415,13 @@ def _filename_base_person(fn, folder):
     return base.strip(), None
 
 
-def _person_identity(fn, folder, text):
+def _person_identity(fn, folder, text, h=None):
     """(分组键, 显示名) — v20 稳定身份:
     - A2: 头部注释有 人物ID (游戏角色 id) → 键 ('id', pid), 最精确;
     - A1: 否则 键 ('name', 去绰号名, 生年) — 生年取头部 出生 或文件名 (849),
       去绰号优先用文件名基名 (缓存纯名), 无则剥头部 名“绰号”后缀 / 绰号前缀。
     同角色因绰号随时代变化 (嗜血者→屠狼者) 也归并到同一键。"""
-    h = _parse_header(text)
+    h = h if h is not None else _parse_header(text)
     person = h.get("person") or ""
     if h.get("person_id"):
         # A2: 人物ID 唯一, 同战役复用同 id 也同页; 战役ID 参与键防跨战役同 id 误并
@@ -433,7 +438,7 @@ def _person_identity(fn, folder, text):
     return ("name", base, year), base
 
 
-def _article_label(fn, text, folder=None):
+def _article_label(fn, text, folder=None, h=None):
     """标签: 十年传记/终传 语义化 (v8)。返回 (label, meta)。
     - 十年传记: 「第N个十年传记」+「至<日期>」
     - 终传: 「终传」+「死于<日期>」
@@ -453,7 +458,7 @@ def _article_label(fn, text, folder=None):
         break  # 首个非注释非空行不是标题 → 用文件名
     m = re.search(r"_(终传|传记)_(?:第\d+个十年_)?(\d+_\d{2}_\d{2})", fn)
     date = m.group(2).replace("_", ".") if m else ""
-    h = _parse_header(text)
+    h = h if h is not None else _parse_header(text)
     kind = m.group(1) if m else ""
     if h.get("decade") is not None:
         label = f"第{h['decade']}个十年传记"
@@ -463,6 +468,65 @@ def _article_label(fn, text, folder=None):
     if kind == "传记":
         return f"{title}（传记）", f"至{date}" if date else ""
     return title, ""
+
+
+# ---------------------------------------------------------------------------
+# v55-7: 阅读页排序键 —— 不再用文件名字典序
+#
+# 旧实现用 `sorted(os.listdir(...))` 定顺序, 于是**传主名参与排序**: 沙米尔 944 年
+# 由捷克入汉, 游戏内姓名顺序由「沙米尔·斯卡利茨」翻成「斯卡利茨沙米尔」, 文件名
+# 前缀随之改变 (斯 U+65AF < 沙 U+6C99) —— 第2个十年被顶到第1个十年前面; 下拉框
+# 角色顺序也变成按名字首字排 (亨利 → 沙米尔 → 马丁), 而非执政顺序。
+# 现改为语义键: 角色按 (战役, 执政日, 生年, 名), 篇目按覆盖截止日。
+# ---------------------------------------------------------------------------
+
+# 与 cl.date_key 同型的「未知」哨兵 —— 排序键一律用元组, 切勿混入 int
+# (混型比较会抛 TypeError: '<' not supported between instances of 'tuple' and 'int')。
+_UNKNOWN_KEY = (9999, 0, 0)
+
+
+def _reign_key(h):
+    """角色执政次序键: 优先头部「执政」即位日 (written by biography.reign_start),
+    缺失时用生年兜底 —— 同尺度近似 (即位必晚于出生), 故新旧文件混排仍有世代序。"""
+    r = h.get("reign")
+    if r:
+        return cl.date_key(r)
+    by = h.get("birth_year")
+    return (by, 0, 0) if by else _UNKNOWN_KEY
+
+
+# 篇目类型次序: 同一天时 在世传记 → 十年传记 → 终传
+_PIECE_KIND = {"传记": 0, "十年": 1, "终传": 2}
+
+
+def _piece_key(fn, h):
+    """篇目次序键: 覆盖截止日升序 (十年档 = 十年末 / 终传 = 卒日 / 在世传记 = 末档日),
+    同日按 在世传记 → 十年传记 → 终传。"""
+    m = re.search(r"_(\d+)_(\d{2})_(\d{2})\.md$", fn)
+    d = (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else _UNKNOWN_KEY
+    if h.get("decade") is not None:
+        kind = _PIECE_KIND["十年"]
+    elif h.get("piece") == "终传":
+        kind = _PIECE_KIND["终传"]
+    else:
+        kind = _PIECE_KIND["传记"]
+    return (d, kind)
+
+
+def _entry_sort_key(fn, h, pkey):
+    """条目总序: (战役ID, 执政/生年, 生年, 角色键, 篇目, 文件名)。
+
+    ★ 角色排序分量用 `_person_identity` 的**稳定身份键**, 绝不用显示名 —— 显示名会
+    随游戏内文化/姓名顺序变化 (沙米尔 944 由捷克入汉: 沙米尔·斯卡利茨 →
+    斯卡利茨沙米尔), 一旦拿它参与排序, 同一角色的两篇就会因「第几篇」之外的字符
+    差异而错序 —— 旧稿用文件名字典序正是栽在这里 (第2个十年顶到第1个前)。
+    身份键归一化为字符串元组, 兼防 A1 键里生年为 None 时与 int 相比抛 TypeError。"""
+    return (h.get("playthrough_id") or "",
+            _reign_key(h),
+            h.get("birth_year") or 9999,
+            tuple("" if x is None else str(x) for x in pkey),
+            _piece_key(fn, h),
+            fn)
 
 
 def rebuild_folder(output_dir, folder):
@@ -483,9 +547,10 @@ def rebuild_folder(output_dir, folder):
                 text = f.read()
         except OSError:
             continue
-        label, meta = _article_label(fn, text, folder)
+        h = _parse_header(text)
+        label, meta = _article_label(fn, text, folder, h)
         html_str, toc = md_to_html(text)
-        pkey, disp = _person_identity(fn, folder, text)
+        pkey, disp = _person_identity(fn, folder, text, h)
         entries.append({
             "person": disp,
             "person_key": pkey,
@@ -493,9 +558,14 @@ def rebuild_folder(output_dir, folder):
             "meta": meta,
             "html": html_str,
             "toc": toc,
+            "sort_key": _entry_sort_key(fn, h, pkey),
         })
     if not entries:
         return None
+    # v55-7: 语义排序 (v8 起为文件名字典序 —— 传主名一变就乱序, 见上方注释块)
+    entries.sort(key=lambda e: e["sort_key"])
+    for e in entries:
+        e.pop("sort_key", None)
     # 按角色分组 (v20: 稳定身份键 — 人物ID 优先, 否则 去绰号名+生年;
     # 绰号随时代变化 (嗜血者→屠狼者) 不再拆页)
     groups = []
