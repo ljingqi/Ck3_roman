@@ -6297,6 +6297,67 @@ class Facts:
 
     # ---- 家族恩怨 (house_relations) / 宝物志 (artifacts) ----
 
+    # v55 (问题1c): 出狱缘由 —— **熔件直读**, 不新增缓存字段 (用户 2026-09-19 定规:
+    # 本轮不重建缓存)。方向铁律 (存档实测, 见 logs/probe_v55_direction.txt):
+    #   `add_opinion = { target = scope:actor }` 写在被囚者作用域内 = **被囚者持有该评价**,
+    #   故 owner=被囚者、target=释放者; 唯 `ransomed_from_prison` 的 target 是**付款人**
+    #   (可能是第三方亲属), 故另有按 owner 的兜底查询。
+    # 生命周期: 出狱类一律 years=10 / decaying (`ransomed_from_prison` 被脚本覆盖为 1 年),
+    # 且**随持有者死亡立即从存档消失** —— 读不到就回退「获释」(与 v54 行为一致)。
+    _PRISON_MANNER_MODS = {
+        "released_from_prison":            ("released",  "获释"),
+        "merciful_opinion":                ("released",  "获释"),
+        "ransomed_from_prison":            ("ransomed",  "纳赎获释"),
+        "demanded_my_conversion_opinion":  ("converted", "改信获释"),
+        "compelled_me_to_convert_opinion": ("converted", "改信获释"),
+        "demanded_hook":                   ("hook",      "交出牵制获释"),
+        "demanded_claim_renouncement":     ("claim",     "被迫放弃宣称获释"),
+        "banished_me":                     ("banished",  "遭驱逐"),
+        "demanded_recruitment":            ("recruit",   "遭强征入仕"),
+        "demanded_taking_vows":            ("vows",      "被迫出家获释"),
+    }
+
+    def _prison_opinion_index(self):
+        """{(owner, target): [(modifier, start_date)]} + 按 owner 的兜底索引 (惰性)。"""
+        cached = getattr(self, "_prison_opinions", None)
+        if cached is not None:
+            return cached
+        by_pair, by_owner = {}, {}
+        for o in (self.melt.get("opinions") or {}).get("active_opinions") or []:
+            if not isinstance(o, dict):
+                continue
+            ow, tg = o.get("owner"), o.get("target")
+            if not isinstance(ow, int) or not isinstance(tg, int):
+                continue
+            for v in cl._opinion_values(o):
+                mod = str(v.get("modifier") or "")
+                if mod not in self._PRISON_MANNER_MODS:
+                    continue
+                st = str(v.get("start_date") or "")
+                by_pair.setdefault((ow, tg), []).append((mod, st))
+                by_owner.setdefault(ow, []).append((mod, st))
+        self._prison_opinions = (by_pair, by_owner)
+        return self._prison_opinions
+
+    def release_manner(self, victim, jailer, out_date):
+        """出狱缘由 (v55 问题1c) → (结局族, 措辞); 判不出返回 ('', '')。
+
+        判据 = 该被囚者在**出狱当日**新得的出狱类好感修饰符 (存档自带 start_date,
+        比逐档差分精确)。诛灭世族那一档不在这里 —— 由 v54 既有判据单独承担
+        (见 `family_purge_victims` / `_purge_dates`, 方案 §1.3-B)。"""
+        if victim is None or not out_date:
+            return ("", "")
+        d = str(out_date)
+        by_pair, by_owner = self._prison_opinion_index()
+        rows = list(by_pair.get((int(victim), int(jailer)), [])) \
+            if isinstance(jailer, int) else []
+        if not any(st == d for _m, st in rows):
+            rows += by_owner.get(int(victim), [])
+        for mod, st in rows:
+            if st == d:
+                return self._PRISON_MANNER_MODS[mod]
+        return ("", "")
+
     def _house_war_nodes(self, other_house, my_houses, as_of):
         """两族之间的**战争因果节点** (v34, 问题6): [(日期, 句)]。
 
@@ -6537,8 +6598,50 @@ class Facts:
                 "level": _lvl,
                 "events": [f"{self.date(d)}，{t}" for d, t in events],
             })
-        out.sort(key=lambda x: len(x["events"]), reverse=True)
-        return out
+        return self._merge_and_cap_feuds(out)
+
+    # v55 (问题1a, 用户 2026-09-19 拍板): 《家族恩怨录》只显示**五个**家族, 且先合并同名家族。
+    # 934 十年档实测 64 条 / 48 个姓氏 —— 同一姓氏下有多个 house id (裴氏×3、邓氏×3、韦氏×3),
+    # 不合并则同一姓氏并列成好几段, 模型只能读成一族写一段 (用户: 「家族太泛滥了」)。
+    # 排序按**档位降序** (世仇 → 敌对 → 争吵) → 事件数降序 → 首事日期升序 → 姓氏;
+    # 用户原话「用档位降序，世仇的事件数必然比更低档位的多」。
+    HOUSE_FEUDS_MAX = 5
+
+    def _merge_and_cap_feuds(self, rows):
+        """同名家族合并 → 档位/事件数排序 → 取前 HOUSE_FEUDS_MAX 族 (v55 问题1a)。"""
+        rank = {"世仇": 3, "敌对": 2, "争吵": 1}
+        merged = {}
+        order = []
+        for r in rows:
+            key = r.get("house_label") or r.get("house") or ""
+            if not key:
+                continue
+            cur = merged.get(key)
+            if cur is None:
+                merged[key] = {"house": r.get("house") or key,
+                               "house_label": r.get("house_label") or key,
+                               "level": r.get("level") or "",
+                               "events": list(r.get("events") or [])}
+                order.append(key)
+                continue
+            # 档位取最重者; 事件并集按 (日期, 句面) 去重 —— 关系流水里同一人
+            # 同日的「囚禁了X」实测有逐字重复条目 (918.4.8 朱思齐 ×2)
+            if rank.get(r.get("level") or "", 0) > rank.get(cur["level"], 0):
+                cur["level"] = r.get("level") or cur["level"]
+            cur["events"].extend(r.get("events") or [])
+        out = []
+        for key in order:
+            r = merged[key]
+            ev = list(dict.fromkeys(r["events"]))
+            ev.sort(key=lambda s: cl.date_key(s.split("，")[0]))
+            r["events"] = ev
+            out.append(r)
+        out.sort(key=lambda x: (-rank.get(x.get("level") or "", 0),
+                                -len(x.get("events") or []),
+                                cl.date_key((x.get("events") or ["9999.9.9"])[0]
+                                            .split("，")[0]),
+                                x.get("house_label") or ""))
+        return out[:self.HOUSE_FEUDS_MAX]
 
     # v13: 宝物志只收高稀珍奇; v21: 门槛改为游戏最高档 名望级 (illustrious) —
     # 存档与游戏定义均无「传奇级 (legendary)」档位, 原 (legendary,) 永远筛空,
