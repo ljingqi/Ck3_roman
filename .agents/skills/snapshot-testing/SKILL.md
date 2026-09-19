@@ -62,6 +62,10 @@ Get-ChildItem output\<家族>\data | Select-Object Name,Length,LastWriteTime
 
 - 破坏性改动前的 checkpoint 提交：`.agents/skills/commit-before-destructive`。
 - 子进程 stdout 编码与包装脚本：`.agents/skills/utf8-gbk-encoding`。
+- **查游戏机制 / 本地化键 / 存档字段含义：`.agents/skills/ck3-game-source`** ——
+  `All Under Heaven`（AUH / 天命 TGP）是**游戏本体 1.19 自带的 DLC 内容**（`game/common/character_interactions/10_tgp_*.txt`、
+  `game/events/dlc/tgp/*`、`game/dlc/dlc029_mp1`），**不是 Mod**，直接读 `game/` 即可；
+  该技能另附「已落档调研」索引，查机制前先看一眼，省得重跑。
 - `README.md` 的「提速基建」段与本技能同源，本技能是它的**可执行版本**。
 
 ## 收尾自查
