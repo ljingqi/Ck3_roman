@@ -1308,6 +1308,14 @@ _PRINCE_WORD_OVERRIDE = {
 }
 
 
+# v55 (问题6): 排序键里「该日期为空」的兜底值 —— 必须与 `cl.date_key` 的返回**同型**
+# (元组), 且其序为最大 (空日期排在本组最后)。旧稿三处写整数 `10 ** 12`, 与同组内
+# 另有日期的行的元组键相比时抛 `TypeError: '<' not supported between instances of
+# 'tuple' and 'int'` (沙米尔 944 第 2 个十年实测: 囚禁集群里同 rank 者一有空 since 即崩,
+# facts 构建阶段失败 → 十年传记永不生成)。`cl.date_key` 对非法输入同样返回 (9999,0,0)。
+_DATE_KEY_MAX = (9999, 0, 0)
+
+
 def _date_ord(d):
     """日期近似天序 (year*372 + (month-1)*31 + day)。
     只用于「相差 N 天以内」的宽松判断 (v34b 头衔事件日核对), 不做精确历法运算 —
@@ -6564,7 +6572,7 @@ class Facts:
                 rank, since = self.title_rank_since_at(n["victim"], d)
                 ranked.append((rank, since, n))
             ranked.sort(key=lambda r: (-r[0],
-                                       cl.date_key(r[1]) if r[1] else 10 ** 12,
+                                       cl.date_key(r[1]) if r[1] else _DATE_KEY_MAX,
                                        r[2]["victim"]))
             names = [r[2].get("vn") or "" for r in ranked]
             names = [x for x in names if x]
@@ -6893,7 +6901,7 @@ class Facts:
             out.append({"house": r["house"], "house_label": r["house_label"],
                         "level": r["level"],
                         "events": [txt for _d, txt in pairs],
-                        "_first": cl.date_key(str(pairs[0][0])) if pairs else 10 ** 12,
+                        "_first": cl.date_key(str(pairs[0][0])) if pairs else _DATE_KEY_MAX,
                         "_w": r["weight"], "_n": len(pairs)})
         out.sort(key=lambda x: (-rank.get(x.get("level") or "", 0),
                                 -x["_w"], -x["_n"], x["_first"],
@@ -10787,7 +10795,7 @@ def _fold_prison_clusters(events, f):
                          "jn": pm.get("jn") or "", "tail": pm.get("t") or "",
                          "o": pm.get("o") or "released"})
         rows.sort(key=lambda r: (-r["rank"],
-                                 cl.date_key(r["since"]) if r["since"] else 10 ** 12,
+                                 cl.date_key(r["since"]) if r["since"] else _DATE_KEY_MAX,
                                  r["cid"]))
         named = [r for r in rows if r["vn"]]
         if not named:
