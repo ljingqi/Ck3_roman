@@ -327,13 +327,15 @@ FACT_WORDING = {
     "hook_over_actor_strong": "{holder}握有对{actor}的强牵制{name}{since}。",
     "hook_over_actor_weak": "{holder}握有对{actor}的牵制{name}{since}。",
     # 归并行 (同类多对象/多持有者): 方向各自的句式, 名字取前三 + 总人数
-    "hook_group_held": "{actor}握有对{names}的{strength}牵制{name}（共{n}人）。",
-    "hook_group_over": "{names}握有对{actor}的{strength}牵制{name}（共{n}人）。",
+    # v55 (问题2): 去括注 —— 「（共N人）」改为主句内的人数定语
+    "hook_group_held": "{actor}握有对{names}共{n}人的{strength}牵制{name}。",
+    "hook_group_over": "{names}共{n}人握有对{actor}的{strength}牵制{name}。",
     # v41 (问题8): 删去「主角握有的牵制如下：」「他人握有对主角的牵制如下：」
     # 两条块首标题行 —— 每条牵制句已自足, 标题行只会把该维度引成开放清单。
     "hook_strong_word": "强",
-    "hook_since": "（{year}起）",
-    "hook_expires": "（{date}届满）",
+    # v55 (问题2): 时间补注去括注 —— 作为句末小句附在牵制句后 (不再「（921年起）」)
+    "hook_since": "，自{year}年起",
+    "hook_expires": "，{date}届满",
     # v38 (问题2): 牵制**白名单**判据 (见 FACT_WORDING["hook_keep_*"]) —
     # 只下发「背后有一件具体事」的牵制; 通用人情/身份自带类一律不入事实层。
     # 判据由程序在 cache_lib 入库前与 facts 读取时各执行一次 (旧缓存同样生效),
@@ -374,8 +376,9 @@ FACT_WORDING = {
     "prison_enslaved": "，没为奴隶",
     "enslaved_line": "{slave}没为{actor}的奴隶。",
     "enslaved_line_on": "{date}，{slave}没为{actor}的奴隶。",
-    "enslaved_line_since": "{slave}没为{actor}的奴隶（{year}起）。",
-    "enslaved_group": "{actor}的奴隶：{names}{extra}（{year}起）。",
+    # v55 (问题2): 去括注 —— 起年改为句首状语 (「X自874年起没为Y的奴隶。」)
+    "enslaved_line_since": "{slave}自{year}起没为{actor}的奴隶。",
+    "enslaved_group": "{year}起，{actor}的奴隶有{names}{extra}。",
     "enslaved_group_extra": "等{n}人",
     "enslaved_head": "主角的奴隶如下：",
     # v38 (问题4): 「曾经是主角的奴隶」的收束句 —— 三档各有确定判据
@@ -383,12 +386,13 @@ FACT_WORDING = {
     #   _sold  失去那一刻已被**别人**奴役 = 转卖, 带出买家;
     #   _freed 失去那一刻已无人奴役他   = 转为 former_slave (获释);
     #   _lost  其余 (死亡 / 数据中断) — 只写「不再见于记载」, 不外推缘由。
+    # v55 (问题2): {since} 由调用方给成句首状语 (「自874年起，」/ 空串), 不再是括注
     "enslaved_former_sold":
-        "{slave}没为{actor}的奴隶{since}，至{year}转归{buyer}。",
+        "{since}{slave}没为{actor}的奴隶，至{year}转归{buyer}。",
     "enslaved_former_freed":
-        "{slave}没为{actor}的奴隶{since}，至{year}获释。",
+        "{since}{slave}没为{actor}的奴隶，至{year}获释。",
     "enslaved_former_lost":
-        "{slave}没为{actor}的奴隶{since}，此后不再见于记载。",
+        "{since}{slave}没为{actor}的奴隶，此后不再见于记载。",
     "enslaved_former_head": "主角昔日的奴隶如下：",
     # v38 (问题1): 角色修正 carn_recently_raped (身上留五年) 的收束句 ——
     # 与性事记忆互为佐证 (记忆给「谁做的」, 修正给「近来仍算近事」这一状态)。
@@ -398,13 +402,15 @@ FACT_WORDING = {
     # 「881年8月28日，X强迫Y性交。」并补一句后效 (受害方及其亲友由此视施为者为仇)。
     # 事实行先立「这是强迫」这一层, 模型才不会把它写成两情相悦。
     "harm_head": "强迫之事如下：",
-    "harm_line": "{text}（{after}）",
+    # v55 (问题2): 后效不再用括注, 改为同句的第二个分句 (「…强迫Y性交，Y由此视其为仇。」)
+    "harm_line": "{text}，{after}。",
     "harm_after_subject": "{name}由此视其为仇",
-    "harm_after_none": "{year}年见于记载",
+    # {year} 由 _year_only 给成「879年」(已含「年」字), 故此处不再补「年」
+    "harm_after_none": "{year}见于记载",
     # v40: 性病 (情人疱疹/大痘) 传播 —— 有性事行动可挂时补在性行为句末 (句号前);
     # 无性事行动可挂 (本体按期在 lover/consort 间传播、卖淫、先天) 时单独成行。
     # 病名由本地化表直取 (本体中文: trait_lovers_pox=情人的疱疹 / trait_great_pox=梅毒)。
-    "std_note": "（{src}把{disease}传染给了{tgt}）",
+    "std_note": "，{src}把{disease}传染给了{tgt}",
     "std_line": "{src}把{disease}传染给了{tgt}。",
     "std_line_anon": "{tgt}染上{disease}。",
     "std_head": "疾病传染如下：",
@@ -430,8 +436,10 @@ FACT_WORDING = {
     # 传主档案与《朝局风云录》同时出词; 「至晚」口径与特质履历同源 (快照差分推失去时点)。
     "office_head": "朝廷职位：",
     "office_held": "任{employer}之{word}",
-    "office_since": "（自{date}任）",
-    "office_since_multi": "（{n}度受任：{dates}）",
+    # v55 (问题2): 去括注 —— 授任日期作句首状语 (「自869年6月28日起任唐皇帝李漼之太师」);
+    # 多度受任改「N度受任…，分别在…」; 失去时点本就是分句 (「；至晚自885年起已卸任」)。
+    "office_held_since": "自{date}起任{employer}之{word}",
+    "office_held_multi": "{n}度受任{employer}之{word}，分别在{dates}",
     "office_lost_late": "；至晚自{year}起已卸任",
     "office_change_gain": "{date}：受{employer}之{gverb}为{word}",
     "office_change_lose": "{date}：已卸任{word}",
@@ -758,8 +766,8 @@ SEX_MEM_WORDING = {
         "base": "{name}逆强奸{other}。",
     },
     # 归并行 (同一受害者被同一人多次 / 同一施为者多次) — 两句各一
-    "group_actor": "{name}对{names}行强迫之事（共{n}次）。",
-    "group_victim": "{name}为{names}所强迫（共{n}次）。",
+    "group_actor": "{name}对{names}共{n}次行强迫之事。",
+    "group_victim": "{name}为{names}共{n}次所强迫。",
 }
 
 # v40: 性病 (情人疱疹/大痘) 传播当次的**自愿**性事 —— 用户拍板 2026-09-15:

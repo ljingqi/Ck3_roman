@@ -645,7 +645,8 @@ def _feud_sentences(facts, cache, cid, reasons, rel_date):
             place = gi.station_place(pid, rel_date) or ""
         tail = f"{elabel}由此与{'她' if pfemale else '他'}结怨"
         if date_z:
-            tail += f"（{date_z}）"
+            # v55 (问题2): 结怨日去括注, 作同句分句
+            tail += f"，{date_z}"
         out.append(f"{'在' + place + '，' if place else ''}{body}，{tail}。")
     return out
 
@@ -988,8 +989,9 @@ _MARRIAGE_TYPES = {
     "became_lovers", "had_sex", "spouse_died", "divorced",
 }
 # v20 (B1): 死句中由 _death_sentence 嵌入的「（时主角驻X）」标注; v24 起改为
-# 受害者所在地「（死于X）」。档案行里两式标注都改独立行呈现, 故先从死句剥离。
-_STATION_RE = re.compile(r"（(?:时主角驻|死于)[^）]*）")
+# 受害者所在地「（死于X）」，v55 起改分句「，死于X」。档案行里标注都改独立行呈现,
+# 故先从死句剥离 —— 三种历史形态一并兼容 (旧缓存/旧快照仍可能带括注形态)。
+_STATION_RE = re.compile(r"(?:（(?:时主角驻|死于)[^）]*）|，死于[^，。；]*)")
 
 
 def _strip_station(s):
@@ -1033,9 +1035,10 @@ def _assassin_lead_line(k, facts=None, scope=None):
         disps = [d for d in disps if d]
         note = k.get("kin_note") or ""
         tail = "；".join(x for x in (note, db) if x)
-        return f"死者：{'、'.join(disps)}（{tail}）" if tail \
+        # v55 (问题2): 死者行去括注 —— 「死者：A、B，俱为X之子女；死于…」
+        return f"死者：{'、'.join(disps)}，{tail}" if tail \
             else f"死者：{'、'.join(disps)}"
-    return f"死者：{disp}（{db}）" if db and not F.is_unknown(db) \
+    return f"死者：{disp}，{db}" if db and not F.is_unknown(db) \
         else f"死者：{disp}"
 
 
@@ -1068,14 +1071,15 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
         disps = [d for d in disps if d]
         note = k.get("kin_note") or ""
         tail = "；".join(x for x in (note, db) if x)
-        lines.append(f"死者：{'、'.join(disps)}（{tail}）" if tail
+        # v55 (问题2): 去括注, 同 _assassin_kill_line
+        lines.append(f"死者：{'、'.join(disps)}，{tail}" if tail
                      else f"死者：{'、'.join(disps)}")
     elif db and not F.is_unknown(db):
         bd = k.get("birth") or ""
-        head = f"（生于{bd}，" if bd else "（"
-        lines.append(f"死者：{disp}{head}{db}）")
+        head = f"，生于{bd}，" if bd else "，"
+        lines.append(f"死者：{disp}{head}{db}")
     elif k.get("birth"):
-        lines.append(f"死者：{disp}（生于{k.get('birth')}）")
+        lines.append(f"死者：{disp}，生于{k.get('birth')}")
     else:
         lines.append(f"死者：{disp}")
     # v24: 受害者死前最近可知所在男爵领 — 击杀无案发地点, 以受害者位置为锚
@@ -1359,8 +1363,8 @@ def _article_facts(facts, cache, key, section=None):
             if sk == "lead" and key == "friend":
                 fcid, is_fallback = _pick_friend(cache, as_of=facts.get("as_of"))
                 if cid == fcid and is_fallback:
-                    blocks["说明"] = ("（传主与主角无结友记忆，本传按同朝共事之谊立传，"
-                                      "以传主生平为主。）")
+                    blocks["说明"] = ("传主与主角无结友记忆，本传按同朝共事之谊立传，"
+                                      "以传主生平为主。")
                 else:
                     rs = _relation_reasons(facts, cache, cid, _friend_types())
                     # v16: 游戏自带关系原因优先 (friend/soulmate/blood_brother)
@@ -1783,9 +1787,9 @@ def _shared_facts_block(facts):
         life_note = (f"【卒年】{llm.fmt_cn_date(death.get('date'))}，{rz}"
                      "——此为终传")
     elif facts.get("as_of"):
-        life_note = f"【现状】在世（截至{llm.fmt_cn_date(facts['as_of'])}）"
+        life_note = f"【现状】在世，截至{llm.fmt_cn_date(facts['as_of'])}"
     else:
-        life_note = "【现状】在世（截至最后一份存档）"
+        life_note = "【现状】在世，截至最后一份存档"
     # v20 (B3) / v29 (问题2): 【冒险者行踪】— 只记无地冒险者时期的营地阶段与驻地
     stations_txt = ""
     stations = facts.get("protagonist_stations") or []
@@ -2170,7 +2174,7 @@ def _assemble(facts, intro, leads, sections, articles):
     death = facts.get("player_death")
     span = ""
     if death:
-        span = f"死于{llm.fmt_cn_date(death.get('date'))}（终传）"
+        span = f"死于{llm.fmt_cn_date(death.get('date'))}，此为终传"
     else:
         cutoff = facts.get("as_of") or facts.get("last_date")
         span = f"截至{llm.fmt_cn_date(cutoff or '?')}"

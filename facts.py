@@ -2731,7 +2731,8 @@ class Facts:
                 lost_names.append(f"{verb}{nm}")
             prev_ids = ids
             if lost_names:
-                line += "（" + "、".join(lost_names) + "）"
+                # v55 (问题2): 失去缘由去括注 (旧稿「…夺得魏博镇（褫夺魏博镇）」)
+                line += "，并" + "、".join(lost_names)
             out.append(line)
         return out
 
@@ -3641,16 +3642,17 @@ class Facts:
         return None
 
     def marriage_lineality_note(self, a, b, wedding=None, before=None):
-        """成婚句/配偶行的程序补注 (v43 起, v51 简化): 母系婚 (入赘) 补「入赘婚」。
+        """成婚句/配偶行的程序补注 (v43 起, v51 简化, v55 去括注): 母系婚补「，是入赘婚」。
 
         只标异常那一档 (母系婚) —— 与游戏 UI 只对母系婚给出
         `MATRILINEAL_WARNING`「该婚姻所生子将属于X的家族」同一口径; 普通婚与判不
         出者返回 '' (句面即普通形态)。
 
-        v51 (用户拍板): 补注与普通婚一样只写线系名 —— 旧稿逐行写全
+        v51 (用户拍板): 补注只写线系名 —— 旧稿逐行写全
         「（入赘婚：所生子女随母方，属X氏）」太长, 且把母方家族名重复进每一处;
         「入赘婚」一词本身即含「所生子女随母方」之义 (CK3 简中同用此词),
         故不再另附家族名, 也不再依赖母方家族名解析成功。
+        v55 (问题2): 括注改分句 —— 句面成「X与Y成婚，是入赘婚。」(旧稿「…（入赘婚）。」)
 
         `wedding` = 成婚日 (传日历记忆的日期; 缺省由 `wedding_date` 回查),
         `before` = 本篇截止日 (十年传记不把尚未出生的子女算进判据)。"""
@@ -3662,7 +3664,7 @@ class Facts:
             wedding = self.wedding_date(a, b)
         if not self.is_matrilineal(a, b, after=wedding or None, before=before):
             return ""
-        return "（入赘婚）"
+        return "，是入赘婚"
 
     def _office_word(self, tier, government, independent=False, female=False, tid=None,
                      cid=None, date=None):
@@ -4447,7 +4449,7 @@ class Facts:
     def _house_label_at(self, cid, date=None):
         """某人**在该日**的家族称谓 (v44 问题1): 沿革点优先, 无沿革回退家族 id 现值。
 
-        v51: 入赘婚补注已简化为「（入赘婚）」, 不再随句下发母方家族名 —— 本方法
+        v51: 入赘婚补注已简化为「，是入赘婚」(v55 起不用括注), 不再随句下发母方家族名 —— 本方法
         暂时没有调用点, 保留以备将来要写「属X氏」时按篇截止日取词 (阿德尔海德
         1118 年别立冯·亚琛氏后, 末档篇不得再写「属诺兰氏」)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
@@ -5265,12 +5267,13 @@ class Facts:
                 # v34 (问题2): 乱伦等「对方不入档」的隐事判不出对象时退简式
                 return SECRET_TOPICS_NO_TARGET.get(tp, "隐情")
             # 模板未用对象 (科举舞弊/挪用国库…) 但有对象时并写, 便于区分同类隐事
-            return f"{tpl}（涉及{tname}）" if tname else tpl
+            # v55 (问题2): 去括注 —— 「科举舞弊，事涉唐皇帝李漼」
+            return f"{tpl}，事涉{tname}" if tname else tpl
         z = L.loc(self.table, tp) or ""
         if not z or re.search(r"[A-Za-z_]", z):
             return ""
         z = re.sub(r"者$", "", z)          # 类型名是名词 (考试舞弊者) — 去「者」成事
-        return f"{z}（涉及{tname}）" if tname else z
+        return f"{z}，事涉{tname}" if tname else z
 
     def _exam_level_for_secret(self, owner, first_seen):
         """科举隐事的考试级别 (v29, 问题6): 取该角色在**同一快照**首见的考试记忆。
@@ -5305,8 +5308,8 @@ class Facts:
         return exact or same_year or nearest
 
     def secret_sentence(self, rec, owner_label=None, self_cid=None):
-        """隐事句: 「陆荣廷有一桩隐事：科举舞弊（涉及唐皇帝李漼，自873年见载）。」
-        首档即见者不写年份; 主题自带括注时年份并入同一括号。"""
+        """隐事句: 「陆荣廷有一桩隐事：科举舞弊，事涉唐皇帝李漼，873年见于记载。」
+        首档即见者不写年份。v55 (问题2): 对象与见载年都不用括注, 依次作同句分句。"""
         if not isinstance(rec, dict):
             return ""
         topic = self.secret_topic(rec, self_cid=self_cid)
@@ -5319,14 +5322,14 @@ class Facts:
         s = f"{owner}有一桩隐事：{topic}"
         note = self._first_seen_note(rec)
         if note:
-            note = f"（{note}）"
-            # 主题自带括注 (科举舞弊（涉及X）) 时并入同一括号, 不叠两层括号
-            s = s[:-1] + f"，{note[1:]}" if s.endswith("）") else s + note
+            s += f"，{note}"
         return s + "。"
 
     def secret_knowers(self, rec, self_cid=None):
-        """知情者短语 (无句末句号): 「知情者：卢从度、从谠（同年）、孙元忠（自873年起）」;
+        """知情者短语 (无句末句号): 「知情者：卢从度，同年；孙元忠，自873年起」;
         无第三方知情者返回 ''。同年知情者并列共用一个年份 (省词元)。
+
+        v55 (问题2): 去括注 —— 年份改作「，同年」/「，自N年起」的并列分句, 以「；」相隔。
 
         v31 (问题7): 当事人不算知情者 — 参与者 (做下此事的人) 与持有人本就知道,
         把他们写成「知情者」只能引出同义反复 (「安乔为二子生父, 则其必知情」)。
@@ -5379,14 +5382,15 @@ class Facts:
             if not yr:
                 parts.append(who)
             elif seen and yr == seen:
-                parts.append(f"{who}（同年）")     # 年份已在「见载」处写过, 只写一次
+                # 年份已在「见载」处写过, 只写一次 (v55: 去括注, 作并列分句)
+                parts.append(f"{who}，同年")
             else:
-                parts.append(f"{who}（自{yr}起）")
-        return "知情者：" + "、".join(parts)
+                parts.append(f"{who}，自{yr}起")
+        return "知情者：" + "；".join(parts)
 
     def secret_line(self, rec, owner_label=None, knowers=True, self_cid=None):
-        """隐事一行 (v28b): 「{owner}有一桩隐事：{topic}（涉及X，自Y年见载）；
-        知情者：A、B（同年）。」— 隐事与知情者同句, 一眼看出谁知道了哪桩事。
+        """隐事一行 (v28b): 「{owner}有一桩隐事：{topic}，事涉X，Y年见于记载；
+        知情者：A，同年；B，自Z年起。」— 隐事与知情者同句, 一眼看出谁知道了哪桩事。
         v45 (档 B): 外层包一层出词登记 (整行一次登记 —— 一行一位持有人)。"""
         with self.log_names() as lg:
             out = self._secret_line_body(rec, owner_label=owner_label,
@@ -5439,9 +5443,8 @@ class Facts:
                 continue
             note = self._first_seen_note(r)
             if note:
-                # 主题自带括注 (科举舞弊（涉及X）) 时并入同一括号, 不叠两层
-                topic = topic[:-1] + f"，{note}）" if topic.endswith("）") \
-                    else topic + f"（{note}）"
+                # v55 (问题2): 去括注 —— 见载年作分句接在主题后 (旧稿并入同一括号)
+                topic += f"，{note}"
             kn = self.secret_knowers(r, self_cid=self_cid) if with_knowers else ""
             if kn:
                 topic += "，" + kn
@@ -5811,8 +5814,9 @@ class Facts:
         fout = []
         for r, nm in fnames[:8]:
             fs, la = r.get("first_seen"), r.get("lost_at")
+            # v55 (问题2): 起年由括注改为句首状语 (「自874年起，X没为Y的奴隶，至881年…」)
             since = "" if (r.get("first") or not fs) \
-                else "（{}起）".format(self._year_only(fs))
+                else "自{}起，".format(self._year_only(fs))
             end_y = self._year_only(la) if la else ""
             buyer = r.get("end_owner")
             bname = self.person_label(buyer, date=self.as_of, style="brief") \
@@ -5963,8 +5967,9 @@ class Facts:
             if not she or not the:
                 continue
             year = self._year_only(fs) if fs else ""
-            date = f"（{year}起）" if year and not rec.get("first") else ""
-            out.append(f"{she}视{the}为{word}{date}。")
+            # v55 (问题2): 去括注 —— 起年作句内状语 (「X自874年起视Y为…」)
+            since = f"自{year}起" if (year and not rec.get("first")) else ""
+            out.append(f"{she}{since}视{the}为{word}。")
         if not out:
             return {}
         return {"lines": sorted(set(out))[:10]}
@@ -7211,10 +7216,11 @@ class Facts:
             name, era = pair
         start = rec.get("start") or rec.get("date") or ""
         when = self.date(start) if start else ""
-        body = f"{name}（{era}）" if era else name
+        # v55 (问题2): 去括注 —— 时代类型作并列小句 (旧稿「新朝征服（危世），自919年8月2日」)
+        era_clause = f"，世属{era}" if era else ""
         if when:
-            return f"天命：{body}，自{when}"
-        return f"天命：{body}"
+            return f"天命：{name}{era_clause}，自{when}"
+        return f"天命：{name}{era_clause}"
 
     def assassination_method(self, killer_id, victim_id, date=None, reason_key=None):
         """暗杀死法 (v25): 泛化死因按池子取一具体手法, 稳定伪随机不漂移。
@@ -7909,11 +7915,13 @@ class Facts:
             if not nm:
                 continue
             start = int(str(h["from"]).split(".")[0])
+            # v55 (问题2): 去括注 —— 履历改主谓句 (旧稿「法华宗（880–895年）、
+            # 艾什尔里派（自896年起）」), 由调用方以「；」相连
             if i + 1 < len(hist):
                 end = int(str(hist[i + 1]["from"]).split(".")[0]) - 1
-                rows.append(f"{nm}（{start}–{end}年）")
+                rows.append(f"{start}年至{end}年信{nm}")
             else:
-                rows.append(f"{nm}（自{start}年起）")
+                rows.append(f"自{start}年起改信{nm}" if i else f"自{start}年起信{nm}")
         return rows
 
     def _culture_name_of_id(self, cul):
@@ -8161,7 +8169,8 @@ class Facts:
                 if _dyn:
                     z = _dyn
             if spans:
-                lines.append(f"{z}（{'；'.join(spans)}）")
+                # v55 (问题2): 去括注 —— 「诗人自921年起获得」(旧稿「诗人（自921年起获得）」)
+                lines.append(z + "；".join(spans))
         # v32 (问题2) / v52 (问题6): 轨道进档履历 — 「不法之徒·强盗（自872年起）」
         lines.extend(self.trait_level_history(cid))
         return lines
@@ -8236,7 +8245,8 @@ class Facts:
                 steps.append(f"自{yr}起" if i == 0 else f"{yr}益进")
             # 单轨特质的轨道名与特质名同源 (「老练的旅行者·老练的旅行者」) — 不叠
             name = f"{base}·{tn}" if len(tracks.get(key) or []) > 1 else base
-            lines.append(f"{name}（{'，'.join(steps)}）")
+            # v55 (问题2): 去括注 —— 「不法之徒·强盗自921年起，924年益进」
+            lines.append(name + "，".join(steps))
         return lines
 
     @staticmethod
@@ -8404,7 +8414,7 @@ class Facts:
         if not hist:
             return [], []
         latest = hist[-1].get("positions") or []
-        holder_roles = {}  # 任职者名 -> [角色句]; 保持花名册出现序
+        holder_roles = {}  # 任职者名 -> [(职位词, 授任日期)]; 保持花名册出现序
         order = []
         for p in latest:
             # v29: 职位显示名按游戏变体解析 (私人医生 → 医学博士)
@@ -8419,15 +8429,18 @@ class Facts:
             roles = holder_roles.setdefault(nm, [])
             if not roles:
                 order.append(nm)
-            roles.append(f"{zh}（自{hire}任）" if hire else zh)
+            roles.append((zh, hire))
         latest_lines = []
         for nm in order:
             roles = holder_roles[nm]
             # v23: 主语=任职者; 同人多职用「又任」递进, 避免「职位：人名」式
             # 履历错觉 (那会诱导模型把岗位归给主角本人)。
-            s = f"{nm}任{roles[0]}"
-            for r in roles[1:]:
-                s += f"，又任{r}"
+            # v55 (问题2): 授任日期去括注, 改为「自X起任…」的句内状语
+            # (旧稿「郭季良任虞人（自929年12月24日任），又任太师（自926年8月14日任）」)。
+            zh0, hire0 = roles[0]
+            s = f"{nm}自{hire0}起任{zh0}" if hire0 else f"{nm}任{zh0}"
+            for zh, hire in roles[1:]:
+                s += f"，{hire}起又任{zh}" if hire else f"，又任{zh}"
             latest_lines.append(s)
         # 任免变化: 相邻快照 (type, employee) 集合差集 → 上任/卸任
         change_lines = []
@@ -8528,10 +8541,13 @@ class Facts:
                 continue
             held = W["office_held"].format(employer=elab or "朝廷", word=word)
             if len(hires) == 1:
-                held += W["office_since"].format(date=hires[0])
+                # v55 (问题2): 去括注 —— 「自869年6月28日起任唐皇帝李漼之太师」
+                held = W["office_held_since"].format(
+                    date=hires[0], employer=elab or "朝廷", word=word)
             else:
-                held += W["office_since_multi"].format(
-                    dates="、".join(hires), n=_count_zh(len(hires)))
+                held = W["office_held_multi"].format(
+                    n=_count_zh(len(hires)), employer=elab or "朝廷", word=word,
+                    dates="、".join(hires))
             if item["last_loss"]:
                 held += W["office_lost_late"].format(year=item["last_loss"])
             latest_lines.append(held)
@@ -9158,7 +9174,8 @@ def _mem_sentence_body(f, owner_id, mem):
                     and who != owner_id and kfather != owner_id:
                 wname = f.event_name(who, date=f.as_of) or f.name_or(who)
                 if wname:
-                    tpl = tpl.rstrip("。") + "（生父{fname}）。"
+                    # v55 (问题2): 去括注 —— 「添子X，生父Y。」
+                    tpl = tpl.rstrip("。") + "，生父{fname}。"
                     extra_fname = wname
     # v21: 刑虐记忆按酷刑类型渲染 (阉割/致盲/毁容/断臂/断腿…, 含受害者名) —
     # 大事记/年表此前只写「施刑/受刑」, 具体酷刑事迹丢失 (王晧 1190 被阉)。
@@ -9240,12 +9257,12 @@ def _mem_sentence_body(f, owner_id, mem):
     s = s.replace("与。", "。").replace("与，", "，").replace("与、", "、")
     s = s.replace("让出。", "让出领地。")
     s = s.replace("得。", "登位。")
-    # 未补出父亲时不留空括注
+    # 未补出父亲时不留空分句 (v55: 补注已由括注改为「，生父X」)
     if not extra_fname:
-        s = s.replace("（生父）。", "。").replace("（生父）", "")
-    # v43: 成婚句补婚姻线系 —— 母系婚 (入赘) 补「入赘婚」,
+        s = s.replace("，生父。", "。").replace("，生父", "")
+    # v43: 成婚句补婚姻线系 —— 母系婚补「，是入赘婚」,
     # 普通婚与判不出者句面不变 (与游戏 UI 只标母系那一档同口径; v51 简化见
-    # marriage_lineality_note)。
+    # marriage_lineality_note; v55 去括注)。
     if mem.get("type") == "married" and other_id is not None:
         note = f.marriage_lineality_note(owner_id, other_id,
                                          wedding=mem.get("creation_date"))
@@ -9397,13 +9414,15 @@ def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False):
                 s = s.rstrip("。") + note + "。"
         vp = f.victim_place(cid)
         if vp:
-            s = s.rstrip("。") + f"（死于{vp}）。"
+            # v55 (问题2): 去括注 —— 「，死于长安。」
+            s = s.rstrip("。") + f"，死于{vp}。"
     return s
 
 
 def _victim_marks(f, cid):
-    """受害者补注「（1073年生，爱沙尼亚人，信东正教）」; 无料返回 ''。
-    v28 起用于谋杀句, v42 (问题5) 起死亡记录句共用 (两者在年表里互为替代)。"""
+    """受害者补注「，1073年生，爱沙尼亚人，信东正教」; 无料返回 ''。
+    v28 起用于谋杀句, v42 (问题5) 起死亡记录句共用 (两者在年表里互为替代)。
+    v55 (问题2): 去括注 —— 补注作同句分句 (旧稿「（1073年生，…）」)。"""
     drec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     by = str(drec.get("birth") or "").split(".")[0] or ""
     cul = f.culture(cid)
@@ -9415,7 +9434,7 @@ def _victim_marks(f, cid):
         mark.append(cul)
     if not is_unknown(fai):
         mark.append(f"信{fai}")
-    return f"（{'，'.join(mark)}）" if mark else ""
+    return ("，" + "，".join(mark)) if mark else ""
 
 
 # v14: 30 个戏剧性模块 — 十年小传按主题切片的事实组织 (研究_戏剧模块化.md)。
@@ -10592,7 +10611,7 @@ def _timeline(f):
                         # 不再用主角驻地 (主角驻地 ≠ 案发地)。
                         vp = f.victim_place(dead)
                         if vp:
-                            s = s.rstrip("。") + f"（死于{vp}）。"
+                            s = s.rstrip("。") + f"，死于{vp}。"
                         old = deaths.get(dead)
                         if old is None or 2 > old[0]:
                             deaths[dead] = (2, mem.get("creation_date"),
@@ -11362,6 +11381,7 @@ def _protagonist(f):
 
     def _annotate(ids, lineality=False):
         out = []
+        noted = False
         for sid in ids:
             nm = f.kin_label(sid, f.as_of)
             if not nm:
@@ -11372,14 +11392,18 @@ def _protagonist(f):
                                  ("concubine", "妾"), ("former_spouses", "前妻"),
                                  ("former_concubines", "前妾")):
                     if sid in (fd_fam.get(k) or []):
-                        note = (f"（原为父{f.kin_label(father_id, f.as_of)}"
-                                f"之{label}）")
+                        # v55 (问题2): 去括注 —— 补注作同句分句, 故并列改用「；」
+                        note = (f"，原为父{f.kin_label(father_id, f.as_of)}"
+                                f"之{label}")
                         break
             # v43: 母系婚 (入赘) 的配偶行补线系与子女归属
             if lineality:
                 note += f.marriage_lineality_note(pid, sid, before=f.as_of)
+            if note:
+                noted = True
             out.append(nm + note)
-        return "、".join(out)
+        # 有人带补注时并列用「；」, 免与补注内的「，」相混
+        return ("；" if noted else "、").join(out)
 
     spouse_ids = list(dict.fromkeys(
         _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
@@ -11729,7 +11753,7 @@ def _realm_facts(f):
             # v38 (问题3): 链顶是主角自己 → 点明自立, 免得模型把「自己的政权」
             # 与同表里的唐/青徐混为一谈
             top_hid = chain[-1][1]
-            tail = "（自立，上无领主）" if top_hid == pid else ""
+            tail = "，自立，上无领主" if top_hid == pid else ""
             out["liege_chain"] = " → ".join(parts) + tail
     # 高位头衔持有者变化 (h_/e_/k_): title history 精确日期为主, realm_history 快照兜底;
     # 头衔名按任期 (v11: 唐皇朝 → 周皇朝 更名可见, 882 的「周皇朝」错标即由此根除)。
@@ -11859,12 +11883,13 @@ def _realm_facts(f):
         vassal_groups.setdefault(sup, []).append(tid)
 
     def _group_suffix(tid):
-        """该头衔的宗主标注: 「（唐皇朝封臣）」; 无宗主 (自成一国) 不给标注。"""
+        """该头衔的宗主标注: 「，为唐皇朝封臣」; 无宗主 (自成一国) 不给标注。
+        v55 (问题2): 去括注, 作同句分句。"""
         sup = liege_of.get(tid)
         if sup is None:
             return ""
         nm = _simple_name(sup)
-        return f"（{nm}封臣）" if nm else ""
+        return f"，为{nm}封臣" if nm else ""
 
     def _simple_name(tid):
         """头衔的**宗室/朝廷通称** —— 按 span_end 的时任持有者取 (h_china → 「唐皇朝」)。
@@ -11952,7 +11977,7 @@ def _realm_facts(f):
         snm = _base_name(sup) or _simple_name(sup)
         if not snm:
             continue
-        changes.append(f"{snm}朝廷所辖（同一朝廷）：" + "、".join(names))
+        changes.append(f"{snm}朝廷所辖，同属一廷：" + "、".join(names))
     # 排序: 上位链头衔在前 (按层级降序), 其余按最后更替日期降序 (近期先)
     def _sort_key(ln):
         nm = ln.split("：", 1)[0]
@@ -12780,7 +12805,7 @@ def _killed_by_player(f):
                 if mdd.get("killer") == pid:
                     vp = f.victim_place(cid)
                     if vp:
-                        ds = ds.rstrip("。") + f"（死于{vp}）。"
+                        ds = ds.rstrip("。") + f"，死于{vp}。"
         _ddate = (prof.get("death") or {}).get("date")
         entry = {
             "id": cid,
@@ -12967,7 +12992,7 @@ def _protagonist_stations(f):
             base = f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else "")
             if base:
                 items.append((cl.date_key(g),
-                              f"{f.date(g)}任{base}（无地冒险者营地）"))
+                              f"{f.date(g)}任无地冒险者营地之{base}"))
     # 2) 驻地轨迹: 只取落在营地区间内的 location (旅行落点一律不收)
     hist = cache.get("player_locations") or []
     if f.as_of:
@@ -13077,7 +13102,8 @@ def _plague_facts(f):
             continue
         head = f"{f.date(created)}，{label}"
         if where:
-            head += f"（{where}）"
+            # v55 (问题2): 去括注 —— 「…，赤烈咳，属肺痨，轻疫」
+            head += f"，属{where}"
         if intensity:
             head += f"，{intensity}"
         bits = [head]
@@ -13137,7 +13163,7 @@ def _genealogy(f):
     fem = f._is_female(pid)
     lines = []
     pname = f.name_or(pid)
-    lines.append(f"一世 {pname}（{f.date(rec.get('birth'))}生）")
+    lines.append(f"一世 {pname}，{f.date(rec.get('birth'))}生")
     spouses = [x for x in (fam.get("primary_spouse") or [])]
     side = [x for x in (fam.get("spouse") or []) if x not in set(spouses)]
     rows = [("father", "父"), ("mother", "母")]
@@ -13255,8 +13281,8 @@ def _secrets_facts(f):
                 continue
             note = f._first_seen_note(r)
             if note:
-                # 主题自带括注 (科举舞弊（涉及X）) 时并入同一括号, 不叠两层
-                t = t[:-1] + f"，{note}）" if t.endswith("）") else t + f"（{note}）"
+                # v55 (问题2): 去括注 —— 见载年作分句接在主题后
+                t += f"，{note}"
             topics.append(t)
         if not topics:
             continue
