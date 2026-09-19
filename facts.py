@@ -1708,6 +1708,58 @@ class Facts:
             return "founded"
         return "restored"
 
+    # v54 (问题4): 年表标题记忆闸的两条判据
+    _TENURE_ZERO_DAY_TOL = 2   # 记忆日与 title history 事件日的容差 (游戏次日才落记忆)
+    _MINISTER_KEY_PREFIX = "e_minister_"
+
+    def is_landless_office_title(self, tid):
+        """无地官署头衔? (三省六部/御史台/枢密院, v54)
+
+        游戏定义在 `common/landed_titles/02_china.txt` 写 `landless = yes`，但**存档的
+        landed_titles 条目不落该字段**（实测 melt_924：`e_minister_of_rites` 无 landless/
+        definite_form 键，而 `x_nf_*` 家业有）—— 故按 key 前缀判定，与 v53 戏剧块同判据。"""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        return key.startswith(self._MINISTER_KEY_PREFIX)
+
+    def title_rank_since_at(self, cid, date):
+        """角色在 date 的 (最高头衔层级 rank, 该头衔的执政起始日)。
+
+        v54 (问题3d): 同日囚禁集群折叠后的**取名排序**用 —— 用户规则
+        「只显示头衔最高，按执政时间排序前 5 人」。无头衔返回 (0, '')。"""
+        if cid is None or not date:
+            return 0, ""
+        try:
+            _tier, tid = self._primary_title_at(cid, as_of=date)
+        except Exception:
+            return 0, ""
+        if tid is None:
+            return 0, ""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        rank = self._TT_RANK.get(key[:2], 0)
+        since = ""
+        for (g, _l, _lt) in (self._hold_intervals(cid, date) or {}).get(tid) or []:
+            if g and (not since or cl.date_key(g) > cl.date_key(since)):
+                since = g
+        return rank, since
+
+    def title_tenure_zero_day(self, cid, tid, date):
+        """该头衔在 date 这次取得是否为「零日在位」(v54 问题4)。
+
+        天朝制天子造衔即封人（`create_title_and_vassal_change` → 同日 `change_title_holder`）
+        与三省六部置官同形：title history 同日 `created/本人` → `appointment/朝臣`，
+        持有区间 gain == loss。这种「在位 0 日」的得衔是**封拜**，不是本人的任期，
+        年表不该写「重建X王国」。记忆日与事件日容差 `_TENURE_ZERO_DAY_TOL` 天。"""
+        if cid is None or tid is None or not date:
+            return False
+        for (gain, loss, _lt) in (self._hold_intervals(cid) or {}).get(tid) or []:
+            if not gain or not loss:
+                continue
+            if _date_ord(gain) != _date_ord(loss):
+                continue
+            if abs(_date_ord(gain) - _date_ord(date)) <= self._TENURE_ZERO_DAY_TOL:
+                return True
+        return False
+
     # v34b: 头衔得失句的**事件日** — 游戏在头衔变动次日才落记忆
     # (title_event.9900 的 cooldown=1 天), 故 creation_date 常晚 0~1 天;
     # title history 的条目日期才是事件当天 (柳特佩特: d_salerno 历史 874.4.25 /
@@ -1875,7 +1927,7 @@ class Facts:
                 break
             holder = self._holder_at_or_now(t, cur, date)
             if isinstance(holder, int):
-                gov = self._character_government(holder, date)
+                gov = self._character_government_or_earliest(holder, date)
                 if gov:
                     break
             liege = t.get("de_facto_liege")
@@ -1977,6 +2029,25 @@ class Facts:
         c = self._chars.get(str(cid)) or {}
         return (c.get("landed_data") or {}).get("government") or ""
 
+    def _character_government_or_earliest(self, cid, date):
+        """角色在 date 的政体; 早于逐档政体史起点时, **仅当天朝链政体**取已知最早值。
+
+        v54 (问题1b): 斯卡利茨档马丁的 `char_government_history` 起点是 919.1.1，
+        而 910/918 的任期全在起点之前 —— `_character_government` 按 v41 纪律返回 ''
+        （「宁可不取词, 也不拿末档政体冒充历史」），头衔层级词于是退成通用 王国/帝国，
+        与同一天的官职词（`_gov_for_word` 有 v47 兜底，出「节度使/观察使」）自相矛盾。
+        天朝制在 TGP 全期是**同一个制度**（不随时间演化），故这一档按已知最早值回填;
+        封建→行政这类**会变的**政体仍返回 ''，v41 的诺兰反例不动
+        （详见方案 §9 风险处置与 `_dead_flavor_consistent` 的既有纪律）。"""
+        gov = self._character_government(cid, date)
+        if gov or not date:
+            return gov
+        hist = self._gov_history(cid)
+        if not hist:
+            return ""
+        first = hist[0].get("government") or ""
+        return first if first in self._CELESTIAL_CHAIN_GOVS else ""
+
 
     def _dead_flavor_consistent(self, fkey, cid, date):
         """存档烘死的职称键 (`dead_data.flavor`) 与该日政体是否自洽 (v41, 问题1)。
@@ -2008,7 +2079,13 @@ class Facts:
         """头衔 id → 中文名 + 动态层级词合并: '复兴党流亡委员会' / '开罗伯爵领' /
         '埃及王国' / '图伦苏丹国' / '阿拔斯哈里发国' / '宋大路' / '中华天朝'(霸权级)。
         v41: date 锚点 — 层级词按该日持有者政体取 (封建期「公国」/ 行政期「军区」)。
-        名字取值: custom → name → 本地化表 → key; 无地营地 (x_) 只给名字。
+        名字取值: **该日动态名**（specific_title_name → title_history_names 国号 →
+        custom → name → 本地化表 → key）; 无地营地 (x_) 只给名字。
+        v54 (问题2): 名字改走 `_name_at_date` —— 旧稿只读静态 `custom/name`，
+        于是天朝国号（h_china/e_lingnan 的 `title_history_names`）永远取不到，
+        918 年该叫「桂」的头衔被写成默认名「岭南」（模型据此写出「受任岭南帝国」）。
+        v54 (问题1b): 持有者取**该日期时任者**（旧稿一律用末档 holder），层级词收口到
+        `_title_tier_word`（天朝链：皇帝兼领=国 / 臣子受任=路）。
         v8: 头衔名与层级词直接合并 (布列塔尼公国), 名字已含层级词时不追加
         (神圣罗马帝国); 霸权级 h_ 仅天朝制启用「天朝」词 (罗马帝国等不加后缀)。
         v8.1: 伊斯兰统治者 (最高领主) 的国名按游戏同规则显示为「家族+层级词」——
@@ -2020,11 +2097,11 @@ class Facts:
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
         tnd = t.get("title_name_data") or {}
-        name = (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()
-        if not name:
-            name = L.loc(self.table, key)
-        if not name:
-            name = key
+        # v54: 动态国号优先 (title_history_names) —— 静态 custom/name 只作兜底
+        name = self._name_at_date(tid, date) \
+            or (tnd.get("custom") or "").strip() \
+            or (tnd.get("name") or "").strip() \
+            or L.loc(self.table, key) or key
         if key.startswith("x_"):  # 无地营地/教团等特殊头衔: 只给名字
             return self._specific_name(tid) or name
         # v52 (问题2): 无地冒险者营地 (`d_laamp_*`) 的层级词取游戏键
@@ -2052,14 +2129,12 @@ class Facts:
                 break
         if tier:
             gov = self._title_government(tid, date)
-            # v30: 先查游戏 flavorization 的 type=title 词 (问题2) — 诺斯公国头衔名
-            # 后缀为「雅尔国」(county_feudal_norse, 块内 tier 同为 duchy) 而非「公国」
+            # v54 (问题1b): 层级词按该日**时任持有者**取 (旧稿传末档 holder,
+            # 于是 910 年的任期按 924 年的持有者判独立性/文化/最高领主)
+            holder = self._holder_at_or_now(t, tid, date)
             word = ""
             if not (key.startswith("h_") and gov != "celestial_government"):
-                word = self._flavor_word("title", tier, t.get("holder"), tid=tid,
-                                         gov=gov, date=date)
-            if not word:
-                word = L.tier_word(self.table, gov, tier)
+                word = self._title_tier_word(tier, holder, tid, gov, date)
             # 霸权级 (h_): 仅天朝制启用「天朝」; 其它政体 h_ 不加后缀
             if key.startswith("h_") and gov != "celestial_government":
                 word = ""
@@ -2098,6 +2173,63 @@ class Facts:
 
     _TT_RANK = {"h_": 6, "e_": 5, "k_": 4, "d_": 3, "c_": 2, "b_": 1, "x_": 0}
 
+    # v54 (问题1b): 走「天朝层级词链」的政体 —— 与 `*_celestial_chinese_*` 条目
+    # `governments` 列表同集。**不含 administrative_government**：行政制自己有
+    # 军区/分区/行省/督军区等带 governments 条件的条目，不该被天朝词覆盖。
+    _CELESTIAL_CHAIN_GOVS = {"celestial_government", "meritocratic_government",
+                              "steppe_admin_government"}
+
+    def _celestial_chain_word(self, tier, government, independent):
+        """天朝层级词链: 皇帝兼领=国 / 臣子受任=路 (v54)。
+
+        游戏 `*_celestial_chinese_independent` 条目带 `name_lists = { name_list_han }`，
+        非汉人天子（斯卡利茨档马丁是捷克人）落不进，于是退到无条件通用条目
+        `kingdom`(45)=**王国** / `empire`(100)=**帝国** / `duchy`=公国 —— 与 v38
+        「皇帝兼领=国、臣子受任=路」的定规冲突，也是用户问题 1b 的直接成因。
+        本项目对天朝词早已采「与文化无关」口径（`_office_word`：诺斯伯爵在中国亦为刺史），
+        故此处直接查天朝链键，不经 flavorization 的姓名系门。不适用返回 ''。"""
+        if government not in self._CELESTIAL_CHAIN_GOVS:
+            return ""
+        if tier == "hegemon":
+            key = "hegemony_celestial_chinese"
+        elif independent and tier in ("empire", "kingdom", "duchy"):
+            key = f"{tier}_celestial_chinese_independent"
+        else:
+            key = f"{tier}_celestial_chinese_vassal"
+        v = L.loc(self.table, key)
+        if v and not v.startswith("$") and not v.startswith("["):
+            return v
+        return ""
+
+    def _title_tier_word(self, tier, cid, tid, government, date,
+                         independent=None):
+        """头衔层级词统一收口 (v54)。
+
+        顺序:
+          ① flavorization 的**专属**条目（带 `governments` 条件）—— 行政制军区/分区、
+             诺斯雅尔国、天朝观察使/都护府、可汗国等，一律按游戏规则优先；
+          ② 命中**通用条目**（无 governments，如裸 `kingdom`/`empire`/`duchy`）时，
+             政体属天朝链则改用天朝链词（国/路/军/镇/州府/行台/皇朝）—— 见
+             `_celestial_chain_word`；
+          ③ 本地化表的政体层级词（缺失回退通用 王国/帝国/公国/伯爵领/堡/皇朝）。"""
+        if independent is None:
+            independent = self._is_independent(cid, date) if cid is not None else True
+            if independent is None:
+                independent = False
+        if cid is not None:
+            fk = self._flavor_key("title", tier, cid, tid=tid, gov=government,
+                                  date=date)
+            if fk:
+                e = (FZ.table().get("entries") or {}).get(fk) or {}
+                if e.get("governments"):
+                    v = L.loc(self.table, fk)
+                    if v and not v.startswith("$") and not v.startswith("["):
+                        return v
+        w = self._celestial_chain_word(tier, government, bool(independent))
+        if w:
+            return w
+        return L.tier_word(self.table, government, tier)
+
     def _tier_word_at(self, tid, government, independent=False, cid=None, date=None):
         """头衔层级词 (v11): 天朝制独立王国用「国」(青徐国), 其余沿用政体层级词
         (皇朝/路/镇/州府…), 缺失回退通用词。
@@ -2107,7 +2239,8 @@ class Facts:
         天朝制独立王国特例与政体层级词表。行政制的「军区／分区／督军区」、
         诺斯的「雅尔国」等文化/政体专属层级词由此按游戏规则取到,
         而不再依赖 `tier_word` 里那张把**封臣契约俸禄档**当层级词的错误回退表
-        (见 logs/research_admin_titles.md)。"""
+        (见 logs/research_admin_titles.md)。
+        v54 (问题1b): 三级顺序收口到 `_title_tier_word`（专属条目 → 天朝链 → 政体词）。"""
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         tier = ""
         for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
@@ -2119,16 +2252,8 @@ class Facts:
         # v52 (问题2): 营地层级词走游戏键 (营地), 不吃 flavorization 的封建层级词
         if self.title_kind(tid) == "camp":
             return self._camp_tier_word(tid)
-        if cid is not None:
-            w = self._flavor_word("title", tier, cid, tid=tid, gov=government,
-                                  date=date)
-            if w:
-                return w
-        if government in self._CELESTIAL_LIKE_GOVS and tier == "kingdom" and independent:
-            v = L.loc(self.table, "kingdom_celestial_chinese_independent")
-            if v and not v.startswith("$") and not v.startswith("["):
-                return v
-        return L.tier_word(self.table, government, tier)
+        return self._title_tier_word(tier, cid, tid, government, date,
+                                     independent=independent)
 
     def _specific_name(self, tid):
         """游戏算好的动态头衔名 (v26): 游牧/宗族命名领域的领域名, 如
@@ -5368,19 +5493,32 @@ class Facts:
         return word
 
     def domain_titles(self, dom):
-        """直辖头衔折叠 (v31, 问题8): 返回 (保留 id 列表, 被折叠的首府男爵领集)。
+        """直辖头衔折叠 (v31 问题8 / v54 问题1): 返回 (保留 id 列表, 被折叠的首府男爵领集)。
 
         伯爵领的首府男爵领 (存档 `capital_barony = true`, 且其 `capital` 即所辖
         伯爵领) 由所辖伯爵领自然蕴含 — 与伯爵领并列会把一处领地写成两处
-        (「贝阿恩伯爵领、波城男爵领」)。首府另由「治所」句写一次。"""
+        (「贝阿恩伯爵领、波城男爵领」)。首府另由「治所」句写一次。
+
+        v36 (用户拍板5): 男爵领 (rank 1) 一律不进直辖清单 — 头衔材料最低取到州府。
+
+        v54 (用户拍板, 2026-09-18): 直辖清单 = **最高头衔**（同最高层级全留）
+        + **实控伯爵领**。理由（用户口径）: 公国/王国之下必须有封臣才能产出租税
+        与兵员, 只有伯爵领是可直接经营的层级 —— 次级 k_/d_ 头衔不是「实控领地」,
+        并列会让档案变成报菜名（马丁 26 地里有 11 王国 + 6 公国）；它们已由
+        「历任」与《朝局风云录》承担。
+        家业 (`x_nf_*`) 只在**一个伯爵领都没有**时保留 —— 与 v41b「有地领主不写
+        庄园句」同纪律（有地时主线走政体/历任，家业另有《家室列传》承担）。"""
         ids = [int(t) for t in (dom or []) if isinstance(t, int)]
         held = set(ids)
+
+        def _rank(tid):
+            return self._TT_RANK.get(
+                ((self._lt.get(str(tid)) or {}).get("key") or "")[:2], 0)
+
         keep, folded = [], set()
         for tid in ids:
             t = self._lt.get(str(tid)) or {}
-            # v36 (用户拍板5): 男爵领 (rank 1) 一律不进直辖清单 — 头衔材料最低取到州府;
-            # 首府男爵领由所辖州府蕴含, 其余男爵领 (如慈州之文城县) 亦不再并列。
-            if self._TT_RANK.get((t.get("key") or "")[:2], 0) == 1:
+            if _rank(tid) == 1:      # v36: 男爵领由所辖州府蕴含
                 folded.add(tid)
                 continue
             cap = t.get("capital")
@@ -5389,7 +5527,19 @@ class Facts:
                 folded.add(tid)
                 continue
             keep.append(tid)
-        return keep, folded
+        # v54: 只留最高层级 + 伯爵领 (家业在无伯爵领时才留)
+        top = max((_rank(t) for t in keep), default=0)
+        has_county = any(_rank(t) == 2 for t in keep)
+        out = []
+        for tid in keep:
+            rank = _rank(tid)
+            if rank == 2 or rank == top:
+                out.append(tid)
+            elif rank == 0 and not has_county:
+                out.append(tid)      # 纯世族: 家业即其全部「地」
+            else:
+                folded.add(tid)
+        return out, folded
 
     def consort_affairs(self, cid, spouses=None):
         """妻室情事脉络 (v31, 问题4): [{spouse, spouse_label, partner, identity, arc}]。
@@ -6927,8 +7077,50 @@ class Facts:
             return False
         return str(date) in self._purge_dates(killer_id)
 
-    def family_purge_summaries(self, killer_id):
-        """诛灭世族的族级摘要: 「920年1月24日诛灭秦氏、裴氏等 36 族，处死家主 36 人」。"""
+    def family_purge_victims(self, killer_id):
+        """诛灭世族涉及者 id 集 (v54 问题3): 该日被处决者 + 被驱逐者。
+
+        互动 `celestial_extinguish_noble_family_interaction`（与事件
+        `tgp_east_asia_interaction_events.2000`）的实际动作是**先尽囚、后驱逐**：
+        对 recipient 的 `every_close_or_extended_family_member` 与 `every_spouse`
+        **一律** `imprison = { type = house_arrest }`，随后处死 recipient、其余驱逐
+        （存档留 `purged_banishment_opinion`）。所以存档里这一件事同时产出
+        36 条处决与 ~94 条囚禁+释放 —— 年表逐人成行会塞满（马丁终传 920.1.24 有 85 行）。"""
+        if killer_id is None:
+            return set()
+        kid = int(killer_id)
+        dates = self._purge_dates(kid)
+        if not dates:
+            return set()
+        out = set()
+        for cid, c in self._chars.items():
+            if not isinstance(c, dict):
+                continue
+            dd = c.get("dead_data") or {}
+            if dd.get("reason") == "death_execution" and dd.get("killer") == kid \
+                    and str(dd.get("date") or "") in dates:
+                out.add(int(cid))
+        for o in (self.melt.get("opinions") or {}).get("active_opinions") or []:
+            if not isinstance(o, dict):
+                continue
+            if o.get("owner") != kid and o.get("target") != kid:
+                continue
+            for v in cl._opinion_values(o):
+                if v.get("modifier") not in self._PURGE_OPINION:
+                    continue
+                if str(v.get("start_date") or "") not in dates:
+                    continue
+                for who in (o.get("owner"), o.get("target")):
+                    if isinstance(who, int) and who != kid:
+                        out.add(int(who))
+        return out
+
+    def family_purge_events(self, killer_id):
+        """诛灭世族的族级**事实行** [{"date", "text"}] (v54)。
+
+        供两处共用: 年表插入（整件事一行）+《刺客列传》名录前的摘要。
+        被驱逐者**不列名** —— 互动里凡有地者一律处决，被流放的必是无地残党，
+        逐人开列只是噪声（用户 2026-09-18 拍板：直接写「剩余残党被流放」）。"""
         if killer_id is None:
             return []
         kid = int(killer_id)
@@ -6962,11 +7154,16 @@ class Facts:
             shown = "、".join(houses[:6])
             if n > 6 and shown:
                 shown += "等"
-            if shown:
-                out.append(f"{self.date(d)}诛灭{shown} {n} 族，处死家主 {len(items)} 人")
-            else:
-                out.append(f"{self.date(d)}诛灭世族 {n} 族，处死家主 {len(items)} 人")
+            head = f"诛灭{shown} {n} 族" if shown else f"诛灭世族 {n} 族"
+            out.append({"date": d,
+                        "text": f"{head}，处死家主 {len(items)} 人，剩余残党被流放"})
         return out
+
+    def family_purge_summaries(self, killer_id):
+        """族级摘要文本列表 (《刺客列传》名录前用), 见 `family_purge_events`。
+        句首带日期 —— 该处不经年表的「句首补日期」组装。"""
+        return [f"{self.date(e['date'])}{e['text']}"
+                for e in self.family_purge_events(killer_id)]
 
     _CYCLE_ERA = {
         "situation_dynastic_cycle_phase_stability_expansion":
@@ -8976,13 +9173,17 @@ def _mem_sentence_body(f, owner_id, mem):
         return tpl2.format(owner=owner, other=other)
     title = ""
     title_tid = None
+    _td = None
     if mem.get("type") in TITLE_VAR_TYPES:
+        # v34b: 头衔得失句用 **title history 事件日** (记忆日常晚一天)
+        _td = f.mem_date(owner_id, mem) or mem.get("creation_date")
         for v in mem.get("vars") or []:
             if v.get("flag") == "landed_title" and v.get("identity"):
                 title_tid = v.get("identity")
-                # v53: 开创/重建按事件日取头衔名 (h_china 8.2 用次日国号秦皇朝)
-                title = f.title(title_tid, date=mem.get("creation_date")) \
-                    or f.title(title_tid)
+                # v53/v54: 名字与层级词一律按事件日取 —— `title()` 自 v54 起
+                # 读该日动态国号 (title_history_names) 与天朝链层级词,
+                # 故 created/appointment/conquest 共用一条取值链, 不再分叉。
+                title = f.title(title_tid, date=_td) or f.title(title_tid)
                 break
     # v28: 头衔得失按 reason 出词 (受任/承袭/受封/攻取…; 卸任/失守/被褫夺…),
     # reason 缺失时回退旧模板 (登位，得X / 让出X)。
@@ -9001,8 +9202,6 @@ def _mem_sentence_body(f, owner_id, mem):
                 _kind = f.created_verb_kind(
                     title_tid, owner_id, mem.get("creation_date"))
                 verb = TITLE_GAIN_CREATED_VERBS.get(_kind) or verb
-                title = f._title_name_at(
-                    title_tid, mem.get("creation_date"), owner_id) or title
             if verb:
                 # v36 (用户拍板4): 他人授予的头衔补「被谁任命/授予」(动词按授予方政体)
                 if owner_id is not None and title_tid is not None \
@@ -9898,6 +10097,8 @@ def _pair_imprisonments(events, f, pid, pname=""):
             W = _style.FACT_WORDING
             body = W["prison_jailed"].format(jailer=jn, victim=vn) if jn \
                 else W["prison_held"].format(victim=vn)
+            head = body          # v54: 句首「X囚禁Y」—— 尾巴即结局, 折叠按尾巴分组
+            o_kind = "other"     # v54: 结局**族** (同日折叠的一致性判据)
             # v35 (问题4): 出狱缘由先问「这一步是不是没为奴隶」——
             # Carnalitas 的 carn_enslave_effect 在奴役的同一刻 release_from_prison,
             # 所以那句「释放」记忆常是「没为奴隶」而不是「获释」。
@@ -9918,21 +10119,26 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     body += W[pun[0]].format(
                         sp=W["prison_same_day"] if same else f"{span}后",
                         jailer=jn)
+                    o_kind = "punished"
                 elif owned is not None and not out.get("escape"):
                     body += W["prison_enslaved"]
+                    o_kind = "enslaved"
                 elif out.get("escape"):
                     # v32: 越狱者不在「获释」之列 —— 出狱方式按记忆型分词
                     body += W["prison_escape_same_day"] if same else (
                         W["prison_escaped"].format(span=span) if span
                         else W["prison_escape_on"].format(date=f.date(out["date"])))
+                    o_kind = "escape"
                 else:
                     body += W["prison_released_same_day"] if same else (
                         W["prison_released"].format(span=span) if span
                         else W["prison_release_on"].format(
                             date=f.date(out["date"])))
+                    o_kind = "released"
             elif owned is not None:
                 # 无释放记忆、但在押期间已没为奴隶 → 出狱缘由即此
                 body += W["prison_enslaved"]
+                o_kind = "enslaved"
             else:
                 # v42 (问题6): 囚期以**死亡**收口 —— 受害者有死亡记录 (日期不早于
                 # 入狱日) 而释放/越狱/狱史皆无证据时, 写出死期与死法; 旧稿一律写
@@ -9952,16 +10158,30 @@ def _pair_imprisonments(events, f, pid, pname=""):
                             or dd.get("killer") == r["jailer"]) \
                         else "prison_died_in_prison"
                     body += W[key].format(sp=sp)
+                    o_kind = ("executed" if key == "prison_died_executed"
+                              else "died_in_prison")
                 else:
                     # v34 (问题7): 记得到此为止 — 释放记忆、狱史与死亡记录三者皆无
                     # 时, 程序把「此后如何」说全, 不把沉默留给模型去补
                     # (旧稿此处留白, 模型把囚期留白补成了「获释」)。
                     body += W["prison_still_held"]
+                    o_kind = "held"
             e = events[r["idx"]]
             e["text"] = f"{f.date(r['date'])}，{body}。"
             e["type"] = "imprisoned"
             e["module"] = "囚禁入狱"
             e.pop("ident", None)
+            # v54 (问题3d): 留给同日集群折叠用 (被囚者 id / 称谓 / 结局族 / 结局原文);
+            # `_fold_prison_clusters` 收口时逐条 pop, 不进最终 facts。
+            e["_pm"] = {"v": victim, "vn": vn, "jn": jn,
+                        "h": head, "t": body[len(head):], "o": o_kind}
+    # v54 (顺带, v42 口径收口): 未被任何囚禁行消费的释放/越狱记忆不再单独成行 ——
+    # v42 定规「释放/越狱一律写在囚禁行**之内**」, 裸「X获释。」行即残留形态。
+    # 实测成因 (斯卡利茨 919.8.25 内莫伊): 同一人被囚两次而引擎只留了一条入狱记忆,
+    # 多出的那次释放遂无行可挂; 旧稿靠年表 cap=150 把它截掉, 折叠后行数下降才浮出。
+    for o in outs:
+        if o["idx"] >= 0 and o["idx"] not in used:
+            drop.add(o["idx"])
     return [e for i, e in enumerate(events) if i not in drop]
 
 
@@ -10106,6 +10326,93 @@ def _std_index(f):
     return f._std_idx
 
 
+# ---------------------------------------------------------------------------
+# v54 (问题3d): 同日囚禁集群折叠
+# ---------------------------------------------------------------------------
+_PRISON_CLUSTER_MIN = 5   # 同日同型囚禁行达此数才考虑折叠 (单/双人囚禁不动)
+_PRISON_FOLD_TOP = 5      # 折叠行前部列名人数, 其后写「等N人」(用户拍板规则)
+
+
+def _fold_prison_clusters(events, f):
+    """同日囚禁集群折叠 (v54 问题3d, 用户 2026-09-18 拍板取名规则)。
+
+    三条件同时成立才折: ①同一天 ②≥ `_PRISON_CLUSTER_MIN` 人 ③**结局族一致**
+    (族见 `_pair_imprisonments` 的 `_pm["o"]`: released/executed/escape/enslaved/
+    punished/died_in_prison/held)。结局族不一致时不折 —— 诺兰 1088.1.16 的 12 人
+    10 处决 / 2 获释, 属两族, 于是 v42「逐人成行留住各自死法」的拍板不受影响
+    (马丁 919.7.14 那 29 人全为 released, 折叠)。
+
+    取名(用户规则): 该日**最高头衔层级降序 → 执政起始日升序**(资格老者在先),
+    取前 `_PRISON_FOLD_TOP` 人, 其后写「等N人」; 结局按原文分布写出
+    (「其中28人1个月后获释、1人当日获释」), 全一致时直接写结局原文。
+
+    处理完逐条 pop `_pm` —— 私有键不进最终 facts。"""
+    groups, order = {}, []
+    for i, e in enumerate(events):
+        pm = e.get("_pm")
+        if e.get("type") != "imprisoned" or not pm:
+            continue
+        d = e.get("date")
+        if d not in groups:
+            groups[d] = []
+            order.append(d)
+        groups[d].append(i)
+    drop, added = set(), []
+    saved = 0
+    for d in order:
+        idxs = groups[d]
+        if len(idxs) < _PRISON_CLUSTER_MIN:
+            continue
+        kinds = {events[i]["_pm"].get("o") for i in idxs}
+        if len(kinds) != 1:
+            continue
+        rows = []
+        for i in idxs:
+            pm = events[i]["_pm"]
+            rank, since = f.title_rank_since_at(pm.get("v"), d)
+            rows.append({"i": i, "rank": rank, "since": since,
+                         "cid": pm.get("v") or 0, "vn": pm.get("vn") or "",
+                         "jn": pm.get("jn") or "", "tail": pm.get("t") or ""})
+        rows.sort(key=lambda r: (-r["rank"],
+                                 cl.date_key(r["since"]) if r["since"] else 10 ** 12,
+                                 r["cid"]))
+        named = [r for r in rows if r["vn"]]
+        if not named:
+            continue
+        shown = "、".join(r["vn"] for r in named[:_PRISON_FOLD_TOP])
+        if len(named) > _PRISON_FOLD_TOP:
+            shown += f"等{len(named)}人"
+        tails = {}
+        for r in named:
+            tails[r["tail"]] = tails.get(r["tail"], 0) + 1
+        jn = named[0]["jn"]
+        body = f"{jn}囚禁{shown}" if jn else f"{shown}被囚"
+        if len(tails) == 1:
+            body += next(iter(tails))
+        else:
+            # 同族不同款 (如 28 人「1个月后获释」+ 1 人「当日获释」) —— 逐款给人数。
+            # 款式原文自带前置「，」, 计数式里去掉, 由「，其中」统一引。
+            body += "，其中" + "、".join(
+                f"{c}人{t.lstrip('，,。；; ')}"
+                for t, c in sorted(tails.items(), key=lambda x: -x[1]))
+        drop.update(idxs)
+        saved += len(named) - 1
+        added.append({"date": d, "type": "imprisoned", "module": "囚禁入狱",
+                      "text": f"{f.date(d)}，{body}。"})
+    for e in events:
+        e.pop("_pm", None)
+    if not drop:
+        return events, 0
+    out = []
+    for i, e in enumerate(events):
+        if i in drop:
+            continue
+        out.append(e)
+    out.extend(added)
+    out.sort(key=lambda e: cl.date_key(e.get("date") or ""))
+    return out, saved
+
+
 def _std_note_for(f, owner_id, mem):
     """该条性事记忆是否即性病传播当次 → 「（X把病传染给了Y）」; 否则 ''。"""
     if not (f.cache.get("disease_edges")):
@@ -10130,6 +10437,69 @@ def _std_suffix(s, note):
     return s.rstrip("。") + note + "。"
 
 
+# v54 (问题3): 监禁类记忆 —— 取值一律是「被囚者」id（用于诛灭世族整簇折叠）
+_PRISON_MEM_TYPES = frozenset({
+    "imprisoned", "imprisoned_other",
+    "released_from_prison_memory", "escaped_from_prison_memory"})
+
+
+def _prison_jailer(owner_id, mem):
+    """该条监禁类记忆的**监禁者** id (v54): 入狱记忆按持有者方向分,
+    `imprisoned_other` 的持有者即监禁者, 被囚者/获释/越狱侧取 `imprisoner` 槽。"""
+    t = mem.get("type")
+    if t not in _PRISON_MEM_TYPES:
+        return None
+    if t == "imprisoned_other":
+        return int(owner_id) if isinstance(owner_id, int) else None
+    j = (mem.get("participants") or {}).get("imprisoner")
+    return int(j) if isinstance(j, int) else None
+
+
+def _prison_victim(owner_id, mem):
+    """该条监禁类记忆的**被囚者** id (v54): 入狱记忆按持有者方向分 (见 PARTICIPANT_SLOTS),
+    获释/越狱记忆的持有者即被囚者。非监禁类返回 None。"""
+    t = mem.get("type")
+    if t not in _PRISON_MEM_TYPES:
+        return None
+    if t == "imprisoned_other":
+        v = (mem.get("participants") or {}).get("imprisoned")
+        return int(v) if isinstance(v, int) else None
+    return int(owner_id) if isinstance(owner_id, int) else None
+
+
+def _title_mem_skip(f, owner_id, mem, pid):
+    """该条头衔得失记忆是否**不进年表** (v54 问题4)。返回 True 即丢。
+
+    年表是「主角自己的行迹」，而头衔记忆有三类噪声（马丁终传实测 59 条里 38 条）：
+
+    ① **封拜**：`owner` 是他人、`flavor_character` 是主角 —— 主角是**授予方**
+       （919.8.3 置三省六部、919.8.22 分封诸王）。这是朝局的材料，不是传主的任期；
+    ② **无地官署**：三省六部/御史台/枢密院（`e_minister_*`）。天子置官当即授人，
+       本人「在位」时长为零 —— 与 v53 戏剧块的判据同源；
+    ③ **零日在位**：造衔即封人（920.1.25 k_henan、920.4.5 k_hunan、922.4.3 k_lingxi
+       等），title history 同日 created/本人 → appointment/朝臣。
+
+    其余（真得真失，`owner` 是主角或与主角相关者）照常收录。"""
+    if mem.get("type") not in TITLE_VAR_TYPES:
+        return False
+    tid = None
+    for v in mem.get("vars") or []:
+        if v.get("flag") == "landed_title" and v.get("identity"):
+            tid = v.get("identity")
+            break
+    if tid is None:
+        return False
+    parts = mem.get("participants") or {}
+    if owner_id != pid:
+        # ① 主角只当授予方的封拜 (owner 为他人 / 相关人)
+        return parts.get("flavor_character") == pid
+    # ② 无地官署
+    if f.is_landless_office_title(tid):
+        return True
+    # ③ 零日在位
+    return f.title_tenure_zero_day(pid, tid, f.mem_date(owner_id, mem))
+
+
 def _timeline(f):
     """主角相关时间线: 只收 宗族/父母妻儿/孙辈儿媳婿 相关事件 (口径见 _related_ids),
     按人按事去重, 按日期排序。
@@ -10143,6 +10513,9 @@ def _timeline(f):
     cache = f.cache
     pid = cache.get("player_id")
     related = _related_ids(f)
+    # v54 (问题3): 诛灭世族涉及者 —— 其监禁类记忆不进年表 (整件事由族级行承担)
+    purge_victims = f.family_purge_victims(pid) if pid is not None else set()
+    purge_dates = f._purge_dates(pid) if pid is not None else set()
     events = []        # (date, type, text)
     idents = {}        # (date, type, text) -> {"owner", "parts"} — 镜像对/监禁对配对用
     seen_keys = set()  # 成对事件去重: (type, creation_date, participants 集)
@@ -10251,6 +10624,20 @@ def _timeline(f):
                                         child if isinstance(child, int) else None)
                 continue
             # 其余记忆: 成对去重
+            # v54 (问题4): 头衔记忆先过闸 —— 封拜他人 / 无地官署 / 零日在位不进年表
+            if _title_mem_skip(f, cid, mem, pid):
+                continue
+            # v54 (问题3): 诛灭世族的「先尽囚、后驱逐」侧 —— 涉及者逐人成行会塞满年表
+            # (马丁 920.1.24 有 85 行), 整件事由族级事实行一行承担 (见下方 family_purge)。
+            # 两条判据并用: ①受害者在诛灭名单里 (被处决者及其同族);
+            # ②该日即诛灭日**且监禁者是主角** —— 被驱逐的残党无地、不在处决名单里,
+            # 只认①会漏掉他们 (实测 85 行里 69 行如此)。
+            if purge_dates and norm_type in _PRISON_MEM_TYPES:
+                _pd = f.mem_date(cid, mem) or mem.get("creation_date")
+                if _prison_victim(cid, mem) in purge_victims \
+                        or (str(_pd) in purge_dates
+                            and _prison_jailer(cid, mem) == pid):
+                    continue
             s = _mem_sentence(f, cid, mem)
             if not s:
                 continue
@@ -10321,6 +10708,10 @@ def _timeline(f):
             fn = f._faith_name(ch.get("faith"))
             if nm and fn:
                 events.append((d, "faith_changed", f"{nm}改信{fn}。", "信仰皈依"))
+    # v54 (问题3): 诛灭世族的族级事实行 —— 整件事一行 (被驱逐者不列名),
+    # 取代被丢掉的逐人监禁行; 日期由下方 out 组装统一加句首 (与其余事件同式)。
+    for _pe in (f.family_purge_events(pid) if pid is not None else []):
+        events.append((_pe["date"], "family_purge", _pe["text"], "诛灭世族"))
     # v11: as_of 截断 (十年传记只到十年末)
     if f.as_of:
         ao = cl.date_key(f.as_of)
@@ -10340,6 +10731,11 @@ def _timeline(f):
     stats = {}
     for _ev in events:
         _d, t, s, mod = _ev[0], _ev[1], _ev[2], _ev[3]
+        # v54 (问题3, 用户拍板「按方案做」): 诛灭世族已折成族级行 —— 一次计 1 次
+        # 「囚禁他人」; 该行句面不含主角名, 故本支须在名在句中判定之前。
+        if t == "family_purge":
+            stats["囚禁他人"] = stats.get("囚禁他人", 0) + 1
+            continue
         if pname0 and pname0 not in s:
             continue
         # v32 (问题1): 被囚统计只算**主角本人**被囚 —— 受害者侧的记忆句现在会点名
@@ -10384,6 +10780,12 @@ def _timeline(f):
     out = _drop_mirror_pairs(out, pid, pname0)
     # v30: 入狱与获释合并 (问题5) — 双视角与进出狱各自成行的问题一并解决
     out = _pair_imprisonments(out, f, pid, pname0)
+    # v54 (问题3d): 同日囚禁集群折叠 —— ≥5 人且结局族一致才折, 取名按头衔高低
+    # 与执政先后 (用户规则); 诺兰 1088.1.16 结局两族, 不受影响。
+    out, _fold_saved = _fold_prison_clusters(out, f)
+    if _fold_saved:
+        # 概览口径与折叠一致: 折掉 N 行即少 N 次 (与诛灭世族「计 1 次」同纪律)
+        stats["囚禁他人"] = max(0, stats.get("囚禁他人", 0) - _fold_saved)
     # v11: 同日同型集体事件合并 (见证加冕/出席大婚/被囚/囚禁)
     out = _merge_same_day_events(out, f)
     # v15: 同月同型流水事件聚合 (结怨/结仇/助战…), 聚合后再限量
@@ -10862,6 +11264,8 @@ def _protagonist(f):
         if ld and not skip_detail:
             p["ruler_since"] = f.date(ld.get("became_ruler_date"))
             # v31 (问题8): 首府男爵领由所辖伯爵领蕴含, 折叠后再出「直辖N地」
+            # v54 (问题1, 用户拍板): 直辖 = 最高头衔(同层级全留) + 实控伯爵领;
+            # 次级公国/王国不再并列 (见 domain_titles 文档串)
             keep, _folded = f.domain_titles(ld.get("domain") or [])
             dom = []
             for tid in keep:
