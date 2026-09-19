@@ -6367,22 +6367,6 @@ class Facts:
                 return self._PRISON_MANNER_MODS[mod]
         return ("", "")
 
-    def _purge_victims_of(self, killer):
-        """`family_purge_victims` 的记忆化包装 (逐人调用会 O(N 角色) 重算)。"""
-        memo = getattr(self, "_purge_victims_map", None)
-        if memo is None:
-            memo = self._purge_victims_map = {}
-        if killer is None:
-            return set()
-        kid = int(killer)
-        if kid in memo:
-            return memo[kid]
-        try:
-            memo[kid] = self.family_purge_victims(kid)
-        except Exception:
-            memo[kid] = set()
-        return memo[kid]
-
     def is_purge_prisoner(self, victim, jailer, date):
         """该次囚禁是否属**诛灭世族** (v55 问题1b) —— 判据取自 `b99d162` (v54)。
 
