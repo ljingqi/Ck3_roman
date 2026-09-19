@@ -6316,6 +6316,15 @@ class Facts:
         "demanded_recruitment":            ("recruit",   "遭强征入仕"),
         "demanded_taking_vows":            ("vows",      "被迫出家获释"),
     }
+    # 折叠行的「缘故词」(v55 问题1d/§3): 结局族 → 计数式里的短语。
+    # 多人簇不带时长 (用户拍板), 单人囚禁行照旧带「3日后 / 1个月后」。
+    _PRISON_KIND_WORD = {
+        "released": "获释", "converted": "改信获释", "hook": "交出牵制获释",
+        "claim": "放弃宣称获释", "ransomed": "纳赎获释", "banished": "遭驱逐",
+        "recruit": "遭强征入仕", "vows": "被迫出家获释", "escape": "越狱脱身",
+        "enslaved": "没为奴隶", "punished": "受刑获释", "executed": "处决",
+        "died_in_prison": "死于狱中", "held": "此后一直未见释放",
+    }
 
     def _prison_opinion_index(self):
         """{(owner, target): [(modifier, start_date)]} + 按 owner 的兜底索引 (惰性)。"""
@@ -6357,6 +6366,247 @@ class Facts:
             if st == d:
                 return self._PRISON_MANNER_MODS[mod]
         return ("", "")
+
+    def _purge_victims_of(self, killer):
+        """`family_purge_victims` 的记忆化包装 (逐人调用会 O(N 角色) 重算)。"""
+        memo = getattr(self, "_purge_victims_map", None)
+        if memo is None:
+            memo = self._purge_victims_map = {}
+        if killer is None:
+            return set()
+        kid = int(killer)
+        if kid in memo:
+            return memo[kid]
+        try:
+            memo[kid] = self.family_purge_victims(kid)
+        except Exception:
+            memo[kid] = set()
+        return memo[kid]
+
+    def is_purge_prisoner(self, victim, jailer, date):
+        """该次囚禁是否属**诛灭世族** (v55 问题1b) —— 判据取自 `b99d162` (v54)。
+
+        v54 在 `_timeline` 里用的是**双判据**: ①受害者在 `family_purge_victims(监禁者)`
+        名单内; ②该日 ∈ `_purge_dates(监禁者)` 且监禁者是主角。年表那一侧只做**丢弃**,
+        故①不带日期也安全; 本处是**造行** (族级句), 不带日期的①会把几十年后的事搬到
+        当年 —— 实测任宗本 927.8.2 被沙米尔囚禁、933.5.15 才被处决, 却因①在 927.8.2
+        造出「诛灭任氏满门」。故此处只取**带日期的②**, 并把「监禁者是主角」按同一口径
+        放宽为「监禁者属主角一族」(亨利/马丁/沙米尔三代同族)。
+
+        实测: 诛灭日的逐人监禁记忆与该日诛灭日**同日** (918.4.8 49 条、920.1.24 72 条、
+        924.3.25 129 条), ②足以覆盖①在本篇的全部命中面。"""
+        return jailer is not None and bool(date) \
+            and str(date) in self._purge_dates(jailer)
+
+    def house_purge_pairs(self, house_id, my_houses):
+        """该族在**诛灭日**上被处决的 (日期, 行刑者) 对 (v55 问题1b)。
+
+        与 `_house_prison_nodes` 的 purge 判据同源 (`_purge_dates`): 有些族的族人并未
+        在诛灭日下狱 (如陶氏/边氏: 917.11.13 下狱、918.4.8 才处决家主), 只认监禁节点会
+        漏掉它们的族级行 —— v54 `family_purge_events(15403)` 对同一天给的是
+        「诛灭…42 族」, 两处口径必须一致。"""
+        out = set()
+        for cid, c in self._chars.items():
+            if not isinstance(c, dict) or c.get("dynasty_house") != house_id:
+                continue
+            dd = c.get("dead_data") or {}
+            if dd.get("reason") != "death_execution":
+                continue
+            k = dd.get("killer")
+            d = str(dd.get("date") or "")
+            if not isinstance(k, int) or not d:
+                continue
+            k = int(k)
+            if k not in my_houses and self._house_of_cid(k) not in my_houses:
+                continue
+            if d in self._purge_dates(k):
+                out.add((d, k))
+        return out
+
+    def house_purge_line(self, killer, house_id, date, house_label=""):
+        """单族的**诛灭族级行** (v55 问题1b): 「924年3月25日，X诛灭裴氏满门，
+        处决家主N人，余族尽数流放」。
+
+        收尾沿用 v54 用户拍板措辞 (凡有地者一律处决, 被流放者必是无地残党, 不列名;
+        见 `family_purge_events`)。家主 N = 该日该族被处决者数。"""
+        if killer is None or not date:
+            return ""
+        d = str(date)
+        house_label = house_label or self._house_label(house_id) or ""
+        if not house_label:
+            return ""
+        n = 0
+        for cid, c in self._chars.items():
+            if not isinstance(c, dict):
+                continue
+            dd = c.get("dead_data") or {}
+            if dd.get("reason") != "death_execution" or dd.get("killer") != int(killer):
+                continue
+            if str(dd.get("date") or "") != d:
+                continue
+            if c.get("dynasty_house") != house_id:
+                continue
+            n += 1
+        jn = self._feud_role_title(killer, d) or "主角"
+        head = f"{jn}诛灭{house_label}满门"
+        if n:
+            head += f"，处决家主{n}人"
+        return head + "，余族尽数流放"
+
+    def _house_prison_nodes(self, other_house, my_houses, as_of):
+        """该族成员被**我方家族成员**囚禁的结构化节点 (v55 问题1b/1c/1d)。
+
+        返回 [{"date", "victim", "jailer", "text", "kind", "purge"}]。
+        与 v34 老稿的三处差别 (老稿只认 protagonist 一人、只分「获释/越狱」两种):
+          · 监禁者放宽到 `my_houses` 全体 (亨利/马丁/沙米尔三代同族都要写);
+          · 出狱缘由走 `release_manner` (改信/牵制/放弃宣称/纳赎/驱逐…);
+          · 诛灭日交 `is_purge_prisoner` 判定, 由调用方折成族级行。"""
+        cache = self.cache
+        chars = cache.get("characters") or {}
+        W = _style.FACT_WORDING
+        out = []
+
+        def _house(cid):
+            return self._house_of_cid(cid)
+
+        def _in_span(d):
+            return not (as_of and d and cl.date_key(d) > cl.date_key(as_of))
+
+        out = []
+        _seen = set()
+        for cid_s, rec in chars.items():
+            cid = int(cid_s)
+            if _house(cid) != other_house:
+                continue
+            for m in rec.get("memories") or []:
+                if (m.get("type") or "") != "imprisoned":
+                    continue
+                jailer = (m.get("participants") or {}).get("imprisoner")
+                if not isinstance(jailer, int) or _house(jailer) not in my_houses:
+                    continue
+                d = m.get("creation_date") or ""
+                if not _in_span(d):
+                    continue
+                # v55 (问题1d): 同一人被同一人同日囚禁的重复记忆只留一条
+                # (实测王从规 924.2.23 有两条逐字相同的 imprisoned 记忆)
+                if (str(d), cid, jailer) in _seen:
+                    continue
+                _seen.add((str(d), cid, jailer))
+                vn = self._feud_role_title(cid, d)
+                if not vn:
+                    continue
+                jn = self._feud_role_title(jailer, d)
+                # 出狱证据二选一: ① 释放/越狱记忆 (最准); ② prison_data 区间闭合日
+                rel = None
+                for mm in rec.get("memories") or []:
+                    if mm.get("type") not in ("released_from_prison_memory",
+                                              "escaped_from_prison_memory"):
+                        continue
+                    rd = mm.get("creation_date") or ""
+                    if cl.date_key(str(rd)) < cl.date_key(str(d)):
+                        continue
+                    if (mm.get("participants") or {}).get("imprisoner") != jailer:
+                        continue
+                    rel = (rd, mm.get("type") == "escaped_from_prison_memory")
+                    break
+                if rel is None:
+                    closed = next((iv for iv in (rec.get("prison_history") or [])
+                                   if iv.get("to")
+                                   and cl.date_key(str(iv["to"]))
+                                   >= cl.date_key(str(d))), None)
+                    if closed:
+                        rel = (closed["to"], False)
+                purge = self.is_purge_prisoner(cid, jailer, d)
+                body = W["prison_jailed"].format(jailer=jn, victim=vn) if jn \
+                    else W["prison_held"].format(victim=vn)
+                kind = "held"
+                if rel:
+                    span = _prison_span(d, rel[0])
+                    same = span == W["prison_same_day"]
+                    if rel[1]:
+                        body += W["prison_escape_same_day"] if same else (
+                            W["prison_escaped"].format(span=span) if span
+                            else W["prison_escape_on"].format(date=self.date(rel[0])))
+                        kind = "escape"
+                    else:
+                        mk, mw = self.release_manner(cid, jailer, rel[0])
+                        if purge:
+                            # 诛灭日：出狱即驱逐 (调用方随后折成族级行; 单人时以此句呈现)
+                            body += "，遭驱逐"
+                            kind = "banished"
+                        elif mw:
+                            body += f"，{mw}"
+                            kind = mk
+                        elif same:
+                            body += W["prison_released_same_day"]
+                            kind = "released"
+                        elif span:
+                            body += W["prison_released"].format(span=span)
+                            kind = "released"
+                        else:
+                            body += W["prison_release_on"].format(
+                                date=self.date(rel[0]))
+                            kind = "released"
+                else:
+                    body += W["prison_still_held"]
+                out.append({"date": d, "victim": cid, "jailer": jailer,
+                            "vn": vn, "jn": jn,
+                            "text": body, "kind": kind, "purge": purge})
+        return out
+
+    def _fold_house_prison_nodes(self, nodes):
+        """同日同监禁者的囚禁节点折叠 (v55 问题1d, 用户拍板「多人不带时长」)。
+
+        取名沿用 v54 §6.1 规则 (头衔层级降序 → 执政起始日升序 → 前 5 人 + 等N人);
+        收口按**出狱缘由族**计数 (不再按时长报菜名), 缘由只一族时写「尽数{词}」。"""
+        W = _style.FACT_WORDING
+        groups, order = {}, []
+        for n in nodes:
+            key = (str(n.get("date") or ""), n.get("jailer"))
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(n)
+        out = []
+        for key in order:
+            rows = groups[key]
+            d, jailer = key
+            if len(rows) < 2:
+                n = rows[0]
+                out.append((n["date"], n["text"]))
+                continue
+            ranked = []
+            for n in rows:
+                rank, since = self.title_rank_since_at(n["victim"], d)
+                ranked.append((rank, since, n))
+            ranked.sort(key=lambda r: (-r[0],
+                                       cl.date_key(r[1]) if r[1] else 10 ** 12,
+                                       r[2]["victim"]))
+            names = [r[2].get("vn") or "" for r in ranked]
+            names = [x for x in names if x]
+            if not names:
+                continue
+            shown = "、".join(names[:5])
+            if len(names) > 5:
+                shown += f"等{len(names)}人"
+            jn = rows[0].get("jn") or ""
+            body = W["prison_jailed"].format(jailer=jn, victim=shown) if jn \
+                else W["prison_held"].format(victim=shown)
+            cnt = {}
+            for n in rows:
+                cnt[n["kind"]] = cnt.get(n["kind"], 0) + 1
+            words = self._PRISON_KIND_WORD
+            if len(cnt) == 1:
+                body += "，尽数" + words.get(next(iter(cnt)), "获释")
+            else:
+                items = sorted(cnt.items(), key=lambda x: -x[1])
+                seg = [f"{c}人{words.get(k, '获释')}"
+                       for k, c in items[:-1]]
+                last_k, last_c = items[-1]
+                seg.append(f"余{last_c}人{words.get(last_k, '获释')}")
+                body += "，其中" + "、".join(seg)
+            out.append((d, body))
+        return out
 
     def _house_war_nodes(self, other_house, my_houses, as_of):
         """两族之间的**战争因果节点** (v34, 问题6): [(日期, 句)]。
@@ -6410,49 +6660,10 @@ class Facts:
                                f"发动{kind}"))
             else:
                 out.append((d, f"{self.event_name(pid, d)}战胜{onm}"))
-        # ---- ② 主角囚禁该族成员及其出狱情形 (v34 问题7: 与《本纪》同口径) ----
-        W = _style.FACT_WORDING
-        for cid, rec in chars.items():
-            if _house(int(cid)) != other_house:
-                continue
-            for m in rec.get("memories") or []:
-                if (m.get("type") or "") != "imprisoned":
-                    continue
-                parts = m.get("participants") or {}
-                if parts.get("imprisoner") != pid:
-                    continue
-                d = m.get("creation_date") or ""
-                if not _in_span(d):
-                    continue
-                vn = _nm(int(cid), d)
-                if not vn:
-                    continue
-                # 出狱证据二选一: ① 释放/越狱记忆 (最准); ② prison_data 区间闭合日
-                rel = None
-                for mm in rec.get("memories") or []:
-                    if mm.get("type") not in ("released_from_prison_memory",
-                                              "escaped_from_prison_memory"):
-                        continue
-                    rd = mm.get("creation_date") or ""
-                    if cl.date_key(str(rd)) < cl.date_key(str(d)):
-                        continue
-                    if (mm.get("participants") or {}).get("imprisoner") != pid:
-                        continue
-                    rel = (rd, mm.get("type") == "escaped_from_prison_memory")
-                    break
-                if rel is None:
-                    ph = rec.get("prison_history") or []
-                    closed = next((iv for iv in ph
-                                   if iv.get("to")
-                                   and cl.date_key(str(iv["to"]))
-                                   >= cl.date_key(str(d))), None)
-                    if closed:
-                        rel = (closed["to"], False)
-                if rel:
-                    verb = "越狱脱身" if rel[1] else "获释"
-                    out.append((d, f"{vn}被囚，{self.date(rel[0])}{verb}"))
-                else:
-                    out.append((d, f"{vn}被囚" + W["prison_still_held"]))
+        # ---- ② 该族成员被**我方家族**囚禁及其出狱情形 ----
+        # v55 (问题1b/1c/1d): 监禁侧整段移到 `_house_prison_nodes` —— 判据与措辞都换了
+        # (监禁者放宽到我方家族全体; 出狱缘由接入 release_manner; 诛灭日改族级行)。
+        # 此处不再出逐人囚禁句, 免得与节点重复。
         # ---- ③ 对方失守头衔 (reason=conquest → 攻取) ----
         lost_titles = []
         for cid, rec in chars.items():
@@ -6545,6 +6756,7 @@ class Facts:
             _hlabel_raw = _hname or "某家族"
             _hlabel = self._house_label(other[0]) or _hlabel_raw
             events = []
+            _raw_ids = {}      # (日期, 句面) -> 该条流水里属于对方家族的 id 集 (v55)
             for e in (r.get("history") or []):
                 d = str(e.get("date") or "")
                 # v11: as_of 截断 — 十年传记只列该时期前的恩怨事件
@@ -6553,13 +6765,23 @@ class Facts:
                 # v14: change_reason 两端角色按事件日期重渲染 (补国号,
                 # 修复方案_菲利普2.md 问题3: 游戏原文只写「国王/王」无国号)
                 # v43: 传两族 id 与对方族称 —— 自指式条目降级为「{对方家族}族人」
-                txt = self._rerender_feud_event(e.get("change_reason") or "", d,
+                _raw = e.get("change_reason") or ""
+                txt = self._rerender_feud_event(_raw, d,
                                                 houses=hs, other_label=_hlabel)
                 if not txt:
                     # v29: 原文不可读 (rakaly 哨兵串/未解析键) → 缓存记忆重建
                     txt = self._feud_event_fallback(my_houses, other[0], d, _hlabel)
                 if not txt:
                     continue
+                _ids = set()
+                for _i in _FEUD_CHAR_RE.findall(str(_raw)):
+                    try:
+                        _ic = int(_i)
+                    except (TypeError, ValueError):
+                        continue
+                    if self._house_of_cid(_ic) == other[0]:
+                        _ids.add(_ic)
+                _raw_ids[(d, txt)] = _ids
                 events.append((d, txt))
             # v34 (问题6): 补战争因果节点 — 宣战/战胜/夺其头衔/沦为无地冒险者。
             # 关系流水的「向X宣战」不带战争类型、「成为X的仇敌」只记结果,
@@ -6579,6 +6801,44 @@ class Facts:
                 if (str(d), txt) not in {(str(ed), et) for ed, et in
                                          _hist_events + _node_events}:
                     _node_events.append((d, txt))
+            # v55 (问题1b/1c/1d): 监禁侧改由结构化节点承担 ——
+            # ① 诛灭日整簇删去, 代之以**一行族级行** (判据整套继承 v54, 见 is_purge_prisoner);
+            # ② 余下的同日同监禁者簇折成一行 (取名规则同 v54 §6.1, 收口按出狱缘由计数);
+            # ③ 关系流水里已被节点覆盖的「囚禁了X」同日同人条目丢弃 (去掉逐字重复,
+            #    且记忆节点的信息更全: 含出狱缘由); 无记忆可依者保留原文。
+            _nodes = self._house_prison_nodes(other[0], my_houses, self.as_of)
+            # 族级行 = 诛灭日上「该族有人下狱」∪「该族有人被处决」, 两者判据同源
+            _pairs = {(n["date"], n["jailer"]) for n in _nodes if n["purge"]}
+            _pairs |= self.house_purge_pairs(other[0], my_houses)
+            _purge_days = {d for d, _k in _pairs}
+            _node_keys = {(n["date"], n["victim"]) for n in _nodes}
+            # v55 (问题1a): 排序权重 = **折叠前**的逐条事件数 —— 折叠会把一整簇并成
+            # 一行, 用折叠后的行数排序会让「被诛灭的大族」掉出前五 (934 档 王氏 20 → 5)。
+            _weight = len(_hist_events) + len(_node_events) + len(_nodes)
+            if _purge_days:
+                # 逐 (日期, 行刑者) 出族级行 —— 不可做叉积 (旧稿会把 918.4.8 也记到
+                # 尚未即位的马丁名下)
+                for _d, _killer in sorted(_pairs, key=lambda x: cl.date_key(x[0])):
+                    _line = self.house_purge_line(_killer, other[0], _d, _hlabel)
+                    if _line:
+                        _node_events.append((_d, _line))
+                # 诛灭日的逐人监禁节点与关系流水 (含逐人处决句) 一并抑制 ——
+                # 逐人处决已在《本纪》《刺客列传》逐条呈现, 本篇由族级行承担
+                _hist_events = [
+                    (ed, et) for ed, et in _hist_events
+                    if not (str(ed) in _purge_days
+                            and any(k in et for k in
+                                    _PRISON_KIND_WORDS + ("处决了",)))]
+                _nodes = [n for n in _nodes if not n["purge"]]
+            # ③ 关系流水里已被记忆节点覆盖的「囚禁了X」同日同人条目丢弃
+            #    (逐字重复与信息更全的节点并存没有意义); 无记忆可依者保留原文。
+            _hist_events = [
+                (ed, et) for ed, et in _hist_events
+                if not (any(k in et for k in _PRISON_KIND_WORDS)
+                        and _raw_ids.get((ed, et))
+                        and any((str(ed), _v) in _node_keys
+                                for _v in _raw_ids[(ed, et)]))]
+            _node_events.extend(self._fold_house_prison_nodes(_nodes))
             events = _hist_events + _node_events
             if not events:
                 continue
@@ -6596,7 +6856,10 @@ class Facts:
                 # v29b: 史书式家族称谓 (程氏), 供「家族：程氏，两族为世仇」式行使用
                 "house_label": _hlabel,
                 "level": _lvl,
-                "events": [f"{self.date(d)}，{t}" for d, t in events],
+                # v55: 内部用 (游戏日期, 渲染句) 对 —— 合并/排序/去重都按游戏日期键,
+                # 不用渲染后的「924年3月25日」反解 (那是字符串, date_key 解不了)
+                "pairs": [(d, f"{self.date(d)}，{t}") for d, t in events],
+                "weight": _weight,
             })
         return self._merge_and_cap_feuds(out)
 
@@ -6608,7 +6871,9 @@ class Facts:
     HOUSE_FEUDS_MAX = 5
 
     def _merge_and_cap_feuds(self, rows):
-        """同名家族合并 → 档位/事件数排序 → 取前 HOUSE_FEUDS_MAX 族 (v55 问题1a)。"""
+        """同名家族合并 → 档位/事件数排序 → 取前 HOUSE_FEUDS_MAX 族 (v55 问题1a)。
+
+        输入行的 `pairs` = [(游戏日期, 渲染句)]; 输出行的 `events` = [渲染句] (对外形态)。"""
         rank = {"世仇": 3, "敌对": 2, "争吵": 1}
         merged = {}
         order = []
@@ -6621,27 +6886,40 @@ class Facts:
                 merged[key] = {"house": r.get("house") or key,
                                "house_label": r.get("house_label") or key,
                                "level": r.get("level") or "",
-                               "events": list(r.get("events") or [])}
+                               "pairs": list(r.get("pairs") or []),
+                               "weight": int(r.get("weight") or 0)}
                 order.append(key)
                 continue
             # 档位取最重者; 事件并集按 (日期, 句面) 去重 —— 关系流水里同一人
             # 同日的「囚禁了X」实测有逐字重复条目 (918.4.8 朱思齐 ×2)
             if rank.get(r.get("level") or "", 0) > rank.get(cur["level"], 0):
                 cur["level"] = r.get("level") or cur["level"]
-            cur["events"].extend(r.get("events") or [])
+            cur["weight"] += int(r.get("weight") or 0)
+            cur["pairs"].extend(r.get("pairs") or [])
         out = []
         for key in order:
             r = merged[key]
-            ev = list(dict.fromkeys(r["events"]))
-            ev.sort(key=lambda s: cl.date_key(s.split("，")[0]))
-            r["events"] = ev
-            out.append(r)
+            seen, pairs = set(), []
+            for d, txt in r["pairs"]:
+                if (str(d), txt) in seen:
+                    continue
+                seen.add((str(d), txt))
+                pairs.append((d, txt))
+            pairs.sort(key=lambda x: cl.date_key(str(x[0])))
+            out.append({"house": r["house"], "house_label": r["house_label"],
+                        "level": r["level"],
+                        "events": [txt for _d, txt in pairs],
+                        "_first": cl.date_key(str(pairs[0][0])) if pairs else 10 ** 12,
+                        "_w": r["weight"], "_n": len(pairs)})
         out.sort(key=lambda x: (-rank.get(x.get("level") or "", 0),
-                                -len(x.get("events") or []),
-                                cl.date_key((x.get("events") or ["9999.9.9"])[0]
-                                            .split("，")[0]),
+                                -x["_w"], -x["_n"], x["_first"],
                                 x.get("house_label") or ""))
-        return out[:self.HOUSE_FEUDS_MAX]
+        out = out[:self.HOUSE_FEUDS_MAX]
+        for r in out:
+            r.pop("_first", None)
+            r.pop("_w", None)
+            r.pop("_n", None)
+        return out
 
     # v13: 宝物志只收高稀珍奇; v21: 门槛改为游戏最高档 名望级 (illustrious) —
     # 存档与游戏定义均无「传奇级 (legendary)」档位, 原 (legendary,) 永远筛空,
@@ -10252,11 +10530,28 @@ def _pair_imprisonments(events, f, pid, pname=""):
                         else W["prison_escape_on"].format(date=f.date(out["date"])))
                     o_kind = "escape"
                 else:
-                    body += W["prison_released_same_day"] if same else (
-                        W["prison_released"].format(span=span) if span
-                        else W["prison_release_on"].format(
-                            date=f.date(out["date"])))
-                    o_kind = "released"
+                    # v55 (问题1c/§3): 出狱缘由 (改信/交出牵制/放弃宣称/纳赎/驱逐…) ——
+                    # 单人囚禁行**带时长**(「3日后改信获释」), 多人折叠簇不带 (见
+                    # `_fold_prison_clusters`, 用户拍板「多人不带」)。
+                    _mk, _mw = f.release_manner(victim, r["jailer"], out["date"])
+                    if _mw:
+                        if same:
+                            body += f"，{W['prison_same_day']}{_mw}"
+                        elif span:
+                            body += f"，{span}后{_mw}"
+                        else:
+                            body += f"，{f.date(out['date'])}{_mw}"
+                        o_kind = _mk
+                    elif same:
+                        body += W["prison_released_same_day"]
+                        o_kind = "released"
+                    elif span:
+                        body += W["prison_released"].format(span=span)
+                        o_kind = "released"
+                    else:
+                        body += W["prison_release_on"].format(
+                            date=f.date(out["date"]))
+                        o_kind = "released"
             elif owned is not None:
                 # 无释放记忆、但在押期间已没为奴隶 → 出狱缘由即此
                 body += W["prison_enslaved"]
@@ -10453,6 +10748,14 @@ def _std_index(f):
 # ---------------------------------------------------------------------------
 _PRISON_CLUSTER_MIN = 5   # 同日同型囚禁行达此数才考虑折叠 (单/双人囚禁不动)
 _PRISON_FOLD_TOP = 5      # 折叠行前部列名人数, 其后写「等N人」(用户拍板规则)
+# v55 (§3): 可折叠的**结局族** = 全部人都活下来的那些 (获释/改信/牵制/放弃宣称/纳赎/
+# 驱逐/征募/出家/越狱/受刑/没为奴隶)。含处决/狱中死/在押的簇**不折** —— v42 用户拍板
+# 「诺兰 1088.1.16 那 12 人 10 处决 / 2 获释, 逐人成行留住各自死法」由此保住;
+# 而 925.5.1 那 22 人结局各为「获释/改信/交出牵制」(全为生还), 折叠后按缘由计数。
+_PRISON_FOLD_KINDS = frozenset({
+    "released", "converted", "hook", "claim", "ransomed", "banished",
+    "recruit", "vows", "escape", "punished", "enslaved",
+})
 
 
 def _fold_prison_clusters(events, f):
@@ -10486,7 +10789,10 @@ def _fold_prison_clusters(events, f):
         if len(idxs) < _PRISON_CLUSTER_MIN:
             continue
         kinds = {events[i]["_pm"].get("o") for i in idxs}
-        if len(kinds) != 1:
+        # v55 (§3): 折叠条件由「结局族完全一致」放宽为「**全部生还**」—— 同一天放出来的
+        # 人各有缘由 (获释/改信/交出牵制), 旧条件会一款不折而回到报菜名; 含处决/狱中死/
+        # 在押的簇仍逐人成行 (v42 拍板: 留住各自死法)。
+        if not kinds or not kinds <= _PRISON_FOLD_KINDS:
             continue
         rows = []
         for i in idxs:
@@ -10494,7 +10800,8 @@ def _fold_prison_clusters(events, f):
             rank, since = f.title_rank_since_at(pm.get("v"), d)
             rows.append({"i": i, "rank": rank, "since": since,
                          "cid": pm.get("v") or 0, "vn": pm.get("vn") or "",
-                         "jn": pm.get("jn") or "", "tail": pm.get("t") or ""})
+                         "jn": pm.get("jn") or "", "tail": pm.get("t") or "",
+                         "o": pm.get("o") or "released"})
         rows.sort(key=lambda r: (-r["rank"],
                                  cl.date_key(r["since"]) if r["since"] else 10 ** 12,
                                  r["cid"]))
@@ -10509,14 +10816,22 @@ def _fold_prison_clusters(events, f):
             tails[r["tail"]] = tails.get(r["tail"], 0) + 1
         jn = named[0]["jn"]
         body = f"{jn}囚禁{shown}" if jn else f"{shown}被囚"
-        if len(tails) == 1:
-            body += next(iter(tails))
+        # v55 (§3, 用户拍板「多人不带时长」): 收口按**出狱缘由族**计数, 不再按结局原文
+        # (含时长) 报菜名 —— 旧稿「其中15人1个月后获释、2人4日后获释、…」7 款并列。
+        words = getattr(f, "_PRISON_KIND_WORD", {}) or {}
+        kinds = {}
+        for r in named:
+            k = r.get("o") or "released"
+            kinds[k] = kinds.get(k, 0) + 1
+        if len(kinds) == 1:
+            body += "，尽数" + words.get(next(iter(kinds)), "获释")
         else:
-            # 同族不同款 (如 28 人「1个月后获释」+ 1 人「当日获释」) —— 逐款给人数。
-            # 款式原文自带前置「，」, 计数式里去掉, 由「，其中」统一引。
-            body += "，其中" + "、".join(
-                f"{c}人{t.lstrip('，,。；; ')}"
-                for t, c in sorted(tails.items(), key=lambda x: -x[1]))
+            items = sorted(kinds.items(), key=lambda x: -x[1])
+            seg = [f"{c}人{words.get(k, '获释')}" for k, c in items[:-1]]
+            _lk, _lc = items[-1]
+            seg.append(f"余{_lc}人{words.get(_lk, '获释')}")
+            body += "，其中" + "、".join(seg)
+        del tails
         drop.update(idxs)
         saved += len(named) - 1
         added.append({"date": d, "type": "imprisoned", "module": "囚禁入狱",
