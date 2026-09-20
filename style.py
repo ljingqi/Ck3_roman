@@ -688,7 +688,16 @@ MEMORY_TEMPLATES = {
     "completed_rites_of_passage": "{name}完成成人礼。",
     "completed_adult_education": "{name}完成深造。",
     "became_acclaimed": "{name}获拥戴。",
-    "witnessed_a_coronation_memory": "{name}见证加冕。",
+    # v56 (问题1b): 加冕类两条此前一条残缺、一条缺模板 ——
+    # witnessed 的参与者是 host (受冕者), 旧模板无 {other} 只出「见证加冕」;
+    # held (当事人自己受冕) 在表里**没有条目**, _mem_sentence 返回 None,
+    # 整件事不进事实面。加冕成的头衔由 facts 按加冕当日首要头衔填入 {title}
+    # (游戏文案 held_a_coronation_memory_desc: 「我被[coronator]正式加冕为
+    # [owner primary title]的合法[owner title]」)。
+    "witnessed_a_coronation_memory": "{name}见证{other}的加冕。",
+    "witnessed_a_coronation_memory_no_other": "{name}见证加冕。",
+    "held_a_coronation_memory": "{name}受{other}加冕为{title}。",
+    "held_a_coronation_memory_no_other": "{name}受加冕为{title}。",
     "grand_wedding_completed_guest": "{name}出席大婚。",
     "ignored_assault_memory": "{name}受辱未报。",
     # v15: 成功谋杀 (主角视角, 神秘死亡味由受害者死亡记录句负责)
@@ -976,8 +985,5 @@ def hook_type_kept(tp):
     return t.startswith("strong_")
 
 
-MERGE_VERB = {
-    "witnessed_a_coronation_memory": "见证加冕。",
-    "grand_wedding_completed_guest": "出席大婚。",
-    "imprisoned": "被囚。",
-}
+# v56: 同日合并超限收尾时要带上各型自己的定值槽 (如加冕句的 host), 由
+# `facts._MERGE_SLOT_RES` 逐型给出 `cap_verb` —— 旧的 MERGE_VERB 表已废止。

@@ -164,6 +164,12 @@ PARTICIPANT_SLOTS = {
     "lover_died": "dead_relation", "soulmate_died": "dead_relation",
     "best_friend_died": "dead_relation", "nemesis_died": "dead_relation",
     "developed_crush": "new_relation",
+    # v56 (问题1b): 加冕类记忆 —— host 是加冕礼的主角 (受冕者), coronator 是施礼者。
+    # 存档实测 witnessed 的参与者即 `{"host": <受冕者>}` (游戏文案
+    # 「我见证了[host]的加冕」); held 的是 `{"coronator": <施礼者>}`。
+    # 旧稿两槽都未登记 + 模板无 {other} → 句面只剩「见证加冕」, 加冕者与加冕之事全失。
+    "witnessed_a_coronation_memory": "host",
+    "held_a_coronation_memory": "coronator",
 }
 
 # v32 (问题3): 生母本人持有该记忆时 particip[mother] == 持有人 → 视为无对手方,
@@ -9578,6 +9584,14 @@ def _mem_sentence_body(f, owner_id, mem):
                 # 故 created/appointment/conquest 共用一条取值链, 不再分叉。
                 title = f.title(title_tid, date=_td) or f.title(title_tid)
                 break
+    elif mem.get("type") == "held_a_coronation_memory":
+        # v56 (问题1b): 加冕成的头衔 —— 记忆本身不带 landed_title var, 按**加冕当日**
+        # 的首要头衔取 (游戏文案即「正式加冕为[owner.GetPrimaryTitle]的合法[title]」)。
+        _td = f.mem_date(owner_id, mem) or mem.get("creation_date")
+        _tier, _tid = f._primary_title_at(owner_id, as_of=_td)
+        if _tid is not None:
+            title = f.title_office_text(owner_id, _tid, _td) \
+                or f.title(_tid, date=_td) or ""
     # v28: 头衔得失按 reason 出词 (受任/承袭/受封/攻取…; 卸任/失守/被褫夺…),
     # reason 缺失时回退旧模板 (登位，得X / 让出X)。
     if mem.get("type") in TITLE_VAR_TYPES and title:
@@ -9633,6 +9647,8 @@ def _mem_sentence_body(f, owner_id, mem):
     s = s.replace("与。", "。").replace("与，", "，").replace("与、", "、")
     s = s.replace("让出。", "让出领地。")
     s = s.replace("得。", "登位。")
+    # v56 (问题1b): 加冕句取不到头衔时不留下悬空的「加冕为。」
+    s = s.replace("加冕为。", "加冕。")
     # 未补出父亲时不留空分句 (v55: 补注已由括注改为「，生父X」)
     if not extra_fname:
         s = s.replace("，生父。", "。").replace("，生父", "")
@@ -11279,10 +11295,24 @@ def _cut_module_top(dm, top_n=5):
 #      合并成「诺兰囚禁A、B…等12人」恰好抹掉每人各自的死法 —— 逐人成行才有意义
 #      (诺兰 1088.1.16 的 12 人即此例: 10 人 6 个月后处决, 2 人获释)。
 _MERGE_SLOT_RES = {
-    "witnessed_a_coronation_memory": (r"^(.+?)见证加冕。$",
-                                      lambda names: "、".join(names) + "见证加冕。"),
-    "grand_wedding_completed_guest": (r"^(.+?)出席大婚。$",
-                                      lambda names: "、".join(names) + "出席大婚。"),
+    # v56 (问题1b): 加冕句补上 host 后, 正则与合并器同步 —— 且**只有 host 相同**
+    # (同一场加冕礼) 才合并成一行。条目字段:
+    #   pat      —— 提取可变槽的正则 (第 0 组恒为人名, 其余为定值槽)
+    #   key      —— None 时整组合并; 给出时按 key(groups) 分小组, 不同键不合并
+    #   comb     —— 合并句正文 (入参 = 各行的 m.groups() 元组列表 gs)
+    #   cap_verb —— 超过 _MERGE_CAP 人时「…等N人」之后的收尾 (须把定值槽带全)
+    "witnessed_a_coronation_memory": {
+        "pat": r"^(?P<name>.+?)见证(?P<host>.+?)的加冕。$",
+        "key": lambda g: g[1],
+        "comb": lambda gs: "、".join(g[0] for g in gs)
+                           + "见证" + gs[0][1] + "的加冕。",
+        "cap_verb": lambda gs: "见证" + gs[0][1] + "的加冕。",
+    },
+    "grand_wedding_completed_guest": {
+        "pat": r"^(?P<name>.+?)出席大婚。$",
+        "comb": lambda gs: "、".join(g[0] for g in gs) + "出席大婚。",
+        "cap_verb": lambda gs: "出席大婚。",
+    },
 }
 _MERGE_CAP = 10  # 合并人名上限, 超过收成「…等N人」
 
@@ -11305,40 +11335,57 @@ def _merge_same_day_events(events, f=None):
         entries = groups[key]
         d, typ = key
         spec = _MERGE_SLOT_RES.get(typ)
-        merged = None
-        if spec and len(entries) > 1:
-            pat, comb = spec
-            slots = []
-            ok = True
+        if not (spec and len(entries) > 1):
+            out.extend(entries)
+            continue
+        pat = spec["pat"]
+
+        def _body(e):
+            b = e["text"]
+            if d and f and b.startswith(f.date(d) + "，"):
+                b = b[len(f.date(d)) + 1:]
+            return b
+
+        # 同一 (日期, 类型) 里可能含**几件不同的事** (同日数场加冕礼) —— 按 key 切块,
+        # 不同键各自成行, 不被折成一句。
+        if spec.get("key"):
+            buckets = {}
             for e in entries:
-                body = e["text"]
-                if d and f and body.startswith(f.date(d) + "，"):
-                    body = body[len(f.date(d)) + 1:]
-                m = re.match(pat, body)
+                m = re.match(pat, _body(e))
+                gk = spec["key"](m.groups()) if m else ("_nomatch", id(e))
+                buckets.setdefault(gk, []).append(e)
+            chunks = list(buckets.values())
+        else:
+            chunks = [entries]
+        for chunk in chunks:
+            slots, ok = [], True
+            for e in chunk:
+                m = re.match(pat, _body(e))
                 if not m:
                     ok = False
                     break
                 slots.append(m.groups())
-            if ok:
+            merged = None
+            if ok and len(chunk) > 1:
                 prefix = f"{f.date(d)}，" if d else ""
                 names = [s[0] for s in slots]
                 if len(names) > _MERGE_CAP:
                     merged = (prefix + "、".join(names[:_MERGE_CAP])
-                              + f"等{len(names)}人" + _MERGE_VERB[typ])
+                              + f"等{len(names)}人" + spec["cap_verb"](slots))
                 else:
-                    merged = prefix + comb(names)
-        if merged:
-            # v27: 合并必须携带 module —— 此前只写 date/type/text, 合并后的
-            # 事件模块为空, 模块切片会把「被囚」等集体事件整体漏掉。
-            # v34 (问题8): 骨血标记同型合并后按「全部为本家子女」判定, 不一并丢失。
-            _rec = {"date": d, "type": typ, "text": merged,
-                    "module": entries[0].get("module", "")}
-            if any("own_birth" in e for e in entries):
-                _rec["own_birth"] = all(e.get("own_birth") is not False
-                                        for e in entries)
-            out.append(_rec)
-        else:
-            out.extend(entries)
+                    merged = prefix + spec["comb"](slots)
+            if merged:
+                # v27: 合并必须携带 module —— 此前只写 date/type/text, 合并后的
+                # 事件模块为空, 模块切片会把「被囚」等集体事件整体漏掉。
+                # v34 (问题8): 骨血标记同型合并后按「全部为本家子女」判定, 不一并丢失。
+                _rec = {"date": d, "type": typ, "text": merged,
+                        "module": chunk[0].get("module", "")}
+                if any("own_birth" in e for e in chunk):
+                    _rec["own_birth"] = all(e.get("own_birth") is not False
+                                            for e in chunk)
+                out.append(_rec)
+            else:
+                out.extend(chunk)
     return out
 
 
@@ -13953,6 +14000,5 @@ _EXECUTION_OPTIONS = _style.EXECUTION_OPTIONS
 _EXECUTION_ORDER = _style.EXECUTION_ORDER
 _STATS_LABEL = _style.STATS_LABEL
 _DEATH_STAT_LABEL = _style.DEATH_STAT_LABEL
-_MERGE_VERB = _style.MERGE_VERB
 _TRAIT_GROUP_WORDS = _style.TRAIT_GROUP_WORDS
 _FACT_WORDING = _style.FACT_WORDING
