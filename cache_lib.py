@@ -2590,10 +2590,19 @@ def _latch_relation_reasons(cache, melt, date_label):
     只收**涉主角**的条目 (控体积: 全档 5.6 万条 scripted_relations, 涉主角个位数);
     无 `reason` 的条目 (potential_rival / elder / disciple 等, 全档约 0.2% 的
     rival 亦无) 不入库 —— 「有因由」与「确无因由」的区别留给生成侧判据。
-    返回本档新增条数。"""
+    返回本档新增条数。
+
+    v56 (§10, 用户拍板「范围 A+B+C+D」): 收录面由「涉主角」放宽为「**双方都在
+    本战役角色表内**」—— 缘由不只出现在主角身上: 斯卡利茨 郑思齐↔任宗本 的
+    `lover_prison` (「…在X的地牢里相爱了」) 双方都不是玩家, 旧判据一条不收,
+    于是传记里只剩「相恋」这个结果。代价实测可控 (本档累计 ≈6320 条 / ≈1.2 MiB)。
+    同档一并记下 `province` (事发省份 id) —— v47 方案 B 原本要求, v50 漏落,
+    导致 60 个含 `[PROVINCE.GetName]` 的 reason 模板渲染成病句
+    (「…在的酒馆中共享了一顿美餐…」)。"""
     pid = cache.get("player_id")
     if pid is None:
         return 0
+    chars = cache.get("characters") or {}
     hist = cache.setdefault("relation_reasons", {})
     added = 0
     for o in (melt.get("opinions") or {}).get("active_opinions") or []:
@@ -2602,7 +2611,8 @@ def _latch_relation_reasons(cache, melt, date_label):
         owner, target = o.get("owner"), o.get("target")
         if not isinstance(owner, int) or not isinstance(target, int):
             continue
-        if owner != pid and target != pid:
+        if owner != pid and target != pid \
+                and (str(owner) not in chars or str(target) not in chars):
             continue
         srs = o.get("scripted_relations")
         if not isinstance(srs, dict):
@@ -2614,10 +2624,12 @@ def _latch_relation_reasons(cache, melt, date_label):
             rec = hist.get(key)
             if rec is None:
                 inv = v.get("involved_character")
+                prov = v.get("province")
                 hist[key] = {
                     "owner": owner, "target": target, "kind": str(kind),
                     "reason": str(v["reason"]),
                     "involved": inv if isinstance(inv, int) else None,
+                    "province": prov if isinstance(prov, int) else None,
                     "first_seen": date_label,
                 }
                 added += 1

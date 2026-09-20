@@ -54,11 +54,20 @@ _DYN_RE = re.compile(r"\[[^\]]*\]")            # [concept|E] / [GetX|V0]
 _REF_RE = re.compile(r"\$([A-Za-z0-9_]+)\$")
 
 # v16: 关系原因模板保留的角色名标签 (rival_murderer 等 reason 键) —
-# 其余动态引用照旧剥除, 这 10 类标签供 facts.relation_reasons 替换名字。
+# 其余动态引用照旧剥除, 这些标签供 facts._sub_relation_loc 替换名字。
+# v56 (问题3 续, 用户拍板「一并修」):
+#   ① `GetShortUINamePossessive` 此前**没认** `|U` 后缀 —— `[X.GetShortUIName
+#      Possessive|U]` 整段被剥, 句子的主语/宾语丢失 (friend_pedagogy 渲染成
+#      「对…细致教育和看护种下了持久的友谊种子」)。现改为「访问器 + 任意 |变体」,
+#      并认 `GetHerHis` (旧式, 无 Your)。
+#   ② 新增 `PROVINCE.GetName` —— 60 个 reason 键用 (72 处), 此前剥掉后模板成病句
+#      (「…在的酒馆中共享了一顿美餐…」); facts 侧早有「当地」兜底, 却因标签已被
+#      剥掉而永远走不到。现保留, 由 facts 解析成**真实地名**。
 _KEEP_DYN_RE = re.compile(
-    r"\[(?:TARGET_CHARACTER_2|TARGET_CHARACTER|CHARACTER)\."
-    r"(?:GetShortUIName(?:\|U)?|GetShortUINamePossessive(?:NoTooltip)?|"
-    r"GetShortUINameNoTooltip|GetHerHisYour)\]")
+    r"\[(?:(?:TARGET_CHARACTER_2|TARGET_CHARACTER|CHARACTER)\."
+    r"(?:GetShortUIName(?:Possessive)?(?:NoTooltip)?|GetHerHis(?:Your)?)"
+    r"|PROVINCE\.GetName)"
+    r"(?:\|[A-Za-z0-9_]+)?\]")
 
 
 def strip_ck3_format(text):
