@@ -990,5 +990,17 @@ def hook_type_kept(tp):
     return t.startswith("strong_")
 
 
-# v56: 同日合并超限收尾时要带上各型自己的定值槽 (如加冕句的 host), 由
-# `facts._MERGE_SLOT_RES` 逐型给出 `cap_verb` —— 旧的 MERGE_VERB 表已废止。
+# v56 (问题3): 出狱缘由的两路数据源 —— `cache_lib._latch_prison_manners` 按这两张表
+# 逐档闩存, `facts.Facts.release_manner` 按同一数据读回 (措辞表在 facts 侧的
+# `_PRISON_MANNER_MODS` / `_PRISON_KIND_WORD`, 其键集必须与下表一致, 见
+# tools/verify_v56_unit.py 的不变量断言)。
+# ① 出狱类好感修饰符 (存档自带 start_date, 精确到日; 10 年衰减且随持有者死亡消失);
+# ② 赎金·人情分支的牵制 —— 不在 `hook_type_kept` 白名单内 (不下发《阴私录》),
+#    只在出狱缘由这一处使用; 其到期日 = 创建日 + 10 个日历年 (实测 15/15 逐日吻合)。
+PRISON_MANNER_OPINION_MODS = frozenset({
+    "released_from_prison", "merciful_opinion", "ransomed_from_prison",
+    "demanded_my_conversion_opinion", "compelled_me_to_convert_opinion",
+    "demanded_hook", "demanded_claim_renouncement", "banished_me",
+    "demanded_recruitment", "demanded_taking_vows",
+})
+PRISON_MANNER_HOOK_TYPES = frozenset({"favor_hook", "indebted_hook"})

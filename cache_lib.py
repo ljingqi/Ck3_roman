@@ -816,6 +816,11 @@ EMPTY_CACHE = {
     # 逐档并入时把涉主角的 reason 闩存 (首见即留, 不覆盖), 生成时作熔件的回退源。
     # key = "<owner>|<target>|<kind>" (方向与存档一致, 互为仇敌时两条各存)。
     "relation_reasons": {},
+    # v56 (问题3): 出狱缘由闩存 — {"<被囚者>><监禁者>><日期>": {"kind","src","first_seen"}}。
+    # 源数据 = 出狱当日新得的出狱类好感 (自带 start_date) 与 `favor_hook`/`indebted_hook`
+    # (到期日减 10 个日历年即创建日)。出狱类好感 10 年衰减且随持有者死亡消失, 而终传
+    # 只载末档熔件 ⇒ 十年前那批释放的缘由只能靠逐档闩存回读 (见 _latch_prison_manners)。
+    "prison_manners": {},
     # v44 (问题2): 存档 played_character.legacy = **玩家角色接替链** (有序带日期):
     # [{"cid": 62045, "date": "1066.9.15"}, {"cid": 16852591, "date": "1117.6.19"}]
     # 末条即当前传主, 起算日 = 继位日 (前一任死亡当日)。新版本玩家可从宗族里
@@ -2429,6 +2434,9 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # 游戏只在关系存续期保留 `scripted_relations.<kind>.reason`, 关系一方死亡后
     # 条目连同缘由一起消失, 而生成只用最新一份熔件 → 见过即留, 供 facts 回退读
     _latch_relation_reasons(cache, melt, date_label)
+    # v56 (问题3): 出狱缘由闩存 —— 出狱类好感 10 年衰减且随持有者死亡消失, 而终传
+    # 只载末档熔件 (斯卡利茨 924 年那批释放的「以人情获释」因此读不到)
+    _latch_prison_manners(cache, melt, date_label)
     # v38 (问题1/问题4): Carnalitas 事件好感 (强奸/奴役/逼良为娼/前主奴) 与
     # `carn_recently_raped` 修正逐档差分 — 它们自带 start_date, 也是「出售奴隶」
     # 这种不留记忆的互动唯一的痕迹
@@ -2577,6 +2585,99 @@ def hook_slot_holder(first, second, field):
     except ValueError:
         n = 0
     return (first, second) if n % 2 == 0 else (second, first)
+
+
+def _minus_years(date_str, n):
+    """'934.4.2' 减 n 个日历年 → '924.4.2'; 取不到返回 '' (v56 问题3)。
+
+    永久牵制的哨兵到期日 (9999.1.1) 一并返回 '' —— 它不是真日期。"""
+    s = str(date_str or "")
+    if not s or s.startswith("9999") or s == "none":
+        return ""
+    try:
+        y, m, d = (int(x) for x in s.split(".")[:3])
+        return f"{y - n}.{m}.{d}"
+    except Exception:
+        return ""
+
+
+def _latch_prison_manners(cache, melt, date_label):
+    """出狱缘由闩存 (v56 问题3)。
+
+    为什么需要: `facts.release_manner` 原先只读**当次熔件**的 active_opinions,
+    而出狱类好感一律 10 年衰减 (`ransomed_from_prison` 被脚本覆盖为 1 年), 且随
+    持有者死亡立即从存档消失 —— 终传只载末档熔件, 十年前那批释放的缘由永久读不到,
+    逐条回落「获释」(斯卡利茨 923.11.6 那 12 人于是全成「尽数获释」)。
+
+    两路证据 (口径见 docs/方案_v56_斯卡利茨四问题.md §4):
+      ① `opinions.active_opinions` 里的出狱类修饰符 —— 自带 start_date, 精确到日;
+         `owner` = 被囚者, `target` = 释放者 (唯赎金那档的 target 是付款人)。
+      ② `relations.active_relations` 里的 `favor_hook` / `indebted_hook` ——
+         赎金·人情分支的留痕。它**没有创建日**, 但到期日 = 创建日 + 10 个日历年
+         (实测 melt_925/927 共 15 条与 ① 的 start_date 逐日吻合), 故按到期日反推。
+         这两类牵制不在 `hook_type_kept` 白名单内 (不下发《阴私录》), 只在本闩存里用。
+
+    记录形如::
+
+        cache["prison_manners"]["<被囚者>><监禁者>><日期>"] = {
+            "victim": …, "jailer": …, "date": "924.4.2",
+            "kind": "demanded_hook" | "hook",   # 好感来源记修饰符名, 牵制来源记结局族
+            "src": "opinion" | "hook", "first_seen": "925.1.1"}
+
+    首见即留 (不覆盖) —— 与熔件新旧无关, 故终传也能回读。只收「涉玩家」的条目
+    (控体积; 全档涉主角的出狱类好感/牵制各十余条)。返回本档新增条数。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return 0
+    hist = cache.setdefault("prison_manners", {})
+    added = 0
+
+    def _put(victim, jailer, date, kind, src):
+        nonlocal added
+        if not isinstance(victim, int) or not isinstance(jailer, int) or not date:
+            return
+        key = f"{victim}>{jailer}>{date}"
+        if key in hist:
+            return
+        hist[key] = {"victim": victim, "jailer": jailer, "date": str(date),
+                     "kind": kind, "src": src, "first_seen": date_label}
+        added += 1
+
+    # ---- ① 出狱类好感修饰符 ----
+    for o in (melt.get("opinions") or {}).get("active_opinions") or []:
+        if not isinstance(o, dict):
+            continue
+        ow, tg = o.get("owner"), o.get("target")
+        if not isinstance(ow, int) or not isinstance(tg, int):
+            continue
+        if ow != pid and tg != pid:
+            continue
+        for v in _opinion_values(o):
+            mod = str(v.get("modifier") or "")
+            if mod not in _style.PRISON_MANNER_OPINION_MODS:
+                continue
+            _put(ow, tg, str(v.get("start_date") or ""), mod, "opinion")
+
+    # ---- ② 赎金·人情牵制 (到期日反推创建日) ----
+    for e in (melt.get("relations") or {}).get("active_relations") or []:
+        if not isinstance(e, dict):
+            continue
+        first, second = e.get("first"), e.get("second")
+        if not isinstance(first, int) or not isinstance(second, int):
+            continue
+        if first != pid and second != pid:
+            continue
+        for k, v in e.items():
+            if not str(k).startswith("active_hook") or not isinstance(v, dict):
+                continue
+            if str(v.get("type") or "") not in _style.PRISON_MANNER_HOOK_TYPES:
+                continue
+            made = _minus_years(v.get("expiration_date"), 10)
+            if not made:
+                continue
+            holder, target = hook_slot_holder(first, second, k)
+            _put(target, holder, made, "hook", "hook")
+    return added
 
 
 def _diff_hooks(cache, melt, date_label):

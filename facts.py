@@ -6320,14 +6320,19 @@ class Facts:
     #   故 owner=被囚者、target=释放者; 唯 `ransomed_from_prison` 的 target 是**付款人**
     #   (可能是第三方亲属), 故另有按 owner 的兜底查询。
     # 生命周期: 出狱类一律 years=10 / decaying (`ransomed_from_prison` 被脚本覆盖为 1 年),
-    # 且**随持有者死亡立即从存档消失** —— 读不到就回退「获释」(与 v54 行为一致)。
+    # 且**随持有者死亡立即从存档消失** —— 读不到就回退「获释」(与 v54 行为一致);
+    # v56 (问题3): 再加一层 cache["prison_manners"] 回退 (逐档闩存, 见 cache_lib),
+    # 终传因此仍能读到十年前那批释放的缘由。
+    # v56 (问题3, 用户拍板): `demanded_hook` 这一档写**中性**的「以人情获释」——
+    # 它与 `favor_hook` 同由「赎金·人情分支」与「索取人情后释放」两条互动产生,
+    # 存档留痕逐字段相同, 程序分不出「纳赎」与「以人情换释」。
     _PRISON_MANNER_MODS = {
         "released_from_prison":            ("released",  "获释"),
         "merciful_opinion":                ("released",  "获释"),
         "ransomed_from_prison":            ("ransomed",  "纳赎获释"),
         "demanded_my_conversion_opinion":  ("converted", "改信获释"),
         "compelled_me_to_convert_opinion": ("converted", "改信获释"),
-        "demanded_hook":                   ("hook",      "交出牵制获释"),
+        "demanded_hook":                   ("hook",      "以人情获释"),
         "demanded_claim_renouncement":     ("claim",     "被迫放弃宣称获释"),
         "banished_me":                     ("banished",  "遭驱逐"),
         "demanded_recruitment":            ("recruit",   "遭强征入仕"),
@@ -6336,7 +6341,7 @@ class Facts:
     # 折叠行的「缘故词」(v55 问题1d/§3): 结局族 → 计数式里的短语。
     # 多人簇不带时长 (用户拍板), 单人囚禁行照旧带「3日后 / 1个月后」。
     _PRISON_KIND_WORD = {
-        "released": "获释", "converted": "改信获释", "hook": "交出牵制获释",
+        "released": "获释", "converted": "改信获释", "hook": "以人情获释",
         "claim": "放弃宣称获释", "ransomed": "纳赎获释", "banished": "遭驱逐",
         "recruit": "遭强征入仕", "vows": "被迫出家获释", "escape": "越狱脱身",
         "enslaved": "没为奴隶", "punished": "受刑获释", "executed": "处决",
@@ -6370,7 +6375,11 @@ class Facts:
 
         判据 = 该被囚者在**出狱当日**新得的出狱类好感修饰符 (存档自带 start_date,
         比逐档差分精确)。诛灭世族那一档不在这里 —— 由 v54 既有判据单独承担
-        (见 `family_purge_victims` / `_purge_dates`, 方案 §1.3-B)。"""
+        (见 `family_purge_victims` / `_purge_dates`, 方案 §1.3-B)。
+
+        v56 (问题3): 熔件里读不到时回退 `cache["prison_manners"]` (逐档闩存) ——
+        出狱类好感 10 年衰减、且随持有者死亡立即消失, 终传只载末档熔件,
+        十年前那一批释放的缘由否则永久丢失 (斯卡利茨 924 年那批全成「获释」)。"""
         if victim is None or not out_date:
             return ("", "")
         d = str(out_date)
@@ -6382,6 +6391,25 @@ class Facts:
         for mod, st in rows:
             if st == d:
                 return self._PRISON_MANNER_MODS[mod]
+        return self._latch_manner(victim, jailer, d)
+
+    def _latch_manner(self, victim, jailer, date):
+        """出狱缘由的**缓存回退** (v56 问题3) —— 读 cache["prison_manners"]。
+
+        闩存记录 (见 `cache_lib._latch_prison_manners`) 的 `kind` 有两种形态:
+        好感来源记**修饰符名** (demanded_hook / ransomed_from_prison …),
+        牵制来源记**结局族名** (hook = 赎金·人情分支的 favor_hook/indebted_hook)。"""
+        if not isinstance(jailer, int):
+            return ("", "")
+        rec = (self.cache.get("prison_manners") or {}).get(
+            f"{int(victim)}>{int(jailer)}>{date}")
+        if not isinstance(rec, dict):
+            return ("", "")
+        kind = str(rec.get("kind") or "")
+        if kind in self._PRISON_MANNER_MODS:
+            return self._PRISON_MANNER_MODS[kind]
+        if kind in self._PRISON_KIND_WORD:
+            return (kind, self._PRISON_KIND_WORD[kind])
         return ("", "")
 
     def is_purge_prisoner(self, victim, jailer, date):
@@ -11285,56 +11313,61 @@ def _timeline(f):
     out = _merge_same_day_events(out, f)
     # v15: 同月同型流水事件聚合 (结怨/结仇/助战…), 聚合后再限量
     out = _merge_same_month_events(out, f)
-    # v56 (问题2 附带): 末道按日期**稳定**排序 —— 中间几步 (同月同型聚合、私情配对)
-    # 把合并行放回该组首次出现的位置, 少数行因此落到更晚的日期之后 (斯卡利茨终传
-    # 实测 7 处逆序: 934.11.21 之后又出现 934.11.1 的褫夺行)。排序稳定, 同日各行
-    # 相对次序不变; 本函数的约定本就是「按日期排序」(见 docstring)。
-    out.sort(key=lambda _e: cl.date_key(_e.get("date") or ""))
-    # v14: 年表限量 (修复方案_菲利普2.md 问题4 修复1) — 级别3已从源头剔除,
-    # 剩余级别1(主角)/级别2(直系); 超限时级别2截断, 级别1全保留。
-    cap = 80 if f.as_of else 150   # 十年传记(有 as_of) ≤80, 终传/在世 ≤150
-    if len(out) > cap:
-        # v56 (问题2 附带): 级别1 判定改按事件自带的 `ident`, 不再靠句面人名匹配 ——
-        # 旧稿用 `name_full in text`, 而主角改名后 (斯卡利茨 947 年宗族改称「施」氏)
-        # 现名与**事件当日的旧名**不同形: 战争/头衔行按事件日取名
-        # (「撒旦之种沙米尔·斯卡利茨赢得战争。」), 现名是「施沙米尔」, 于是主角
-        # 自己 924–943 年的战争行整批被判成级别2 而在封顶时删光 (终传 150 条里
-        # 只剩 7 条, 全是前代马丁朝的)。
-        #   · ident.owner == 主角  → 本人持有的记忆;
-        #   · 主角在 ident.parts 里 → 本人为当事人 (镜像对留存的那条常是对手视角,
-        #     如「敌方赢得战争」而主角是败方 —— 这类正是要留的);
-        #   · 无 ident 的旧型 → 回退句面匹配。
-        # 另: 截断**保持原时间序** (旧稿把级别1 全部提到级别2 之前, 封顶后的年表
-        # 因此前段是主角、后段倒回前代, 与板块要求「按时间次序叙述」相悖)。
-        pid_cap = f.cache.get("player_id")
-        pname = (f.cache.get("characters") or {}).get(str(pid_cap), {}).get("name_full") or ""
-
-        def _is_lvl1(_e):
-            _ident = _e.get("ident") or {}
-            if _ident:
-                if _ident.get("owner") == pid_cap:
-                    return True
-                return pid_cap in [v for v in (_ident.get("parts") or {}).values()
-                                   if isinstance(v, int)]
-            return bool(pname) and pname in (_e.get("text") or "")
-
-        _lvl1 = [_e for _e in out if _is_lvl1(_e)]
-        _room = max(0, cap - len(_lvl1))
-        _keep = {id(_e) for _e in _lvl1}
-        for _e in out:                      # 原序遍历, 级别2 按序补足名额
-            if _room <= 0:
-                break
-            if id(_e) not in _keep:
-                _keep.add(id(_e))
-                _room -= 1
-        out = [_e for _e in out if id(_e) in _keep]
-    return out
+    # v14/v56: 末道稳定排序 + 年表限量 (判据与次序见 `_cap_timeline`)
+    return _cap_timeline(out, f)
 
 
 # v14: 十年戏剧主题抽取 (研究_戏剧模块化.md 3.2) — 时间线事件按模块计数,
 # 主角参与 ×3 / 直系参与 ×2 / 其余 ×1 (时间线已只含直系, 权重简化为
 # 主角名在文本中 ×3 否则 ×1); v24: 取 Top5 (用户: 呈现 5 个左右), 与第 5 名
 # 并列的模块全保留; 专题模块 (血脉登基等) 先并入再统一切口。
+def _cap_timeline(out, f):
+    """年表限量 (v14; v56 问题2 附带重写判据与次序)。
+
+    级别3已从源头剔除, 剩余级别1(主角)/级别2(直系); 超限时截断级别2。
+
+    v56 判据: 级别1 按事件自带的 `ident`, 不再靠句面人名匹配 —— 旧稿用
+    `name_full in text`, 而主角改名后 (斯卡利茨 947 年宗族改称「施」氏) 现名与
+    **事件当日的旧名**不同形: 战争/头衔行按事件日取名
+    (「撒旦之种沙米尔·斯卡利茨赢得战争。」), 现名是「施沙米尔」, 于是主角自己
+    924–943 年的战争行整批被判成级别2 而在封顶时删光 (终传 150 条里只剩 7 条,
+    全是前代马丁朝的)。
+      · ident.owner == 主角  → 本人持有的记忆;
+      · 主角在 ident.parts 里 → 本人为当事人 (镜像对留存的那条常是对手视角,
+        如「敌方赢得战争」而主角是败方 —— 这类正是要留的);
+      · 无 ident 的旧型 → 回退句面匹配。
+    另: ① 末道按日期**稳定**排序 —— 中间几步 (同月同型聚合、私情配对) 把合并行
+    放回该组首次出现的位置, 少数行因此落到更晚的日期之后 (斯卡利茨终传实测 7 处
+    逆序); ② 截断**保持原时间序** (旧稿把级别1 全部提到级别2 之前, 封顶后的年表
+    因此前段是主角、后段倒回前代, 与板块要求「按时间次序叙述」相悖)。"""
+    out.sort(key=lambda _e: cl.date_key(_e.get("date") or ""))
+    cap = 80 if f.as_of else 150   # 十年传记(有 as_of) ≤80, 终传/在世 ≤150
+    if len(out) <= cap:
+        return out
+    pid_cap = f.cache.get("player_id")
+    pname = (f.cache.get("characters") or {}).get(str(pid_cap), {}).get("name_full") or ""
+
+    def _is_lvl1(_e):
+        _ident = _e.get("ident") or {}
+        if _ident:
+            if _ident.get("owner") == pid_cap:
+                return True
+            return pid_cap in [v for v in (_ident.get("parts") or {}).values()
+                               if isinstance(v, int)]
+        return bool(pname) and pname in (_e.get("text") or "")
+
+    _lvl1 = [_e for _e in out if _is_lvl1(_e)]
+    _room = max(0, cap - len(_lvl1))
+    _keep = {id(_e) for _e in _lvl1}
+    for _e in out:                      # 原序遍历, 级别2 按序补足名额
+        if _room <= 0:
+            break
+        if id(_e) not in _keep:
+            _keep.add(id(_e))
+            _room -= 1
+    return [_e for _e in out if id(_e) in _keep]
+
+
 def decade_module_top(timeline, protagonist, top_n=5):
     """十年戏剧主题: [(模块名, 得分)] 按得分降序; 并列第5名全保留 (可能 >5)。
     无时间线/无模块事件时返回 []。"""
