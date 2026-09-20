@@ -1770,14 +1770,19 @@ def _protagonist_archive_lines(facts, private=False, scope=None):
                           with_private_chains=private, scope=scope)
 
 
-def _shared_facts_block(facts):
+def _shared_facts_block(facts, subject=None):
     """所有调用共享的事实前缀 (v9 输入缓存优化 + v14 瘦身)。
 
     v34 (问题5, 用户拍板): 只留**稳定最小身份票** —
     【传主】【家族】【现状】+【概览】+ 按需的【冒险者行踪】【瘟疫】。
     完整【人物档案】与【主角大事摘要】移出共享前缀, 改由 `_article_facts`
     按篇下发 (旧稿把同一份档案与逐年摘要注入每一次请求, 各篇因此车轱辘话)。
-    共享前缀仍逐字节一致置于每条 user 消息最前, 供 DeepSeek 前缀缓存命中。"""
+    共享前缀仍逐字节一致置于每条 user 消息最前, 供 DeepSeek 前缀缓存命中。
+
+    v56 (问题1a, 用户拍板案 A): `subject` = 该篇**传主**名 (仅《列传·好友》《列传·仇人》
+    两篇给出)。给了时首行改称【主角】—— 该篇的传主是别人, 首行若仍写【传主】,
+    与本篇紧随的 `subject_note`「【传主】X」正面冲突, 模型据此把主角当成传主。
+    其余篇目 subject 为 None, 首行逐字不变 (共享前缀仍是同一条缓存前缀)。"""
     p = facts["protagonist"]
     name = p.get("name") or "主角"
     house = _house_text(facts)
@@ -1807,7 +1812,7 @@ def _shared_facts_block(facts):
     if ds:
         label = "本十年" if facts.get("decade") else "一生"
         stats_txt = f"【概览】{label}{'、'.join(ds)}。"
-    out = [f"【传主】{name}\n【家族】{house}\n{life_note}"]
+    out = [f"【{'主角' if subject else '传主'}】{name}\n【家族】{house}\n{life_note}"]
     if stations_txt:
         out.append("\n\n" + stations_txt)
     if plague_txt:
@@ -1877,7 +1882,8 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     events_block = _key_events_block(facts, key, sec,
                                      subject=_article_subject(facts, cache, key))
     user_msg = style.PROMPTS["lead_user"].format(
-        shared=_shared_facts_block(facts), theme=_decade_theme_note(facts),
+        shared=_shared_facts_block(facts, subject=article.get("subject")),
+        theme=_decade_theme_note(facts),
         intro=intro, custom_note=custom_note, subject_note=subject_note,
         facts=facts_txt,
         events=(f"{events_block}\n\n" if events_block else ""),
@@ -1888,7 +1894,10 @@ def build_lead_messages(article, facts, cache, intro, cfg):
 
 
 def _subject_note(article, facts):
-    """传主类文章 (好友/仇人列传) 的叙述中心提示。"""
+    """传主类文章 (好友/仇人列传) 的叙述中心提示。
+
+    v56 (问题1a, 用户拍板案 A): 共享前缀对有传主的篇目改称【主角】(见
+    `_shared_facts_block`), 本篇传主之名由这里**一次**立下 (行首【传主】X)。"""
     subj = article.get("subject")
     if not subj:
         return ""
@@ -1911,7 +1920,8 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
     events_block = _key_events_block(facts, key, section,
                                      subject=_article_subject(facts, cache, key))
     user_msg = style.PROMPTS["mid_user"].format(
-        shared=_shared_facts_block(facts), theme=_decade_theme_note(facts),
+        shared=_shared_facts_block(facts, subject=article.get("subject")),
+        theme=_decade_theme_note(facts),
         subject_note=subject_note, facts=facts_txt,
         events=(f"{events_block}\n\n" if events_block else ""),
         title=title, focus=article.get("focus") or article.get("theme") or "",
