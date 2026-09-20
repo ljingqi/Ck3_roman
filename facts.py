@@ -13594,6 +13594,10 @@ def _killed_by_player(f):
             "faith": f.faith(cid),
             "traits": "、".join(f.traits(cid)),
             "events": [],
+            # v56 (§10): 与 `events` 逐位对应的记忆型 — 《刺客列传》的婚恋行按**型**
+            # 过滤, 不再按句面关键词 (相恋句改出游戏缘由句「…相爱了」后, 旧的关键词
+            # 过滤匹配不到, 那一行会整条消失)。
+            "event_types": [],
             "role": "",   # 与主角的关系 (子/友/敌...) 由 biography 侧根据记忆推断
         }
         # v28b: 称谓统一 — 死者标签 (官职/称号+名) 由 facts 一次组好,
@@ -13602,11 +13606,23 @@ def _killed_by_player(f):
                           or entry["name"])
         for mem in prof.get("memories") or []:
             s = _mem_sentence(f, cid, mem)
-            if s:
-                # v34b: 事实日 (头衔得失用 title history 事件日)
-                entry["events"].append(
-                    f"{f.date(f.mem_date(cid, mem))}，{s}")
-        entry["events"].sort()
+            if not s:
+                continue
+            # v56 (§10-E): 相恋**双方各持一条**同型记忆 (participants 互指) ——
+            # 两个当事人都在本名录内时只留一侧 (id 较小者), 免同一件事在
+            # 《刺客列传》里出两行正反句 («A和B相爱了» + «B和A相爱了»)。
+            # 时间线那一侧由 `_drop_mirror_pairs` 处理 (见 `_MIRROR_TYPE_PAIRS`)。
+            if str(mem.get("type") or "") == "became_lovers":
+                _oth = (mem.get("participants") or {}).get("new_relation")
+                if isinstance(_oth, int) and _oth in killed and _oth < cid:
+                    continue
+            # v34b: 事实日 (头衔得失用 title history 事件日)
+            entry["events"].append(
+                f"{f.date(f.mem_date(cid, mem))}，{s}")
+            entry["event_types"].append(str(mem.get("type") or ""))
+        _pairs = sorted(zip(entry["events"], entry["event_types"]))
+        entry["events"] = [p[0] for p in _pairs]
+        entry["event_types"] = [p[1] for p in _pairs]
         out.append(entry)
     out.sort(key=lambda e: cl.date_key(e["death_date"]))
     # v11: 击杀人数多时剔除 lowborn (无家族、非家人/友/仇), 保模型注意力;

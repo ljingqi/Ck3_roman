@@ -1144,11 +1144,23 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
     if bits:
         lines.append("亲缘：" + "、".join(bits))
     # 婚恋记忆: 只收婚恋类 (过滤 k["events"], 其文本带日期前缀)
+    # v56 (§10): 按**记忆型**过滤 (`facts._killed_by_player` 下发的 `event_types`
+    # 与 events 逐位对应) —— 旧稿按句面关键词匹配, 而相恋句改出游戏缘由句
+    # (「…在地牢里相爱了」) 后「相恋」二字不再出现, 该行会整条从《刺客列传》消失。
+    # `event_types` 缺失时 (旧快照) 回退关键词, 行为与旧稿一致。
+    _MAR_TYPES = ("married", "became_lovers", "became_lovers_spouse",
+                  "had_sex", "had_sex_spouse", "broke_up_lovers", "spouse_died")
+    _MAR_WORDS = ("成婚", "相恋", "私情", "分手", "丧偶", "离婚")
     mar = []
     for e in [k] + grp:
-        mar.extend(x for x in (e.get("events") or [])
-                   if any(m in x for m in ("成婚", "相恋", "私情", "分手",
-                                           "丧偶", "离婚")))
+        ev = e.get("events") or []
+        et = e.get("event_types") or []
+        for i, x in enumerate(ev):
+            if i < len(et):
+                if et[i] in _MAR_TYPES:
+                    mar.append(x)
+            elif any(m in x for m in _MAR_WORDS):
+                mar.append(x)
     if mar:
         lines.append("婚恋：")
         lines.extend("  " + e for e in mar)
