@@ -320,6 +320,11 @@ def dynasty_id_of(melt, house_id):
         return None
 
 
+# v56 (性能): 宗族名/家族名取值链的按档缓存槽 (thread-local, 单槽 —— 换熔件即失效)。
+# 见 `dynasty_name_zh` 与 `_dyn_caches`。
+_TL = threading.local()
+
+
 def dynasty_name_zh(melt, dynasty_id):
     """宗族 id → 宗族名中文。取值链 (实测):
       1) dynasties[<id>].localized_name    (Mod 档自带, 如 冯·大马士革 / 崔佛)
@@ -328,50 +333,92 @@ def dynasty_name_zh(melt, dynasty_id):
       3) .name 字段 → 本地化表 (dynn_Lithokristes → 利索克里斯蒂斯)
       4) .key 字符串 → 本地化表 (dynn_<key> / <key>, v8.2)
       5) 创始家族兜底: 同宗族内 found_date 最早的 house 取名 (边 / 奥尔西尼…)
-      全部失败返回 '' (由调用方回退家族名)。"""
+      全部失败返回 '' (由调用方回退家族名)。
+
+    v56 (性能): 5 号兜底原先**每次调用**全表扫 `dynasty_house` (本档 6332 条) ——
+    单档重建里本函数调用 2.2 万次即 1.39 亿次 dict.get, cProfile 实测占
+    `extract_snapshot` 总时的 **44%**。现按熔件缓存「宗族 → 最早 house」索引与
+    逐 id 结果 (thread-local 单槽, 换熔件即失效), 复杂度由 O(宗族数 × house 数)
+    降为 O(house 数 + 宗族数)。缓存只持有**当前档**熔件的引用, 由
+    `extract_snapshot` 换档时清空 (见 `_dyn_caches`)。"""
     if dynasty_id is None:
         return ""
+    c = _dyn_caches(melt)
+    memo = c[2]
+    if dynasty_id in memo:
+        return memo[dynasty_id]
+    val = ""
     try:
         dyn = (melt.get("dynasties") or {}).get("dynasties") or {}
         e = dyn.get(str(dynasty_id)) or {}
         # 1) 存档自带本地化名
         ln = e.get("localized_name") or ""
         if ln and any("\u3400" <= ch <= "\u9fff" for ch in ln):
-            return zh(ln)
-        t = localization.table()
-        # 2) 游戏宗族定义表 (v14: key → dynn_X → 本地化)
-        key = e.get("key")
-        if isinstance(key, str):
-            v = dynasty_name_of_key(key)
-            if v:
-                return v
-        # 3) name 字段 (dynn_X) → 本地化表 / 码点兜底
-        name = e.get("name") or ""
-        if isinstance(name, str):
-            v = _dynasty_name_of_dynn(name, t)
-            if v:
-                return v
-        # 4) key 字符串 → 本地化表变体
-        if isinstance(key, str):
-            for cand in ("dynn_" + key, key):
-                v = localization.loc(t, cand)
-                if v and v != cand:
-                    return v
-        # 5) 创始家族兜底: 同宗族内 found_date 最早的 house
-        dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
-        best = None
-        for hid, h in dh.items():
-            if not isinstance(h, dict):  # v7: none 条目防护
-                continue
-            if h.get("dynasty") == dynasty_id:
-                fd = h.get("found_date") or "9999.1.1"
-                if best is None or fd < best[0]:
-                    best = (fd, hid)
-        if best:
-            return house_name_zh(melt, int(best[1]))
-        return ""
+            val = zh(ln)
+        else:
+            t = localization.table()
+            # 2) 游戏宗族定义表 (v14: key → dynn_X → 本地化)
+            key = e.get("key")
+            if isinstance(key, str):
+                val = dynasty_name_of_key(key)
+            # 3) name 字段 (dynn_X) → 本地化表 / 码点兜底
+            if not val:
+                name = e.get("name") or ""
+                if isinstance(name, str):
+                    val = _dynasty_name_of_dynn(name, t)
+            # 4) key 字符串 → 本地化表变体
+            if not val and isinstance(key, str):
+                for cand in ("dynn_" + key, key):
+                    v = localization.loc(t, cand)
+                    if v and v != cand:
+                        val = v
+                        break
+            # 5) 创始家族兜底: 同宗族内 found_date 最早的 house (索引化)
+            if not val:
+                hid = _earliest_house_index(melt, c).get(dynasty_id)
+                if hid is not None:
+                    val = house_name_zh(melt, int(hid))
+            val = val or ""
     except Exception:
-        return ""
+        val = ""
+    memo[dynasty_id] = val
+    return val
+
+
+def _dyn_caches(melt):
+    """本线程当前的 (melt, 宗族→最早 house 索引, 宗族→名字 memo)。
+
+    单槽: 熔件对象一变即重建 (身份判定 `is`)。thread-local 保证并发重建
+    (pipeline 的后台传记线程与主线程) 不互相串味。"""
+    c = getattr(_TL, "dyn", None)
+    if c is None or c[0] is not melt:
+        c = [melt, None, {}]
+        _TL.dyn = c
+    return c
+
+
+def clear_dyn_caches():
+    """释放本线程缓存的熔件引用 (换档/收尾时调; 见 `extract_snapshot`)。"""
+    _TL.dyn = None
+
+
+def _earliest_house_index(melt, c):
+    """{宗族 id: 该宗族 found_date 最早的 house id} —— 每个熔件只扫一遍。"""
+    if c[1] is None:
+        dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
+        best = {}
+        for hid, h in dh.items():
+            if not isinstance(h, dict):     # v7: none 条目防护
+                continue
+            did = h.get("dynasty")
+            if did is None:
+                continue
+            fd = h.get("found_date") or "9999.1.1"
+            cur = best.get(did)
+            if cur is None or fd < cur[0]:
+                best[did] = (fd, hid)
+        c[1] = {k: v[1] for k, v in best.items()}
+    return c[1]
 
 
 # ---------------------------------------------------------------------------
@@ -1722,7 +1769,25 @@ def _record_vassal_and_cycle(cache, melt, date_label):
 def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     """把一个存档快照并入缓存。返回 False 表示玩家不一致被拒绝。
     _new_deaths: 可选列表, 本次并入「首次记录死亡」的角色 id (int) 会追加进来,
-    供调用方只对「新死亡」角色做死档记忆回溯, 避免每轮全量扫描 (v9)。"""
+    供调用方只对「新死亡」角色做死档记忆回溯, 避免每轮全量扫描 (v9)。
+
+    v56 (性能): 本函数在**关掉自动 GC** 的窗口里跑 (出栈恢复原状态) ——
+    缓存对象图到后期上千万节点, 本函数每档新建/改写数十万对象, 途中反复触发
+    gen0/1/2, 每次 gen2 都要遍历全图。实测单档 `extract_snapshot`
+    7.75 s → 3.22 s (**-58%**, 斯卡利茨 melt_940)。数据全是 dict/list,
+    引用计数即可释放, 无环; 与 `load_melt` 的同类处理同源 (v49 O2)。"""
+    _gc_was_on = gc.isenabled()
+    if _gc_was_on:
+        gc.disable()
+    try:
+        return _extract_snapshot(cache, melt, date_label, _new_deaths)
+    finally:
+        if _gc_was_on:
+            gc.enable()
+
+
+def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
+    """`extract_snapshot` 的实现体 (GC 窗口由外层负责)。"""
     player_id = find_player(melt)
     # v28: 战役校验 — 角色 id 跨战役复用 (867 自定义角色恒为 38701/38682),
     # 仅凭玩家 id 无法拦住「另一场战役的熔件并进本缓存」。两边都有战役号
@@ -1757,6 +1822,8 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     db = _db(melt)
     lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
     tl = melt.get("traits_lookup") or []
+    # v56 (性能): 换档即释放上一档在 `_TL` 里留下的引用 (宗族名索引/结果 memo)
+    clear_dyn_caches()
     # v13: 本快照内共享的姓名推断缓存 (一次 rebuild 数万角色只算一遍)
     _name_memo = {}
     # v14: 宗族名解析记忆化 (旧缓存自愈用)
