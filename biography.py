@@ -674,7 +674,7 @@ def _num1(v, nd=1):
 
 
 def _profile_lines(facts, cid=None, with_real_parentage=False,
-                   with_private_chains=False, scope=None):
+                   with_private_chains=False, scope=None, with_death=True):
     """主角或某角色的档案 → 自然语言行列表 (v15: 字段表格改散文, 程序直出不改写)。
     首行为名号句: 官职+姓名 + 家族分家/族属/信仰/出生/家训;
     后续每类事实一句, 缺失字段整句省略。cid=None 时用主角。
@@ -756,10 +756,16 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     for ln in (p.get("house_history") or []):
         if ln:
             lines.append(ln)
-    # ---- v44 (问题2): 传主链句 (前任/后任传主与继位日) ----
+    # ---- 传主链句 (前任/后任传主与继位日) ----
     for ln in (p.get("succession") or []):
-        if ln:
-            lines.append(ln)
+        if not ln:
+            continue
+        # v57 (问题2a): with_death=False 时连「后任：948年10月6日，其子…继为传主」一并省去
+        # —— 该句带着主角卒日, 与死亡句同属「主角卒年数据」, 而《刺客列传》篇用不上
+        # (该篇主角恒居凶手位; 后任句见 facts.py 的 succession 生成)。
+        if not with_death and str(ln).startswith("后任："):
+            continue
+        lines.append(ln)
     # ---- v27: 语言句 (母语/兼通) ----
     if p.get("language_line"):
         lines.append(p["language_line"])
@@ -931,7 +937,7 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         st = p["status"]
         lines.append(("现" + st) if st.startswith("年") else f"现状：{st}")
     # ---- 死亡句 ----
-    if p.get("death"):
+    if p.get("death") and with_death:
         lines.append(p["death"])
     # ---- 戏剧性事件句 (v34: 揭底链只在内部档放行) ----
     df = list(p.get("dramatic_facts") or [])
@@ -1329,9 +1335,10 @@ def _article_facts(facts, cache, key, section=None):
     # 本板块的亲缘名额 (S1 字面语义) 而挤掉真正的首见位。
     if key not in ("friend", "enemy") or subject is None:
         _set_block(blocks, "传主档案",
-                   "\n".join(_protagonist_archive_lines(facts,
-                                                        private=key in private_boards,
-                                                        scope=scope)))
+                   "\n".join(_protagonist_archive_lines(
+                       facts, private=key in private_boards, scope=scope,
+                       # v57 (问题2a): 《刺客列传》篇不下发主角卒年 (死亡句/后任句)
+                       with_death=(key != "assassins"))))
     if key == "benji":
         # v27: 开篇与纪事按模块切片, 两块料不相交
         # v34 (问题5): 不再附【主角大事摘要】(与下面的【大事年表】逐字重复,
@@ -1773,16 +1780,19 @@ def _section_req(text, facts):
     return text
 
 
-def _protagonist_archive_lines(facts, private=False, scope=None):
+def _protagonist_archive_lines(facts, private=False, scope=None, with_death=True):
     """主角档案块 (v34, 问题5): 从共享前缀移出, 按篇下发。
     private=True 放行揭底链 (托卵承嗣/血脉登基) 与「实父」行 —
     只给《家室列传》《阴私录》这类讲门庭内情的篇目。
-    v45: scope = 本板块的亲缘定语登记表 (基准人 = 该篇传主)。"""
+    v45: scope = 本板块的亲缘定语登记表 (基准人 = 该篇传主)。
+    v57 (问题2a): with_death=False 时不出死亡句与「后任」句 (《刺客列传》篇专用,
+    该篇人名录恒为死于主角之手者; 主角卒年数据留在篇内会被模型续成名录末条)。"""
     return _profile_lines(facts, None, with_real_parentage=private,
-                          with_private_chains=private, scope=scope)
+                          with_private_chains=private, scope=scope,
+                          with_death=with_death)
 
 
-def _shared_facts_block(facts, subject=None):
+def _shared_facts_block(facts, subject=None, key=None):
     """所有调用共享的事实前缀 (v9 输入缓存优化 + v14 瘦身)。
 
     v34 (问题5, 用户拍板): 只留**稳定最小身份票** —
@@ -1794,15 +1804,23 @@ def _shared_facts_block(facts, subject=None):
     v56 (问题1a, 用户拍板案 A): `subject` = 该篇**传主**名 (仅《列传·好友》《列传·仇人》
     两篇给出)。给了时首行改称【主角】—— 该篇的传主是别人, 首行若仍写【传主】,
     与本篇紧随的 `subject_note`「【传主】X」正面冲突, 模型据此把主角当成传主。
-    其余篇目 subject 为 None, 首行逐字不变 (共享前缀仍是同一条缓存前缀)。"""
+    其余篇目 subject 为 None, 首行逐字不变 (共享前缀仍是同一条缓存前缀)。
+
+    v57 (问题2a, 用户拍板案 A): `key` = 本篇篇目键。《刺客列传》篇不出**主角卒年行**
+    —— 该篇人名录恒为「死于主角之手者」, 主角卒年一旦随前缀下发, 模型会把它续成
+    名录的最后一条 (斯卡利茨终传实测 «**秦皇帝撒旦之种施沙米尔**，948年10月6日，
+    误食了一些有毒的植物，死于丹徒，年三十七。»); 主角在该篇是凶手位, 卒年用不上。
+    同源收紧见 `_profile_lines(with_death=False)`。其余篇目逐字不变。"""
     p = facts["protagonist"]
     name = p.get("name") or "主角"
     house = _house_text(facts)
     death = facts.get("player_death")
-    if death:
+    if death and key != "assassins":
         rz = death.get("reason_zh") or death.get("reason") or "去世"
         life_note = (f"【卒年】{llm.fmt_cn_date(death.get('date'))}，{rz}"
                      "——此为终传")
+    elif death:
+        life_note = ""
     elif facts.get("as_of"):
         life_note = f"【现状】在世，截至{llm.fmt_cn_date(facts['as_of'])}"
     else:
@@ -1824,7 +1842,8 @@ def _shared_facts_block(facts, subject=None):
     if ds:
         label = "本十年" if facts.get("decade") else "一生"
         stats_txt = f"【概览】{label}{'、'.join(ds)}。"
-    out = [f"【{'主角' if subject else '传主'}】{name}\n【家族】{house}\n{life_note}"]
+    head = f"【{'主角' if subject else '传主'}】{name}\n【家族】{house}"
+    out = [f"{head}\n{life_note}" if life_note else head]
     if stations_txt:
         out.append("\n\n" + stations_txt)
     if plague_txt:
@@ -1894,7 +1913,7 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     events_block = _key_events_block(facts, key, sec,
                                      subject=_article_subject(facts, cache, key))
     user_msg = style.PROMPTS["lead_user"].format(
-        shared=_shared_facts_block(facts, subject=article.get("subject")),
+        shared=_shared_facts_block(facts, subject=article.get("subject"), key=key),
         theme=_decade_theme_note(facts),
         intro=intro, custom_note=custom_note, subject_note=subject_note,
         facts=facts_txt,
@@ -1932,7 +1951,7 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
     events_block = _key_events_block(facts, key, section,
                                      subject=_article_subject(facts, cache, key))
     user_msg = style.PROMPTS["mid_user"].format(
-        shared=_shared_facts_block(facts, subject=article.get("subject")),
+        shared=_shared_facts_block(facts, subject=article.get("subject"), key=key),
         theme=_decade_theme_note(facts),
         subject_note=subject_note, facts=facts_txt,
         events=(f"{events_block}\n\n" if events_block else ""),
@@ -2186,6 +2205,68 @@ def _normalize_section(text, sec_title, article_title=""):
     if not saw:
         body = f"### {sec_title}\n\n{body}"
     return body
+
+
+# v57 (问题2b): 名录条目形态 —— 行首「称谓/姓名 (可粗体) + 逗号 + 年月日」。
+# 称谓段一律不含句读 (排除「史臣曰：…」这类正文行误命中的可能)。
+_ROSTER_ENTRY_RE = re.compile(
+    r"^\s*\*{0,2}(?P<label>[^*，,。：:；;！!？?…「」『』《》〈〉“”\"'（）()\[\]【】]"
+    r"{1,40}?)\*{0,2}\s*[，,]\s*\d{3,4}年\d{1,2}月\d{1,2}日")
+_ARTICLE_HEAD_RE = re.compile(r"^## \d+、")
+
+
+def _drop_subject_roster_lines(md, facts, articles):
+    """v57 (问题2b): 《刺客列传》篇内删掉**传主本人**的名录条目行 (成品兜底, 幂等)。
+
+    该篇人名录恒为「死于主角之手者」, 而传主本人的卒年句与死者条目**同构**
+    (粗体称谓 + 日期 + 死因 + 死于 + 年岁), 模型为收束名录会自行续上一条
+    (斯卡利茨终传实测: «**秦皇帝撒旦之种施沙米尔**，948年10月6日，误食了一些
+    有毒的植物，死于丹徒，年三十七。距其诛席元裕，仅一月又三日。»)。
+    事实侧已收根 (`_shared_facts_block` / `_profile_lines` 的 with_death), 此处再保
+    一道底线: 只在本篇范围内、且行首为传主称谓或姓名时才删 —— 死者条目、他篇正文
+    一字不动。返回 (新 md, 删除行数)。"""
+    asa = next((i for i, a in enumerate(articles, 1)
+                if (a or {}).get("key") == "assassins"), None)
+    if asa is None:
+        return md, 0
+    p = facts.get("protagonist") or {}
+    label = str(p.get("label") or "")
+    name = str(p.get("name") or "")
+    # 姓名过短 (=2 字) 时只认全称谓, 防「…X甲」这类同名尾缀误伤
+    idents = [x for x in (label, name) if x and (x == label or len(x) >= 3)]
+    if not label and not name:
+        return md, 0
+    # 名录内的真死者 (含组内血亲) 一律保留 —— 即便其称谓尾缀与传主姓名相同
+    victims = set()
+    for k in (facts.get("killed") or []):
+        for it in [k] + list((k or {}).get("group") or []):
+            for key in ("label", "name"):
+                v = str((it or {}).get(key) or "")
+                if v:
+                    victims.add(v)
+    head = f"## {asa}、《{(articles[asa - 1] or {}).get('title') or ''}》"
+    out, dropped, inside, sample = [], 0, False, ""
+    for ln in md.split("\n"):
+        if _ARTICLE_HEAD_RE.match(ln):
+            inside = (ln.strip() == head)
+            out.append(ln)
+            continue
+        if inside:
+            m = _ROSTER_ENTRY_RE.match(ln)
+            if m:
+                lab = m.group("label")
+                if (lab not in victims
+                        and any(lab == nm or (len(nm) >= 3 and lab.endswith(nm))
+                                for nm in idents)
+                        and ("死" in ln or "卒" in ln or "崩" in ln)):
+                    dropped += 1
+                    sample = sample or ln.strip()
+                    continue
+        out.append(ln)
+    if dropped:
+        llm.log(f"【刺客列传】删除传主本人的名录条目 {dropped} 行 "
+                f"(本篇名录只列死于主角之手者): {sample[:60]}")
+    return "\n".join(out), dropped
 
 
 def _assemble(facts, intro, leads, sections, articles):
@@ -2616,6 +2697,8 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
                 sections[(ak, sk)] = body
 
     md = _assemble(facts, intro, leads, sections, articles)
+    # v57 (问题2b): 《刺客列传》篇内删掉传主本人的名录条目 (成品兜底, 幂等)
+    md, _n_dropped = _drop_subject_roster_lines(md, facts, articles)
     # v51: 成品再收一道 (幂等) —— 兜住终传附录等程序直出段; 只过正文 md,
     # 下面的机器可读头注释 (人物: / 篇目: / 十年:) 保持半角冒号不动。
     md = llm.normalize_zh_punct(md)
