@@ -909,6 +909,29 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 `tools/snap.py` 快照 schema 2 → **3**（旧快照上 v56 各组整组 SKIP）。
 **成稿未重跑**。
 
+### v56 追加（§10 关系缘由：情人「相恋」读不到缘由 / 地点槽 / 标签剥除）
+
+用户追问「郑思齐与任宗本**在狱里**变成情人，应该有东西写」。调研见
+`docs/调研_狱中相恋缘由.md`、`docs/调研_关系缘由第三人与地点槽位.md`，方案见
+`docs/方案_v56_斯卡利茨四问题.md` §10（用户拍板 A+B+C+D、地点槽一并修、标签剥除与镜像重复一并修）。
+
+| # | 用户所见 | 根因（一句话） | 改动落点 |
+| --- | --- | --- | --- |
+| 10a | 「…与任宗本**相恋**」——不说为什么，其实是在主角的软禁地里成的 | 缘由**读得到**（游戏 `lover_prison`＝「…在X的地牢里相爱了」），但三条断链叠在一起：① `_latch_relation_reasons` 只收「涉主角」条目，这对双方都不是玩家 ⇒ 一条不收；② `relation_reasons` 只查「主角↔cid」；③ 两人 933.5.15 被处死，**934 档起关系条目全消失**，而生成只用最新档 | 闩存放宽到「双方都在角色表内」；新增任意二人对查询 `relation_reason_for_pair`；`became_lovers` 优先出**游戏缘由句**，读不到时按「同监禁者＋同 house_arrest＋区间覆盖关系日」兜底 |
+| 10b | 「…在的酒馆中共享了一顿美餐…」（60 个模板成病句） | 建表 `_KEEP_DYN_RE` 只保三角色标签，`[PROVINCE.GetName]` 被剥净 ⇒ facts 的「当地」兜底是死代码；且闩存没记 `province`（v47 方案 B 要求过，v50 漏落） | 建表保留 `PROVINCE.GetName`；闩存增 `province`；`facts` 用 `county_at_province`→`title` 解析成**真实地名** |
+| 10c | 「对…细致教育和看护种下了友谊」（主语丢失） | `GetShortUIName` 认了 `\|U`、`GetShortUINamePossessive` **没认** ⇒ `[X.GetShortUINamePossessive\|U]` 整段被剥 | keep-regex 改为「访问器 + 任意 `\|变体`」，并认旧式 `GetHerHis` |
+| 10d | 同一对相恋出两行正反句 | 相恋双方各持一条同型记忆（participants 互指），`_MIRROR_TYPE_PAIRS` 未登记 | 登记 `became_lovers`（时间线走 `_drop_mirror_pairs`；《刺客列传》名录内互恋只留一侧） |
+| 10e | （追修）改出缘由句后，该行从《刺客列传》**整条消失** | 该板块的「婚恋」行按**句面关键词**过滤，新句「…相爱了」不含「相恋」 | 改按**记忆型**过滤（死者名录下发与 `events` 逐位对齐的 `event_types`，缺字段时回退关键词） |
+
+**改后实测**：缓存 `relation_reasons` 11 → **12,897** 条（含 30 条 `lover_prison`、1,897 条带 `province`）；
+含 `PROVINCE.GetName` 的模板 0 → **86** 条；相恋行出词
+「930年6月11日，巴塘节度使郑思齐和任氏刺史任宗本**在撒旦之种施沙米尔的地牢里相爱了**。」（同对两行 → 1 行）。
+**回归**：`verify_v56_unit` **57/57**；`verify_fast` 该快照除 1 条既有 FAIL（灭门死因）外全 PASS。
+**缓存提速（`c851d70`，本次一并做）**：`dynasty_name_zh` 的「同宗族最早 house」兜底原先**每次调用全表扫**
+（单档 2.2 万次调用 = 1.39 亿次 `dict.get`，占 `extract_snapshot` 44%）→ 索引化 + 结果 memo；
+`extract_snapshot` 全程开 GC → 关 GC 窗口（单档 7.75 s → 3.22 s，**−58%**）。
+单档合计 21.6–35.5 s → 9.0–11.9 s（2.4–3.0×）；**缓存逐键一致**（`experiments/diff_v56_cache.py` 差异 0 处）。
+
 ## v55 修正（斯卡利茨三问题：家族恩怨录泛滥与诛灭适配 / 事实层括注 / 囚禁集群收口）
 
 问题、证据链、根因与七项拍板逐条见 `docs/方案_v55_斯卡利茨三问题.md`。
