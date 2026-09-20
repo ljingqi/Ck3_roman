@@ -5659,6 +5659,8 @@ class Facts:
         if pid is None:
             return {}
         ao = cl.date_key(self.as_of) if self.as_of else None
+        # v56 (问题4): 主角只出名字 (event_name), 头衔在档案一次立名
+        plabel = self.event_name(pid, self.as_of) or "主角"
         recs = []
         for rec in (self.cache.get("hooks") or {}).values():
             if not isinstance(rec, dict):
@@ -5694,7 +5696,7 @@ class Facts:
                         for i in list(dict.fromkeys(ids))[:3])
                     tpl = _FACT_WORDING[
                         "hook_group_held" if mine else "hook_group_over"]
-                    lines.append(tpl.format(actor="主角", names=names, strength=word,
+                    lines.append(tpl.format(actor=plabel, names=names, strength=word,
                                             name=name, n=len(rs)))
                     continue
                 r = rs[0]
@@ -5709,11 +5711,11 @@ class Facts:
                 if exp and str(exp) not in ("9999.1.1", "none"):
                     since = _FACT_WORDING["hook_expires"].format(date=self.date(exp))
                 if mine:
-                    lines.append(tpl.format(actor="主角", target=other,
+                    lines.append(tpl.format(actor=plabel, target=other,
                                             name=name, since=since))
                 else:
                     holder = self.person_label(r["holder"], date=self.as_of, style="brief") or "某人"
-                    lines.append(tpl.format(actor="主角", holder=holder,
+                    lines.append(tpl.format(actor=plabel, holder=holder,
                                             name=name, since=since))
             if lines:
                 out[direction] = lines
@@ -5787,7 +5789,8 @@ class Facts:
         recs.sort(key=lambda r: cl.date_key(r.get("first_seen") or "9999.9.9"))
         former.sort(key=lambda r: cl.date_key(r.get("lost_at") or "9999.9.9"))
         W = _FACT_WORDING
-        plabel = self.person_label(pid, date=self.as_of, style="brief") or "主角"
+        # v56 (问题4): 主角只出名字 (event_name), 头衔在档案一次立名
+        plabel = self.event_name(pid, self.as_of) or "主角"
         names = []
         for r in recs:
             nm = self.person_label(r["slave"], date=self.as_of, style="brief") or ""
@@ -13626,9 +13629,11 @@ def _secrets_facts(f):
     for rec in mine:
         (murder if rec.get("type") in SECRET_MURDER_TYPES else held).append(rec)
     out = {}
-    plabel = f.person_label(pid, date=f.as_of, style="brief") or f.name_or(pid)
+    # v56 (问题4): 主角称谓与全篇一致 —— 用 event_name (主角只出名字), 头衔只在
+    # 《传主档案》一次立名; 旧稿 style="brief" 使「秦皇帝撒旦之种施沙米尔」逐行泛滥。
+    plabel = f.event_name(pid, f.as_of) or f.name_or(pid)
     if held:
-        # 主角称谓与全篇一致 (时间线/档案同为 person_label)
+        # 主角称谓与全篇一致 (时间线/档案同为 event_name)
         lines = f.secret_lines(held, owner_label=plabel, self_cid=pid)
         revealed = any(f.secret_knowers(r, self_cid=pid) for r in held)
         if lines:
