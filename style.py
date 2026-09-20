@@ -309,6 +309,10 @@ FACT_WORDING = {
     "prison_escape_same_day": "，当日越狱脱身",
     "prison_jailed": "{jailer}囚禁{victim}",
     "prison_held": "{victim}被囚",
+    # v56 (问题2, 用户拍板案 A): 同日「入狱＋获释」且同日该被囚者的战争结束 ——
+    # 这不是「抓了又放」, 而是**战末俘获**: 原囚禁行改写为战胜句 (同日那条 war_won
+    # 行被本句吃掉, 免两行重复), 事件型改 `war_capture` 不进囚禁集群折叠。
+    "prison_war_end": "{jailer}战胜{victim}，俘之",
     # v42 (问题3): 阉割/致盲**必然与释放同日**（存档 21/21 例实证）——
     # 刑名不再另起一行, 而是充当出狱缘由并入囚禁句。{sp} = 「当日」或「14日后」。
     "prison_punish_castrated": "，{sp}遭阉割而获释",

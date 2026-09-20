@@ -10418,6 +10418,36 @@ def _punishment_on(events, victim, date):
     return None
 
 
+def _war_end_with(events, victim, jailer, date):
+    """同日「该被囚者的战争结束」事件 (v56 问题2) → (事件下标, 胜者 id) 或 None。
+
+    判据 (用户拍板案 A): 事件日 == 出狱日, 且一侧是 victim、另一侧是 jailer:
+      · `war_won`  (胜者视角, parts.loser == victim);
+      · `war_lost` (败者视角, owner == victim 且 parts.winner == jailer)。
+    两条记忆互为镜像, 年表只留一条 (见 `_MIRROR_KEEP`), 故两侧都认。
+    jailer 未知时只认 victim 为败方的战争。
+    实测 (斯卡利茨): 全档 469 例同日入狱+获释中 35 例如此, 监禁者全为玩家。"""
+    dk = cl.date_key(str(date)) if date else None
+    for i, e in enumerate(events):
+        t = e.get("type")
+        if t not in ("war_won", "war_lost"):
+            continue
+        if dk is not None and cl.date_key(str(e.get("date"))) != dk:
+            continue
+        ident = e.get("ident") or {}
+        parts = ident.get("parts") or {}
+        owner = ident.get("owner")
+        winner = parts.get("winner")
+        loser = parts.get("loser")
+        if t == "war_won":
+            if loser == victim and (jailer is None or winner == jailer):
+                return (i, winner)
+        else:
+            if owner == victim and (jailer is None or winner == jailer):
+                return (i, winner)
+    return None
+
+
 def _pair_imprisonments(events, f, pid, pname=""):
     """同一被囚者的入狱与获释合成一行 (问题5); 双视角同一囚禁事件只留一条。"""
     ins, outs = [], []
@@ -10523,7 +10553,18 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 # v42 (问题3): 阉割/致盲与释放同日 —— 刑名即出狱缘由, 并入本行
                 pun = (None if out.get("escape")
                        else _punishment_on(events, victim, out["date"]))
-                if pun is not None:
+                # v56 (问题2, 用户拍板案 A): 同日「入狱＋获释」且同日该被囚者的
+                # 战争结束 —— 此事不是「抓了又放」而是战末俘获, 改写为战胜句并
+                # 吃掉同日那条 war_won 行 (两行不再重复)。
+                _war = (_war_end_with(events, victim, r["jailer"], out["date"])
+                        if same and not out.get("escape") else None)
+                if _war is not None:
+                    drop.add(_war[0])
+                    _wn = f.event_name(_war[1], date=f.as_of) \
+                        if isinstance(_war[1], int) else ""
+                    body = W["prison_war_end"].format(jailer=_wn or jn, victim=vn)
+                    o_kind = "war_end"
+                elif pun is not None:
                     # pun = (W 的模板键, 事件下标) —— 见 _punishment_on;
                     # 同日给「当日」(与「当日获释」同式), 其余给「N日后」
                     drop.add(pun[1])
@@ -10596,9 +10637,15 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     o_kind = "held"
             e = events[r["idx"]]
             e["text"] = f"{f.date(r['date'])}，{body}。"
+            e.pop("ident", None)
+            if o_kind == "war_end":
+                # v56 (问题2): 战末俘获单列一型 —— `_fold_prison_clusters` 只认
+                # `imprisoned`, 本行因此不进囚禁集群折叠 (940.6.1 的 7 人各成一行)。
+                e["type"] = "war_capture"
+                e["module"] = "战和胜负"
+                continue
             e["type"] = "imprisoned"
             e["module"] = "囚禁入狱"
-            e.pop("ident", None)
             # v54 (问题3d): 留给同日集群折叠用 (被囚者 id / 称谓 / 结局族 / 结局原文);
             # `_fold_prison_clusters` 收口时逐条 pop, 不进最终 facts。
             e["_pm"] = {"v": victim, "vn": vn, "jn": jn,
