@@ -309,6 +309,12 @@ FACT_WORDING = {
     "prison_escape_same_day": "，当日越狱脱身",
     "prison_jailed": "{jailer}囚禁{victim}",
     "prison_held": "{victim}被囚",
+    # v56 (§10-D): 相恋缘由的**程序兜底** (拿不到游戏 reason 键时) —— 双方同囚于
+    # 同一监禁者、同为 house_arrest (软禁)、且关系起始日落在共同在押区间内。
+    # 措辞只陈述**可判定的事实** (「同在X的软禁中」), 不冒用游戏 lover_prison
+    # 的「地牢」文案。
+    "lovers_same_prison": "{name}与{other}同在{jailer}的软禁中相恋",
+    "lovers_same_prison_no_jailer": "{name}与{other}同在软禁中相恋",
     # v56 (问题2, 用户拍板案 A): 同日「入狱＋获释」且同日该被囚者的战争结束 ——
     # 这不是「抓了又放」, 而是**战末俘获**: 原囚禁行改写为战胜句 (同日那条 war_won
     # 行被本句吃掉, 免两行重复), 事件型改 `war_capture` 不进囚禁集群折叠。

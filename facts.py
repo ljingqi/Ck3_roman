@@ -1397,6 +1397,8 @@ class Facts:
         # v50: 缓存里的关系缘由 (cache["relation_reasons"], 惰性构建) —— 熔件里
         # 该关系条目已随一方死亡/关系解除消失时, 用它回退 (见 relation_reasons)
         self._cached_opinion_idx = None
+        # v56 (§10): 熔件 opinions 的**全对**索引 (不过滤主角, 第三方对的缘由用)
+        self._any_opinion_idx = None
         self._rel_reason_cache = {}
         # v11: 语言 → 文化模板列表 反查索引 (同一语言多文化共享, 如 language_norse
         # 同时被 norman/norse 持有; 推断时优先有父名规则的模板)
@@ -7909,17 +7911,42 @@ class Facts:
             idx.setdefault((owner, target), {})[kind] = {
                 "reason": reason,
                 "involved_character": rec.get("involved"),
+                "province": rec.get("province"),
                 "_first_seen": rec.get("first_seen"),
             }
         self._cached_opinion_idx = idx
         return idx
 
-    def _rel_mem_date(self, cid, mem_types):
-        """主角↔cid 间某类关系的最早记忆日期 (≤ as_of), 用于游戏原因的时间门 —
-        十年传记不把 as_of 之后才形成的关系泄漏进早期。"""
+    def _any_opinion_index(self):
+        """熔件 `opinions.active_opinions` 的**全对**索引 (v56 §10)。
+
+        与 `_player_opinion_index` 同源, 但**不按主角过滤** —— 第三方对
+        (如「郑思齐↔任宗本」) 的 `scripted_relations` 也在其中。只收带
+        `scripted_relations` 的条目 (全档约 5.6 万 → 索引更小), 惰性一次扫描。
+        用途: `became_lovers` 等关系记忆的缘由句要按**记忆当事人**查, 而不是按主角。"""
+        if self._any_opinion_idx is not None:
+            return self._any_opinion_idx
+        idx = {}
+        for o in (self.melt.get("opinions") or {}).get("active_opinions") or []:
+            if not isinstance(o, dict):
+                continue
+            ow, tg = o.get("owner"), o.get("target")
+            if not isinstance(ow, int) or not isinstance(tg, int):
+                continue
+            sr = o.get("scripted_relations")
+            if isinstance(sr, dict) and sr:
+                idx[(ow, tg)] = sr
+        self._any_opinion_idx = idx
+        return idx
+
+    def _rel_mem_date(self, cid, mem_types, base=None):
+        """a↔cid 间某类关系的最早记忆日期 (≤ as_of), 用于游戏原因的时间门 —
+        十年传记不把 as_of 之后才形成的关系泄漏进早期。
+        v56 (§10): `base` 指定基准人 (缺省 = 主角) —— 第三方对 (相恋的两人都不是
+        主角) 也要能判「关系在 as_of 前是否已存在」。"""
         cache = self.cache
-        pid = self.cache.get("player_id")
-        if pid is None:
+        pid = base if base is not None else self.cache.get("player_id")
+        if pid is None or cid is None:
             return None
         chars = cache.get("characters") or {}
         best = None
@@ -7983,7 +8010,60 @@ class Facts:
                 extra = v.get("involved_character")
                 if not isinstance(extra, int):
                     extra = None
-                s = _sub_relation_loc(self, tpl, pair[0], pair[1], extra)
+                s = _sub_relation_loc(self, tpl, pair[0], pair[1], extra,
+                                      province=v.get("province"))
+                s = s.strip("。") + "。" if s else ""
+                if s and s not in seen:
+                    seen.add(s)
+                    out.append(s)
+        return out
+
+    def relation_reason_for_pair(self, a, b, kinds, styled=False):
+        """任意二人对的游戏缘由句 (v56 §10) —— 与 `relation_reasons` 同口径,
+        但基准不是主角: 用于**双方都不是主角**的关系对 (如「郑思齐↔任宗本」
+        在施沙米尔的地牢里相恋)。
+
+        数据源: 熔件 `opinions` 全对索引 (`_any_opinion_index`) + 逐档闩存的
+        `cache["relation_reasons"]` (v56 起收录面已放宽到「双方都在角色表内」)。
+        时间门与 `relation_reasons` 同 (关系须在 as_of 前已存在)。返回渲染好的 [句]。
+        熔件优先、闩存补缺 (同 `relation_reasons` 的键序与口径)。
+        `styled=True` 时三个称谓走 `event_name` (与事实面其余行同口径)。"""
+        if not isinstance(a, int) or not isinstance(b, int) or a == b:
+            return []
+        melt_idx = self._any_opinion_index()
+        cached = self._cached_opinion_index()
+        out, seen = [], set()
+        for pair in ((a, b), (b, a)):
+            merged = {}
+            for kind, v in (melt_idx.get(pair) or {}).items():
+                if kind in kinds and isinstance(v, dict) and v.get("reason"):
+                    merged[kind] = v
+            for kind, v in (cached.get(pair) or {}).items():
+                if kind in kinds and isinstance(v, dict) and kind not in merged:
+                    merged[kind] = v
+            for kind, v in merged.items():
+                reason = v.get("reason")
+                if not reason:
+                    continue
+                mtypes = self._REL_REASON_KINDS.get(kind)
+                if mtypes and not self._rel_mem_date(b, mtypes, base=a):
+                    continue      # 该关系在 as_of 前不存在 → 不渲染
+                tpl = L.relation_templates().get(reason)
+                if not tpl:
+                    continue
+                extra = v.get("involved_character")
+                if not isinstance(extra, int):
+                    extra = None
+                _names = None
+                if styled:
+                    _names = [
+                        self.event_name(pair[0], date=self.as_of) or self.name_or(pair[0]),
+                        self.event_name(pair[1], date=self.as_of) or self.name_or(pair[1]),
+                        (self.event_name(extra, date=self.as_of) or self.name_or(extra))
+                        if isinstance(extra, int) else "",
+                    ]
+                s = _sub_relation_loc(self, tpl, pair[0], pair[1], extra,
+                                      province=v.get("province"), names=_names)
                 s = s.strip("。") + "。" if s else ""
                 if s and s not in seen:
                     seen.add(s)
@@ -9452,6 +9532,59 @@ def _sex_mem_sentence(f, owner_id, mem, info):
     return tpl.format(name=owner, other=other)
 
 
+def _lovers_in_same_prison(f, a, b, date):
+    """相恋缘由的**程序兜底** (v56 §10-D) → 句 或 ''。
+
+    判据: a 与 b 在关系起始日**同囚于同一监禁者、同为 house_arrest (软禁)** ——
+    即两人各自 `prison_history` 里都有一个区间满足
+    `same imprisoner ∧ type == "house_arrest" ∧ since/from ≤ date ≤ to`。
+    出「{A}与{B}同在{J}的软禁中相恋。」(监禁者不可考时省去)。
+
+    为什么需要: 游戏只在**关系条目存续期**写 `reason` (`lover_prison`, 见
+    `events/prison_events/house_arrest_ongoing_events.txt` option .d), 关系解除或
+    当事人死亡后条目消失; 而闩存只在「并入的那一档」看得到 —— 从较晚的档才开始
+    重建时读不到 reason, 此时仍可由在押事实判定这段关系起于狱中。
+    判据要求关系起始日**落在共同在押区间内**, 故「先成情人、后同囚」不会被误判;
+    有 reason 键时不走这条 (仅兜底)。"""
+    if not isinstance(a, int) or not isinstance(b, int) or a == b or not date:
+        return ""
+    try:
+        dk = cl.date_key(str(date))
+    except Exception:
+        return ""
+    chars = f.cache.get("characters") or {}
+
+    def _jailers_in_span(cid):
+        out = set()
+        for iv in ((chars.get(str(cid)) or {}).get("prison_history") or []):
+            if not isinstance(iv, dict) or iv.get("type") != "house_arrest":
+                continue
+            jailer = iv.get("imprisoner")
+            lo, hi = iv.get("since") or iv.get("from"), iv.get("to")
+            if not isinstance(jailer, int) or not lo or not hi:
+                continue
+            try:
+                if cl.date_key(str(lo)) <= dk <= cl.date_key(str(hi)):
+                    out.add(jailer)
+            except Exception:
+                continue
+        return out
+
+    common = _jailers_in_span(a) & _jailers_in_span(b)
+    if not common:
+        return ""
+    jailer = sorted(common)[0]
+    an = f.event_name(a, date=f.as_of) or f.name_or(a)
+    bn = f.event_name(b, date=f.as_of) or f.name_or(b)
+    if not an or not bn:
+        return ""
+    W = _FACT_WORDING
+    jn = f.event_name(jailer, date=f.as_of) or f.name_or(jailer)
+    if jn:
+        return W["lovers_same_prison"].format(name=an, other=bn, jailer=jn) + "。"
+    return W["lovers_same_prison_no_jailer"].format(name=an, other=bn) + "。"
+
+
 def _mem_sentence(f, owner_id, mem):
     """一条记忆 → 干净中文句。
 
@@ -9552,6 +9685,22 @@ def _mem_sentence_body(f, owner_id, mem):
     # v32: 无对手方 → 回退 `<type>_no_other` 模板 (被囚/逃脱/夭折三类都有)
     if not other:
         tpl = MEMORY_TEMPLATES.get(f"{mtype}_no_other") or tpl
+    # v56 (§10, 用户拍板 A+B+C+D): 「相恋」句优先出**游戏自己的缘由句** ——
+    # 「X和Y在Z的地牢里相爱了。」(reason=`lover_prison`, 第三人槽=监禁者)。
+    # 记忆本身只有结果 (无 reason/地点/监禁者), 缘由在**关系条目**上: 熔件里查得到就用
+    # 熔件, 查不到用逐档闩存的 `cache["relation_reasons"]` (v56 起收录面已放宽到
+    # 「双方都在角色表内」, 故两个都不是主角的当事人也有)。两路都没有时按同狱在押
+    # 事实兜底 (见 `_lovers_in_same_prison`)。
+    if mtype == "became_lovers" and isinstance(other_id, int) \
+            and other_id != owner_id:
+        _rs = f.relation_reason_for_pair(owner_id, other_id, ("lover",),
+                                         styled=True)
+        if _rs:
+            return _rs[0]
+        _fb = _lovers_in_same_prison(f, owner_id, other_id,
+                                     mem.get("creation_date"))
+        if _fb:
+            return _fb
     # v32 (问题3): 夭折句的配偶称谓 (妻/夫/妾/情人) — 由关系数据判定, 不靠措辞猜
     rel = ""
     if mtype in _CONSORT_MEM_TYPES and other_id is not None:
@@ -10196,6 +10345,9 @@ _MIRROR_KEEP = {
     "battle_won_memory": 2, "battle_lost_memory": 1,
     "torturer_memory": 2, "tortured_memory": 1,
     "ascended_throne_memory": 2, "lost_title_memory": 1,
+    # v56 (§10-E): 相恋双方**各持一条**同型记忆 (participants 互指) —— 旧稿未登记,
+    # 于是同一件事出两行正反句 (「郑思齐与任宗本相恋。」+「任宗本与郑思齐相恋。」)。
+    "became_lovers": 2,
 }
 _MIRROR_TYPE_PAIRS = (
     frozenset({"offensive_war", "defensive_war"}),
@@ -10203,6 +10355,7 @@ _MIRROR_TYPE_PAIRS = (
     frozenset({"battle_won_memory", "battle_lost_memory"}),
     frozenset({"torturer_memory", "tortured_memory"}),
     frozenset({"ascended_throne_memory", "lost_title_memory"}),
+    frozenset({"became_lovers"}),          # v56 (§10-E): 同型镜像对
 )
 # 需要带身份槽 (owner + participants) 才能配对/合并的记忆类型
 _IDENT_TYPES = frozenset(
@@ -10258,6 +10411,10 @@ def _mirror_partner(a, b):
         v = x.get(k)
         return int(v) if isinstance(v, int) else None
 
+    if ta == tb == "became_lovers":
+        # v56 (§10-E): 同一对相恋的两条记忆 (持有者互为对方记忆的对象槽)
+        return p(pa, "new_relation") is not None \
+            and p(pa, "new_relation") == ob and p(pb, "new_relation") == oa
     if {ta, tb} == {"offensive_war", "defensive_war"}:
         return p(pa, "other_party") is not None \
             and p(pa, "other_party") == ob and p(pb, "other_party") == oa
@@ -12630,46 +12787,74 @@ _AGENT_ZH = {
 }
 
 
-def _sub_relation_loc(f, s, owner, target, extra=None):
-    """关系原因本地化串 → 干净中文句 (替换 CK3 角色/代词占位符)。
-    [CHARACTER.*]=记录拥有者, [TARGET_CHARACTER.*]=对方, [TARGET_CHARACTER_2.*]=
-    第三人 (involved_character, 如地牢主人); |U 是英文大写变体, 中文忽略;
-    Possessive 中文无词形变化, 用原名; 未知标签 (省份/物品) 清空。"""
-    oname = f.name_or(owner)
-    tname = f.name_or(target)
-    xname = f.name_or(extra) if isinstance(extra, int) else ""
-    subs = (
-        ("[CHARACTER.GetShortUIName|U]", oname),
-        ("[CHARACTER.GetShortUIName]", oname),
-        # v52 (问题5 伴随修复): 记录拥有者的 Possessive / NoTooltip 两形此前无对应
-        # 替换项, 落到末尾的正则被整段清空 —— 于是「[TARGET]剥夺了[CHARACTER
-        # 的Possessive]政治地位…」渲染成「剥夺了的政治地位」(仲宣结仇缘由原样)。
-        # 中文无词形变化, 一律用原名; 三类标签在 22k 条模板里共 892 处。
-        ("[CHARACTER.GetShortUINamePossessive]", oname),
-        ("[CHARACTER.GetShortUINamePossessiveNoTooltip]", oname),
-        ("[CHARACTER.GetShortUINameNoTooltip]", oname),
-        ("[TARGET_CHARACTER.GetShortUIName|U]", tname),
-        ("[TARGET_CHARACTER.GetShortUIName]", tname),
-        ("[TARGET_CHARACTER.GetShortUINameNoTooltip]", tname),
-        # v47: 第三人槽 (involved_character, 如「虐待其配偶X」的 X) —— 旧实现只
-        # 认 Possessive 形, 非 Possessive 的 `[TARGET_CHARACTER_2.GetShortUIName]`
-        # 落到末尾的正则清空, 于是句子里的人名被吃掉
-        # (「…虐待其配偶，后者是…的亲属」，见 docs/研究_v47_结仇缘由缺失.md §5)。
-        ("[TARGET_CHARACTER_2.GetShortUIName|U]", xname),
-        ("[TARGET_CHARACTER_2.GetShortUINameNoTooltip]", xname),
-        ("[TARGET_CHARACTER_2.GetShortUIName]", xname),
-        ("[TARGET_CHARACTER_2.GetShortUINamePossessive]", xname or tname),
-        ("[TARGET_CHARACTER_2.GetHerHisYour]", "其"),
-        ("[TARGET_CHARACTER.GetShortUINamePossessiveNoTooltip]", tname),
-        ("[TARGET_CHARACTER.GetShortUINamePossessive]", tname),
-        ("[CHARACTER.GetHerHisYour]", "其"),
-        ("[TARGET_CHARACTER.GetHerHisYour]", "其"),
-        ("[PROVINCE.GetName]", "当地"),
-        ("[PROVINCE.Custom('TerrainTypeProvince')]", ""),
-        ("[TARGET_CHARACTER.Custom('child_favorite_toy')]", "玩具"),
-    )
-    for a, b in subs:
-        s = s.replace(a, b)
+_REL_LOC_TAG_RE = re.compile(
+    r"\[(CHARACTER|TARGET_CHARACTER|TARGET_CHARACTER_2|PROVINCE)\."
+    r"([A-Za-z_]+?)(?:\|[A-Za-z0-9_]+)?\]")
+
+
+def _province_label(f, province):
+    """省份 id → 地名 (伯爵领名, 取不到退男爵领名); 未知返回 '' (v56)。"""
+    if province is None:
+        return ""
+    try:
+        tid = f.county_at_province(province) or f.barony_at_province(province)
+    except Exception:
+        return ""
+    if tid is None:
+        return ""
+    try:
+        return f.title(tid) or ""
+    except Exception:
+        return ""
+
+
+def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None):
+    """关系原因本地化串 → 干净中文句 (替换 CK3 角色/地点/代词占位符)。
+
+    [CHARACTER.*]=记录拥有者, [TARGET_CHARACTER.*]=对方,
+    [TARGET_CHARACTER_2.*]=第三人 (involved_character, 如地牢主人),
+    [PROVINCE.GetName]=事发地; `|U` 是英文大写变体 (中文忽略);
+    Possessive 中文无词形变化, 用原名。
+
+    v56 (问题3 续): 改为**按角色/地点派发**的正则替换 —— 旧稿是逐形列举的替换表,
+    认不出 `|U` 与 NoTooltip 的组合形, 落进末尾的清空正则 (主语/宾语被吃掉)。
+    另: 模板要用第三人槽而 `extra` 缺失时**整句不出** (返回 '') —— 旧稿把对方名字
+    塞进第三人位, 会写成「虐待其配偶，后者是<对方>的亲属」这种错人句;
+    实测本档「需第三人∧缺人」= 0 例, 故此改是防守性加固。
+    v56 (地点): `[PROVINCE.GetName]` 由 `province` 解析成真实地名 (伯爵领名), 无值时
+    退「当地」(旧稿因标签已在建表时被剥, 这句兜底是死代码)。
+    v56 (§10): `names` 可显式给出 (owner, target, 第三人) 三个称谓 —— 供事实面走
+    `event_name` 口径 (同一人全篇称谓一致), 缺省仍用 `name_or` (保持 v16 起的行为)。"""
+    if names is not None:
+        oname, tname, xname = (list(names) + ["", "", ""])[:3]
+    else:
+        oname = f.name_or(owner)
+        tname = f.name_or(target)
+        xname = f.name_or(extra) if isinstance(extra, int) else ""
+    pname = _province_label(f, province) if province is not None else ""
+    need_x = [False]
+
+    def _rep(m):
+        role, acc = m.group(1), m.group(2)
+        if role == "PROVINCE":
+            return pname or "当地"
+        if acc.startswith("GetHerHis"):
+            return "其"
+        if role == "CHARACTER":
+            return oname
+        if role == "TARGET_CHARACTER":
+            return tname
+        if not xname:            # TARGET_CHARACTER_2 缺人 → 整句不出
+            need_x[0] = True
+            return ""
+        return xname
+
+    s = _REL_LOC_TAG_RE.sub(_rep, s)
+    if need_x[0]:
+        return ""
+    # 仍未被认出的具名标签 (Custom(...) 等) 照旧替换/清空
+    s = s.replace("[PROVINCE.Custom('TerrainTypeProvince')]", "")
+    s = s.replace("[TARGET_CHARACTER.Custom('child_favorite_toy')]", "玩具")
     s = re.sub(r"\[[^\]]*\]", "", s)
     s = s.replace("  ", " ").strip()
     return s
