@@ -11238,15 +11238,49 @@ def _timeline(f):
     out = _merge_same_day_events(out, f)
     # v15: 同月同型流水事件聚合 (结怨/结仇/助战…), 聚合后再限量
     out = _merge_same_month_events(out, f)
+    # v56 (问题2 附带): 末道按日期**稳定**排序 —— 中间几步 (同月同型聚合、私情配对)
+    # 把合并行放回该组首次出现的位置, 少数行因此落到更晚的日期之后 (斯卡利茨终传
+    # 实测 7 处逆序: 934.11.21 之后又出现 934.11.1 的褫夺行)。排序稳定, 同日各行
+    # 相对次序不变; 本函数的约定本就是「按日期排序」(见 docstring)。
+    out.sort(key=lambda _e: cl.date_key(_e.get("date") or ""))
     # v14: 年表限量 (修复方案_菲利普2.md 问题4 修复1) — 级别3已从源头剔除,
-    # 剩余级别1(主角)/级别2(直系); 超限时级别2截断, 级别1(主角名在文本中)全保留。
+    # 剩余级别1(主角)/级别2(直系); 超限时级别2截断, 级别1全保留。
     cap = 80 if f.as_of else 150   # 十年传记(有 as_of) ≤80, 终传/在世 ≤150
     if len(out) > cap:
-        pname = (f.cache.get("characters") or {}).get(str(f.cache.get("player_id")), {}).get("name_full") or ""
-        lvl1 = [e for e in out if pname and pname in e["text"]]
-        lvl2 = [e for e in out if not (pname and pname in e["text"])]
-        lvl1.extend(lvl2[:max(0, cap - len(lvl1))])
-        out = lvl1
+        # v56 (问题2 附带): 级别1 判定改按事件自带的 `ident`, 不再靠句面人名匹配 ——
+        # 旧稿用 `name_full in text`, 而主角改名后 (斯卡利茨 947 年宗族改称「施」氏)
+        # 现名与**事件当日的旧名**不同形: 战争/头衔行按事件日取名
+        # (「撒旦之种沙米尔·斯卡利茨赢得战争。」), 现名是「施沙米尔」, 于是主角
+        # 自己 924–943 年的战争行整批被判成级别2 而在封顶时删光 (终传 150 条里
+        # 只剩 7 条, 全是前代马丁朝的)。
+        #   · ident.owner == 主角  → 本人持有的记忆;
+        #   · 主角在 ident.parts 里 → 本人为当事人 (镜像对留存的那条常是对手视角,
+        #     如「敌方赢得战争」而主角是败方 —— 这类正是要留的);
+        #   · 无 ident 的旧型 → 回退句面匹配。
+        # 另: 截断**保持原时间序** (旧稿把级别1 全部提到级别2 之前, 封顶后的年表
+        # 因此前段是主角、后段倒回前代, 与板块要求「按时间次序叙述」相悖)。
+        pid_cap = f.cache.get("player_id")
+        pname = (f.cache.get("characters") or {}).get(str(pid_cap), {}).get("name_full") or ""
+
+        def _is_lvl1(_e):
+            _ident = _e.get("ident") or {}
+            if _ident:
+                if _ident.get("owner") == pid_cap:
+                    return True
+                return pid_cap in [v for v in (_ident.get("parts") or {}).values()
+                                   if isinstance(v, int)]
+            return bool(pname) and pname in (_e.get("text") or "")
+
+        _lvl1 = [_e for _e in out if _is_lvl1(_e)]
+        _room = max(0, cap - len(_lvl1))
+        _keep = {id(_e) for _e in _lvl1}
+        for _e in out:                      # 原序遍历, 级别2 按序补足名额
+            if _room <= 0:
+                break
+            if id(_e) not in _keep:
+                _keep.add(id(_e))
+                _room -= 1
+        out = [_e for _e in out if id(_e) in _keep]
     return out
 
 
