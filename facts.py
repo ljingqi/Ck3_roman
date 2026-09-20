@@ -1400,9 +1400,6 @@ class Facts:
         # v56 (§10): 熔件 opinions 的**全对**索引 (不过滤主角, 第三方对的缘由用)
         self._any_opinion_idx = None
         self._rel_reason_cache = {}
-        # v57 (问题3): 主角「囚禁了 X」记忆 → {victim_id: [日期…]} (惰性建一次) ——
-        # 同档内囚禁+处决的受害者靠它判「卒时在押」(见 _custody_at_death)。
-        self._jail_dates = None
         # v11: 语言 → 文化模板列表 反查索引 (同一语言多文化共享, 如 language_norse
         # 同时被 norman/norse 持有; 推断时优先有父名规则的模板)
         self._lang_to_tpl = {}
@@ -9334,78 +9331,64 @@ class Facts:
             return ""
         return self.title(county) or ""
 
-    def _prison_at_death(self, rec, date):
-        """v57 (问题3): 死亡当日仍在押的那一段囚禁区间 (无则 None)。
+    def _capital_province_at(self, date=None):
+        """v57 (问题3): 主角在 date 时点的首都省份 id (取不到返回 None)。
 
-        区间起点优先取游戏给的入狱日 `since` —— `from` 只是**观察到**在押的那一档
-        (晚于真实入狱日), 用它会把「入狱当年即死」判成不在押。"""
-        if not date:
+        首都**会搬** (斯卡利茨实测 924–945 在 b_long_hung/郡口, 946 起 b_dantu/丹徒),
+        而 `cache.landed.realm_capital` 只有末档值, 故读逐档闩存的 `capital_history`
+        (见 cache_lib)；老缓存无该键时退回末档 realm_capital。头衔 id → key →
+        `provmap` 反查省份。"""
+        ch = self.cache.get("capital_history") or []
+        pid = self.cache.get("player_id")
+        want = None
+        if ch and date:
+            dk = cl.date_key(str(date))
+            for pt in ch:
+                d = pt.get("date")
+                if d and cl.date_key(str(d)) <= dk:
+                    want = pt.get("title")
+                elif d:
+                    break
+        if want is None:
+            rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+            want = (rec.get("landed") or {}).get("realm_capital")
+        if want is None:
             return None
-        dk = cl.date_key(date)
-        hit = None
-        for iv in (rec.get("prison_history") or []):
-            if not isinstance(iv, dict):
-                continue
-            start = iv.get("since") or iv.get("from")
-            if start and cl.date_key(str(start)) > dk:
-                continue
-            to = iv.get("to")
-            if to and cl.date_key(str(to)) < dk:
-                continue
-            hit = iv
-        return hit
+        key = (self._lt.get(str(want)) or {}).get("key") or ""
+        prov = self._prov_inv().get(key)
+        if isinstance(prov, int):
+            return prov
+        # 头衔不在（被毁/换 id）时退一步: 取该头衔条目的 capital（其州府头衔）再反查
+        cap = (self._lt.get(str(want)) or {}).get("capital")
+        key2 = ((self._lt.get(str(cap)) or {}).get("key")
+                if isinstance(cap, int) else "")
+        prov = self._prov_inv().get(key2)
+        return prov if isinstance(prov, int) else None
 
-    def _player_jail_dates(self):
-        """v57 (问题3): 主角「囚禁了 X」记忆 (imprisoned_other) → {被囚者 id: [日期…]}。
+    def capital_place_at(self, date=None):
+        """v57 (问题3): 主角当时首都的地名 (贵族领/州府名; 取不到返回 '')。"""
+        prov = self._capital_province_at(date)
+        if prov is None:
+            return ""
+        bid = self.barony_at_province(prov)
+        if bid is not None:
+            nm = self.title_base_name(bid)
+            if nm and not nm.startswith("b_"):
+                return nm
+        cid2 = self.county_at_province(prov)
+        if cid2 is not None:
+            nm = self.title_base_name(cid2)
+            if nm and not nm.startswith("c_"):
+                return nm
+        return ""
 
-        惰性建一次 (主角记忆可达数千条, 逐受害者重扫不值当)。"""
-        if self._jail_dates is not None:
-            return self._jail_dates
-        out = {}
-        prec = ((self.cache.get("characters") or {})
-                .get(str(self.cache.get("player_id")))) or {}
-        for m in (prec.get("memories") or []):
-            if str(m.get("type") or "") != "imprisoned_other":
-                continue
-            v = (m.get("participants") or {}).get("imprisoned")
-            d = m.get("creation_date")
-            if isinstance(v, int) and d:
-                out.setdefault(v, []).append(str(d))
-        self._jail_dates = out
-        return out
-
-    def _custody_at_death(self, cid, rec, date):
-        """v57 (问题3): 卒时是否**在押**。
-
-        两条证据: ① 跨档囚禁段覆盖卒日 (`prison_history`, 来自存档 prison_data);
-        ② 记忆里的囚禁且其后无释放/越狱 —— 只能捕获「跨过至少一个年度快照」的囚禁,
-        同档内囚禁+处决者 (实测董承裕 947.8.30 被囚、947.9.6 处死) 存档里从未被观测为
-        囚犯, 但本人 `imprisoned` 记忆与主角 `imprisoned_other` 记忆都在。"""
-        if not date:
+    @staticmethod
+    def _executed_by(rec, pid):
+        """v57 (问题3): 该角色是否被 pid **处决** (存档只存 death_execution)。"""
+        d = (rec or {}).get("death") or {}
+        if d.get("killer") != pid:
             return False
-        try:
-            cid = int(cid)
-        except (TypeError, ValueError):
-            return False
-        if self._prison_at_death(rec, date) is not None:
-            return True
-        dk = cl.date_key(str(date))
-        jails = [str(m.get("creation_date")) for m in (rec.get("memories") or [])
-                 if str(m.get("type") or "") == "imprisoned" and m.get("creation_date")
-                 and cl.date_key(str(m["creation_date"])) <= dk]
-        jails += [d for d in (self._player_jail_dates().get(cid) or [])
-                  if cl.date_key(d) <= dk]
-        if not jails:
-            return False
-        lk = max(cl.date_key(d) for d in jails)
-        for m in (rec.get("memories") or []):
-            if str(m.get("type") or "") not in ("released_from_prison_memory",
-                                                "escaped_from_prison_memory"):
-                continue
-            rd = m.get("creation_date")
-            if rd and lk < cl.date_key(str(rd)) <= dk:
-                return False
-        return True
+        return str(d.get("reason") or "") in _PRISON_EXEC_REASONS
 
     @staticmethod
     def _iv_covers(iv, ak):
@@ -9435,45 +9418,15 @@ class Facts:
             self._prov_invmap = inv
         return self._prov_invmap
 
-    def _own_provinces(self, cid, date=None):
-        """v57 (问题3): 某人 date 时点所持头衔的辖境省份集合。
-
-        用于判「记录到的所在地**是不是他自己的地方**」—— 囚犯在存档里的 location 是
-        狱主所在地, 只有落在自家辖境之外时才换成治所 (自家宅第软禁者一字不动)。"""
-        anchor = date or self.as_of
-        if not anchor:
-            return set()
-        try:
-            cid = int(cid)
-        except (TypeError, ValueError):
-            return set()
-        ak = cl.date_key(str(anchor))
-        inv = self._prov_inv()
-        out = set()
-        for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
-            ent = self._lt.get(str(tid)) or {}
-            key = ent.get("key") or ""
-            if not key or self._is_estate_title(tid):
-                continue
-            if not any(self._iv_covers(iv, ak) for iv in (ivs or [])):
-                continue
-            cap = ent.get("capital")
-            cap_key = ((self._lt.get(str(cap)) or {}).get("key")
-                       if isinstance(cap, int) else "")
-            for k in (key, cap_key):
-                p = inv.get(k)
-                if p is not None:
-                    out.add(p)
-        return out
-
     def _primary_landed_at(self, cid, date=None):
-        """v57 (问题3): 某人 date 时点**首要领地头衔** id (取不到返回 None)。
+        """某人 date 时点**首要领地头衔** id (取不到返回 None)。
 
         与 `_primary_title_at` 同口径 (男爵领不入首要头衔 —— v36 用户拍板5; 同层级取
-        最早获得者), 但三处按受害者场景收紧:
+        最早获得者), 但两处收紧:
           · **含当日刚失去的头衔** —— 被处死者正是「持有到卒日、卒日终结」, 而旧函数
             只认未结束区间, 于是被处死者一个头衔都取不到 (斯卡利茨 53/53 全空);
-          · 世族庄园 (`_nf_`, 家族庄园不是治所) 与营地/毡帐 (rank 0) 不计。"""
+          · 世族庄园 (`_nf_`) 与营地/毡帐 (rank 0) 不计。
+        v57 (问题4) 借它取「最高头衔层级」, 判行政任免流水 (见 `admin_title_noise`)。"""
         anchor = date or self.as_of
         if not anchor:
             return None
@@ -9498,20 +9451,33 @@ class Facts:
                     best = cur
         return best[2] if best else None
 
-    def _seat_place(self, cid, date=None):
-        """v57 (问题3): 首要领地头衔的**治所名** (取不到返回 '')。
+    def _celestial_like_at(self, cid, date=None):
+        """v57 (问题4): 该角色在该日是否行天朝制/行政制一类政体 (官职轮转, 头衔靠铨选)。"""
+        gov = self._character_government(cid, date) or ""
+        return gov in self._CELESTIAL_LIKE_GOVS
 
-        头衔条目的 `capital` 指向该头衔的首府**头衔 id** (伯爵领自己指自己), 故取其名;
-        名字取不到时退回头衔自己的名 (`_name_at_date` 按该日国号)。"""
-        tid = self._primary_landed_at(cid, date)
+    def admin_title_noise(self, tid, date=None, pid=None):
+        """v57 (问题4, 用户拍板): 该头衔在该日是否属**行政任免流水** (不进年表)。
+
+        用户原话: 「理论上除了最高头衔，其他头衔都是根据选举决定的继承者，只是因为
+        没有符合条件的才会给回玩家」—— 故天朝制/行政制政体下, **低于主角首要头衔**的
+        头衔得失 (受任/接任/辞去/褫夺/夺得/调任) 不构成传主行迹 (斯卡利茨实测: 这类行
+        占《本纪》纪事年表 31.5%、《朝局风云录》开篇 95.8%)。
+        最高头衔本身的得失照旧 (受任秦皇帝等); 封建采邑 (继承制) 一律不动。"""
         if tid is None:
-            return ""
-        cap = (self._lt.get(str(tid)) or {}).get("capital")
-        for t in ([cap] if isinstance(cap, int) else []) + [tid]:
-            nm = self._name_at_date(t, date) or self.title_base_name(t)
-            if nm and not nm.startswith(("b_", "c_", "d_", "k_", "e_", "h_", "x_")):
-                return nm
-        return ""
+            return False
+        pid = self.cache.get("player_id") if pid is None else pid
+        if pid is None or not self._celestial_like_at(pid, date):
+            return False
+        top_tid = self._primary_landed_at(pid, date)
+        if top_tid is None:
+            return False
+        top_key = (self._lt.get(str(top_tid)) or {}).get("key") or ""
+        top_rank = self._TT_RANK.get(top_key[:2], 0)
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        if not key:
+            return False
+        return self._TT_RANK.get(key[:2], 0) < top_rank
 
     def victim_place(self, cid):
         """受害者所在地 (v24): 其死亡前后最近可知的男爵领名。
@@ -9519,29 +9485,20 @@ class Facts:
         ② 缓存死亡记录 location_province (死亡写入时复制自 last_location);
         ③ 缓存 last_location。解析失败返回 '' — 调用方省略地点标注。
 
-        v57 (问题3, 用户拍板案甲): **死于在押期间者不再用监所地** —— 存档里囚犯的
-        location 就是狱主所在地 (CK3 把囚犯拘在狱主处), 主角的囚犯因此一律显示成主角
-        当时的驻地 (斯卡利茨实测: 143 名被处死者中 53 人有囚禁段, 终传里 27 处落在
-        郡口/丹徒)。改为「本人治所优先, 入狱前最后所在地兜底」(后者由 cache_lib 逐档
-        闩在 prison_history 段的 `pre_province` 上) —— 未在押者一路照旧, 一字不动。"""
+        v57 (问题3, 用户拍板): **被主角处决者一律在主角当时的首都** —— 处决发生在首都,
+        而存档给的是各处行刑地 (诛灭满门那种游戏让他们在自家治所"死", 也有行刑地记在
+        别处的); 故不采信这些, 改取 `capital_history` 那一档的 `realm_capital` 地名
+        (首都本身会搬: 斯卡利茨实测 924–945 郡口、946 起丹徒)。非「主角处决」者照旧。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         d = rec.get("death") or {}
+        if self._executed_by(rec, self.cache.get("player_id")):
+            nm = self.capital_place_at(d.get("date"))
+            if nm:
+                return nm
         loc = self.character_location_province(cid)
         if loc is None:
             loc = (d.get("location_province")
                    or (rec.get("last_location") or {}).get("province"))
-        # v57 (问题3, 用户拍板案甲): 在押、且记录到的地方**不在自家辖境**时改取治所
-        # (存档里囚犯的 location 是狱主所在地 —— 主角的囚犯因此全落在郡口/丹徒);
-        # 无治所者回退「入狱前最后所在地」。
-        if isinstance(loc, int) and self._custody_at_death(cid, rec, d.get("date")) \
-                and loc not in self._own_provinces(cid, d.get("date")):
-            nm = self._seat_place(cid, d.get("date"))
-            if nm:
-                return nm
-            iv = self._prison_at_death(rec, d.get("date")) or {}
-            _pv = iv.get("pre_province")
-            if isinstance(_pv, int):
-                loc = _pv
         if loc is None:
             return ""
         prov = loc
@@ -11361,7 +11318,12 @@ def _title_mem_skip(f, owner_id, mem, pid):
     ③ **零日在位**：造衔即封人（920.1.25 k_henan、920.4.5 k_hunan、922.4.3 k_lingxi
        等），title history 同日 created/本人 → appointment/朝臣。
 
-    其余（真得真失，`owner` 是主角或与主角相关者）照常收录。"""
+    其余（真得真失，`owner` 是主角或与主角相关者）照常收录。
+
+    v57 (问题4, 用户拍板): 第四类 —— **天朝制/行政制政体下的行政任免流水**。
+    用户原话「理论上除了最高头衔，其他头衔都是根据选举决定的继承者，只是因为没有
+    符合条件的才会给回玩家」, 故该政体下低于主角首要头衔的头衔得失一律不收
+    (见 `Facts.admin_title_noise`); 受任/辞去/褫夺镜像行 (owner 为他人) 同判。"""
     if mem.get("type") not in TITLE_VAR_TYPES:
         return False
     tid = None
@@ -11372,6 +11334,9 @@ def _title_mem_skip(f, owner_id, mem, pid):
     if tid is None:
         return False
     parts = mem.get("participants") or {}
+    if f.admin_title_noise(tid, f.mem_date(owner_id, mem) or mem.get("creation_date"),
+                           pid):
+        return True
     if owner_id != pid:
         # ① 主角只当授予方的封拜 (owner 为他人 / 相关人)
         return parts.get("flavor_character") == pid

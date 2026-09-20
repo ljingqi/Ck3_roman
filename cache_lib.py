@@ -2279,9 +2279,6 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             rec["languages"] = list(langs)
         # v24: 角色最近已知所在省份 (存活期每快照更新; 死亡写入时复制进
         # rec.death.location_province, 供刺客列传/时间线的受害者所在地标注)。
-        # v57 (问题3): 覆盖前先留一份 —— 本档新开囚禁段时, 它就是「入狱前最后所在地」
-        # (存档里囚犯的 location 是**狱主所在地**, 故入狱后这一路只会记到监所)。
-        _prev_prov = (rec.get("last_location") or {}).get("province")
         _loc = (c.get("alive_data") or {}).get("location") or {}
         _prov = _loc.get("location") if isinstance(_loc, dict) else _loc
         if isinstance(_prov, int):
@@ -2331,14 +2328,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             cur = {"from": date_label, "to": None,
                    "imprisoner": _pd.get("imprisoner"),
                    "type": _pd.get("type") or "",
-                   "since": _pd.get("date") or date_label,
-                   # v57 (问题3): 入狱前最后所在地 —— 囚犯在存档里的 location 是狱主
-                   # 所在地 (CK3 把囚犯拘在狱主处), 于是「死于X」会一律落在主角当时的
-                   # 驻地 (斯卡利茨实测 143 名被处死者里 27 处显示郡口/丹徒)。
-                   # facts.victim_place 对「死于在押期间」者改成「本人治所优先,
-                   # 此处兜底」; 无主领地者 (平民起义领袖) 全靠这一格。
-                   "pre_province": (_prev_prov if isinstance(_prev_prov, int)
-                                    else None)}
+                   "since": _pd.get("date") or date_label}
             # 与上一段同囚禁者/同类型 → 视为同一段 (换档不新开)
             if ph and ph[-1].get("to") is None \
                     and ph[-1].get("imprisoner") == cur["imprisoner"] \
@@ -2436,6 +2426,14 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 hist = cache.setdefault("player_locations", [])
                 if not hist or hist[-1].get("province") != prov:
                     hist.append({"date": date_label, "province": prov})
+            # v57 (问题3, 用户拍板): **首都沿革** —— realm_capital 是会搬的 (斯卡利茨实测
+            # 924–945 在 b_long_hung/郡口, 946 起 b_dantu/丹徒), 而 cache.landed 只留末档值。
+            # 处决地点一律取「主角当时的首都」(见 facts.victim_place), 故按变化点闩存。
+            _cap = ld.get("realm_capital")
+            if _cap is not None:
+                _ch = cache.setdefault("capital_history", [])
+                if not _ch or _ch[-1].get("title") != _cap:
+                    _ch.append({"date": date_label, "title": _cap})
             # v24: 营地宗旨史 (历任营地阶段称呼词用: 头目/领袖/队长…);
             # 营地宗旨是持有者律法 (camp_purpose_*), 只记变化点防膨胀。
             if ld.get("government") == "landless_adventurer_government":
