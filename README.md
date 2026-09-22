@@ -1343,6 +1343,53 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 - **提示词正向表述**：写给模型的每一句都用「要做什么」表述（见技能 `no-negative-prompts`）。
 - **编码**：Python / JSON / 日志 / output 产物一律 UTF-8，`.bat` 用 GBK（见技能 `utf8-gbk-encoding`）。
 
+## v58 修正（吉贝尔蒂八问题：首要头衔 / 隐事句 / 囚禁双行 / 家族前缀 / 天命 / 宫廷司祭 / 加冕重复 / 继承措辞）
+
+测试集 `output/吉贝尔蒂`（玛蒂尔达·卡诺萨，`pid=36664`，`as_of=1077.1.1`）用户报八问，
+根因与证据见 `docs/方案_v58_吉贝尔蒂八问题.md`（含 `game/` 原文行号与存档字段）。
+用户 2026-09-22 拍板后实施，**每问一条 commit**：
+
+| # | 现象 | 根因 | 修法（落点） |
+| --- | --- | --- | --- |
+| 1 | 驼背戈特弗里德被写成「布拉班特公爵」 | 两条公国头衔同日到手，`_primary_title_at` 同级并列时退化成头衔 id 序（819<879） | 同级改按**存档 `domain` 次序**破平（`facts._domain_order`：死者 `dead_data.domain` 优先 —— 游戏把首要头衔写在首位，本档 35087 = `[879 下洛塔林吉亚, 819 布拉班特, …]`） |
+| 2 | 「有一桩隐事：与X私通」 | `secret_sentence` 一律套「有隐事」框架，而私通/乱伦/谋害/巫术类主题本身是谓语 | 新增 `style.SECRET_PREDICATE_TYPES` 谓词白名单 → 谓词型直接出「X与Y私通。」；名词型（科举舞弊/血统有争）保留原框架 |
+| 3 | 同日两条「囚禁乔丹/乔纳森·德朗戈」 | **不是重复**：两人是同父同母兄弟（37701/37945），同日被同一人囚、同日释放，记忆各自独立 | 用户拍板**先不改**（只在方案 §3 记录「已查清、非重复」） |
+| 4 | 缺「迪·/德·/冯·」 | 家族前缀写在 `common/dynasty_houses/*.txt` 的 `prefix = "dynnp_di"`（存档 `dynasty_house[].prefix` 亦可），项目解析定义表时整条丢掉 | `localization._parse_dynasty_defs` 同时抓 `prefix`（并把键形放宽到数字键/带连字符键）→ `data/dynasties.json` schema 2 增 `house_prefixes`/`dynasty_prefixes`；`cache_lib.house_prefix_zh` + `display_name` 西方名序拼「名·前缀+家族名」 |
+| 5 | 封建统治者出现「天命」 | `dynastic_cycle` 是 `is_unique = yes` 的**世界级唯一局势**（`common/situation/situations/tgp_dynastic_cycle.txt:7`，作用域＝中国 core 子区域 :466-468），旧稿无条件取用 | 用户拍板**只用政体链**：`facts.dynastic_cycle_line` 先查主角当时政体，非天朝链（celestial/meritocratic/steppe_admin）即不下发；政体不可知亦不下发（参与者名单校验留待后续） |
+| 6 | 「宫廷司祭卡利斯托」缺教会称谓 | 游戏按 `GetActualBishopTitle`（**宗教组 × 领主最高头衔层级**，`common/customizable_localization/00_divinity_custom_loc.txt:659`）给司祭出词（天主教公国级＝主教），地名取领主首要头衔名 | `facts.chaplain_title` 解析 `councillor_court_chaplain_<宗教组>_<层级>` 词表 + 领主首要头衔名 → 议会行输出「宫廷司祭托斯卡纳主教卡利斯托」（用户 2026-09-22 给的样本为 `托斯卡纳主教里卡尔多`） |
+| 7 | 同一场加冕礼连出两行（12/22、12/23） | 游戏对同一场加冕礼写两次记忆：活动收尾 `coronation.txt:3043` ＋ 宾客告别事件 `coronation_events.0312`（`coronation_events.txt:5137`，只对非 AI 宾客），故玩家侧跨日两条 | 新增 `facts._merge_activity_windows`：同 type＋同 host 在 7 日窗口内并成一行，**日期只写首日**、见证人并集去重（用户拍板「只写第一天」） |
+| 8 | 「承袭领地」与「亲属去世」两行割裂、且写成「亲属公公」 | ① 死讯（`relative_died`）与承袭（`ascended_throne_memory` `reason=inheritance`，`participants.flavor_character` 即被继承者）是同日两条独立记忆；② 亡故句模板硬写「亲属」，再被 v45 亲缘定语按**板块传主**算词插成「公公」 | `facts.inherit_pairs`/`_inherit_line` 合为一句「{死者}去世，{继承者}从其手中承袭{领地}。」（继承者称谓取继承前一日；同日多位继承人并成一句）；亡故句关系词改按**句内主语**算（`kin_key(owner, dead)` → 父亲/舅父/姨母…），并在 `biography._KIN_MARK_RE` 收全亲缘词表，杜绝二次插词 |
+
+**顺带修掉的两处（方案 §0.1 / §8-bis）**
+
+- 本地化表**退表保护**：`localization.game_dir()` 注册表读不到时退到常见 Steam 路径（vdf 扫描），
+  且 `save_localization_table` 拒绝「新表 < 旧表六成」的落盘 —— 实测同一天内出现过 94,734 键
+  （只剩 Mod 本地化）覆盖 382,330 键的退化，中文人名/家族前缀会整片失效。
+- 宗族定义解析放宽到**数字键**（游戏本体按宗族 id 定义：`101556 = { prefix="dynnp_di"
+  name="dynn_Lucca" }`）→ 「卡诺萨为**吉贝尔蒂**宗族的分支」改回游戏口径「卡诺萨为**卢卡**宗族的分支」。
+- `tools/verify_fast.py` 的两处**既有误报**一并修正：性病传播行判据允许「YYYY年M月D日」与行首缩进；
+  v45 亲缘定语的「已写明关系」判据移到 `word_for` 之前（不再登记没插进去的词）。
+
+**实测（`tools/snapdiff.py` 事实面 · 旧快照 `snap_v58_full.json` → 新快照 `snap_v58_after4.json`）**
+
+```
+- 布拉班特公爵驼背戈特弗里德·维格里希 …   → + 下洛塔林吉亚公爵驼背戈特弗里德·维格里希 …
+- 1072年，玛蒂尔达·卡诺萨有一桩隐事：与阿普利亚公爵狐狸罗贝尔·欧特维尔私通。
++ 1072年，玛蒂尔达·迪·卡诺萨与阿普利亚公爵狐狸罗贝尔·德·欧特维尔私通。
+- 天命：政通人和，世属治世，自1066年9月15日。        （整行消失）
+- 御前会议六席：…宫廷司祭卡利斯托…                → + …宫廷司祭托斯卡纳主教卡利斯托…
+- 1067年12月22日/23日 两行见证加冕                  → + 1067年12月22日，玛蒂尔达·迪·卡诺萨、卡林西亚公爵贝特霍尔德·冯·策林根见证…（一行）
+- 1074年2月25日，布拉班特公爵驼背戈特弗里德·维格里希承袭下洛塔林吉亚公国。
+- 1074年2月25日，…的亲属公公下洛塔林吉亚公爵大胡子戈特弗里德·维格里希去世。
++ 1074年2月25日，下洛塔林吉亚公爵大胡子戈特弗里德·维格里希去世，驼背戈特弗里德·维格里希从其手中承袭下洛塔林吉亚公国。
++ 1076年1月26日，下洛塔林吉亚公爵驼背戈特弗里德·维格里希去世，墨索里尼·迪·卡诺萨从其手中承袭下洛塔林吉亚公国，加里波利·迪·卡诺萨从其手中承袭布拉班特公国。
+```
+
+回归：`tools/verify_v58_unit.py`（八问 53 条断言，秒级）＋
+`tools/verify_fast.py output/吉贝尔蒂/data/snap_v58_after4.json` → **全部 PASS**。
+新增只读探针：`tools/diag_v58_gib.py`、`tools/diag_v58_gib2.py`、`tools/diag_v58_inherit.py`、
+`tools/diag_gib_v58.py`、`tools/probe_v58_melt.py`。
+
 ## 环境准备
 
 1. **Python 依赖**：`python -m pip install -r requirements.txt`（requests）。

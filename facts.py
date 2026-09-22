@@ -2631,6 +2631,20 @@ class Facts:
         memo[key] = out
         return out
 
+    def inherit_consumed(self, cid):
+        """已被继承合句消费的记忆对象 id 集 (v58 问题8; 与 `inherit_pairs` 同源)。"""
+        memo = getattr(self, "_inherit_consumed_memo", None)
+        if memo is None:
+            memo = self._inherit_consumed_memo = {}
+        key = str(cid)
+        if key in memo:
+            return memo[key]
+        ids = set()
+        for _line, _ids, _dd in self.inherit_pairs(cid).values():
+            ids |= _ids
+        memo[key] = ids
+        return ids
+
     # ---- v58 (问题8): 继承合句 (谁去世, 谁从他那里承袭了哪块领地) ----
     #
     # 存档里「父死」与「子承袭」是同日两条独立记忆:
@@ -9015,6 +9029,12 @@ class Facts:
                                        e.get("type") or "", gov, imperial)
             who = e.get("owner")
             nm = self.person_label(who, date=self.as_of, style="brief") if isinstance(who, int) else ""
+            # v58 (问题6): 宫廷司祭席带教会称谓 (游戏显示「宫廷司祭佛罗伦萨主教卡利斯托」)
+            if (e.get("type") or "") in self._CHAPLAIN_SEAT_TASKS \
+                    and isinstance(who, int):
+                _ct = self.chaplain_title(who, date=self.as_of)
+                if _ct:
+                    nm = f"{_ct}{nm}" if nm else _ct
             if word and nm:
                 # v29b: 官职与大臣名直连 (「长史延寿」), 不再用「长史（延寿）」
                 # 这类括注同位语 — 现代汉语以「职+名」连写为正 (「宰相吴全略」)。
@@ -9032,6 +9052,114 @@ class Facts:
         gov, imperial = self._council_scope()
         return L.council_seat_word(self.table, self._council_tasks, task_type,
                                    gov, imperial)
+
+    # ---- v58 (问题6): 宫廷司祭 (realm priest) 的教会称谓 ----
+    #
+    # 游戏把司祭的称谓拼成「教会词 + 名」（天主教公国级 = 主教），教会词由
+    # `common/customizable_localization/00_divinity_custom_loc.txt:659`
+    # `GetActualBishopTitle` 按**宗教组 × 领主的最高头衔层级**取
+    # （注释原文 "Religion-By-Religion Titles for Bishops based on Liege's Tier"），
+    # 中文在 `localization/simp_chinese/council_l_simp_chinese.yml` 的
+    # `councillor_court_chaplain_<宗教组>_{county,duchy,kingdom,empire}`：
+    # 天主教 伯爵级=隶属主教 / 公国级=主教 / 王国级=总主教 / 帝国级=牧首。
+    # 地名按用户 2026-09-22 给的样本（「托斯卡纳主教里卡尔多」）取**领主首要头衔名**
+    # （本档 = 托斯卡纳），与议会席位词拼成「宫廷司祭托斯卡纳主教卡利斯托」。
+    _CHAPLAIN_SEAT_TASKS = ("task_religious_relations",)
+    _CHAPLAIN_WORD_RE = re.compile(
+        r"^councillor_court_chaplain_(?P<rel>.+?)_"
+        r"(?P<tier>county|duchy|kingdom|empire)(?P<fem>_female)?$")
+    # 宗教组 id/tag → 本地化键里的前缀（游戏两种写法混用，逐个候选试）
+    _CHAPLAIN_REL_ALIASES = {
+        "christianity_religion": "christian",
+        "christianity": "christian",
+        "islam_religion": "islam",
+        "judaism_religion": "judaism",
+        "buddhism": "buddhism_religion",
+        "taoism": "taoism_religion",
+        "hellenism": "hellenism_religion",
+        "paganism_religion": "paganism_religion",
+    }
+
+    def _chaplain_words(self):
+        """本地化表 → {宗教组前缀: {tier: (中性词, 女性词)}} (惰性建一次)。"""
+        idx = getattr(self, "_chaplain_words_index", None)
+        if idx is not None:
+            return idx
+        idx = {}
+        for k, v in (self.table or {}).items():
+            if not isinstance(v, str) or not v or "$" in v or "[" in v:
+                continue
+            m = self._CHAPLAIN_WORD_RE.match(k)
+            if not m:
+                continue
+            rel = m.group("rel")
+            tier = m.group("tier")
+            slot = idx.setdefault(rel, {}).setdefault(tier, ["", ""])
+            slot[1 if m.group("fem") else 0] = v
+        self._chaplain_words_index = idx
+        return idx
+
+    def _chaplain_word(self, rel_id, rel_tag, tier, female=False):
+        """宗教组 × 领主层级 → 教会词 (取不到退 `theocrat` 兜底档)。"""
+        idx = self._chaplain_words()
+        cands = []
+        for r in (rel_id, rel_tag):
+            s = str(r or "")
+            if not s:
+                continue
+            for c in (s, s.replace("_religion", ""),
+                      self._CHAPLAIN_REL_ALIASES.get(s, "")):
+                if c and c not in cands:
+                    cands.append(c)
+        cands.append("theocrat")
+        for c in cands:
+            slot = (idx.get(c) or {}).get(tier)
+            if not slot:
+                continue
+            w = slot[1] if (female and slot[1]) else slot[0]
+            if w:
+                return w
+        return ""
+
+    def chaplain_title(self, cid, date=None):
+        """宫廷司祭的教会称谓 (v58 问题6) → 「托斯卡纳主教」; 无料返回 ''。
+
+        判据: cid 是某领主 (court_owner) 议会「宫廷司祭」席
+        (`council_task_manager.active[*].type == task_religious_relations`) 的持有人;
+        教会词按该领主的宗教组 × 其最高头衔层级取; 地名取该领主的首要头衔名。"""
+        if cid is None or not self.melt:
+            return ""
+        act = (self.melt.get("council_task_manager") or {}).get("active") or {}
+        liege = None
+        for e in act.values():
+            if not isinstance(e, dict):
+                continue
+            if (e.get("type") or "") not in self._CHAPLAIN_SEAT_TASKS:
+                continue
+            if e.get("owner") == cid:
+                liege = e.get("court_owner")
+                break
+        if not isinstance(liege, int):
+            return ""
+        d = date or self.as_of
+        _tier, tid = self._primary_title_at(liege, d)
+        tier = _tier or self._RANK_TIER.get(5)
+        place = ""
+        if tid is not None:
+            place = self._name_at_date(tid, d) or self.title_base_name(tid)
+        if not place:
+            return ""
+        fid = self._faith_id(liege, d)
+        rel = self.melt.get("religion") or {}
+        fe = (rel.get("faiths") or {}).get(str(fid)) or {}
+        re_ = (rel.get("religions") or {}).get(str(fe.get("religion"))) or {}
+        rel_id = re_.get("religion_type") or re_.get("tag") or ""
+        rel_tag = re_.get("tag") or ""
+        word = self._chaplain_word(rel_id, rel_tag, tier,
+                                   female=self._is_female(cid))
+        if not word:
+            return ""
+        return f"{place}{word}"
 
     def court_position_scope(self, cid=None):
         """职位变体求值域 (v29): 雇主政体/独立/顶层层级/文化传承。
@@ -11578,14 +11706,18 @@ def _timeline(f):
         cid = int(cid)
         # v58 (问题8): 本角色的「死讯＋承袭」配对 (按 cid 记忆化, 只读记忆)
         _ipairs = f.inherit_pairs(cid)
+        _consumed = f.inherit_consumed(cid)
         # 本人死亡记录 (信息最全, 优先级最高)
         if cid in related:
             # v42 (问题5): annotated=True —— 主角所杀者并写生年/族属/信仰,
             # 与 `*_died` 分支取死亡记录时的补注同式 (两者同优先级, 谁先写都一样)
             ds = _death_sentence(f, cid, annotated=True)
             if ds:
-                deaths[cid] = (3, (rec.get("death") or {}).get("date"),
-                               "death", ds)
+                # v58 (问题8): 按优先级写 —— 继承合句 (4) 不得被死亡记录顶掉
+                _old = deaths.get(cid)
+                if _old is None or 3 > _old[0]:
+                    deaths[cid] = (3, (rec.get("death") or {}).get("date"),
+                                   "death", ds)
         for mem in rec.get("memories") or []:
             parts = mem.get("participants") or {}
             owner_rel = cid in related
@@ -11617,14 +11749,26 @@ def _timeline(f):
                 if isinstance(dead, int):
                     if _ip is not None:
                         # v58 (问题8): 该死讯与新主的承袭同日 → 合为一句
-                        deaths[dead] = (4, _ip[2], "death",
-                                        f"{f.date(_ip[2])}，{_ip[0]}")
+                        _txt = f"{f.date(_ip[2])}，{_ip[0]}"
+                        _old = deaths.get(dead)
+                        # 同一死者同日有多位继承人 (本档 35087 死日: 墨索里尼承袭
+                        # 下洛塔林吉亚、加里波利承袭布拉班特) → 并成一句
+                        _head, _sep, _tail = _ip[0].partition("去世，")
+                        if (_old is not None and _old[0] == 4 and _sep and _tail
+                                and _ip[2] == _old[1]
+                                and (_head + "去世，") in _old[3]
+                                and _tail.rstrip("。") not in _old[3]):
+                            _txt = _old[3].rstrip("。") + "，" + _tail
+                        deaths[dead] = (4, _ip[2], "death", _txt)
                         continue
                     ds = _death_sentence(f, dead, annotated=True)
                     if ds:
                         _dd = ((cache.get("characters") or {}).get(str(dead)) or {})
-                        deaths[dead] = (3, (_dd.get("death") or {}).get("date"),
-                                        "death", ds)
+                        # v58 (问题8): 按优先级写 (继承合句 prio 4 不得被顶掉)
+                        _old = deaths.get(dead)
+                        if _old is None or 3 > _old[0]:
+                            deaths[dead] = (3, (_dd.get("death") or {}).get("date"),
+                                            "death", ds)
                     else:
                         s = _mem_sentence(f, cid, mem)
                         if s:
@@ -11689,8 +11833,8 @@ def _timeline(f):
             # v54 (问题4): 头衔记忆先过闸 —— 封拜他人 / 无地官署 / 零日在位不进年表
             if _title_mem_skip(f, cid, mem, pid):
                 continue
-            # v58 (问题8): 已被继承合句消费的承袭记忆不再单独成行
-            if _ip is not None:
+            # v58 (问题8): 已被继承合句消费的记忆 (死讯 + 承袭) 不再单独成行
+            if _consumed and id(mem) in _consumed:
                 continue
             # v54 (问题3): 诛灭世族的「先尽囚、后驱逐」侧 —— 涉及者逐人成行会塞满年表
             # (马丁 920.1.24 有 85 行), 整件事由族级事实行一行承担 (见下方 family_purge)。
@@ -12034,7 +12178,19 @@ def _merge_activity_windows(events, f=None):
         for gkey, g in groups:
             if len(g) < 2:
                 continue
-            gs = [re.match(pat, _body(e)).groups() for e in g]
+            # 同一人可能两天各留一条记忆 (本档玛蒂尔达 12.22 与 12.23 各有),
+            # 同日那一条的「名字槽」本身也可能是「A、B」多人串 →
+            # 逐名拆开去重, 只列一次。定值槽 (host 等) 取首条的。
+            _base = re.match(pat, _body(g[0])).groups()
+            _names, _seen = [], set()
+            for e in g:
+                for _nm in str(re.match(pat, _body(e)).groups()[0]).split("、"):
+                    _nm = _nm.strip()
+                    if not _nm or _nm in _seen:
+                        continue
+                    _seen.add(_nm)
+                    _names.append(_nm)
+            gs = [tuple([_nm] + list(_base[1:])) for _nm in _names]
             if len(gs) > _MERGE_CAP:
                 body = "、".join(x[0] for x in gs[:_MERGE_CAP]) + \
                     f"等{len(gs)}人" + spec["cap_verb"](gs)

@@ -1233,6 +1233,11 @@ _KIN_MARKS = (
 # （单字词 父/子/兄… 故意不收 —— 头衔里的「皇子」「国皇女」会撞上）。
 _KIN_MARKS = tuple(sorted(set(_KIN_MARKS) | {w for w in F.kin_texts() if len(w) >= 2},
                           key=len, reverse=True))
+# v58 (问题8): 亡故句的**通用/非血亲**关系词也一并算「已写明关系」——
+# 旧稿「的亲属X去世」会被再插一次定语，写成「的亲属公公X去世」。
+_KIN_MARKS = tuple(sorted(set(_KIN_MARKS) | {"亲属", "仇人", "友人", "情人",
+                                             "灵魂伴侣", "挚友", "死敌"},
+                          key=len, reverse=True))
 _KIN_MARK_RE = re.compile("|".join(_KIN_MARKS))
 
 
@@ -1274,12 +1279,14 @@ def _kin_tag_line(facts, scope, line):
             # 索引记的是**构造期**的出词, 有的并未留在成句里 (死句把凶手称谓换成
             # 「其」等) —— 该行没出现这个称谓, 不占名额
             continue
-        w = scope.word_for(cid, fi)
-        if not w:
+        # 行内该处已带亲缘词 (「其父X」/「X的父亲Y」) → 关系已经写明, **不消费名额**,
+        # 也不再插第二次词。v58 (问题8): 本判据必须在 `word_for` 之前 —— 否则会
+        # 登记一个最终没插进去的词, v45 [2]「标注确实落在本板块文本里」随机 FAIL。
+        if _KIN_MARK_RE.search(line[max(off, i - 12):i]):
             scan = i + len(label)
             continue
-        # 行内该处已带亲缘词 (「其父X」) → 关系已经写明, 名额已占, 不再重复插词
-        if _KIN_MARK_RE.search(line[max(off, i - 12):i]):
+        w = scope.word_for(cid, fi)
+        if not w:
             scan = i + len(label)
             continue
         line = f"{line[:i]}{w}{line[i:]}"
