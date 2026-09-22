@@ -1228,6 +1228,11 @@ _KIN_MARKS = (
     "前男宠", "子女", "实父", "兄弟姊妹", "岳父", "女婿", "儿媳",
     "姻亲兄弟", "姻亲姊妹", "继子", "继女",
 )
+# v58 (问题8): 事实层的亡故句现在直接把关系写在句面上（「X的父亲Y去世」），
+# 故把亲缘词表里的**多字词**一并算作「已写明关系」，板块期不再插第二次定语
+# （单字词 父/子/兄… 故意不收 —— 头衔里的「皇子」「国皇女」会撞上）。
+_KIN_MARKS = tuple(sorted(set(_KIN_MARKS) | {w for w in F.kin_texts() if len(w) >= 2},
+                          key=len, reverse=True))
 _KIN_MARK_RE = re.compile("|".join(_KIN_MARKS))
 
 

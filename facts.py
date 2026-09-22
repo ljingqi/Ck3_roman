@@ -2631,6 +2631,115 @@ class Facts:
         memo[key] = out
         return out
 
+    # ---- v58 (问题8): 继承合句 (谁去世, 谁从他那里承袭了哪块领地) ----
+    #
+    # 存档里「父死」与「子承袭」是同日两条独立记忆:
+    #   relative_died         participants {dead_relation: <父>}
+    #   ascended_throne_memory vars reason=inheritance, landed_title=<头衔>,
+    #                          participants {flavor_character: <父>}
+    # 旧稿逐条出句 → 「X承袭下洛塔林吉亚公国。」＋「X的亲属Y去世。」两行割裂,
+    # 看不出「因为父死, 所以子继承」; 而「亲属」还会被 v45 亲缘定语按**板块传主**
+    # 算词插成「亲属公公」。现按 (同日/邻近 + 同一被继承者) 合为一句:
+    #   「1074年2月25日，下洛塔林吉亚公爵大胡子戈特弗里德·维格里希去世，
+    #     布永伯爵驼背戈特弗里德·维格里希从其手中承袭下洛塔林吉亚公国。」
+    # 继承者称谓取**继承前一日**（否则会写成「下洛塔林吉亚公爵X承袭下洛塔林吉亚公国」）。
+    _INHERIT_MERGE_DAYS = 3
+
+    def _mem_var(self, mem, flag):
+        """记忆 vars 里某 flag 的取值 (identity 优先, 否则 value)。"""
+        for v in (mem.get("vars") or []):
+            if v.get("flag") == flag:
+                return v.get("identity") if v.get("identity") is not None \
+                    else v.get("value")
+        return None
+
+    def _inherited_title_names(self, cid, prev, date):
+        """cid 在 date 从 prev 手中按继承得到的头衔名列表 (title history)。"""
+        idx = getattr(self, "_inherit_title_index", None)
+        if idx is None:
+            idx = {}
+            for (hid, tid, d), p in (self._gain_prev or {}).items():
+                if p is None:
+                    continue
+                if self.gain_reason(hid, tid, d) != "inheritance":
+                    continue
+                idx.setdefault((hid, str(d), p), []).append(tid)
+            self._inherit_title_index = idx
+        tids = list(idx.get((int(cid), str(date), int(prev))) or [])
+        out = []
+        for tid in tids:
+            nm = self._title_name_at(tid, date, cid)
+            if nm:
+                out.append(nm)
+        return out
+
+    def _inherit_line(self, heir, prev, date, landed_title=None):
+        """继承合句正文 (不含日期前缀); 无料返回 ''。"""
+        dead = self.person_label(prev, date=date, style="brief") or self.name_or(prev)
+        # 继承者称谓取继承前一日 (当天他已戴上新头衔, 会与新得的头衔撞车)
+        heir_lbl = self.person_label(heir, date=_day_before(date), style="brief") \
+            or self.name_or(heir)
+        if not dead or not heir_lbl:
+            return ""
+        titles = self._inherited_title_names(heir, prev, date)
+        if not titles and landed_title:
+            nm = self._title_name_at(landed_title, date, heir)
+            if nm:
+                titles = [nm]
+        if not titles:
+            return ""
+        if len(titles) > 3:
+            tname = "、".join(titles[:3]) + f"等{len(titles)}处领地"
+        else:
+            tname = "、".join(titles)
+        return f"{dead}去世，{heir_lbl}从其手中承袭{tname}。"
+
+    def inherit_pairs(self, cid):
+        """cid 的 (死讯记忆, 继承记忆) 配对 (按 cid 记忆化)。
+
+        返回 {死讯记忆对象 id: (合句正文, {被消费的记忆对象 id})} —— 调用方
+        跳过被消费的记忆、改用合句（日期前缀由调用方补）。"""
+        memo = getattr(self, "_inherit_pairs_memo", None)
+        if memo is None:
+            memo = self._inherit_pairs_memo = {}
+        key = str(cid)
+        if key in memo:
+            return memo[key]
+        rec = (self.cache.get("characters") or {}).get(key) or {}
+        mems = [m for m in (rec.get("memories") or []) if isinstance(m, dict)]
+        deaths = []
+        for m in mems:
+            if m.get("type") not in _DIED_TYPES:
+                continue
+            dead = (m.get("participants") or {}).get("dead_relation")
+            if isinstance(dead, int):
+                deaths.append((self.mem_date(cid, m) or m.get("creation_date"),
+                               m, dead))
+        out = {}
+        for m in mems:
+            if m.get("type") != "ascended_throne_memory":
+                continue
+            if str(self._mem_var(m, "reason") or "") != "inheritance":
+                continue
+            prev = (m.get("participants") or {}).get("flavor_character")
+            if not isinstance(prev, int):
+                continue
+            d = self.mem_date(cid, m) or m.get("creation_date")
+            if not d:
+                continue
+            for dd, dm, dead in deaths:
+                if dead != prev or not dd:
+                    continue
+                if abs(_daynum(dd) - _daynum(d)) > self._INHERIT_MERGE_DAYS:
+                    continue
+                body = self._inherit_line(cid, prev, d,
+                                          self._mem_var(m, "landed_title"))
+                if body:
+                    out[id(dm)] = (body, {id(dm), id(m)}, dd)
+                break
+        memo[key] = out
+        return out
+
     def _primary_title_at(self, cid, as_of=None):
         """角色在 as_of 日期的首要头衔 (tier, tid): 最高层级中最早获得者;
         无头衔 (仅营地) 返回 (None, tid)。
@@ -9921,6 +10030,18 @@ def _mem_sentence_body(f, owner_id, mem):
     other = ""
     if other_id is not None:
         other = f.event_name(other_id, date=f.as_of)
+    # v58 (问题8): 关系亡故句 —— 关系词按**句内主语**（记忆持有人）相对死者算，
+    # 并把关系直接写进句面。旧稿一律「{name}的亲属{other}去世。」, 再由板块期
+    # 按**板块传主**插亲缘定语: 驼背戈特弗里德档案里的「父亲去世」因此被写成
+    # 「的亲属公公…去世」(公公是玛蒂尔达对死者的称谓)。
+    if mtype in _REL_DIED_TYPES and isinstance(other_id, int) \
+            and other and other_id != owner_id:
+        _k = kin_key(f.cache, owner_id, other_id,
+                     spouse_back=f._spouse_back_index(),
+                     rev=f._kin_rev_index())
+        _kw = kin_text(_k) if _k else ""
+        if _kw:
+            return f"{owner}的{_kw}{other}去世。"
     # v32: 无对手方 → 回退 `<type>_no_other` 模板 (被囚/逃脱/夭折三类都有)
     if not other:
         tpl = MEMORY_TEMPLATES.get(f"{mtype}_no_other") or tpl
@@ -10517,6 +10638,11 @@ def _death_module(f, dead_cid, rivals=None, friends=None):
 # 不再分「四类走去重 / 四类走通用句」。名单与 style.MEMORY_TEMPLATES 的 `*_died` 同步。
 _DIED_TYPES = ("relative_died", "friend_died", "rival_died", "spouse_died",
                "lover_died", "soulmate_died", "best_friend_died", "nemesis_died")
+
+# v58 (问题8): 这几种「亡故」记忆的关系词按**句内主语**算（血亲/姻亲可判者），
+# `spouse_died` 另走「丧偶」句形，不入此表。
+_REL_DIED_TYPES = ("relative_died", "rival_died", "friend_died", "lover_died",
+                   "soulmate_died", "best_friend_died", "nemesis_died")
 
 
 def _count_zh(n):
@@ -11450,6 +11576,8 @@ def _timeline(f):
     births = {}        # (date, 出生键) -> (优先级, date, type, text)
     for cid, rec in (cache.get("characters") or {}).items():
         cid = int(cid)
+        # v58 (问题8): 本角色的「死讯＋承袭」配对 (按 cid 记忆化, 只读记忆)
+        _ipairs = f.inherit_pairs(cid)
         # 本人死亡记录 (信息最全, 优先级最高)
         if cid in related:
             # v42 (问题5): annotated=True —— 主角所杀者并写生年/族属/信仰,
@@ -11466,6 +11594,8 @@ def _timeline(f):
             if not owner_rel and not part_rel:
                 continue  # 路人记忆大事: 剔除
             mtype = mem.get("type")
+            # v58 (问题8): 继承合句 —— 被配对的死讯改用合句, 承袭记忆不再单独成行
+            _ip = _ipairs.get(id(mem)) if _ipairs else None
             # v38 (问题1): 性事记忆族的自愿档归并 —— 只有强迫/半强迫单独成档
             # (模块「强暴凌辱」, 不进任何板块白名单); 自愿档与旧的 had_sex 同键同模,
             # 婚姻内的那一支仍换档为「夫妻之情」(见下方 ev_type)。
@@ -11485,6 +11615,11 @@ def _timeline(f):
             if mtype in _DIED_TYPES:
                 dead = parts.get("dead_relation")
                 if isinstance(dead, int):
+                    if _ip is not None:
+                        # v58 (问题8): 该死讯与新主的承袭同日 → 合为一句
+                        deaths[dead] = (4, _ip[2], "death",
+                                        f"{f.date(_ip[2])}，{_ip[0]}")
+                        continue
                     ds = _death_sentence(f, dead, annotated=True)
                     if ds:
                         _dd = ((cache.get("characters") or {}).get(str(dead)) or {})
@@ -11553,6 +11688,9 @@ def _timeline(f):
             # 其余记忆: 成对去重
             # v54 (问题4): 头衔记忆先过闸 —— 封拜他人 / 无地官署 / 零日在位不进年表
             if _title_mem_skip(f, cid, mem, pid):
+                continue
+            # v58 (问题8): 已被继承合句消费的承袭记忆不再单独成行
+            if _ip is not None:
                 continue
             # v54 (问题3): 诛灭世族的「先尽囚、后驱逐」侧 —— 涉及者逐人成行会塞满年表
             # (马丁 920.1.24 有 85 行), 整件事由族级事实行一行承担 (见下方 family_purge)。
@@ -12769,7 +12907,14 @@ def _character_profiles(f):
         mems = []
         # v26: 取缓存记忆 (此前写 prof.get("memories"), 而 prof 无该键 →
         # 「传主行迹」对所有人恒为「（无行迹记录）」)
+        # v58 (问题8): 先做「继承合句」配对 —— 被消费的死讯/承袭记忆不再单独成行
+        _ipairs = f.inherit_pairs(cid)
+        _iconsumed = set()
+        for _line, _ids, _dd in _ipairs.values():
+            _iconsumed |= _ids
         for mem in rec.get("memories") or []:
+            if id(mem) in _iconsumed:
+                continue
             s = _mem_sentence(f, cid, mem)
             if not s:
                 continue
@@ -12779,6 +12924,8 @@ def _character_profiles(f):
             if f.as_of and _md and cl.date_key(_md) > cl.date_key(f.as_of):
                 continue
             mems.append(f"{f.date(_md)}，{s}")
+        for _line, _ids, _dd in _ipairs.values():
+            mems.append(f"{f.date(_dd)}，{_line}")
         mems.sort()
         prof["events"] = mems
         # v29 (问题4): 「传主行迹」用省主语版 — 块内主语恒为传主, 重复姓名无信息
