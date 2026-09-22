@@ -2548,7 +2548,7 @@ class Facts:
             return "家族庄园"
         return "世族"
 
-    def _primary_group(self, held):
+    def _primary_group(self, held, cid=None):
         """按持有集计算「主要头衔组」[(gain_date, tid)] (v11): held = {tid: gain_date}
         - 州府/县/堡 (c_/b_) 不进组 (如 898-911 的登州伯爵领等);
         - 有 公国(d_) 及以上或营地(x_) 时: 层级 ≥ 王国只留首要; 公国/营地层取
@@ -2568,6 +2568,7 @@ class Facts:
             items.append((tid, self._TT_RANK.get(key[:2], 0), gain))
         if not items:
             return []  # 仅持朝廷职司 (官职非领地)
+        order = self._domain_order(cid) if cid is not None else {}
         majors = [it for it in items
                   if (it[1] >= 3 or it[1] == 0)
                   and not self._is_nomad_camp(it[0])
@@ -2581,17 +2582,54 @@ class Facts:
             cands = [it for it in items if it[1] != 1]
             if not cands:
                 return []
-            t0 = sorted(cands, key=lambda it: (-it[1], cl.date_key(it[2])))[0]
+            t0 = sorted(cands, key=lambda it: (-it[1], order.get(int(it[0]), 10 ** 6),
+                                               cl.date_key(it[2])))[0]
             return [(t0[2], t0[0])]
         max_tier = max(r for _t, r, _g in majors)
         tops = sorted([it for it in majors if it[1] == max_tier],
-                      key=lambda it: cl.date_key(it[2]))
+                      key=lambda it: (order.get(int(it[0]), 10 ** 6),
+                                      cl.date_key(it[2])))
         if max_tier >= 4:  # k_ 及以上: 只记首要
             t0 = tops[0]
             return [(t0[2], t0[0])]
         camps = [it for it in majors if self.title_kind(it[0]) == "camp"]
         picked = tops[:1] + [c for c in camps if c != tops[0]]
         return [(g, t) for t, _r, g in sorted(picked, key=lambda it: cl.date_key(it[2]))]
+
+    def _domain_order(self, cid):
+        """角色「辖地列表」的次序 (v58 问题1) → {tid: 下标}。
+
+        游戏写进的 `domain` 列表把**首要头衔放在首位**（实测: 驼背戈特弗里德
+        `dead_data.domain = [879 下洛塔林吉亚, 819 布拉班特, …]`，且他当日的承袭
+        记忆 `landed_title` 也是 879；玩家 `domain[0] = d_toscana` 与游戏 UI 一致）。
+        旧稿同级并列时只比「取得日」，同日则退化成**头衔 id 序**（819 先于 879），
+        于是两条同日到手的公国头衔里取到了布拉班特。
+
+        取值链: 死者的 `dead_data.domain`（死亡时烘死, 最稳）→ 活人
+        `landed_data.domain` → 缓存 `landed.domain`（仅玩家有）。取不到返回 {}
+        （调用方退回旧口径）。"""
+        if cid is None:
+            return {}
+        key = str(cid)
+        memo = getattr(self, "_domain_order_memo", None)
+        if memo is None:
+            memo = self._domain_order_memo = {}
+        if key in memo:
+            return memo[key]
+        c = self._chars.get(key) or {}
+        dom = ((c.get("dead_data") or {}).get("domain")
+               or (c.get("landed_data") or {}).get("domain"))
+        if not dom:
+            dom = (((self.cache.get("characters") or {}).get(key) or {})
+                   .get("landed") or {}).get("domain")
+        out = {}
+        for i, tid in enumerate(dom or []):
+            try:
+                out[int(tid)] = i
+            except (TypeError, ValueError):
+                continue
+        memo[key] = out
+        return out
 
     def _primary_title_at(self, cid, as_of=None):
         """角色在 as_of 日期的首要头衔 (tier, tid): 最高层级中最早获得者;
@@ -2621,7 +2659,8 @@ class Facts:
                  for tid, g in held.items()]
         max_tier = max(r for _t, r, _g in items)
         tops = sorted([it for it in items if it[1] == max_tier],
-                      key=lambda it: cl.date_key(it[2]))
+                      key=lambda it: (self._domain_order(cid).get(int(it[0]), 10 ** 6),
+                                      cl.date_key(it[2])))
         tid = tops[0][0]
         tier = self._RANK_TIER.get(max_tier) if max_tier >= 1 else None
         return tier, tid
@@ -2663,7 +2702,7 @@ class Facts:
                     held[tid] = _dd
                 else:
                     held.pop(tid, None)
-            group = self._primary_group(held)
+            group = self._primary_group(held, cid)
             if group and group != prev_group:
                 phases.append((d, group, set(prev_held) - set(held)))
                 prev_group = group
@@ -7624,7 +7663,22 @@ class Facts:
     }
 
     def dynastic_cycle_line(self, date=None):
-        """天命局势一行 (v53): 「天命：新朝征服（危世），自919年8月2日」。"""
+        """天命局势一行 (v53): 「天命：新朝征服（危世），自919年8月2日」。
+
+        v58 (问题5, 用户拍板「只用政体链」): `dynastic_cycle` 是游戏里
+        `is_unique = yes` 的**世界级唯一局势**（`common/situation/situations/
+        tgp_dynastic_cycle.txt:7`），作用域是中国 core 子区域
+        （同文件 :466-468：`add_dejure_title_to_sub_region = title:h_china` ＋
+        `add_character_realm_to_sub_region = title:h_china.holder`）。旧稿无条件
+        取用, 于是封建制的托斯卡纳女公爵档案里也写「天命：政通人和，世属治世」。
+        现按主角**当时的政体**下闸: 只有天朝链政体（celestial/meritocratic/
+        steppe_admin）才下发; 政体不可知时不下发（宁缺勿错, 与 v41 同纪律）。
+        参与者名单校验留待后续（用户: 评估性能影响后再加）。"""
+        pid = self.cache.get("player_id")
+        gov = self._character_government_or_earliest(pid, date) \
+            if pid is not None else ""
+        if gov not in self._CELESTIAL_CHAIN_GOVS:
+            return ""
         hist = self.cache.get("dynastic_cycle_history") or []
         rec = None
         if hist:
@@ -11659,6 +11713,8 @@ def _timeline(f):
     if _fold_saved:
         # 概览口径与折叠一致: 折掉 N 行即少 N 次 (与诛灭世族「计 1 次」同纪律)
         stats["囚禁他人"] = max(0, stats.get("囚禁他人", 0) - _fold_saved)
+    # v58 (问题7): 同场活动跨日合并 (同一场加冕礼的跨日见证记忆)
+    out = _merge_activity_windows(out, f)
     # v11: 同日同型集体事件合并 (见证加冕/出席大婚/被囚/囚禁)
     out = _merge_same_day_events(out, f)
     # v15: 同月同型流水事件聚合 (结怨/结仇/助战…), 聚合后再限量
@@ -11779,6 +11835,88 @@ _MERGE_SLOT_RES = {
     },
 }
 _MERGE_CAP = 10  # 合并人名上限, 超过收成「…等N人」
+
+
+# v58 (问题7): **同场活动跨日合并** —— 游戏对同一场加冕礼写两条
+# `witnessed_a_coronation_memory`（活动收尾 `common/activities/activity_types/
+# coronation.txt:3043` ＋ 宾客告别事件 `coronation_events.0312`
+# (`events/activities/coronation_activity/coronation_events.txt:5137`, 只对非 AI
+# 宾客触发)），玩家侧于是落在相邻两天（本档 1067.12.22 与 1067.12.23）。
+# 同日合并器只认同一天, 跨日的同场事件不合并 → 大事记里同一场加冕礼连出两行。
+# 规则: 同 type + 同 host (加冕者) 且在 `_ACTIVITY_MERGE_DAYS` 天窗口内 → 并成一行,
+# 日期取**首日**（用户 2026-09-22 拍板「只写第一天」), 见证人取并集。
+_ACTIVITY_WINDOW_TYPES = ("witnessed_a_coronation_memory",
+                          "grand_wedding_completed_guest")
+_ACTIVITY_MERGE_DAYS = 7
+
+
+def _merge_activity_windows(events, f=None):
+    """同场活动跨日合并 (v58 问题7)。仅对 `_ACTIVITY_WINDOW_TYPES` 生效。"""
+    if not events:
+        return events
+    by_type = {}
+    for e in events:
+        t = e.get("type")
+        if t in _ACTIVITY_WINDOW_TYPES:
+            by_type.setdefault(t, []).append(e)
+    if not by_type:
+        return events
+    drop = set()
+    merged = {}
+
+    for typ, entries in by_type.items():
+        spec = _MERGE_SLOT_RES.get(typ)
+        if not spec:
+            continue
+        pat = spec["pat"]
+
+        def _body(e):
+            b = e.get("text") or ""
+            d = e.get("date")
+            pre = f.date(d) + "，" if (d and f) else ""
+            return b[len(pre):] if (pre and b.startswith(pre)) else b
+
+        ordered = sorted(entries, key=lambda e: cl.date_key(e.get("date") or ""))
+        groups = []            # [(首日, [entry…])]
+        for e in ordered:
+            m = re.match(pat, _body(e))
+            if not m:
+                continue
+            gkey = spec["key"](m.groups()) if spec.get("key") else "_"
+            dk = cl.date_key(e.get("date") or "")
+            placed = False
+            for g in groups:
+                if g[0] == gkey and _daynum(e.get("date")) - _daynum(g[1][0].get("date")) \
+                        <= _ACTIVITY_MERGE_DAYS:
+                    g[1].append(e)
+                    placed = True
+                    break
+            if not placed:
+                groups.append((gkey, [e]))
+        for gkey, g in groups:
+            if len(g) < 2:
+                continue
+            gs = [re.match(pat, _body(e)).groups() for e in g]
+            if len(gs) > _MERGE_CAP:
+                body = "、".join(x[0] for x in gs[:_MERGE_CAP]) + \
+                    f"等{len(gs)}人" + spec["cap_verb"](gs)
+            else:
+                body = spec["comb"](gs)
+            first = g[0]
+            d = first.get("date")
+            txt = f"{f.date(d)}，{body}" if (d and f) else body
+            merged[id(first)] = dict(first, text=txt, activity_window=True)
+            for e in g:
+                if e is not first:
+                    drop.add(id(e))
+    if not drop and not merged:
+        return events
+    out = []
+    for e in events:
+        if id(e) in drop:
+            continue
+        out.append(merged.get(id(e), e))
+    return out
 
 
 
