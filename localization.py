@@ -181,13 +181,27 @@ def _steam_library_roots():
                     break
     except Exception:
         pass
-    if steam:
-        roots.append(steam)
-        vdf = os.path.join(steam, "steamapps", "libraryfolders.vdf")
+    # v58 (§0.1): 注册表读不到 (受限/子进程环境实测 `winreg.OpenKey` 抛
+    # FileNotFoundError) 时退到常见安装路径, 否则 game_dir() 为空 →
+    # build_localization_table 只读得到 Mod 本地化 (实测 94,734 键 vs 完整
+    # 382,330 键), 中文人名/头衔整片退化成英文或裸键。libraryfolders.vdf 里
+    # 的其它库路径同样扫一遍。
+    cands = [steam] if steam else []
+    cands += [r"<Steam目录>", r"<Steam目录>"]
+    for c in cands:
+        if not c:
+            continue
+        vdf = os.path.join(c, "steamapps", "libraryfolders.vdf")
+        if not os.path.isfile(vdf):
+            continue
+        if c not in roots:
+            roots.append(c)
         try:
             with open(vdf, encoding="utf-8", errors="replace") as fp:
                 for m in re.finditer(r'"path"\s*"([^"]+)"', fp.read()):
-                    roots.append(m.group(1).replace("\\\\", "\\"))
+                    p = m.group(1).replace("\\\\", "\\")
+                    if p not in roots:
+                        roots.append(p)
         except Exception:
             pass
     return roots
@@ -413,6 +427,14 @@ def load_localization_table(cfg, force=False):
         # 游戏目录不可用 (换机 / 未配置): 保留旧表, 优于空表
         llm.log("本地化重建未取到任何键 (游戏目录不可用?), 沿用既有表。")
         return cached
+    # v58 (§0.1): **退表保护** —— 只在游戏目录不可用时会重建出「只剩 Mod 键」的
+    # 小表 (实测 94,734 vs 382,330)。旧稿只挡「空表」, 于是这类退化表会覆盖好的表,
+    # 中文人名/头衔/家族前缀整片失效。新表键数不足旧表六成时拒绝落盘。
+    if cached and len(table) < len(cached) * 0.6:
+        llm.log(f"本地化重建结果偏小 ({len(table)} 键 < 旧表 {len(cached)} 键的六成) —— "
+                f"疑游戏目录不可用, 保留旧表不落盘。若确为游戏更新, 请删 "
+                f"{path} 后重建。")
+        return cached
     fp = None
     try:
         fp = source_fingerprint(cfg)
@@ -629,40 +651,56 @@ def _dynasties_path(cfg):
     return os.path.join(cfg.get("data_dir", ""), "dynasties.json")
 
 
-def _parse_dynasty_defs(path, out):
+def _parse_dynasty_defs(path, out, prefixes=None):
     """解析一份 dynasties/dynasty_houses txt: key = { name = "dynn_X" } → out[key]。
-    忽略嵌套花括号块 (脚本块不在这些文件里), 只取顶层 key。"""
+    忽略嵌套花括号块 (脚本块不在这些文件里), 只取顶层 key。
+
+    v58 (问题4): 同时抓 `prefix = "dynnp_X"`（贵族地面前缀：意大利 di／法兰西 de／
+    德意志 von…）→ prefixes[key]。键形放宽两处：
+      · 允许**数字键**（游戏本体宗族定义按宗族 id 命名：`101556 = { name = "dynn_Lucca" }`）；
+      · 允许键内出现 `-`／`.`（家族键 `house_visconti-somma`）。
+    旧正则要求键以字母开头，把这两类定义整条丢掉（本档「卡诺萨为吉贝尔蒂宗族的分支」
+    即由此而来，游戏口径是「卢卡」）。"""
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as fp:
             txt = fp.read()
     except Exception:
         return
-    for m in re.finditer(r"^([A-Za-z][A-Za-z0-9_]*)\s*=\s*\{([^{}]*)\}", txt, re.M):
+    for m in re.finditer(r"^([A-Za-z0-9_][A-Za-z0-9_.\-]*)\s*=\s*\{([^{}]*)\}",
+                         txt, re.M):
         key, body = m.group(1), m.group(2)
-        nm = re.search(r'name\s*=\s*["\']?(dynn_[A-Za-z0-9_]+)', body)
+        nm = re.search(r'name\s*=\s*["\']?(dynn_[A-Za-z0-9_\-]+)', body)
         if nm:
             out[key] = nm.group(1)
+        if prefixes is not None:
+            pf = re.search(r'prefix\s*=\s*["\']?(dynnp_[A-Za-z0-9_\-]+)', body)
+            if pf:
+                prefixes[key] = pf.group(1)
 
 
 def build_dynasty_table(cfg):
     """游戏 + Mod 的 common/dynasties 与 common/dynasty_houses →
-    {"dynasties": {key: dynn名}, "houses": {house_key: dynn名}}。Mod 覆盖游戏。"""
-    out = {"dynasties": {}, "houses": {}}
+    {"dynasties": {key: dynn名}, "houses": {house_key: dynn名},
+     "dynasty_prefixes": {key: dynnp名}, "house_prefixes": {house_key: dynnp名}}
+    (v58 问题4: 后两张是前缀表)。Mod 覆盖游戏。"""
+    out = {"dynasties": {}, "houses": {},
+           "dynasty_prefixes": {}, "house_prefixes": {}}
     roots = []
     g = game_dir(cfg)
     if g:
         roots.append(g)
     roots += enabled_mod_dirs(cfg)
     for root in roots:
-        for folder, bucket in (("dynasties", "dynasties"),
-                               ("dynasty_houses", "houses")):
+        for folder, bucket, pbucket in (("dynasties", "dynasties", "dynasty_prefixes"),
+                                        ("dynasty_houses", "houses", "house_prefixes")):
             d = os.path.join(root, "common", folder)
             if not os.path.isdir(d):
                 continue
             for dp, _dn, fns in os.walk(d):
                 for fn in sorted(fns):
                     if fn.endswith(".txt"):
-                        _parse_dynasty_defs(os.path.join(dp, fn), out[bucket])
+                        _parse_dynasty_defs(os.path.join(dp, fn), out[bucket],
+                                            prefixes=out[pbucket])
     return out
 
 
@@ -670,22 +708,30 @@ def save_dynasty_table(cfg, table, path=None):
     path = path or _dynasties_path(cfg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fp:
-        json.dump({"schema": 1, "dynasties": table.get("dynasties") or {},
-                   "houses": table.get("houses") or {}}, fp, ensure_ascii=False)
+        # v58 (问题4): schema 2 = 增 dynasty_prefixes / house_prefixes 两张前缀表
+        json.dump({"schema": 2,
+                   "dynasties": table.get("dynasties") or {},
+                   "houses": table.get("houses") or {},
+                   "dynasty_prefixes": table.get("dynasty_prefixes") or {},
+                   "house_prefixes": table.get("house_prefixes") or {}},
+                  fp, ensure_ascii=False)
     return path
 
 
 def load_dynasty_table(cfg, force=False):
     """载入宗族/家族定义表; 缺失或强制时重建。
-    返回 {"dynasties": {key: dynn名}, "houses": {house_key: dynn名}}。"""
+    返回 {"dynasties": …, "houses": …, "dynasty_prefixes": …, "house_prefixes": …}。
+    v58: schema<2 (无前缀表) 视为过期 → 重建一次 (重建 <1s)。"""
     path = _dynasties_path(cfg)
     if not force and os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1:
+            if data.get("schema") == 2:
                 return {"dynasties": data.get("dynasties") or {},
-                        "houses": data.get("houses") or {}}
+                        "houses": data.get("houses") or {},
+                        "dynasty_prefixes": data.get("dynasty_prefixes") or {},
+                        "house_prefixes": data.get("house_prefixes") or {}}
         except Exception:
             pass
     table = build_dynasty_table(cfg)

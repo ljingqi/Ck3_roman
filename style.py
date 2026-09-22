@@ -854,6 +854,23 @@ SECRET_TOPICS_NO_FATHER = {
     "secret_disputed_heritage": "所生{target}血统有争",
 }
 
+# v58 (问题2): **谓词型**隐事主题 —— 这些主题本身已是一个谓语短语（「与X私通」
+# 「谋害X」「暗行巫术」），再套「{owner}有一桩隐事：{topic}」会读成
+# 「玛蒂尔达·卡诺萨有一桩隐事：与阿普利亚公爵狐狸罗贝尔·欧特维尔私通。」
+# 故这类直接作谓语出句：「1072年，玛蒂尔达·卡诺萨与阿普利亚公爵狐狸罗贝尔·欧特维尔私通。」
+# 其余（名词型：科举舞弊 / 所生X血统有争 / 断袖…）保留原「有隐事」框架
+# （它们需要「这是他的隐事」这层语义，直接作谓语不通）。
+SECRET_PREDICATE_TYPES = frozenset({
+    "secret_lover", "secret_incest", "secret_murder", "secret_murder_attempt",
+    "secret_witch", "secret_embezzler", "secret_siphoned_treasury",
+    "secret_adultery", "secret_coup_plotter", "secret_cannibal",
+})
+
+
+def secret_topic_is_predicate(tp):
+    """该隐事类型的主题短语能否直接作谓语 (v58 问题2)。"""
+    return str(tp or "") in SECRET_PREDICATE_TYPES
+
 
 # v16: 动作型死因 → 施事句式 (原始 reason key → 动词)。有凶手/行刑者/对手
 # 记录时, 把施事者直接嵌进句内 (被XXX谋杀 / 被XXX处决 / 与XXX决斗而亡),

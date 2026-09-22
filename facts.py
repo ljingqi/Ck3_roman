@@ -5325,7 +5325,11 @@ class Facts:
 
     def secret_sentence(self, rec, owner_label=None, self_cid=None):
         """隐事句: 「陆荣廷有一桩隐事：科举舞弊，事涉唐皇帝李漼，873年见于记载。」
-        首档即见者不写年份。v55 (问题2): 对象与见载年都不用括注, 依次作同句分句。"""
+        首档即见者不写年份。v55 (问题2): 对象与见载年都不用括注, 依次作同句分句。
+        v58 (问题2): **谓词型**主题 (私通/乱伦/谋害/暗行巫术/侵吞库银…) 去壳 ——
+        直接写「{owner}{topic}」。旧稿一律套「有一桩隐事：」框架, 于是私通类
+        被读成「玛蒂尔达·卡诺萨有一桩隐事：与阿普利亚公爵狐狸罗贝尔·欧特维尔私通。」
+        (用户 2026-09-22 报第 2 问: 期望「1072年，玛蒂尔达·卡诺萨与…私通。」)"""
         if not isinstance(rec, dict):
             return ""
         topic = self.secret_topic(rec, self_cid=self_cid)
@@ -5335,7 +5339,10 @@ class Facts:
             else self.name_or(rec.get("owner"))
         if not owner:
             return ""
-        s = f"{owner}有一桩隐事：{topic}"
+        if _style.secret_topic_is_predicate(rec.get("type")):
+            s = f"{owner}{topic}"
+        else:
+            s = f"{owner}有一桩隐事：{topic}"
         note = self._first_seen_note(rec)
         if note:
             s += f"，{note}"
@@ -5452,23 +5459,42 @@ class Facts:
             ln = self.secret_line(items[0], owner_label=owner, self_cid=self_cid,
                                   knowers=with_knowers)
             return [ln] if ln else []
-        clauses = []
+        # v58 (问题2): 谓词型主题逐桩成句 (「X与Y私通，1072年见于记载。」),
+        # 名词型仍并成「X有隐事N桩：…」—— 两类混在一起会写出
+        # 「有隐事两桩：与X私通；所生Y血统有争」这种半通顺句。
+        blocks = []          # [(是否谓词型, [rec…])] 按原次序 (按日期排好的)
         for r in items:
-            topic = self.secret_topic(r, self_cid=self_cid)
-            if not topic:
+            pred = _style.secret_topic_is_predicate(r.get("type"))
+            if blocks and blocks[-1][0] == pred:
+                blocks[-1][1].append(r)
+            else:
+                blocks.append((pred, [r]))
+        out = []
+        for pred, group in blocks:
+            if pred:
+                for r in group:
+                    ln = self.secret_line(r, owner_label=owner, self_cid=self_cid,
+                                          knowers=with_knowers)
+                    if ln:
+                        out.append(ln)
                 continue
-            note = self._first_seen_note(r)
-            if note:
-                # v55 (问题2): 去括注 —— 见载年作分句接在主题后 (旧稿并入同一括号)
-                topic += f"，{note}"
-            kn = self.secret_knowers(r, self_cid=self_cid) if with_knowers else ""
-            if kn:
-                topic += "，" + kn
-            clauses.append(topic)
-        if not clauses:
-            return []
-        return [f"{owner}有隐事{_count_zh(len(clauses))}桩："
-                + "；".join(clauses) + "。"]
+            clauses = []
+            for r in group:
+                topic = self.secret_topic(r, self_cid=self_cid)
+                if not topic:
+                    continue
+                note = self._first_seen_note(r)
+                if note:
+                    # v55 (问题2): 去括注 —— 见载年作分句接在主题后 (旧稿并入同一括号)
+                    topic += f"，{note}"
+                kn = self.secret_knowers(r, self_cid=self_cid) if with_knowers else ""
+                if kn:
+                    topic += "，" + kn
+                clauses.append(topic)
+            if clauses:
+                out.append(f"{owner}有隐事{_count_zh(len(clauses))}桩："
+                           + "；".join(clauses) + "。")
+        return out
 
     def secrets_known_by(self, cid, date=None):
         """cid 知情、但主人不是他的隐事记录 (把柄维度)。"""

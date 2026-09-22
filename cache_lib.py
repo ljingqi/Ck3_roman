@@ -249,6 +249,76 @@ def house_name_of_key(key):
     return _dynasty_name_of_dynn(nm, localization.table())
 
 
+# ---------------------------------------------------------------------------
+# v58 (问题4): 贵族地面前缀 (意大利 di／法兰西 de／德意志 von…)
+# ---------------------------------------------------------------------------
+# 游戏把「以地名为氏」的家族/宗族前缀写在 common/dynasty_houses/*.txt 与
+# common/dynasties/*.txt 的 `prefix = "dynnp_X"`（如 house_canossa → dynnp_di，
+# house_ghiberti → dynnp_de，house_wigeriche 无前缀），中文文案在
+# localization/<lang>/dynasties/dynasty_names_l_<lang>.yml（dynnp_di = "迪· "）。
+# 存档也会自带（dynasty_house[].prefix / dynasties[].prefix），以存档为准。
+# 显示名 = 名 + 「·」+ 前缀 + 家族名（西方名序），即游戏的「罗伯托·迪·卡诺萨」。
+
+_PREFIX_ZH_CACHE = {}
+
+
+def _prefix_zh(pkey, table=None):
+    """dynnp_X → 中文前缀 (迪·/德·/冯·)。取不到 / 占位符 / 未译 → ''。
+    值尾的排版空格一律去掉（「迪· 」→「迪·」）。"""
+    if not pkey:
+        return ""
+    if pkey in _PREFIX_ZH_CACHE:
+        return _PREFIX_ZH_CACHE[pkey]
+    t = table if table is not None else localization.table()
+    v = localization.loc(t, pkey) or ""
+    if (not v) or v == pkey or "$" in v or "[" in v or re.search(r"[A-Za-z_]", v):
+        v = ""
+    else:
+        v = v.rstrip()
+    _PREFIX_ZH_CACHE[pkey] = v
+    return v
+
+
+def _prefix_of_key(kind, key):
+    """家族/宗族定义表里的前缀键。kind ∈ {"house", "dynasty"}; 未知返回 ''。"""
+    if not key:
+        return ""
+    tb = localization.dynasty_table()
+    bucket = "house_prefixes" if kind == "house" else "dynasty_prefixes"
+    return (tb.get(bucket) or {}).get(str(key)) or ""
+
+
+def house_prefix_zh(melt, house_id):
+    """家族 id → 前缀中文 (迪·)。取值链: 存档 dynasty_house[].prefix → 游戏定义表。
+    无前缀家族返回 ''。"""
+    if house_id is None:
+        return ""
+    try:
+        e = ((melt or {}).get("dynasties") or {}).get("dynasty_house") or {}
+        rec = e.get(str(house_id)) or {}
+        pkey = rec.get("prefix") or _prefix_of_key("house", rec.get("key"))
+        return _prefix_zh(pkey)
+    except Exception:
+        return ""
+
+
+def dynasty_prefix_zh(melt, dynasty_id):
+    """宗族 id → 前缀中文。取值链: 存档 dynasties[].prefix → 游戏定义表。"""
+    if dynasty_id is None:
+        return ""
+    try:
+        e = ((melt or {}).get("dynasties") or {}).get("dynasties") or {}
+        rec = e.get(str(dynasty_id)) or {}
+        pkey = rec.get("prefix")
+        if not pkey:
+            key = rec.get("key")
+            if isinstance(key, (str, int)):
+                pkey = _prefix_of_key("dynasty", str(key))
+        return _prefix_zh(pkey)
+    except Exception:
+        return ""
+
+
 def house_name_zh(melt, house_id):
     """家族 id → 姓氏中文。取值链 (实测):
       1) dynasty_house[<id>].localized_name  (存档自带, 如 冯·大马士革 / 北家 / 庆州崔)
@@ -1463,13 +1533,23 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
         # 宗族名缺失 (解析失败/无宗族) 回退家族名 (旧行为)
         surname = dn or h
         return surname + nm if surname else nm
+    # v58 (问题4): 西方名序拼上前缀 (迪·/德·/冯·) —— 游戏显示「罗伯托·迪·卡诺萨」。
+    # 家族名若已自带前缀 (存档 localized_name 如「冯·大马士革」) 则不重复加。
+    pfx = house_prefix_zh(melt, rec.get("dynasty_house")) if melt is not None else ""
+    if pfx and h and (h.startswith(pfx) or h.startswith(pfx.rstrip("·"))):
+        pfx = ""
+
+    def _west_surname(surname):
+        return f"{nm}·{pfx}{surname}" if (surname and pfx) else \
+            (f"{nm}·{surname}" if surname else nm)
+
     cultures = (melt or {}).get("culture_manager") or {}
     if cul is not None and str(cul) in (cultures.get("cultures") or {}):
         # 文化已知且西方默认: 名·姓
-        return f"{nm}·{h}" if h else nm
+        return _west_surname(h)
     if order is not None and order == "":
         # 亲属/模板推断为西方默认: 名·姓
-        return f"{nm}·{h}" if h else nm
+        return _west_surname(h)
     # 3) 无从推断: 只给给定名 (宁缺勿错序)
     return nm
 
