@@ -933,6 +933,18 @@ EMPTY_CACHE = {
     # 逐档并入时把涉主角的 reason 闩存 (首见即留, 不覆盖), 生成时作熔件的回退源。
     # key = "<owner>|<target>|<kind>" (方向与存档一致, 互为仇敌时两条各存)。
     "relation_reasons": {},
+    # v60 (问题3): 婚配闩存 —— 主角一方的 `family_data` 在死亡档会被清空
+    # (崔佛 881/882 档 family_data=[]), 而**对方**身上的反向指针
+    # (`concubinist` / `former_concubinists` / `spouse` / `former_spouses`)
+    # 逐档在册。逐档扫全角色把「与主角的婚配」闩存下来, 首见即留,
+    # 供 facts 在主角自身 family 为空时回读 (见 `_latch_spouses`)。
+    # key = "<主角id>><对方id>", value = {"kind","first_seen","source"}。
+    "spouse_latch": {},
+    # v60 (问题4): 囚禁交接闩存 —— {"<被囚者id>": {"from","to","since","first_seen"}}。
+    # 传主死后其在押囚犯的监禁者转归继位者 (崔佛卒于 881.1.1, 四人改归 15179),
+    # 而该类档期的 `find_player` 已是继位者 —— 传主这一侧只有靠同战役后继档
+    # 闩存, 才能在传记里写出「转归其妾埃尔梅辛达」(见 `_latch_prison_succession`)。
+    "prison_succession": {},
     # v56 (问题3): 出狱缘由闩存 — {"<被囚者>><监禁者>><日期>": {"kind","src","first_seen"}}。
     # 源数据 = 出狱当日新得的出狱类好感 (自带 start_date) 与 `favor_hook`/`indebted_hook`
     # (到期日减 10 个日历年即创建日)。出狱类好感 10 年衰减且随持有者死亡消失, 而终传
@@ -1881,6 +1893,11 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             and cache["player_id"] != player_id:
         # v53: 同战役他传主熔件仍记封臣史/天命 (马丁终传要用亨利档的早年合同)
         _record_vassal_and_cycle(cache, melt, date_label)
+        # v60 (问题4): 同战役**后继玩家**的档也要用来记囚禁交接 ——
+        # 传主死后其在押囚犯的监禁者转归继位者, 而那之后的档
+        # `find_player` 已换成继位者, 本传主这一侧永远看不到 (崔佛 881/882 档
+        # 的 find_player 是 15179, 他的缓存只到 880 档)。
+        _latch_prison_succession(cache, melt, date_label)
         return False
     if cache["player_id"] is None:
         cache["player_id"] = player_id
@@ -2409,11 +2426,23 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                    "imprisoner": _pd.get("imprisoner"),
                    "type": _pd.get("type") or "",
                    "since": _pd.get("date") or date_label}
-            # 与上一段同囚禁者/同类型 → 视为同一段 (换档不新开)
-            if ph and ph[-1].get("to") is None \
-                    and ph[-1].get("imprisoner") == cur["imprisoner"] \
+            _same_span = (ph and ph[-1].get("to") is None
+                          and ph[-1].get("since") == cur["since"])
+            if _same_span and ph[-1].get("imprisoner") == cur["imprisoner"] \
                     and ph[-1].get("type") == cur["type"]:
+                # 与上一段同囚禁者/同类型 → 视为同一段 (换档不新开)
                 pass
+            elif _same_span:
+                # v60 (问题4): 同一段囚禁**换了监禁者** —— 前一位监禁者死亡后
+                # 囚禁转归其继承人, 游戏把 prison_data.date 留在原入狱日。
+                # 崔佛 880.10.20 关押四人, 881.1.1 卒, 四人的监禁者即变为
+                # 继位玩家 15179; 旧稿就地改写 imprisoner, 「谁关的→谁接着关」
+                # 这条交接在事实面完全消失。改记 `from_imprisoner` 保留下手者,
+                # `imprisoner` 仍作「到本档为止的监禁者」。
+                ph[-1]["from_imprisoner"] = ph[-1].get("from_imprisoner") \
+                    or ph[-1].get("imprisoner")
+                ph[-1]["imprisoner"] = cur["imprisoner"]
+                ph[-1]["type"] = cur["type"]
             else:
                 if ph and ph[-1].get("to") is None:
                     ph[-1]["to"] = date_label
@@ -2440,7 +2469,24 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         if rev_cons:
             fam["concubine"] = list(dict.fromkeys(
                 (fam.get("concubine") or []) + rev_cons))
-        rec["family"] = fam
+        # v60 (问题3): 亲属集**逐键合并, 空值不覆盖**。
+        # 旧稿 `rec["family"] = fam` 无条件覆写: 死亡档的 `family_data` 已被游戏
+        # 清空 (崔佛 881/882 档 family_data=[]), 880 档抓到的 `concubine: 15899`
+        # 连同 `ever_spouses` 的来源一并丢掉, 模型于是自己造出「结缡三次、离异
+        # 两次」的家室列传。亲属集是**曾有过**的事实 (婚配、父母、同胞、子女),
+        # 旧值保留正确; 唯 `primary_spouse` 是单值指针 (新档给了新值即换代)。
+        # 项目对母系婚/出狱缘由/结仇缘由都有闩存, 唯独婚配没有 —— 此处补齐。
+        _fam_prev = rec.get("family") or {}
+        _fam_new = dict(_fam_prev)
+        for _k, _v in fam.items():
+            if not _v:
+                continue
+            if _k == "primary_spouse" or _k not in _fam_prev:
+                _fam_new[_k] = list(_v)
+            else:
+                _fam_new[_k] = list(dict.fromkeys(
+                    list(_fam_prev.get(_k) or []) + list(_v)))
+        rec["family"] = _fam_new
         # v31: 历史上所有配偶 (含离异/丧偶后被移出当前字段者) — 婚姻对判定用
         # (「与配偶同房」不写私通; 妻子后来的情人身份对照也靠它)。
         ever = set(rec["family"].get("ever_spouses") or [])
@@ -2589,6 +2635,9 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # 游戏只在关系存续期保留 `scripted_relations.<kind>.reason`, 关系一方死亡后
     # 条目连同缘由一起消失, 而生成只用最新一份熔件 → 见过即留, 供 facts 回退读
     _latch_relation_reasons(cache, melt, date_label)
+    # v60 (问题3): 婚配闩存 —— 主角自身 family_data 在死亡档被清空, 而配偶/妾
+    # 身上的反向指针逐档在册; 逐档扫下来, 生成期才有「一生有过哪些妻妾」可依
+    _latch_spouses(cache, melt, date_label)
     # v56 (问题3): 出狱缘由闩存 —— 出狱类好感 10 年衰减且随持有者死亡消失, 而终传
     # 只载末档熔件 (斯卡利茨 924 年那批释放的「以人情获释」因此读不到)
     _latch_prison_manners(cache, melt, date_label)
@@ -2621,6 +2670,59 @@ def matrilineal_pair_key(a, b):
     return f"{min(int(a), int(b))}>{max(int(a), int(b))}"
 
 
+def _latch_prison_succession(cache, melt, date_label):
+    """囚禁交接闩存 (v60 问题4) —— 「甲关的人, 甲死后归乙关」。
+
+    崔佛 880.10.20 把四人下狱; 881.1.1 崔佛卒, 四人的
+    `alive_data.prison_data.imprisoner` 随即变成继位者 15179, 而 `date` 仍是
+    880.10.20 (游戏只换监禁者, 不改入狱日)。传主这一侧的缓存只并入到 880 档
+    (881/882 档 `find_player` 已是继位者), 于是「谁接着关」这条交接在传记里
+    完全消失, 只剩一句无限期的「此后一直未见释放」。
+
+    本函数在**传主与熔件玩家不一致**时被调用 (即同战役后继玩家的档), 判据:
+    ① 某人在押 (`prison_data.imprisoner` = 乙); ② 其 `imprisoned` 记忆里的
+    `imprisoner` = 甲 (本缓存传主)。两条同时成立即记一条交接。
+
+    记录形如::
+
+        cache["prison_succession"]["46208"] = {
+            "victim": 46208, "from": 38660, "to": 15179,
+            "since": "880.10.20", "first_seen": "881.1.1"}
+
+    首见即留 (不覆盖), 返回本档新增条数。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return 0
+    hist = cache.setdefault("prison_succession", {})
+    added = 0
+    db = _db(melt)
+    for cid, c in all_characters(melt).items():
+        if not isinstance(c, dict):
+            continue
+        pd = (c.get("alive_data") or {}).get("prison_data")
+        if not isinstance(pd, dict):
+            continue
+        to_id = pd.get("imprisoner")
+        if not isinstance(to_id, int) or to_id == pid:
+            continue
+        for mid in mem_ids_of(c):
+            e = db.get(str(mid))
+            if not isinstance(e, dict) or e.get("type") != "imprisoned":
+                continue
+            from_id = (e.get("participants") or {}).get("imprisoner")
+            if from_id != pid:
+                continue
+            key = str(cid)
+            if key in hist:
+                continue
+            hist[key] = {"victim": int(cid), "from": int(from_id), "to": int(to_id),
+                         "since": str(e.get("creation_date") or ""),
+                         "first_seen": date_label}
+            added += 1
+            break
+    return added
+
+
 def _latch_matrilineal(cache, melt, date_label):
     """母系婚 (入赘) 婚姻对闩存 (v43)。
 
@@ -2650,6 +2752,162 @@ def _latch_matrilineal(cache, melt, date_label):
             pairs[key] = date_label
             added += 1
     return added
+
+
+# v60 (问题3): 存档 `family_data` 里「关系持有者 → 对方」的键 → 对方所处的位分。
+# 方向语义按存档实测 (崔佛档三名强纳之妾): `concubinist` 是**对方键**, 值 = 其
+# 主人; 其余键都是**本人键**, 值 = 配偶/前配偶。位分优先序 `_SPOUSE_KIND_RANK`
+# 保证同一对关系被两档以不同键记下时, 以最强的一位分为准 (正妻 > 侧室 > 妾 >
+# 前配偶 > 前妾), 例如先为妾、后成正妻者最终记「primary_spouse」。
+_SPOUSE_LATCH_KEYS = (
+    # (键, 对方位分, 是否反向键)
+    ("concubinist", "concubine", True),
+    ("former_concubinists", "former_concubine", True),
+    ("primary_spouse", "primary_spouse", False),
+    ("spouse", "spouse", False),
+    ("former_spouses", "former_spouse", False),
+)
+
+_SPOUSE_KIND_RANK = {
+    "primary_spouse": 0, "spouse": 1, "concubine": 2,
+    "former_spouse": 3, "former_concubine": 4,
+}
+
+
+def spouse_latch_key(player_id, other_id):
+    """婚配闩存键 —— 方向固定为「主角 > 对方」(v60)。"""
+    return f"{int(player_id)}>{int(other_id)}"
+
+
+def _latch_spouses(cache, melt, date_label):
+    """主角婚配闩存 (v60 问题3)。
+
+    为什么需要: 主角**自己**的 `family_data` 在死亡档被游戏清空 —— 崔佛 868–879
+    各档 `family_data = null`、880 档 `{"concubine": 15899}`、881/882 档 `[]`,
+    而生成只用最新一份熔件, 于是「一生有过三名强纳之妾」在事实面变成**一无所有**,
+    模型为填满《家室列传》的骨架遂自行虚构妻室 (实测虚构出「阿斯特里德」)。
+
+    真正逐档在册的是**对方身上的反向指针** —— 三名妾在 882 档都写着
+    `former_concubinists: [38660]`。故每次并档扫一遍全角色的 `family_data`,
+    凡与主角相关者一律闩存; 首见即留 (不覆盖), 位分按 `_SPOUSE_KIND_RANK`
+    取最强的一档。
+
+    `since` (v60) 取**最早**的已知日期: `family_data` 只逐档可见, 首见档会
+    晚于成婚日最多一年 (崔佛三名妾: 首见 880.1.1/881.1.1, 而成婚在
+    879.9.1/880.2.1/880.5.9)。命名类好感 (`forced_me_concubine_marriage_opinion`
+    等) 自带 `start_date`, 故同一档里按好感记录把日期前移。
+
+    记录形如::
+
+        cache["spouse_latch"]["38660>15899"] = {
+            "player": 38660, "other": 15899, "kind": "concubine",
+            "source": "concubinist" | "former_concubinists" | "spouse" | …,
+            "since": "879.9.1", "first_seen": "880.1.1"}
+
+    返回本档新增对数。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return 0
+    pid = int(pid)
+    latch = cache.setdefault("spouse_latch", {})
+    for cid, c in all_characters(melt).items():
+        _latch_spouses_of(c, cid, latch, pid, date_label)
+    _latch_spouse_dates(latch, melt, pid)
+    return sum(1 for v in latch.values() if v.get("first_seen") == date_label)
+
+
+# 命名类好感 (owner = 被纳者, target = 强纳者) → 与主角的婚配起始日。
+# `forced_spouse_concubine_marriage_opinion` 不在本表: 它记在**原配**身上,
+# 语义是「原配被离断」, 起始日的所指另算 (见 `_latch_spouse_dates`)。
+_SPOUSE_OPINION_START = ("forced_me_concubine_marriage_opinion",
+                         "concubine_with_monogamous_faith_opinion")
+
+
+def _latch_spouse_dates(latch, melt, pid):
+    """把命名类好感的 `start_date` 用作婚配起始日 (v60 问题3; 见 `_latch_spouses`)。
+
+    `family_data` 只在年度熔件里出现, 首见档可比真实成婚日晚一年; 而
+    `active_opinions` 的 `start_date` 是游戏自记的**当日**。两路取最早者。
+
+    方向须与存档实测一致 (崔佛档三名强纳之妾): 纳妾类好感记在**被纳者**身上
+    (`owner` = 被纳者, `target` = 强纳者); 而离断原配那一档记在**原配**身上
+    (`owner` = 原配, `target` = 强纳者), 其 `start_date` 是被纳者与他人成婚的日子,
+    **不是**与主角的起始日 —— 故那一档反过来取「owner 的配偶」中被纳者。"""
+    for o in (melt.get("opinions") or {}).get("active_opinions") or []:
+        if not isinstance(o, dict):
+            continue
+        owner, target = o.get("owner"), o.get("target")
+        if not isinstance(owner, int) or not isinstance(target, int):
+            continue
+        dates = {}
+        for v in _opinion_values(o):
+            mod = str(v.get("modifier") or "")
+            st = str(v.get("start_date") or "")
+            if mod in _SPOUSE_OPINION_START and st and mod not in dates:
+                dates[mod] = st
+        if not dates:
+            continue
+        if target == pid:
+            # 主角强纳 owner 为妾
+            rec = latch.get(spouse_latch_key(pid, owner))
+            if rec is not None:
+                st = min(dates.values(), key=date_key)
+                cur = rec.get("since") or rec.get("first_seen") or ""
+                if not cur or date_key(st) < date_key(cur):
+                    rec["since"] = st
+        elif owner != pid:
+            # owner 的原配被主角夺走: 取其前配偶中与主角闩存过的那一位
+            ex_fd = ((melt.get("living") or {}).get(str(owner))
+                     or (melt.get("dead_unprunable") or {}).get(str(owner)) or {})
+            ex_fd = ex_fd.get("family_data") or {}
+            for partner in (ex_fd.get("former_spouses") or []):
+                if not isinstance(partner, int) or partner == pid:
+                    continue
+                if "forced_spouse_concubine_marriage_opinion" not in dates:
+                    continue
+                rec = latch.get(spouse_latch_key(pid, partner))
+                if rec is None:
+                    continue
+                st = dates["forced_spouse_concubine_marriage_opinion"]
+                cur = rec.get("since") or rec.get("first_seen") or ""
+                if not cur or date_key(st) < date_key(cur):
+                    rec["since"] = st
+
+
+def _latch_spouses_of(char_obj, cid, latch, pid, date_label):
+    """单个角色的 `family_data` → 婚配闩存 (v60; 见 `_latch_spouses`)。"""
+    if not isinstance(char_obj, dict):
+        return
+    try:
+        cid = int(cid)
+    except (TypeError, ValueError):
+        return
+    fd = char_obj.get("family_data") or {}
+    if not isinstance(fd, dict):
+        return
+    for key, kind, reverse in _SPOUSE_LATCH_KEYS:
+        v = fd.get(key)
+        if v is None:
+            continue
+        ids = [int(x) for x in (v if isinstance(v, list) else [v])
+               if isinstance(x, int) or str(x).isdigit()]
+        if pid not in ids and cid != pid:
+            continue
+        for other in ids:
+            player, partner = (other, cid) if reverse else (cid, other)
+            if player != pid or partner == pid:
+                continue
+            lk = spouse_latch_key(pid, partner)
+            rec = latch.get(lk)
+            if rec is None:
+                latch[lk] = {"player": pid, "other": partner, "kind": kind,
+                             "source": key, "since": date_label,
+                             "first_seen": date_label}
+                continue
+            if _SPOUSE_KIND_RANK.get(kind, 9) \
+                    < _SPOUSE_KIND_RANK.get(rec.get("kind") or "", 9):
+                rec["kind"] = kind
+                rec["source"] = key
 
 
 def relation_reason_key(owner, target, kind):
