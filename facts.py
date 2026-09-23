@@ -6204,6 +6204,56 @@ class Facts:
             out.append(tpl.format(date=self.date(start), actor=actor, name=name))
         return sorted(set(out))
 
+    def concubine_divorce_lines(self):
+        """「妾的原有婚配被离断」事实 (v60 问题3) —— 逐条形如
+        「879年9月1日，希尔德加德原为萨洛蒙之妻，主角强纳为妾而离异。」。
+
+        源 = `cache["opinions"]` 里 `forced_spouse_concubine_marriage_opinion`
+        (owner = 被离断的原配, target = 强纳者), 由游戏脚本
+        `00_marriage_interaction_effects.txt` 在「强纳有夫/有妇之人为妾」时给予
+        原配并 `divorce = scope:recipient`。崔佛档三名妾**都是他人之妻**,
+        而模型此前只看到「强纳为妾」一句, 遂把女子的原配关系整段虚构 ——
+        这一行把「谁是原配」写成事实。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return []
+        ao = cl.date_key(self.as_of) if self.as_of else None
+        W = _FACT_WORDING
+        out = []
+        for rec in (self.cache.get("opinions") or {}).values():
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("modifier") != "forced_spouse_concubine_marriage_opinion":
+                continue
+            owner, target = rec.get("owner"), rec.get("target")
+            if not isinstance(owner, int) or not isinstance(target, int):
+                continue
+            fs, la = rec.get("first_seen"), rec.get("lost_at")
+            if ao is not None and fs and cl.date_key(fs) > ao:
+                continue
+            if ao is not None and la and cl.date_key(la) <= ao:
+                continue
+            start = rec.get("start") or fs
+            if not start:
+                continue
+            ex_name = self.person_label(owner, date=self.as_of, style="brief") or ""
+            if not ex_name:
+                continue
+            # 被强纳者 = 原配在本档的前妻/前夫 (缓存亲属集里唯一的新增配偶)
+            sp_name = ""
+            for x in (((self.cache.get("characters") or {}).get(str(owner)) or {})
+                      .get("family") or {}).get("former_spouses") or []:
+                if isinstance(x, int) and x != pid:
+                    sp_name = self.person_label(x, date=self.as_of, style="brief") or ""
+                    break
+            if not sp_name:
+                continue
+            actor = "主角" if target == pid \
+                else (self.person_label(target, date=self.as_of, style="brief") or "某人")
+            out.append(W["concubine_divorced"].format(
+                date=self.date(start), actor=actor, name=sp_name, ex=ex_name))
+        return sorted(set(out))
+
     def hook_notable(self):
         """有「够格入《阴私录》」的牵制 (v31; v38 问题2 收紧判据)。
 
@@ -6484,8 +6534,159 @@ class Facts:
         "claim": "放弃宣称获释", "ransomed": "纳赎获释", "banished": "遭驱逐",
         "recruit": "遭强征入仕", "vows": "被迫出家获释", "escape": "越狱脱身",
         "enslaved": "没为奴隶", "punished": "受刑获释", "executed": "处决",
-        "died_in_prison": "死于狱中", "held": "此后一直未见释放",
+        "died_in_prison": "死于狱中",
+        # v60 (问题4): 收句以**本档为界** —— 旧措辞「此后一直未见释放」把
+        # 「本传数据窗口内在押」写成一句无限期的断言 (崔佛 881.1.1 卒、四名
+        # 囚犯此后转归继位者, 传记却读成永远没放)。{bound} 由调用方给:
+        # 十年档给该篇截止日, 终传给「末档」(见 `_prison_bound`)。
+        "held": "至{bound}仍在押",
     }
+
+    def prison_death_clause(self, victim, date=None):
+        """收句用的死亡记录 (v60 问题4) → {date, reason, killer} 或 {};
+
+        缓存优先; 缓存未记 (受害者死在缓存末档之后) 时回退**熔件** `dead_data`
+        —— 旧稿只查 `cache["characters"][victim]["death"]`, 于是「死在末档之后、
+        只在熔件里」的那批人被写成永远在押。"""
+        rec = ((self.cache.get("characters") or {}).get(str(victim)) or {})
+        dd = rec.get("death") or {}
+        if dd.get("date"):
+            return dd
+        for seg in ("living", "dead_unprunable"):
+            c = (self.melt.get(seg) or {}).get(str(victim))
+            if isinstance(c, dict) and (c.get("dead_data") or {}).get("date"):
+                return c["dead_data"]
+        return {}
+
+    def _death_int(self, v):
+        """死亡记录的整数字段 (哨兵 4294967295 = 无 / 0xFFFFFFFF 一律视为缺) → int|None。"""
+        if not isinstance(v, int) or v < 0 or v >= 4294967295:
+            return None
+        return v
+
+    def spouse_latch_rows(self, as_of=None):
+        """主角的婚配闩存记录 (v60 问题3) → [{other, kind, first_seen}], 按见载日排序。
+
+        源 = `cache["spouse_latch"]` (逐档扫全角色 `family_data` 的反向指针闩存,
+        见 `cache_lib._latch_spouses`)。主角自身的 `family_data` 在死亡档会被游戏
+        清空, 这张表是「一生有过哪些妻妾」唯一跨档可靠的来源。"""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return []
+        ck = cl.date_key(as_of) if as_of else None
+        out = []
+        for key, rec in (self.cache.get("spouse_latch") or {}).items():
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("player") != pid:
+                continue
+            other = rec.get("other")
+            if not isinstance(other, int):
+                continue
+            fs = rec.get("first_seen")
+            st = rec.get("since") or fs
+            # v60: `since` 可比首见档更早 (命名类好感自带 start_date) —— 十年档
+            # 的时期门按它判, 免得 879 年成的婚被算进第 2 个十年
+            if ck is not None and st and cl.date_key(st) > ck:
+                continue
+            out.append({"other": other, "kind": str(rec.get("kind") or ""),
+                        "first_seen": st or fs})
+        out.sort(key=lambda r: (cl.date_key(r["first_seen"] or ""), r["other"]))
+        return out
+
+    def merge_spouse_latch(self, fam, as_of=None):
+        """把婚配闩存并进亲属集 (v60 问题3) —— 就地补 fam, 返回 fam。
+
+        位分按 `spouse_latch.kind` 落到 `primary_spouse` / `spouse` / `concubine`
+        与 `former_spouses` / `former_concubines` 五键, 与游戏 `family_data` 的
+        键名同构, 下游 (`_protagonist_facts` / `_genealogy` / `biography`) 无需另学
+        一套。**只补不覆盖**: 游戏当档给出的键值优先, 闩存只填缺。"""
+        rows = self.spouse_latch_rows(as_of)
+        if not rows:
+            return fam
+        fam = fam if isinstance(fam, dict) else {}
+        for key in ("primary_spouse", "spouse", "concubine",
+                    "former_spouses", "former_concubines"):
+            fam.setdefault(key, [])
+        # 位分可能随档演进 (妾 → 正妻): 以最强的一位分为准 (rank 见 cache_lib)
+        rank = cl._SPOUSE_KIND_RANK
+        best = {}
+        for r in rows:
+            k = r["kind"]
+            if k not in rank:
+                continue
+            if r["other"] not in best or rank[k] < rank[best[r["other"]]]:
+                best[r["other"]] = k
+        for other, k in best.items():
+            slot = {"primary_spouse": "primary_spouse", "spouse": "spouse",
+                    "concubine": "concubine", "former_spouse": "former_spouses",
+                    "former_concubine": "former_concubines"}[k]
+            if other not in fam[slot]:
+                fam[slot].append(other)
+        # 已成正妻/侧室者不再同时列作妾 (游戏把同一人写在两个字段时,
+        # `_consort_word` 判「妾」优先, 会把正妻读成妾)
+        _formal = set(fam.get("primary_spouse") or []) | set(fam.get("spouse") or [])
+        if _formal:
+            fam["concubine"] = [x for x in fam.get("concubine") or []
+                                if x not in _formal]
+            fam["former_concubines"] = [x for x in fam.get("former_concubines") or []
+                                        if x not in _formal]
+        ever = set(fam.get("ever_spouses") or [])
+        for key in ("primary_spouse", "spouse", "former_spouses",
+                    "concubine", "former_concubines"):
+            ever.update(int(x) for x in (fam.get(key) or []))
+        if ever:
+            fam["ever_spouses"] = sorted(ever)
+        return fam
+
+    def _prison_bound(self):
+        """囚禁收句的观测界 (v60 问题4) → 「{日期}末档」或「末档」。
+
+        十年档以该篇截止日为界 (「878年1月1日末档」), 终传以缓存末档为界
+        (「末档」)。措辞里的「末档」二字必须留住 —— 只写日期会被读成获释日。"""
+        last = self.cache.get("last_date")
+        cut = self.as_of or last
+        if not cut:
+            return "末档"
+        if last and str(cut) == str(last):
+            return "末档"
+        d = self.date(cut)
+        return f"{d}末档" if d else "末档"
+
+    def prison_handover_clause(self, victim, date=None):
+        """该囚犯的**监禁者交接**小句 (v60 问题4) → 「，881年1月1日转归埃尔梅辛达」;
+        无交接或交接晚于本篇截止日时返回 ''。
+
+        来源二路: ① 同一缓存内逐档观测到的 `from_imprisoner` (传主在世时监禁者
+        换人); ② `cache["prison_succession"]` (传主死后囚禁转归继位者 —— 该类
+        档期的玩家已不是传主, 由 `cache_lib._latch_prison_succession` 从同战役
+        后继档闩存)。"""
+        try:
+            victim = int(victim)
+        except (TypeError, ValueError):
+            return ""
+        cut = self.as_of or self.cache.get("last_date")
+        ck = cl.date_key(cut) if cut else None
+        rec = (self.cache.get("prison_succession") or {}).get(str(victim)) or {}
+        nxt = rec.get("to") if isinstance(rec.get("to"), int) else None
+        when = rec.get("first_seen") or rec.get("since") or ""
+        if nxt is None:
+            for iv in (((self.cache.get("characters") or {}).get(str(victim)) or {})
+                       .get("prison_history") or []):
+                if isinstance(iv, dict) and isinstance(iv.get("from_imprisoner"), int) \
+                        and isinstance(iv.get("imprisoner"), int):
+                    nxt = iv["imprisoner"]
+                    when = iv.get("from") or ""
+                    break
+        if nxt is None:
+            return ""
+        if date and ck is not None and cl.date_key(date) > ck:
+            return ""
+        name = self.event_name(nxt, date=self.as_of) or self.name_or(nxt, "")
+        if not name:
+            return ""
+        d = self.date(when) if when else ""
+        return f"，{d}转归{name}" if d else f"，转归{name}"
 
     def _prison_opinion_index(self):
         """{(owner, target): [(modifier, start_date)]} + 按 owner 的兜底索引 (惰性)。"""
@@ -6716,7 +6917,9 @@ class Facts:
                                 date=self.date(rel[0]))
                             kind = "released"
                 else:
-                    body += W["prison_still_held"]
+                    # v60 (问题4): 收句以本档为界 + 监禁者交接 (若已观测到)
+                    body += W["prison_still_held"].format(bound=self._prison_bound())
+                    body += self.prison_handover_clause(cid, date=d)
                 out.append({"date": d, "victim": cid, "jailer": jailer,
                             "vn": vn, "jn": jn,
                             "text": body, "kind": kind, "purge": purge})
@@ -7099,6 +7302,11 @@ class Facts:
         "animal_skull", "VIET_clutter",
     }
     ARTIFACT_MAX = 20
+    # v60 (问题2): 部件宝物 (遗骸所制) 的**独立**名额。旧稿甲乙两档共用一个
+    # `ARTIFACT_MAX`, 于是一个「批量吃掉」战役里 22 件遗骨会把名望级重宝
+    # (帝国皇冠、宋御玺这类) 全挤出去 —— 两档的性质完全不同 (甲档是高稀重宝,
+    # 乙档是人物遗骸), 该各自节流。乙档按成物日升序收, 每篇收满为止。
+    ARTIFACT_PART_MAX = 30
     # v39: 流转条目 → 「本条之后宝物在谁手里」的角色槽 (逐条语义实测:
     # 诺兰 1093 档 1773 件宝物的 4256 条流转全类型核对)。
     # conquest 的 actor 是失主、recipient 是新主 (128 荆棘冠冕 1086.1.1
@@ -7126,8 +7334,9 @@ class Facts:
     # (Friends & Foes), 二者都是常见/大师级档 —— 旧的名望级门槛把这类最有
     # 叙事价值的战利品全挡在《宝物志》之外 (诺兰把谋杀的爱沙尼亚国王的头骨
     # 铸成高脚杯, 1111 年即成, 却从未进过任何一篇)。
-    ARTIFACT_PART_VISUALS = {"skull_goblet", "human_skull"}
-    ARTIFACT_PART_WORDS = ("头骨", "头颅", "颅骨", "头盖骨", "乳牙")
+    ARTIFACT_PART_VISUALS = {"skull_goblet", "human_skull", "devour_bone_visual"}
+    ARTIFACT_PART_WORDS = ("头骨", "头颅", "颅骨", "头盖骨", "乳牙",
+                           "之骨", "剩的骨头", "被吃掉了")
 
     # 宝物描述里的数据函数块: \x15ONCLICK:CHARACTER,id \x15TOOLTIP:... \x15L 名字\x15!\x15!\x15!
     _ARTIFACT_REF_RE = re.compile(
@@ -7151,6 +7360,16 @@ class Facts:
         if not s:
             return ""
 
+        # v60 (问题5): Mod 遗骨文案是「[被吃者]被吃掉了，这是[他/她]被吃剩的
+        # 骨头。」—— 第二句用人称代词回指, 事实句里读来突兀 (模型会照抄)。
+        # 存档里的 `ONCLICK:CHARACTER,<id>` 就是这个「他/她」的所指, 故按 id 取
+        # 本项目自己的称谓把代词换掉, 全句改为一句自足的中文。
+        _vic = None
+        _m0 = re.search(r"ONCLICK:CHARACTER,(\d+)", s)
+        if _m0:
+            _vic = int(_m0.group(1))
+        _ta = "她" if (_vic is not None and self._is_female(_vic)) else "他"
+
         def _repl(m):
             kind, key, text = m.group(1), m.group(2), (m.group(3) or "").strip()
             if kind == "CHARACTER" and str(key).isdigit():
@@ -7168,15 +7387,81 @@ class Facts:
         s = s.replace("!", "").replace(";", "")
         s = re.sub(r"\s{2,}", " ", s).strip()
         s = re.sub(r"(?<=[\u4e00-\u9fff]) (?=[\u4e00-\u9fff])", "", s)
+        if _vic is not None:
+            vn = self.event_name(_vic, date) or ""
+            if vn:
+                s = s.replace("被吃掉了", "被吃掉")
+                s = s.replace(f"这是{_ta}被吃剩的骨头",
+                              f"这是被吃剩的骨头")
+                s = s.replace(f"这是{_ta}", "这是")
+                s = re.sub(r"这是[他她](?=被)", "这是", s)
         return s.rstrip("。") if loc_text_ok(s) else ""
 
+    def _artifact_text(self, raw, date=None):
+        """宝物**名称**或**描述** → 干净中文 (v60 问题2)。
+
+        与 `_artifact_material` 同一套清洗, 但入口统一: 名称此前是一路裸值
+        (`a.get("name")`), 而存档里的宝物名同样带数据函数块与烘焙短名 ——
+        Mod 遗骨名实测为
+        `\\x15high 奥斯塔\\x15!·\\x15high 马格努斯斯多蒂尔\\x15!·\\x15high  赖于马河谷\\x15!之骨`,
+        直接下发会把 `\\x15`/`high` 与多余空格写进提示词 (违反「干净事实」口径)。
+        名称里的 `\\x15high …\\x15!` 是**修饰片段**而非角色引用, 就地剥除即可。"""
+        return self._artifact_material(raw, date)
+
     def _is_part_artifact(self, a, desc=""):
-        """是否「以角色部件制成」的宝物: visuals 类型或描述用词任一命中。"""
+        """是否「以角色部件制成」的宝物: visuals 类型或名字/描述用词任一命中。
+
+        v60 (问题2): 加 `devour_bone_visual` 与「之骨／剩的骨头／被吃掉了」——
+        Mod「食人赋能」的遗骨 (`devour_bone_name` = `[…]之骨`,
+        `devour_bone_desc` = 「…被吃掉了，这是…被吃剩的骨头。」) 此前整类被挡在
+        《宝物志》门外。与 `ARTIFACT_FILLER_TYPES` 的 `animal_skull`(兽类颅骨
+        战利品) 不冲突: 动物骨走 filler, 人骨走本档。"""
         vis = ((a.get("visuals") or {}).get("type") or "")
         if vis in self.ARTIFACT_PART_VISUALS:
             return True
         blob = f"{a.get('name') or ''}{desc}"
         return any(w in blob for w in self.ARTIFACT_PART_WORDS)
+
+    def _artifact_ever_own_kin(self, hist):
+        """流转史里是否**曾**归本宗族 (v60 问题2)。
+
+        旧稿乙档按**末档 owner** 判归属 (`_is_own_kin(a.get("owner"))`) ——
+        崔佛全部 22 件遗骨在末档 (881.1.1 主角卒) 都已由 38660 传于继位者
+        15179, owner 不再是本宗族, 于是整批被丢弃 (《宝物志》全篇 0 件)。
+        遗骨是主角自铸的战利品, 正确判据是「流转史里任一条的 actor/recipient
+        为本宗族或主角本人」。十年档的**时期**归属仍由 `_held_asof` 截断。"""
+        for e in hist:
+            if not isinstance(e, dict):
+                continue
+            for key in ("actor", "recipient"):
+                if self._is_own_dyn_kin(e.get(key)):
+                    return True
+        return False
+
+    def _artifact_dyn_of(self, cid):
+        """角色所属宗族 id (熔件 `dynasty_house` → `dynasty`); 查不到返回 None。
+
+        v60 (问题2): 从 `_artifact_candidates` 的内嵌函数提出来 ——
+        `_artifact_ever_own_kin` 与甲档「曾入外族之手」判定要共用同一份索引。
+        (与既有的 `_dynasty_of_cid` 分名: 那一个走缓存并回退 `dynasty_id_of`。)"""
+        if not isinstance(cid, int):
+            return None
+        dh = (self.melt.get("dynasties") or {}).get("dynasty_house") or {}
+        c = (self.melt.get("living") or {}).get(str(cid)) \
+            or (self.melt.get("dead_unprunable") or {}).get(str(cid)) or {}
+        h = c.get("dynasty_house")
+        return (dh.get(str(h)) or {}).get("dynasty") if isinstance(h, int) else None
+
+    def _is_own_dyn_kin(self, cid):
+        """本宗族: 主角本人, 或与主角同宗族者 (供 `_artifact_candidates`)。"""
+        my_dyn = self.cache.get("dynasty_id")
+        my_pid = self.cache.get("player_id")
+        if not isinstance(cid, int):
+            return False
+        if cid == my_pid:
+            return True
+        d = self._artifact_dyn_of(cid)
+        return d is not None and my_dyn is not None and d == my_dyn
 
     def _artifact_candidates(self, as_of):
         """《宝物志》选材 (v43) —— 返回 [(aid, kind, a, hist)], 已按 as_of 截断。
@@ -7187,25 +7472,17 @@ class Facts:
             亦不要求曾入外族之手 (头骨高脚杯是主角自铸的战利品)。
         归属一律按 as_of 判定 (十年传记不穿越; 见 v39 注释)。"""
 
-        dh = (self.melt.get("dynasties") or {}).get("dynasty_house") or {}
         my_dyn = self.cache.get("dynasty_id")
         my_pid = self.cache.get("player_id")
 
         def _dyn_of(cid):
-            """角色所属宗族 id (熔件 dynasty_house → dynasty); 查不到返回 None。"""
-            c = (self.melt.get("living") or {}).get(str(cid)) \
-                or (self.melt.get("dead_unprunable") or {}).get(str(cid)) or {}
-            h = c.get("dynasty_house")
-            return (dh.get(str(h)) or {}).get("dynasty") if isinstance(h, int) else None
+            """角色所属宗族 id; 查不到返回 None。"""
+            return self._artifact_dyn_of(cid)
 
         def _is_own_kin(cid):
-            """本宗族: 主角本人, 或与主角同宗族者。"""
-            if not isinstance(cid, int):
-                return False
-            if cid == my_pid:
-                return True
-            d = _dyn_of(cid)
-            return d is not None and my_dyn is not None and d == my_dyn
+            """本宗族: 主角本人, 或与主角同宗族者 (v60: 收口到 `_is_own_dyn_kin`,
+            供 `_artifact_ever_own_kin` 共用同一份 dynasty_house 索引)。"""
+            return self._is_own_dyn_kin(cid)
 
         def _held_asof(hist, as_of):
             """as_of 之前是否已归入本宗族 (v39)。as_of 为空 (终传) 时不做此判定。"""
@@ -7253,7 +7530,7 @@ class Facts:
                         break
                 if cross:
                     kind = "relic"
-            if not kind and _is_own_kin(a.get("owner")):
+            if not kind and self._artifact_ever_own_kin(hist):
                 desc = self._artifact_material(a.get("description"), as_of
                                                or self.as_of)
                 if self._is_part_artifact(a, desc):
@@ -7313,7 +7590,9 @@ class Facts:
         for aid, kind, a, hist in self._artifact_candidates(self.as_of):
             if aid in written:
                 continue
-            name = a.get("name") or "一件宝物"  # v14: 无名宝物不泄露 id
+            # v60 (问题2): 名字同样过清洗 —— 存档宝物名带 `\x15high …\x15!`
+            # 数据函数块与烘焙短名 (「奥斯蒂亚\x15high 市长\x15!，…之骨」)。
+            name = self._artifact_text(a.get("name"), self.as_of) or "一件宝物"
             rarity = rarity_zh.get(a.get("rarity")) or a.get("rarity") or ""
             # v29b: 稀有度改逗号同位语 (「宝物：X，名望级」), 不用括注
             lines = [f"宝物：{name}，{rarity}"]
@@ -7321,6 +7600,7 @@ class Facts:
                 mat = self._artifact_material(a.get("description"), self.as_of)
                 if mat:
                     lines.append(f"材质：{mat}")
+            _is_bone = self._is_devour_bone(a)
             entries = []
             for e in reversed(hist):
                 # v11: as_of 截断 — 十年传记只列该时期前的流转
@@ -7331,7 +7611,12 @@ class Facts:
                 d = self.date(e.get("date")) if e.get("date") else ""
                 actor = self.name_or(e.get("actor"), "") if isinstance(e.get("actor"), int) else ""
                 rec2 = self.name_or(e.get("recipient"), "") if isinstance(e.get("recipient"), int) else ""
-                if t == "created" and actor:
+                if t == "created" and _is_bone and actor and rec2:
+                    # v60 (问题2): 遗骨的成物条目里 actor 是**被吃者本人**
+                    # (Mod 的 `creator = $VICTIM$`), 走通用句式会读成
+                    # 「斯克迪尔锻造此宝」; 改写为下口者与受害者都在场的一句。
+                    entries.append(f"{d}，{rec2}吃掉{actor}，遗骨成此宝")
+                elif t == "created" and actor:
                     entries.append(f"{d}，{actor}锻造此宝")
                 elif t == "created":
                     entries.append(f"{d}，创制")
@@ -7358,9 +7643,26 @@ class Facts:
             if entries:
                 lines.append("流转：" + "；".join(entries))
             # 重宝在前, 部件宝物其次; 档内按流转史丰富度降序
-            rows.append((0 if kind == "relic" else 1, -len(lines), aid, lines))
+            # (行 = (档位, 排序权重, 宝物id, 宝物对象, 文本行) —— 乙档另按成物日重排)
+            rows.append((0 if kind == "relic" else 1, -len(lines), aid, a, lines))
         rows.sort(key=lambda x: (x[0], x[1], x[2]))
-        return ["\n".join(r[3]) for r in rows][: self.ARTIFACT_MAX]
+        # v60 (问题2): 甲乙两档**各自**限额 —— 见 ARTIFACT_PART_MAX 注释。
+        # 部件档内再按成物日升序 (一件件吃下去的顺序), 同日内按流转史丰富度。
+        relics = [r for r in rows if r[0] == 0][: self.ARTIFACT_MAX]
+        parts = [r for r in rows if r[0] == 1]
+        parts.sort(key=lambda r: (self._artifact_created_key(r[3]), r[1], r[2]))
+        return ["\n".join(r[4]) for r in relics + parts[: self.ARTIFACT_PART_MAX]]
+
+    def _is_devour_bone(self, a):
+        """是否为「吃剩的骨头」遗骨 (v60 问题2)。"""
+        return ((a.get("visuals") or {}).get("type") or "") == self._DEVOUR_VISUAL
+
+    def _artifact_created_key(self, a):
+        """宝物成物日 → 排序键 (无 created 条目返回最大键, 排到最后)。"""
+        for e in ((a.get("history") or {}).get("entries") or []):
+            if isinstance(e, dict) and e.get("type") == "created" and e.get("date"):
+                return cl.date_key(e["date"])
+        return (9999, 0, 0)
 
     # ---- v8.1: 伊斯兰统治者动态国名 (游戏同规则复现) ----
 
@@ -7499,6 +7801,11 @@ class Facts:
         调用方保持既有「被X处决」。"""
         if killer_id is None:
             return "", ""
+        # v60 (问题2/问题1): 食人硬证优先 —— 受害者名下有「…之骨」遗骨, 且该遗骨
+        # 成物时收件人就是本行刑者, 即此人被吃掉。死法由存档确定性给出, 不进随机池
+        # (崔佛档 25 名死者里 22 人被吃, 旧稿只写对 3 条)。
+        if victim_id is not None and self.devoured_by(int(killer_id), int(victim_id)):
+            return _style.EXECUTION_DEVOUR_BONE
         # v53 (问题4): 诛灭世族命中的死者, 方式固定「连坐处死」, 不走随机池。
         if victim_id is not None and self.is_family_purge(killer_id, victim_id, date):
             return _style.EXECUTION_PURGE
@@ -7547,6 +7854,15 @@ class Facts:
     _PURGE_OPINION = ("purged_banishment_opinion", "purged_execution_opinion")
     _PURGE_CATALYST = "catalyst_tyrannical_extinguish_noble_family"
     _PURGE_HOUSE_THRESHOLD = 3
+    # v60 (问题1): 互动 `celestial_extinguish_noble_family` 的 `is_shown` 硬门 ——
+    # 游戏 `10_tgp_interactions.txt:11172` 要求 `government_has_flag =
+    # government_is_celestial`, 而该 flag 在 `00_government_types.txt` 里只出现在
+    # `celestial_government` 块内。**只认这一个政体**: 行政制(administrative)、
+    # 选贤制(meritocratic)、草原行政(steppe_admin) 都不带此 flag, 它们各自有
+    # 自己的灭族互动 (不写 `catalyst_tyrannical_extinguish_noble_family`)。
+    # 旧稿四条通道一条都不核对机制前提, 于是部落制的崔佛批量吃掉五名俘虏
+    # (Mod「食人赋能」把吃掉写成 death_execution) 就被写成「诛灭三族」。
+    _PURGE_GOVS = {"celestial_government"}
 
     def _dynastic_cycle_history_entries(self):
         """局势史条目 (熔件优先, 缓存变化点兜底)。"""
@@ -7559,15 +7875,37 @@ class Facts:
         return []
 
     def _purge_dates(self, killer_id):
-        """行刑者诛灭世族的日期集 (v53): 同日多族处决 / 庄园销毁 / purged 评价 / 催化剂。"""
+        """行刑者诛灭世族的日期集 (v53; v60 加机制门)。
+
+        v60 (问题1) 重写: 旧稿四条通道取「诛灭日」, **没有一条核对机制前提**,
+        于是部落制的崔佛把 879.9.1 批量吃掉的五名俘虏 (Mod「食人赋能」把
+        `devour_single_character_effect` 写成 `death_execution`) 记成
+        「诛灭波埃氏、瓦讷氏、韦尔夫氏」, 又把 869.3.31 中国「崔氏」庄园
+        (持有人 10923, 与当日两名死者毫无关系) 的销毁日撞成「诛灭二族」。
+
+        现在两条纪律同时生效:
+          · **机制门** —— 该日行刑者政体须为 `celestial_government`
+            (与互动 `is_shown` 的 `government_has_flag = government_is_celestial`
+            同口径, 见 `_PURGE_GOVS`)。政体不可知时不判 (宁缺勿错, 同 v58 天命闸)。
+          · **正证门** —— 除「同名日期」外, 该日还须至少一项机制指纹:
+            ① 与该日**受害者同族**的 `_nf_` 世族庄园于该日销毁 (旧稿只做
+               「全世界任一庄园销毁日 ∩ 本地处决日」, 与受害者无涉);
+            ② 该日新得 `purged_*_opinion` (互动对被驱逐残党留下的唯一痕迹);
+            ③ 天命催化剂条目 `catalyst_tyrannical_extinguish_noble_family`
+               且 `character == 行刑者` (旧稿 `character` 缺省即放行 —— 全球任意
+               天朝灭族日都会塞进任何 killer 的日期集)。
+        另: 食人硬证 (该日有 `devour_bone_visual` 宝物成物且 recipient == 行刑者)
+        的日期一律排除 —— 吃掉共享 `death_execution` 死因, 但它不是灭族
+        (见 `_devour_bones`)。"""
         if killer_id is None:
             return set()
         kid = int(killer_id)
         cached = self._purge_dates_map.get(kid)
         if cached is not None:
             return cached
-        dates = set()
-        by_day = {}
+        # 该日被本行刑者处决者 —— {日期: {house_id: [cid…]}}:
+        # 「异族数」与「庄园旧持有人是否属当日受害者之族」共用一份索引
+        victims_by_day = {}
         for cid, c in self._chars.items():
             if not isinstance(c, dict):
                 continue
@@ -7579,37 +7917,17 @@ class Facts:
             d = dd.get("date")
             if not d:
                 continue
-            hid = c.get("dynasty_house")
-            by_day.setdefault(str(d), set()).add(hid)
-        for d, houses in by_day.items():
-            if len([h for h in houses if h is not None]) >= self._PURGE_HOUSE_THRESHOLD:
-                dates.add(str(d))
-        estate_days = set()
-        for tid, t in self._lt.items():
-            if not isinstance(t, dict):
-                continue
-            if not self._is_estate_title(tid):
-                continue
-            hist = t.get("history") or {}
-            if not isinstance(hist, dict):
-                continue
-            for d, v in hist.items():
-                for e in (v if isinstance(v, list) else [v]):
-                    if isinstance(e, dict) and e.get("type") == "destroyed":
-                        estate_days.add(str(d))
-        for d in estate_days:
-            if d in by_day:
-                dates.add(d)
-        pid = self.cache.get("player_id")
-        if pid is not None and int(pid) == kid:
-            for o in (self.melt.get("opinions") or {}).get("active_opinions") or []:
-                if not isinstance(o, dict):
-                    continue
-                if o.get("owner") != kid and o.get("target") != kid:
-                    continue
-                for v in cl._opinion_values(o):
-                    if v.get("modifier") in self._PURGE_OPINION and v.get("start_date"):
-                        dates.add(str(v["start_date"]))
+            victims_by_day.setdefault(str(d), {}).setdefault(
+                c.get("dynasty_house"), []).append(int(cid))
+        if not victims_by_day:
+            self._purge_dates_map[kid] = set()
+            return set()
+        # 日期候选集 (须过机制门)
+        cand = {d for d, houses in victims_by_day.items()
+                if len([h for h in houses if h is not None])
+                >= self._PURGE_HOUSE_THRESHOLD}
+        proof = self._purge_opinion_dates(kid)
+        cand |= proof
         for e in self._dynastic_cycle_history_entries():
             if not isinstance(e, dict):
                 continue
@@ -7618,12 +7936,131 @@ class Facts:
                 continue
             if cat.get("catalyst") != self._PURGE_CATALYST:
                 continue
-            if cat.get("character") not in (None, kid):
+            # character 必须**就是**本行刑者: 缺 character 的条目归属不明, 丢弃
+            if cat.get("character") != kid:
                 continue
             if cat.get("date"):
-                dates.add(str(cat["date"]))
-        self._purge_dates_map[kid] = dates
-        return dates
+                cand.add(str(cat["date"]))
+        dates = {d for d in cand if self._purge_gov_ok(kid, d)}
+        if not dates:
+            self._purge_dates_map[kid] = dates
+            return dates
+        devoured = {d for d, _rec, _vid in self._devour_bones().values()}
+        # 正证①: 与该日受害者**同族**的世族庄园于该日销毁
+        proof = set()
+        for tid, t in self._lt.items():
+            if not isinstance(t, dict):
+                continue
+            if not self._is_estate_title(tid):
+                continue
+            hist = t.get("history") or {}
+            if not isinstance(hist, dict):
+                continue
+            for _hd, v in hist.items():
+                for e in (v if isinstance(v, list) else [v]):
+                    if not isinstance(e, dict) or e.get("type") != "destroyed":
+                        continue
+                    d = str(_hd)
+                    h = e.get("holder")
+                    if not isinstance(h, int):
+                        continue
+                    if d not in victims_by_day:
+                        continue
+                    if self._house_of_cid(h) in set(victims_by_day.get(d) or {}):
+                        proof.add(d)
+        # 正证②: 该日新得 purged_* 好感 (owner/target 任一涉本行刑者)
+        proof |= self._purge_opinion_dates(kid)
+        self._purge_dates_map[kid] = {
+            d for d in dates if d in proof and d not in devoured}
+        return self._purge_dates_map[kid]
+
+    def _purge_opinion_dates(self, killer_id):
+        """涉本行刑者的 `purged_*` 好感日期集 (v60 问题1 正证②)。
+
+        互动对被驱逐的残党留 `purged_banishment_opinion` / `purged_execution_opinion`
+        (自带 `start_date`), 这是「确实发生了一次世族诛灭」的机制指纹之一。"""
+        out = set()
+        for o in (self.melt.get("opinions") or {}).get("active_opinions") or []:
+            if not isinstance(o, dict):
+                continue
+            if o.get("owner") != killer_id and o.get("target") != killer_id:
+                continue
+            for v in cl._opinion_values(o):
+                if v.get("modifier") in self._PURGE_OPINION and v.get("start_date"):
+                    out.add(str(v["start_date"]))
+        return out
+
+    def _purge_gov_ok(self, killer_id, date):
+        """该日行刑者政体是否具备诛灭世族的机制前提 (v60 问题1)。
+
+        政体**不可知**时返回 True —— 「宁缺勿错」在这里的方向是「不因此改口」:
+        早于逐档政体史起点的处决行仍按旧口径参与判定, 由正证门负责收紧;
+        只有确知为非天朝制政体时才整日落空 (崔佛 `tribal_government`)。"""
+        gov = self._character_government(killer_id, date)
+        return (not gov) or gov in self._PURGE_GOVS
+
+    # v60 (问题2/问题1): 食人硬证索引 —— Mod「食人赋能」(`devour_bone_visual` 宝物):
+    # 吃掉一个角色会在**同一刻**为该角色造一件「…之骨」遗骨, 成物条目
+    # `history.entries` 的 `created` 里 `recipient` 就是下口者。死因本身
+    # 只写 `death_execution`(与处决同键), 这件遗骨是存档里唯一能确证「吃掉了」
+    # 的物证 —— 旧稿让它闲置: 25 名死者里 22 人被吃, 传记却按伪随机池写成
+    # 「斩首／烧死／献祭／溺毙」, 只有恰好抽到 devour 的 3 条写对。
+    _DEVOUR_VISUAL = "devour_bone_visual"
+
+    def _devour_bones(self):
+        """吃掉硬证 {宝物id: (成物日, 被吃者id)} (v60)。
+
+        只收 `visuals.type == devour_bone_visual` 且 `created` 条目带
+        `recipient` 的遗骨; 被吃者 id 取成物条目的 `actor`(即受害者本人,
+        描述里的 `ONCLICK:CHARACTER,id` 与之同源), 退回创建者。"""
+        memo = getattr(self, "_devour_bones_map", None)
+        if memo is not None:
+            return memo
+        out = {}
+        art = (self.melt.get("artifacts") or {}).get("artifacts") or {}
+        for aid, a in art.items():
+            if not isinstance(a, dict):
+                continue
+            if ((a.get("visuals") or {}).get("type") or "") != self._DEVOUR_VISUAL:
+                continue
+            for e in ((a.get("history") or {}).get("entries") or []):
+                if not isinstance(e, dict) or e.get("type") != "created":
+                    continue
+                rec = e.get("recipient")
+                if not isinstance(rec, int):
+                    continue
+                vid = e.get("actor")
+                if not isinstance(vid, int):
+                    vid = self._artifact_actor_from_name(a.get("description"))
+                out[str(aid)] = (str(e.get("date") or ""), rec, vid)
+                break
+        self._devour_bones_map = out
+        return out
+
+    def devoured_by(self, killer_id, victim_id=None):
+        """行刑者吃掉的 {被吃者id: 成物日} (v60); 给 victim_id 时返回该人的成物日。
+
+        与 `_devour_bones` 同源 —— 只认「遗骨成物时收件人就是此人」这一条,
+        因为 Mod 允许遗骨转赠/继承, 末档 owner 早已易主 (崔佛全部 22 件遗骨
+        在 881.1.1 都传给了继位者)。"""
+        out = {}
+        for _aid, (date, rec, vid) in (self._devour_bones() or {}).items():
+            if rec != killer_id:
+                continue
+            if vid is None:
+                continue
+            out[int(vid)] = date
+        if victim_id is None:
+            return out
+        return out.get(int(victim_id), "")
+
+    def _artifact_actor_from_name(self, raw):
+        """遗骨描述里的 `ONCLICK:CHARACTER,<id>` → 被吃者 id (v60; 查不到返回 None)。"""
+        m = self._ARTIFACT_REF_RE.search(str(raw or ""))
+        if not m or m.group(1) != "CHARACTER":
+            return None
+        key = m.group(2)
+        return int(key) if str(key).isdigit() else None
 
     def is_family_purge(self, killer_id, victim_id, date=None):
         """该处决是否属于诛灭世族 (同日旁证命中)。"""
@@ -11292,8 +11729,9 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 # 入狱日) 而释放/越狱/狱史皆无证据时, 写出死期与死法; 旧稿一律写
                 # 「此后一直未见释放」(诺兰 1088.1.16 那 10 人其实 6 个月后被处决,
                 # 受害者侧记忆已被引擎剪除, 故此前看不出囚期已终结)。
-                dd = ((f.cache.get("characters") or {}).get(str(victim)) or {}) \
-                    .get("death") or {}
+                # v60 (问题4): 走向 `prison_death_clause` —— 缓存查不到时回退熔件
+                # `dead_data` (死在缓存末档之后者旧稿读不到)。
+                dd = f.prison_death_clause(victim)
                 d_date = dd.get("date")
                 if d_date and cl.date_key(str(d_date)) >= cl.date_key(str(r["date"])):
                     # v42: 与释放句同式 —— 同日给「当日」, 其余给「N个月后」,
@@ -11303,7 +11741,7 @@ def _pair_imprisonments(events, f, pid, pname=""):
                         else (f"{_sp}后" if _sp else f"至{f.date(d_date)}")
                     key = "prison_died_executed" \
                         if (dd.get("reason") in _PRISON_EXEC_REASONS
-                            or dd.get("killer") == r["jailer"]) \
+                            or _death_int(dd.get("killer")) == _death_int(r["jailer"])) \
                         else "prison_died_in_prison"
                     body += W[key].format(sp=sp)
                     o_kind = ("executed" if key == "prison_died_executed"
@@ -11312,7 +11750,10 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     # v34 (问题7): 记得到此为止 — 释放记忆、狱史与死亡记录三者皆无
                     # 时, 程序把「此后如何」说全, 不把沉默留给模型去补
                     # (旧稿此处留白, 模型把囚期留白补成了「获释」)。
-                    body += W["prison_still_held"]
+                    # v60 (问题4): 界线写到本篇截止日 (十年档) 或末档 (终传),
+                    # 并写出监禁者交接 (「881年1月1日转归埃尔梅辛达」)。
+                    body += W["prison_still_held"].format(bound=f._prison_bound())
+                    body += f.prison_handover_clause(victim)
                     o_kind = "held"
             e = events[r["idx"]]
             e["text"] = f"{f.date(r['date'])}，{body}。"
@@ -12667,6 +13108,11 @@ def _protagonist(f):
         )
     # 家庭 (v11: as_of 截断 — 出生晚于 as_of 的未出生者不列)
     fam = rec.get("family") or {}
+    # v60 (问题3): 先并入婚配闩存 —— 主角自身的 family_data 在死亡档被清空,
+    # 而配偶/妾的反向指针逐档在册; 不并这一层, 「一生无正妻、只有三名强纳
+    # 之妾」在事实面就退化成一片空白, 模型遂自行虚构妻室。
+    fam = f.merge_spouse_latch(fam, f.as_of)
+    rec["family"] = fam
     # v13: 妻妾与父系婚姻史交叉标注 — 「先为父之妻/妾, 后归子」的戏剧性关系
     father_id = (fam.get("father") or [None])[0]
     fd_fam = {}
@@ -14513,6 +14959,8 @@ def _genealogy(f):
         return []
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
     fam = rec.get("family") or {}
+    # v60 (问题3): 婚配闩存并进世系 —— 与 `_protagonist_facts` 同源
+    fam = f.merge_spouse_latch(fam, f.as_of)
     fem = f._is_female(pid)
     lines = []
     pname = f.name_or(pid)
@@ -14832,7 +15280,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     pid = cache.get("player_id")
     if pid is not None:
         rec = (cache.get("characters") or {}).get(str(pid)) or {}
-        fam = rec.get("family") or {}
+        # v60 (问题3): 配偶集先并入婚配闩存 —— 与 `_protagonist_facts` 同源
+        fam = f.merge_spouse_latch(rec.get("family") or {}, f.as_of)
+        rec["family"] = fam
         spouse_ids = list(dict.fromkeys(
             (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])
             + (fam.get("former_spouses") or [])))
@@ -14841,10 +15291,14 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         facts["consort_affairs"] = f.consort_affairs(pid, spouses=spouse_ids)
         # v32 (问题1): 强纳为妾 (存档唯一带确切日期的纳妾记录)
         facts["forced_concubines"] = f.forced_concubine_lines()
+        # v60 (问题3): 妾的原有婚配被离断 (原配方留
+        # `forced_spouse_concubine_marriage_opinion`)
+        facts["concubine_divorces"] = f.concubine_divorce_lines()
     else:
         facts["imperial_spouses"] = []
         facts["consort_affairs"] = []
         facts["forced_concubines"] = []
+        facts["concubine_divorces"] = []
     return facts
 
 
