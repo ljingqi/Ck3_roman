@@ -372,15 +372,20 @@ def _enemy_for_facts(facts, cache):
 
 def _family_ids(cache):
     """主角家人 id 集 (妻室/前妻/子女/兄弟姊妹 — v13 加同胞: 手足归家室列传,
-    不入好友列传)。"""
+    不入好友列传)。
+    v60 (问题3): 配偶一侧改用 `ever_spouses` (跨档闩存的全部婚配), 旧键在
+    死亡档被游戏清空时不再导致家室列传无素材。"""
     pid = cache.get("player_id")
     if pid is None:
         return set()
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    fam = rec.get("family") or {}
     out = set()
-    for key in ("primary_spouse", "spouse", "former_spouses", "child", "siblings"):
-        for x in (rec.get("family") or {}).get(key) or []:
-            out.add(int(x))
+    for key in ("primary_spouse", "spouse", "former_spouses", "ever_spouses",
+                "concubine", "former_concubines", "child", "siblings"):
+        for x in fam.get(key) or []:
+            if isinstance(x, int):
+                out.add(int(x))
     return out
 
 
@@ -414,16 +419,18 @@ def _has_assassins(facts):
 
 def _family_ids_by_kind(cache, kind):
     """家室二分 (v27): kind='spouse' 取妻妾 (含前妻前妾),
-    kind='child' 取子女与同胞。"""
+    kind='child' 取子女与同胞。
+    v60 (问题3): 配偶一侧补 `ever_spouses` —— 与 `_family_ids` 同源。"""
     pid = cache.get("player_id")
     if pid is None:
         return set()
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
     fam = rec.get("family") or {}
-    keys = (("primary_spouse", "spouse", "former_spouses",
+    keys = (("primary_spouse", "spouse", "former_spouses", "ever_spouses",
              "concubine", "former_concubines") if kind == "spouse"
             else ("child", "siblings"))
-    return {int(x) for k in keys for x in (fam.get(k) or [])}
+    return {int(x) for k in keys for x in (fam.get(k) or [])
+            if isinstance(x, int) or str(x).isdigit()}
 
 
 def _consort_affair_lines(facts, cache):
@@ -1470,6 +1477,10 @@ def _article_facts(facts, cache, key, section=None):
             # (旧稿无此日期, 模型写成「嫁入年份未见于簿册」而默认先婚后囚)
             _set_block(blocks, "强纳为妾",
                        "\n".join(facts.get("forced_concubines") or []))
+            # v60 (问题3): 妾的原有婚配被离断 (原配是游戏指定的那个人, 不是模型
+            # 另造的妻子) —— 与「强纳为妾」同块序并读即成完整因果
+            _set_block(blocks, "妾室原有婚配",
+                       "\n".join(facts.get("concubine_divorces") or []))
         tl = F.slice_timeline(facts.get("timeline") or [], key, sk,
                                  exclude=_has_assassins(facts))
         if tl:
@@ -1784,6 +1795,25 @@ def _section_req(text, facts):
     return text
 
 
+def _jiashi_variant(facts, cache):
+    """《家室列传》素材档 (v60 问题3) → 'spouse' | 'concubine' | 'none'。
+
+    判据全在程序侧: 主角的配偶集 (含前妻, 已在 `Facts.merge_spouse_latch` 里
+    并入婚配闩存) 与妾集孰有孰无。无正妻而只有妾时不得再索要「结缡、离异、
+    前妻之死、再娶」; 两者皆无时不得索要妻室子女 —— 否则模型只能编造
+    (崔佛档实测: 一生无正妻、无子女, 传记却写出「结缡三次」)。"""
+    pid = cache.get("player_id")
+    if pid is None:
+        return "none"
+    fam = ((cache.get("characters") or {}).get(str(pid)) or {}).get("family") or {}
+    if fam.get("primary_spouse") or fam.get("spouse") \
+            or fam.get("former_spouses"):
+        return "spouse"
+    if fam.get("concubine") or fam.get("former_concubines"):
+        return "concubine"
+    return "none"
+
+
 def _protagonist_archive_lines(facts, private=False, scope=None, with_death=True):
     """主角档案块 (v34, 问题5): 从共享前缀移出, 按篇下发。
     private=True 放行揭底链 (托卵承嗣/血脉登基) 与「实父」行 —
@@ -2087,8 +2117,8 @@ def _fix_kin_roles(text, facts, cache):
     fam = ((cache.get("characters") or {}).get(str(pid)) or {}).get("family") or {}
     kids = set(fam.get("child") or []) | set(fam.get("siblings") or [])
     others = []
-    for key in ("primary_spouse", "spouse", "former_spouses", "concubine",
-                "former_concubines", "father", "mother"):
+    for key in ("primary_spouse", "spouse", "former_spouses", "ever_spouses",
+                "concubine", "former_concubines", "father", "mother"):
         others.extend(fam.get(key) or [])
     others.extend(sorted(kids))
     chars = cache.get("characters") or {}
@@ -2495,14 +2525,24 @@ def build_articles(facts, cache, cfg):
         ep = facts["characters"].get(str(enemy)) or {}
         ename = ep.get("name") or ""
     sec_keys = [s for s in ("lead", "mid")]  # v11: 尾段 (评曰) 全部删去, 太史公曰只留总纲
+    # v60 (问题3): 《家室列传》按素材改口 —— 判据一次性算好 (见 _jiashi_variant)
+    facts["_jiashi_variant"] = _jiashi_variant(facts, cache)
+
     def mk_sections(key):
         titles = style.SECTION_TITLES.get(key, {})
+        _var = (style.JIASHI_VARIANTS.get(facts.get("_jiashi_variant") or "")
+                if key == "jiashi" else None)
+        if _var:
+            titles = dict(titles)
+            titles["lead"] = _var["lead_title"]
+            titles["mid"] = _var["mid_title"]
         defaults = {"lead": "开篇", "mid": "纪事"}
         return [{
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
             "req": _section_req(
-                       style.SECTION_REQ.get(key, {}).get(sk)
+                       (_var or {}).get(sk)
+                       or style.SECTION_REQ.get(key, {}).get(sk)
                        or "按传记笔法写作。", facts),
         } for sk in sec_keys]
     articles = [
@@ -2521,10 +2561,14 @@ def build_articles(facts, cache, cfg):
                          "subject": ename, "theme": "仇人传记（一生劲敌）",
                          "focus": "以传主一生行迹与结仇由头为限，客观平实",
                          "sections": mk_sections("enemy")})
+    # v60 (问题3): 家室列传的题面随素材改口 (theme/focus 与板块要求同分支) ——
+    # 无正妻、无子女者若仍收「妻室子女的门庭画卷」「子女来历与血脉之争」,
+    # 模型照样会为这行题面造出一屋子妻儿。
+    _jv = style.JIASHI_VARIANTS.get(facts.get("_jiashi_variant") or "") or {}
     articles.extend([
         {"key": "jiashi", "title": "家室列传", "subject": None,
-         "theme": "妻室子女的门庭画卷",
-         "focus": "写门庭内情：结缡、情事脉络、子女来历与血脉之争",
+         "theme": _jv.get("theme") or "妻室子女的门庭画卷",
+         "focus": _jv.get("focus") or "写门庭内情：结缡、情事脉络、子女来历与血脉之争",
          "sections": mk_sections("jiashi")},
         {"key": "chaoju", "title": "朝局风云录", "subject": None,
          "theme": "朝局官制沉浮",
