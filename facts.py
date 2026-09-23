@@ -6041,82 +6041,29 @@ class Facts:
         return {"lines": out, "former": fout}
 
     def harm_lines(self):
-        """强迫/半强迫之事的**事实行** (v38, 问题1 追修)。
+        """强迫/半推半就之事的**事实行** —— v59 起停用 (恒返回 [])。
 
-        数据源 = 时间线里模块「强暴凌辱」的事件 (由性事记忆族的 noncon/dubcon 档
-        经 `_mem_sentence` 出句), 取「主角为一方当事人」的那些。句式为
+        v38 (问题1 追修) 曾把「时间线里模块『强暴凌辱』的事件」单列一块, 供
+        《阴私录》的事实面使用 (「...X强迫Y性交。（受害方及其亲属由此视其为仇）」)。
+        **v59 (问题2, 用户 2026-09-23 拍板): 性事只在《列传·好友》《列传·仇人》
+        里用** —— 该块随之停用; 性事行的载体改为好友/仇人两篇的【相关年表】
+        (走 `facts["timeline"]` + `MODULE_SLICE` 的 `("friend"/"enemy","mid")`)。
 
-            881年8月28日，黔中王朱安仁强迫唐皇帝李润性交。（受害方及其亲属由此视其为仇）
-
-        为什么单列一块: 《阴私录》此前的纪事块只有「谁视主角为曾行强迫之事」这种
-        **他人评断**, 缺「这件事发生过」的确定事实 —— 朱安仁档实测, 模型据此
-        把强迫之事写成了两情相悦的私通 (「李润的家书」「离宫所历之事」)。
-        括注里的后效由 `carnal_opinions` 的当事人/亲属条数判定; 无此类好感时
-        退为「（N年见于记载）」。"""
-        pid = self.cache.get("player_id")
-        if pid is None:
-            return []
-        # 当事人: 指向主角的 carn_raped_* 好感 (受害方本人与其亲友)
-        party, kin = [], set()
-        for rec in (self.cache.get("carnal_opinions") or {}).values():
-            if not isinstance(rec, dict) or rec.get("target") != pid:
-                continue
-            mod = str(rec.get("modifier") or "")
-            owner = rec.get("owner")
-            if not isinstance(owner, int):
-                continue
-            if mod == "carn_raped_me":
-                if owner not in party:
-                    party.append(owner)
-            elif mod in ("carn_raped_family_member", "carn_raped_my_lover",
-                         "carn_raped_my_friend"):
-                kin.add(owner)
-        W = _FACT_WORDING
-        out = []
-        for e in _timeline(self) or []:
-            if (e.get("module") or "") != "强暴凌辱":
-                continue
-            # 主角是当事人之一: 记忆**持有者** (施为方/受害方) 或**参与槽**里的对象
-            ident = e.get("ident") or {}
-            parts = ident.get("parts") or {}
-            involved = ident.get("owner") == pid \
-                or pid in [v for v in parts.values() if isinstance(v, int)]
-            if not involved:
-                continue
-            text = e.get("text") or ""
-            year = self._year_only(e.get("date")) if e.get("date") else ""
-            # 受害方 (可能来自施为方视角的记忆, 也可能来自受害方视角)
-            vids = [v for v in parts.values() if isinstance(v, int) and v != pid] \
-                or [ident.get("owner") if ident.get("owner") != pid else None]
-            vname = ""
-            for v in vids:
-                if isinstance(v, int):
-                    # 与好感记录里的当事人核对, 取一致的称谓
-                    cand = self.person_label(v, date=self.as_of, style="brief") or ""
-                    if cand:
-                        vname = cand
-                        break
-            if not vname:
-                for v in party:
-                    vname = self.person_label(v, date=self.as_of, style="brief") or ""
-                    if vname:
-                        break
-            if vname:
-                tail = W["harm_after_subject"].format(name=vname)
-            else:
-                tail = W["harm_after_none"].format(year=year or "")
-            out.append(W["harm_line"].format(text=text.rstrip("。"), after=tail))
-        return out
+        函数保留为**空实现**: `_secrets_facts` 仍调用它, 但 `out["harm"]` 不再下发
+        (见 `_secrets_facts`); 将来若要把强迫之事放进别的专用块, 这里是恢复点
+        (`style.FACT_WORDING` 的 `harm_*` 措辞已随本轮删除)。"""
+        return []
 
     def std_lines(self):
-        """性病传播的事实行 (v40): 无性事行动可挂的那一档单独成行。
+        """性病传播的事实行 (v40): 只收当事人属相关集者。
 
-        返回 [「{日期}，{源}把{病}传染给了{的}。」] —— 只收当事人属相关集者;
-        无源 (卖淫/先天) 时写「{的}染上{病}。」。有性事行动可挂的传播不走这里
-        (它补在性行为句末, 见 `_std_note_for`)。"""
+        返回 [「{日期}，{源}把{病}传染给了{的}。」] —— 无源 (卖淫/先天) 时写
+        「{的}染上{病}。」。
+        v59 (问题2): 「可挂性事」的补注出口随性事退出年表而删除,
+        本行成为传播的唯一出口。"""
         related = _related_ids(self)
         out = []
-        for when, text, src, tgt in _std_index(self)[1]:
+        for when, text, src, tgt in _std_index(self):
             if not when:
                 continue
             if not (tgt in related or (isinstance(src, int) and src in related)):
@@ -6147,9 +6094,11 @@ class Facts:
         v41 (问题3, 用户拍板「都移除, 做成配置形式」): **整族由配置开关控制**,
         默认关 (`config.json` 的 `carnal_opinions`)。实测本档 29 条全部是
         `carn_raped_me/_my_lover/_family_member`, 只给「曾强奸我」这类评断,
-        无地点、无行为、无具体日, 与性事记忆渲染的「强迫之事」行
+        无地点、无行为、无具体日, 与性事记忆渲染的强迫之事行
         (「1078年6月21日…强迫尼希莱·卡斯特罗乔瓦尼口交」) 逐条重复,
-        只增提示词长度。置 true 时恢复旧行为。"""
+        只增提示词长度。置 true 时恢复旧行为。
+        v59 (问题2): 性事行已退出公开面 (只在好友/仇人列传里用), 本块与它的
+        重复面进一步缩小; 开关口径不变。"""
         if not self._show_carnal_opinions:
             return {}
         pid = self.cache.get("player_id")
@@ -9945,6 +9894,18 @@ _SEX_RECEIVING_RE = re.compile(r"_receiving_player")
 _SEX_MEM_RE = re.compile(r"^had_sex_")
 # v38 (问题1): 性事记忆族的参与槽 — 全部 24 键共用 `sex_partner`
 _SEX_PARTNER_SLOT = "sex_partner"
+# v38 (问题1 顺带): 三人行 — 两个对象槽
+_SEX_THREESOME_TYPE = "had_a_threesome_memory"
+
+
+def is_sex_memory(mtype):
+    """该记忆类型是否属性事 (v59 档案闸用; 含三人行)。
+
+    时间线侧另有按**戏剧模块**判定的 `is_sex_event()` (见下方模块常量区) ——
+    那一边要覆盖「自愿档归并成 `had_sex` 后的配偶/非配偶两档」与强迫档。"""
+    t = str(mtype or "")
+    return bool(_SEX_MEM_RE.match(t)) or t == _SEX_THREESOME_TYPE
+
 
 
 def sex_mem_info(mtype):
@@ -10067,9 +10028,10 @@ def _mem_sentence(f, owner_id, mem):
     v31: 同伴槽位型记忆的参与槽与持有者同一人时返回 None (退化记录, 见
     `_PEER_SLOT_TYPES`); 配偶之间的 had_sex 改用「同房」模板 (问题2/3)。
     v38 (问题1): Carnalitas 性事族 (had_sex_*) 按前缀族解析 —— 强迫 (noncon)
-    与半强迫 (dubcon) 出句, 其余自愿档仍走旧模板。
-    v40: 性病传播当次的自愿档是**唯一特例** —— 出体位句并在句末补
-    「（X把病传染给了Y）」(见 `_std_note_for`)。
+    与半推半就 (dubcon) 出句, 其余自愿档仍走旧模板。
+    v59 (问题2): 三档句面只在角色档案与好友/仇人列传里使用 (公开年表已闸掉);
+    v40「性病传播当次的自愿档出体位句 + 句末补注」这一特例随之删除
+    (补注只挂在年表性事行上, 该行已不存在)。
     v45 (档 B): 外层包一层出词登记 —— 本句用到的每个 (cid, 称谓) 记进
     `f.name_index[本句]`, 供板块期在**确切位置**插入亲缘定语。"""
     with f.log_names() as lg:
@@ -10105,12 +10067,8 @@ def _mem_sentence_body(f, owner_id, mem):
         info = sex_mem_info(mtype)
         if info is None:
             return None
-        note = _std_note_for(f, owner_id, mem)
         if info["kept"]:
-            return _std_suffix(_sex_mem_sentence(f, owner_id, mem, info), note)
-        if note:
-            # v40 唯一特例: 性病传播当次的**自愿**性事也出体位句 (用户 2026-09-15 拍板)
-            return _std_suffix(_sex_mem_sentence(f, owner_id, mem, info), note)
+            return _sex_mem_sentence(f, owner_id, mem, info)
         # 其余自愿档: 继续走旧模板 (had_sex / had_sex_spouse / had_sex_consensual)
         mtype = "had_sex"
     # v38 (问题1 顺带): 三人行 —— 两个对象槽 (partner_1/partner_2)
@@ -10511,10 +10469,12 @@ MODULE_TABLE = {
     "越狱脱逃":   {"escaped_from_prison_memory"},
     "刑虐残暴":   {"tortured_memory", "torturer_memory"},
     "受辱含冤":   {"ignored_assault_memory"},
-    # v38 (问题1): 强迫/半强迫的性事 —— 用户拍板只收这两档。12 个键 = 施为/受害
+    # v38 (问题1): 强迫/半推半就的性事 —— 用户拍板只收这两档。12 个键 = 施为/受害
     # × (dom/sub) × 体位 (阴道/肛/口) × (noncon/dubcon); Mod 里没有 dom/sub 标记
-    # 的旧键也在其中。刻意**不进** MODULE_SLICE 的任何板块白名单: 它是时间线里的
-    # 可核查事实, 由哪一篇展开属于篇目判断, 事实层不替模型决定。
+    # 的旧键也在其中。
+    # v59 (问题2, 用户 2026-09-23 拍板): 本模块**只进《列传·好友》《列传·仇人》**
+    # (见 MODULE_SLICE 的 ("friend"/"enemy","mid")); 且性事一律不进公开年表
+    # (见 `_timeline` 的 `is_sex_event` 闸)。
     "强暴凌辱":   {
         f"had_sex_{side}_player_{dom}{act}_{cons}"
         for side in ("giving", "receiving")
@@ -10522,9 +10482,9 @@ MODULE_TABLE = {
         for act in ("vaginal_cum_inside", "vaginal_cum_outside", "anal", "oral")
         for cons in ("noncon", "dubcon")
     },
-    # v40: 性病传播 (情人疱疹/大痘) —— 无性事行动可挂的那一档单独成行
-    # (本体按期在 lover/consort 之间传播、卖淫、先天); 有性事行动可挂的边
-    # 补在性行为句末, 不进本模块。
+    # v40: 性病传播 (情人疱疹/大痘) —— 传播本身不是性事, 单独成行
+    # (本体按期在 lover/consort 之间传播、卖淫、先天)。
+    # v59: 「有性事行动可挂的边补在性行为句末」这一档已删除 (载体不存在)。
     "疾病传播":   {"std_transmission"},
     "结仇结怨":   {"became_rivals", "became_grudge"},
     "死敌之仇":   {"became_nemesis"},
@@ -10558,15 +10518,44 @@ for _m, _ts in MODULE_TABLE.items():
         _TYPE2MODULE[_t] = _m
 
 
+# ---------------------------------------------------------------------------
+# v59 (问题2, 用户 2026-09-23 拍板): 性事只在《列传·好友》《列传·仇人》里用
+# ---------------------------------------------------------------------------
+# 用户原话:「保存自愿/半推半就/强迫分类, 但只在好友/仇人列传中使用性交事件」。
+# 落实为三道闸 (事实来源一字不改, 变的只是「哪一篇能看到它」):
+#   ① `_timeline` 的**年表闸** —— 性事模块不进 `facts["timeline"]`, 于是
+#      共享前缀《大事年表》、各篇【本板块大事】、十年主题计数一概不见性事;
+#   ② `_character_profiles` 的**档案闸** —— 角色档案的「行迹」不再列性事行;
+#   ③ 白名单只给 `("friend","mid")` / `("enemy","mid")` 放行这三个模块。
+# 三档分类 (自愿 / 半推半就 / 强迫) 完整保留: 自愿档仍按
+# `同房`(配偶) / `相与`(非配偶) 出句, 半推半就与强迫档照 `SEX_MEM_WORDING`。
+MODULE_MARRIAGE = "婚配联姻"
+MODULE_DUBIOUS = "情变私通"
+MODULE_SEXUAL_HARM = "强暴凌辱"
+# 性事相关模块集 (年表闸与白名单共用)
+MODULE_SEX_MODULES = frozenset({MODULE_MARRIAGE, MODULE_DUBIOUS,
+                                MODULE_SEXUAL_HARM})
+
+
+def is_sex_event(ev_type):
+    """该时间线事件类型是否属性事 (按戏剧模块判定, v59)。
+
+    `_timeline` 里自愿档已归并为 `had_sex` (配偶档再换 `had_sex_spouse`),
+    两者都在 `MODULE_SEX_MODULES` 内, 故一处判据覆盖三档。"""
+    return (_TYPE2MODULE.get(ev_type) or "") in MODULE_SEX_MODULES
+
+
 # v27: 板块 → 戏剧模块白名单 (研究_戏剧模块化.md 的切片方案落地)。
 # 键 = (文章 key, 板块 key); 未列出的组合不收时间线 (该板块不看年表)。
 # 目的: 让同一篇的开篇与纪事拿到**不相交**的素材 (此前 6 篇里 5 篇事实块
 # 逐字节相同, 等于同一份料发两遍)。
 MODULE_SLICE = {
-    # 本纪: 开篇 = 家世/受学/婚姻/添丁; 纪事 = 权力线索 (起家/兵戈/刑狱/恩怨)
-    ("benji", "lead"): {"教化求学", "科考功名", "人质质任", "婚配联姻",
-                        "信仰皈依", "拥戴加冕", "丧亲之恸",
-                        "情变私通"},
+    # 本纪: 开篇 = 家世/受学/信仰; 纪事 = 权力线索 (起家/兵戈/刑狱/恩怨)
+    # v59 (问题2): 婚配联姻/情变私通**撤出本纪** —— 与 `研究_戏剧模块化.md`
+    # 的模块表 (「18 婚配联姻 → 家室; 19 情变私通 → 家室」) 对齐; 且 v59 起
+    # 性事行本就不进年表, 留着这两个模块只会把「成婚/相恋/分手」与权力线索并列。
+    ("benji", "lead"): {"教化求学", "科考功名", "人质质任",
+                        "信仰皈依", "拥戴加冕", "丧亲之恸"},
     ("benji", "mid"): {"起家发迹", "失位让土", "开战兴兵", "战和胜负",
                        "战死负伤", "囚禁入狱", "获释出狱", "刑虐残暴",
                        "受辱含冤", "拥戴加冕", "结仇结怨", "死敌之仇",
@@ -10581,6 +10570,13 @@ MODULE_SLICE = {
     # 公主被囚的监禁者在旧稿里读不到, 模型只能写「后世皆指为伯爵本人」;
     # 只入纪事 — v27 铁律: 同篇开篇与纪事的素材不相交, 开篇的妻妾档案行
     # 本来就带「为X所囚」)
+    # 家室: 开篇 = 结缡/情变/丧偶; 纪事 = 生育/夭亡/丧亲/丧友 + 囚禁 (v32 问题1:
+    # 公主被囚的监禁者在旧稿里读不到, 模型只能写「后世皆指为伯爵本人」;
+    # 只入纪事 — v27 铁律: 同篇开篇与纪事的素材不相交, 开篇的妻妾档案行
+    # 本来就带「为X所囚」)
+    # v59 (问题2): 这两个模块留在《家室列传》是给**非性事**的关系行用
+    # (成婚/相恋/分手/丧偶) —— 门庭内情正是该篇本分; 性事行本身由年表闸全局
+    # 挡住 (见 `_timeline`), 不会漏到这里来。
     ("jiashi", "lead"): {"婚配联姻", "情变私通", "丧偶之痛"},
     ("jiashi", "mid"): {"添丁进口", "夭折", "丧亲之恸", "婚配联姻",
                         "情变私通", "丧友之恸", "囚禁入狱", "获释出狱",
@@ -10594,19 +10590,25 @@ MODULE_SLICE = {
     ("qunying", "mid"): {"起家发迹", "失位让土", "开战兴兵", "战和胜负",
                          "囚禁入狱", "获释出狱", "结仇结怨", "死敌之仇",
                          "拥戴加冕"},
-    # 强暴凌辱 (v38, 问题1): 强迫/半强迫的性事 —— 时间线里是「谁对谁做了什么、在何日」
-    # 的确定性事实。放进《阴私录》的开篇与纪事: 该篇讲的正是「何事、涉及何人、
-    # 事在何年、有谁知情」, 强迫之事属于此列。**不进其他篇目的白名单** ——
-    # 本纪/朝局只写公开行迹, 此事由《阴私录》承载 (v27 的「一篇一题」分工)。
-    # v40: 疾病传播 (无性事行动可挂的那一档) 同归《阴私录》。
-    ("secrets", "lead"): {"强暴凌辱", "疾病传播"},
-    ("secrets", "mid"): {"强暴凌辱", "疾病传播"},
+    # 强暴凌辱 (v38, 问题1): 强迫/半推半就的性事 —— 时间线里是「谁对谁做了什么、
+    # 在何日」的确定性事实。
+    # v59 (问题2, 用户拍板): **只在《列传·好友》《列传·仇人》里用**。故:
+    #   · 撤出《阴私录》(旧稿在这里) —— 该篇只留隐事/把柄/知情者;
+    #   · 撤出《家室列传》—— 门庭内情仍由「结缡/生育/丧亲」承载,
+    #     性事行随年表闸一起不再出现;
+    #   · `疾病传播` (v40, 无性事行动可挂的那一档) 同撤 —— 它与性事同源,
+    #     留在阴私录等于把性事换个名字写回去。
+    ("secrets", "lead"): set(),
+    ("secrets", "mid"): set(),
     # 列传: 开篇只给传主档案与关系缘由 (不配年表); 纪事给传主行迹 + 模块切片
     ("friend", "lead"): set(),
-    ("friend", "mid"): {"结友知交", "挚友血盟", "丧友之恸", "结仇结怨"},
+    # v59 (问题2): 传主自己的性事 (含配偶同房/私通/强迫) 归其本传纪事 ——
+    # 这是全项目唯一使用性事事件的板块。`情变私通` 原就在此, 本轮补三档。
+    ("friend", "mid"): {"结友知交", "挚友血盟", "丧友之恸", "结仇结怨",
+                        "情变私通", "婚配联姻", "强暴凌辱"},
     ("enemy", "lead"): set(),
     ("enemy", "mid"): {"结仇结怨", "死敌之仇", "化仇解怨", "仇人死亡",
-                       "情变私通", "结友知交"},
+                       "情变私通", "婚配联姻", "强暴凌辱", "结友知交"},
 }
 
 # v27: 板块排除模块 (用户决策 2026-09-10) — 本纪/朝局纪事不收「谋害人命」
@@ -10622,7 +10624,6 @@ def slice_timeline(timeline, key, section_key, names=None, exclude=True):
     """按板块白名单切时间线 (v27), 返回事件文本列表。"""
     return [e["text"] for e in slice_events(timeline, key, section_key,
                                             names=names, exclude=exclude)]
-
 
 def slice_events(timeline, key, section_key, names=None, exclude=True):
     """按板块白名单切时间线, 返回事件 dict 列表 (v27)。白名单 ∪ **未标注模块
@@ -11339,19 +11340,13 @@ def _pair_imprisonments(events, f, pid, pname=""):
 
 
 # ---------------------------------------------------------------------------
-# v40: 性病 (情人疱疹 / 大痘) 传播 —— 补在性行为句后, 或单独成行
+# v40: 性病 (情人疱疹 / 大痘) 传播 —— 单独成行
 # ---------------------------------------------------------------------------
 # 数据源: `cache["disease_edges"]` (cache_lib._diff_disease_edges)。
 # 用户口径 (2026-09-15): 发生传播时在**性行为**句后补
-# 「（某某把疱疹/大痘传染给了某某）」; 这一次不论自愿或非自愿都出句
-# (自愿档的唯一特例); 没有性事行动可挂 (本体按期在 lover/consort 间传播、
-# 卖淫、先天) 则单独成一条记忆行。
-#
-# 感染日换算: 队列里的 fire_date 是**复检日**, 感染日在其前 [下限, 上限] 天
-# (本体 20_health_effects.txt: 情人疱疹 days={60 1000}、大痘 days={250 1500};
-# 早发大痘转正 health.1013 days={90 150})。
-_STD_WINDOW_DAYS = {"lovers_pox": (1000, 60), "great_pox": (1500, 250),
-                    "early_great_pox": (150, 90)}
+# 「（某某把疱疹/大痘传染给了某某）」。该补注的载体是年表里的性事行 ——
+# **v59 (问题2, 用户 2026-09-23 拍板) 性事不进公开年表**, 补注随之删除;
+# 传播本身仍单独成一条事实行, 归「疾病传播」模块。
 # 本地化表缺键时的兜底名 (本体中文: 情人疱疹 / 梅毒; 早发档显示同疱疹)
 _STD_ZH_FALLBACK = {"lovers_pox": "情人的疱疹", "great_pox": "梅毒",
                     "early_great_pox": "情人的疱疹"}
@@ -11374,41 +11369,25 @@ def _date_obj(s):
         return None
 
 
-def _std_act_index(f):
-    """性事记忆索引: frozenset({甲,乙}) → [(日期, 持有人, 记忆)] (仅 sex_partner 槽)。"""
-    out = {}
-    for cid, rec in (f.cache.get("characters") or {}).items():
-        cid = int(cid)
-        for mem in rec.get("memories") or []:
-            t = str(mem.get("type") or "")
-            if not t.startswith(_SEX_MEM_PREFIX):
-                continue
-            other = (mem.get("participants") or {}).get(_SEX_PARTNER_SLOT)
-            d = mem.get("creation_date")
-            if isinstance(other, int) and other != cid and d:
-                out.setdefault(frozenset((cid, other)), []).append(
-                    (str(d), cid, mem))
-    return out
-
-
 def _std_index(f):
-    """cache["disease_edges"] → (notes, standalone) (惰性, 只算一次)。
+    """cache["disease_edges"] → [(日期, 文本, 源, 的)] (惰性, 只算一次)。(v59 重写)
 
-    notes: {(frozenset({源,的}), 性事记忆日) → 「（X把病传染给了Y）」}
-    standalone: [(日期, 文本, 源, 的)] —— 无性事行动可挂的传播行
+    v40 原有两个出口: ①「可挂性事」的传播补注, 挂在那一场性事的句末
+    (`_std_note_for`); ②无性事行动可挂的传播单独成行。
+    **v59 (问题2, 用户拍板) 性事不进公开年表** —— 出口①的载体已不存在,
+    故本轮删去补注与 `_std_act_index`/`_std_note_for`/`_std_suffix`,
+    只留出口② (性病传播本身不是性事, 仍按 `疾病传播` 模块进年表)。
 
     去重: 同一病人同一病种**只留一条** —— `health.1200/1201` 会自我重排复检,
-    同一次感染在队列里会留下多条边 (日期各异), 且治愈后可再感染; 取最早的
-    一次, 并优先取能挂到性事记忆的那条 (日期最准, 且证明事发于本传跨度内)。
+    同一次感染在队列里会留下多条边 (日期各异), 且治愈后可再感染;
+    取**与复检日最接近**的那一条 (最接近感染时点)。
     """
     if getattr(f, "_std_idx", None) is not None:
         return f._std_idx
     edges = f.cache.get("disease_edges") or {}
-    acts = _std_act_index(f) if edges else {}
     chars = f.cache.get("characters") or {}
     W = _style.FACT_WORDING
-    notes, standalone = {}, []
-    buckets = {}   # (病种, 病人) -> [(档位, 排序日, payload)]
+    buckets = {}   # (病种, 病人) -> [(排序日, payload)]
     for rec in edges.values():
         if not isinstance(rec, dict):
             continue
@@ -11421,61 +11400,32 @@ def _std_index(f):
         if str(tgt) not in chars:
             # 病人不在缓存相关集内 —— 这条边进不了任何篇目, 直接跳过 (省索引)
             continue
+        # v24 同源口径: 数据起点即见 (first=True) 的传播没有可作实的日期,
+        # 不单独成行 (病人仍由其档案/特质可见)。
+        if rec.get("first"):
+            continue
         # v42 (问题4): 年表事实行 —— 主角只出名字 (见 Facts.event_name)
         tname = f.event_name(tgt, date=f.as_of)
+        if not tname:
+            continue
         sname = ""
         if isinstance(src, int) and src != tgt and str(src) in chars:
             sname = f.event_name(src, date=f.as_of)
-        if not tname:
-            continue
-        pair = frozenset((src, tgt)) if isinstance(src, int) else None
-        win = _STD_WINDOW_DAYS.get(key) or (1000, 60)
-        lo = fire - datetime.timedelta(days=win[0])
-        hi = fire - datetime.timedelta(days=win[1])
-        fs = _date_obj(rec.get("first_seen"))
-        cands = []
-        for d, cid, mem in (acts.get(pair) or []) if pair else []:
-            dd = _date_obj(d)
-            if dd is None or not (lo <= dd <= hi):
-                continue
-            # 性事必在「首次见到该边」之前 (那条边就是性事当次排下的复检);
-            # 同窗口内取最晚一次 (最接近感染时点的那次暴露)
-            cands.append((dd <= fs if fs else True, dd, d, cid, mem))
-        picked = None
-        if cands:
-            ok = [c for c in cands if c[0]]
-            picked = max(ok or cands, key=lambda c: c[1])
-        bk = (key, tgt)
-        if picked and sname:
-            _, _, d, _cid, _mem = picked
-            note = W["std_note"].format(src=sname, tgt=tname, disease=zh)
-            # 档位 0 = 可挂性事 (优先); 排序日 = 性事日
-            buckets.setdefault(bk, []).append(
-                (0, _date_obj(d) or fire, ("note", pair, str(d), note)))
-            continue
-        # v24 同源口径: 数据起点即见 (first=True) 的传播没有可作实的日期,
-        # 不单独成行 (病人仍由其档案/特质可见); 有性事行动可挂者不受此限 ——
-        # 性事记忆在册即证明事发于本传跨度之内。
-        if rec.get("first"):
-            continue
         when = str(rec.get("first_seen") or rec.get("fire_date") or "")
         wd = _date_obj(when) or fire
         if sname:
             text = W["std_line"].format(src=sname, tgt=tname, disease=zh)
-            buckets.setdefault(bk, []).append(
-                (1, wd, ("line", when, text, src, tgt)))
+            payload = ("line", when, text, src, tgt)
         else:
             text = W["std_line_anon"].format(tgt=tname, disease=zh)
-            buckets.setdefault(bk, []).append(
-                (1, wd, ("line", when, text, None, tgt)))
+            payload = ("line", when, text, None, tgt)
+        buckets.setdefault((key, tgt), []).append((wd, payload))
+    out = []
     for _bk, items in buckets.items():
-        items.sort(key=lambda x: (x[0], x[1]))
-        payload = items[0][2]
-        if payload[0] == "note":
-            notes[(payload[1], payload[2])] = payload[3]
-        else:
-            standalone.append((payload[1], payload[2], payload[3], payload[4]))
-    f._std_idx = (notes, standalone)
+        items.sort(key=lambda x: x[0])
+        payload = items[-1][1]
+        out.append((payload[1], payload[2], payload[3], payload[4]))
+    f._std_idx = out
     return f._std_idx
 
 
@@ -11586,28 +11536,8 @@ def _fold_prison_clusters(events, f):
     return out, saved
 
 
-def _std_note_for(f, owner_id, mem):
-    """该条性事记忆是否即性病传播当次 → 「（X把病传染给了Y）」; 否则 ''。"""
-    if not (f.cache.get("disease_edges")):
-        return ""
-    t = str(mem.get("type") or "")
-    if not t.startswith(_SEX_MEM_PREFIX):
-        return ""
-    other = (mem.get("participants") or {}).get(_SEX_PARTNER_SLOT)
-    d = mem.get("creation_date")
-    if not isinstance(other, int) or not d:
-        return ""
-    notes, _sa = _std_index(f)
-    if not notes:
-        return ""
-    return notes.get((frozenset((owner_id, other)), str(d)), "")
-
-
-def _std_suffix(s, note):
-    """把「（X把病传染给了Y）」补在性行为句末 (句号之前)。"""
-    if not s or not note:
-        return s
-    return s.rstrip("。") + note + "。"
+# v59 (问题2): `_std_note_for` / `_std_suffix` 已随「性事不进公开年表」删除 ——
+# 补注的载体 (年表里的性事行) 不再存在, 性病传播一律走 `_std_index` 的单独成行。
 
 
 # v54 (问题3): 监禁类记忆 —— 取值一律是「被囚者」id（用于诛灭世族整簇折叠）
@@ -11728,9 +11658,11 @@ def _timeline(f):
             mtype = mem.get("type")
             # v58 (问题8): 继承合句 —— 被配对的死讯改用合句, 承袭记忆不再单独成行
             _ip = _ipairs.get(id(mem)) if _ipairs else None
-            # v38 (问题1): 性事记忆族的自愿档归并 —— 只有强迫/半强迫单独成档
-            # (模块「强暴凌辱」, 不进任何板块白名单); 自愿档与旧的 had_sex 同键同模,
-            # 婚姻内的那一支仍换档为「夫妻之情」(见下方 ev_type)。
+            # v38 (问题1): 性事记忆族的自愿档归并 —— 强迫/半推半就单独成档
+            # (模块「强暴凌辱」), 自愿档与旧的 had_sex 同键同模, 婚姻内的那一支
+            # 仍换档为「夫妻之情」(见下方 ev_type)。
+            # v59 (问题2): 三档都不进公开年表 (见下方 `is_sex_event` 闸);
+            # 归并仍要做 —— 档案/好友仇人列传按 `had_sex*` 与强迫档出句。
             _sxinfo = sex_mem_info(mtype) \
                 if isinstance(mtype, str) and mtype.startswith(_SEX_MEM_PREFIX) \
                 else None
@@ -11879,11 +11811,17 @@ def _timeline(f):
                 if isinstance(_oth, int) and _oth != cid \
                         and f.is_spouse_pair(cid, _oth):
                     ev_type = norm_type + "_spouse"
+            # v59 (问题2, 用户拍板): 性事 (含配偶同房/私通/强迫·半推半就) **不进
+            # 公开年表** —— 三条模块的句面只留在角色档案与好友/仇人列传里,
+            # 故此处直接丢; 于是共享前缀《大事年表》、各篇【本板块大事】与
+            # 十年主题计数里都不会再出现性事。
+            if is_sex_event(ev_type):
+                continue
             events.append((_md, ev_type, s,
                            _TYPE2MODULE.get(ev_type, "")))
     # v40: 性病传播 —— 无性事行动可挂的边单独成行 (本体按期在 lover/consort
     # 之间传播、卖淫、先天; 不并入任何性行为句)。只收当事人属相关集者。
-    for _when, _text, _src, _tgt in _std_index(f)[1]:
+    for _when, _text, _src, _tgt in _std_index(f):
         if not _when:
             continue
         if not (_tgt in related or (isinstance(_src, int) and _src in related)):
@@ -13070,6 +13008,12 @@ def _character_profiles(f):
             _iconsumed |= _ids
         for mem in rec.get("memories") or []:
             if id(mem) in _iconsumed:
+                continue
+            # v59 (问题2, 用户拍板): 性事 (同房/私通/强迫·半推半就) 不进角色档案的
+            # 「行迹」 —— 档案是各篇共用的公开数据 (家室档案也在共享前缀里),
+            # 性事只在《列传·好友》《列传·仇人》的【相关年表】里出现
+            # (那一路走 `facts["timeline"]`, 见 `_timeline` 的闸)。
+            if is_sex_memory(mem.get("type")):
                 continue
             s = _mem_sentence(f, cid, mem)
             if not s:
@@ -14754,11 +14698,14 @@ def _secrets_facts(f):
     vl = f.carnal_victim_line()
     if vl:
         out["carnal_victim"] = [vl]
-    # v38 (问题1 追修): 强迫之事的事实行 (时间线 slice 之外单独成块, 开篇/纪事都下发)
+    # v59 (问题2, 用户 2026-09-23 拍板): 性事只在《列传·好友》《列传·仇人》里用 ——
+    # 「强迫之事如下」事实块随之撤下 (`harm_lines` 已空实现, 此处不再下发 `harm`)。
+    # 性事行的载体改为好友/仇人两篇的【相关年表】(年表闸见 `_timeline`)。
     hl = f.harm_lines()
     if hl:
         out["harm"] = hl
-    # v40: 性病传播的事实行 (无性事行动可挂的那一档; 有行动可挂的补在性行为句末)
+    # v40: 性病传播的事实行 (无源则写「染上」)。
+    # v59: 「可挂性事」的补注出口随性事退出年表而停用, 本行成为唯一出口。
     dl = f.std_lines()
     if dl:
         out["disease"] = dl

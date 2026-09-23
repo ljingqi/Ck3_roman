@@ -1662,15 +1662,10 @@ def _article_facts(facts, cache, key, section=None):
                 lines.append(_murder_index_line(facts, sec))
             if has_held and sec.get("held_unrevealed"):
                 lines.append("这些隐事至今无人知晓。")
-            # v38 (问题1 追修): 强迫之事**先进开篇** —— 时间线里那句
-            # 「881年8月28日，X强迫Y性交。」是程序坐实的确定事实; 少了它, 开篇只剩
-            # 「有桩始终未曾命名的事」这种留白, 模型就把强迫之事写成两情相悦的私通
-            # (朱安仁档实测: 正文写成「李润的家书」「离宫所历之事」)。
-            harm = list(sec.get("harm") or [])
-            if harm:
-                lines.append(style.FACT_WORDING["harm_head"])
-                lines.extend(harm[:2])
-            # v40: 性病传播 (无性事行动可挂的那一档) —— 开篇给前两条
+            # v59 (问题2, 用户拍板): 性事只在《列传·好友》《列传·仇人》里用 ——
+            # 「强迫之事」块（v38）撤下；性病传播块**保留**在《阴私录》
+            # （它是疾病线, 不是性事行; 性事行本身由年表闸与档案闸全局挡住）。
+            # v40: 性病传播 (无源则写「染上」) —— 开篇给前两条
             dis = list(sec.get("disease") or [])
             if dis:
                 lines.append(style.FACT_WORDING["std_head"])
@@ -1712,11 +1707,8 @@ def _article_facts(facts, cache, key, section=None):
             cvl = list(sec.get("carnal_victim") or [])
             if cvl:
                 mid_lines.extend(cvl)
-            # v38 (问题1 追修): 强迫之事全列 (开篇给前两条, 纪事给全部)
-            harm = list(sec.get("harm") or [])
-            if harm:
-                mid_lines.append(style.FACT_WORDING["harm_head"])
-                mid_lines.extend(harm)
+            # v59 (问题2, 用户拍板): 「强迫之事」块撤下 (性事只在好友/仇人列传里用);
+            # 性病传播块保留 (疾病线, 非性事行)。
             # v40: 性病传播全列 (纪事给全部)
             dis = list(sec.get("disease") or [])
             if dis:

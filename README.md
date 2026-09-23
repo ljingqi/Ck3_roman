@@ -1390,6 +1390,83 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 新增只读探针：`tools/diag_v58_gib.py`、`tools/diag_v58_gib2.py`、`tools/diag_v58_inherit.py`、
 `tools/diag_gib_v58.py`、`tools/probe_v58_melt.py`。
 
+## v59 修正（吉贝尔蒂两问题：性事措辞「半强迫」→「半推半就」 / 性事只进好友·仇人列传）
+
+方案与证据见 `docs/方案_v59_吉贝尔蒂两问题.md`（含 Mod 原文行号与提示词实录行号）。
+用户 2026-09-23 拍板：**「保存自愿/半推半就/强迫分类，但只在好友/仇人列传中使用性交事件」**。
+
+**问题一：玩家点「做爱」，事实面写成「半强迫地与X性交」**
+
+不是程序判错 —— 是**游戏自己**把那一场标成 `dubcon`：`carn_sex_interaction`（中文名即
+「做爱」，`localization/simp_chinese/carn_interactions_l_simp_chinese.yml:2`）在
+`hidden_effect`（`common/character_interactions/carn_sex_interaction.txt:141-234`）里算自愿程度，
+**配偶走「妾/奴隶」那一支**：对方不满足「好感 ≥50 或魅力 ≥20 且性向相合」就落 `dubcon`，
+记忆键因此是 `had_sex_giving_player_dom_vaginal_cum_inside_dubcon`
+（`carn_had_sex_memory_effect.txt:191-214`）。项目把 `dubcon` 译成「半强迫」——
+**比 Mod 自己的中文文案（「半推半就」）更重**，且与自愿档的「同房」并存时自相矛盾。
+
+| 档 | 键尾缀 | 施为方句 | 受害方句 |
+| --- | --- | --- | --- |
+| 自愿 | `_consensual` | 配偶 `同房` / 非配偶 `相与` | 同左 |
+| **半推半就** | `_dubcon` | **`{name}半推半就，与{other}性交。`**（旧：「半强迫地」） | `{name}半推半就，与{other}性交。` |
+| 强迫 | `_noncon` | `{name}强迫{other}性交。`（女方施为且阴道/肛 → 逆强奸） | `{name}被{other}强迫性交。` |
+
+落点：`style.SEX_MEM_WORDING` 的 `actor_dubcon` 四句 + `style.py` 表头注释 + `facts.sex_mem_info`
+/`_sex_mem_sentence` 的文档串。**三档与体位词（性交/肛交/口交）都不变**，`noncon` 一字不动。
+
+**问题二：这种私事出现在「大事年表」里**
+
+根因：`facts._timeline` **没有「大事」判据** —— 相关角色的每条记忆一律入册，
+唯一的「裁」是 `_cap_timeline` 的 80/150 条封顶（本档十年只有 11 条，一条不裁）；
+`同房`/`私通` 又经 `婚配联姻`/`情变私通` 白名单进了《本纪》，`强暴凌辱` 虽只在
+《阴私录》白名单里，却照样进**共享前缀的大事年表**。
+
+修法（三道闸，事实来源一字不改，变的只是「哪一篇能看到它」）：
+
+| 闸 | 落点 | 效果 |
+| --- | --- | --- |
+| 年表闸 | `facts._timeline` 里 `is_sex_event(ev_type)` → `continue` | 三档性事都不进 `facts["timeline"]`；共享前缀《大事年表》、各篇【本板块大事】、十年主题计数一概不见 |
+| 档案闸 | `facts._character_profiles` 的 memories 循环 `is_sex_memory(mtype)` → `continue` | 角色档案（含家室档案，它在共享前缀里）的「行迹」不再列性事行 |
+| 白名单 | `MODULE_SLICE` 只给 `("friend","mid")` / `("enemy","mid")` 放行 `婚配联姻`/`情变私通`/`强暴凌辱` | 性事的唯一去处是《列传·好友》《列传·仇人》的【相关年表】 |
+
+配套（同一轮）：
+
+- **v40 性病补注删除**：`std_note`（补在性行为句末）的载体是年表性事行，载体既无，补注随之
+  删除 —— `_std_act_index`/`_std_note_for`/`_std_suffix`/`_STD_WINDOW_DAYS` 一并去掉，
+  `_std_index` 重写为「同病人同病种只留一条（取与复检日最接近者为日期）」并返回单列表；
+  性病传播本身仍单独成行、归「疾病传播」模块（它不是性事）。
+- **v40 的「有性事行动可挂」优先档删除**：`first=True` 的传播边一律不单独成行（原来靠
+  「可挂性事」例外放行的那一档不存在了）。
+- **v38 的「强迫之事」块撤下**：`facts["secrets"]["harm"]` 不再下发（`harm_lines` 空实现）、
+  `style.FACT_WORDING` 的 `harm_head/harm_line/harm_after_subject/harm_after_none` 删除、
+  `biography.py` 两处 `harm` 下发去掉；《阴私录》保留隐事/把柄/知情者与**性病传播**
+  （传播是疾病线、不是性事行，照 v40 原状留在该篇）。
+- **《本纪》开篇白名单对齐 v14 设计文档**（`docs/研究_戏剧模块化.md:83-84`）：
+  `婚配联姻`/`情变私通` 从 `("benji","lead")` 撤出（家室两档不变）。
+
+回归与验证状态（诚实标注）：
+
+| 项 | 状态 |
+| --- | --- |
+| 语法检查 `ast.parse`（facts/style/biography/两个单测/verify_fast） | **PASS** |
+| `tools/verify_v39_unit.py` | **53 PASS / 0 FAIL**（改口径后的完整一轮） |
+| `tools/verify_v40_unit.py` | 改口径后那一轮 **35 PASS / 2 FAIL**；两条 FAIL 均已处置：`4c` 是我把断言写反（已修）；`3c2` 起因是「性病传播块是否随性事一起退出《阴私录》」这一处**我无法复跑确认**的改动 —— 该改动已**撤回**（性病传播块照旧留在《阴私录》，它是疾病线而非性事行），对应断言随之改为只坐实「强迫之事块撤下」与「传播线照旧」。**该两行修正未经复跑**（本会话 `pwsh` 一律报 `SetNamedSecurityInfoW failed: grantWrite(<项目根>)`） |
+| 快照对照 / `verify_fast` / 提示词重出 | **未跑**（同上） |
+| `git commit` | **未执行**（同上，命令无法运行；改动全部留在工作区） |
+
+```powershell
+& tools\py.ps1 tools\verify_v39_unit.py     # ← 本轮已 PASS (53/0)
+& tools\py.ps1 tools\verify_v40_unit.py     # ← 改口径后请复跑确认 (4c/3c2 两行已修)
+& tools\py.ps1 tools\snap.py 吉贝尔蒂 36664 1077.1.1 1 --name=snap_v59_before
+& tools\py.ps1 tools\snap.py 吉贝尔蒂 36664 1077.1.1 1 --name=snap_v59_after
+& tools\py.ps1 tools\snapdiff.py snap_v58_after5.json snap_v59_after.json --facts-only
+& tools\py.ps1 tools\verify_fast.py output/吉贝尔蒂/data/snap_v59_after.json
+```
+
+**预期**（未经快照核验，属推断）：`1075年5月31日…半强迫地…` 整行从《阴私录》事实面消失；
+`1068年1月29日…同房。`、`1071年5月15日/12月23日…有私情。`、`1074年12月20日…性交，…传染给了…`
+从大事年表消失；家室档案行迹里不再有性事行。**性病传播块仍留在《阴私录》**（未改）。
+
 ## 环境准备
 
 1. **Python 依赖**：`python -m pip install -r requirements.txt`（requests）。
