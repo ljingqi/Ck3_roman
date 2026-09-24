@@ -1655,6 +1655,72 @@ d17b69a fix(v62)   范围C + 范围B + e_japan 关白/幕府将军；verify_v62_
 | 既有单测回归 | v39 55/55、v41 41/41、v53 54/54、v54 46/46、v55 58/58、v56 57/57、v62 17/17；`verify_v52_unit` 的 2 条 FAIL 在动工前检查点（`1df4662`，`git worktree` 复跑）**同样存在**，与本轮无关 |
 | 端到端 | `pipeline.py bio 38665 --decade 2` 重生成第 2 个十年（改前留档 `output/菲利普2/.bak_d2_pre_v62.md`） |
 
+## 热修（v62 期间）: continue 生成十年传记崩溃 —— facts 模块级函数里的裸名
+
+用户 2026-09-24 16:20 跑 `启动续传.bat` 报
+`传记生成失败 (将重试): name '_death_int' is not defined`，触发档为
+**菲利普2 / 玩家 38665 / 数据已满第 3 个十年**（日志里 16:20:42 排队、16:20:46 失败，
+`output/菲利普2/data/player_38665.json` 的写入时间 16:20:41 与日志逐秒对上）。
+
+| # | 现象 | 根因（改前） | 修法（落点） |
+| --- | --- | --- | --- |
+| 1 | 十年传记必崩（第 3 个十年崩于生产、第 2 个十年崩于对照，见下） | `facts.py:11943`：`_pair_imprisonments` 是**模块级函数**，却裸调**类方法** `_death_int(...)`。函数作用域里没有这个名字，只有走到「囚期以死亡收口」（v60 问题4）**且**死因不在 `_PRISON_EXEC_REASONS` 内、须比对 killer 与监禁者时才求值 | `f._death_int(...)`：比对结果先落 `_killer_same`，语义不变（哨兵 `4294967295` 一律视同「无凶手」） |
+| 2 | 同类隐患，尚未爆出 | `facts.py:13864`：`_realm_facts` 里的嵌套函数 `_base_name` 写 `self.table` —— 模块级函数里没有 `self`，时任名取不到而落本地化兜底时必崩（v38 起潜伏） | `L.loc(f.table, key)` |
+
+**为什么历次快照与单测都没拦住**
+
+- 该句的门槛是「**囚犯有死亡记录** + 死因不在刑杀集内 + 死亡日期不早于入狱日」，而死亡兜底
+  `prison_death_clause` 回退**熔件**（`dead_data`）这条路是 v60 问题4 为崔佛 881 那批囚犯
+  新加的 —— 要数据恰好命中才会走到，故历次快照都没碰到：v62 那轮跑通的第 1 个十年
+  （10:57 成稿）、第 2 个十年（15:02 成稿）与 `snap_v62_p2`（15:05 快照）用的都是**当时**的
+  缓存与熔件。16:20 并入 898.1.1 档时缓存与熔件一起推进（日志 16:20:38「死角色记忆回溯:
+  26 个角色补全记忆」，16:09–16:22 归档出 melt_889–898），同一句这才有了数据命中 ——
+  实测把源码换回改前版本、用**当前**数据跑 as_of=888.1.1 同样崩（见下「对照」）。
+- 加了一个不看数据就能查这类缺陷的静态体检 `tools/find_undefined.py`：用 `symtable`
+  找「以模块级身份引用、实际不存在」的裸名（另有 `tools/verify_module_scope_unit.py`
+  在改前/改后各跑一遍，作为回归）。改前命中 `facts.py` 2 处，改后生产模块 0 处。
+
+**提交纪律（每步一条 commit）**
+
+```
+13d5965 checkpoint 动工前工作树（两个旧启动器删除 + tools/find_undefined.py 入库）
+e66dda0 fix(hotfix) facts 模块级函数里的裸名（_death_int / self）
+        + tools/verify_module_scope_unit.py（15 条）+ 体检工具改造
+```
+
+**回归与验收状态**
+
+| 项 | 结果 |
+| --- | --- |
+| 改前复现（`tools/verify_module_scope_unit.py` [2] 组） | 抛 `facts.py:11943 NameError: name '_death_int' is not defined` —— 与用户日志逐字一致 |
+| 反例探针（[3] 组跑 `13d5965` 版 facts.py） | 抛 `NameError: name 'self' is not defined` —— 确认该断言不是空转 |
+| `tools/verify_module_scope_unit.py`（假存档，秒级） | **15/15 PASS**（静态体检 / 囚期以死亡收口 / 朝局底名兜底） |
+| `tools/find_undefined.py`（生产 10 模块） | 改前 `facts.py` 2 处；改后 **0 处** |
+| 既有单测 | v39 55/55、v40 36/36、v41 41/41、v51 31/31、v52 35/37（2 条**既有** FAIL）、v53 54/54、v54 46/46、v55 58/58、v56 57/57、v57 36/36、v58 53/53、v62 21/21 |
+| 端到端（就是崩掉的那一篇） | `tools/snap.py 菲利普2 38665 898.1.1 3 --name=snap_hotfix_d3` **落快照成功**（熔件 `melt_898_01_01.json`，751,634 字节，14 个请求块）；该篇 `[V60] 囚禁收句不再是无限期断言` PASS |
+| 对照（改前源码 · 当前数据） | 把 `facts.py` 换回 `13d5965`、用当前 `melt_898_01_01.json` 跑 `snap.py 菲利普2 38665 888.1.1 2`：同样崩在 `build_facts → _timeline:12569 → _pair_imprisonments:11943`，路径与日志一致 —— 说明该缺陷在当前数据下**已挡住全部篇目**，不是只挡第 3 个十年 |
+| 事实面是否被改动 | 两处落点都在**改前必抛 NameError 的分支**上（`_death_int` 是纯函数、无副作用），故只有原本必崩的路径会变；因改前源码对同一缓存**任何 as_of 都跑不出快照**，逐字节对照快照在本档无法构造 |
+| `verify_fast`（`snap_hotfix_d3.json`） | 余 2 条 FAIL，均**与本轮无关**（见下） |
+
+**`snap_hotfix_d3` 上残留的 2 条 FAIL（待单独定性，本轮未动）**
+
+1. `[V56] [1] 把柄行仍点名主角`：v62 段已记为既有 FAIL，基线 `v61_after_p2.json` 同样 FAIL。
+2. `[V40] 《阴私录》疾病行同源于时间线`：该断言要求 `facts.secrets.disease` 的每一行**逐字**
+   出现在 `facts.timeline` 里。实测（`snap_hotfix_d3` 与 `snap_hotfix_d2_ctl` **两个时点都一样**）：
+   `secrets.disease` = `897年，迈尔染上梅毒。` / `897年，迈尔染上情人的疱疹。`（**全域**缓存，
+   不受 as_of 截断），而 timeline 是 **as_of 窗口**（d2 = 878–887、d3 = 888–897）且
+   `timeline 里的疾病行 = []` —— v59 撤下性事行的时间线载体后，疾病行只在《阴私录》出，
+   v40 时代「同源于时间线」的前提已失效；缓存里第一次真的出现传播行（897 迈尔）才浮出。
+   属**断言陈旧**，与本轮两行修复无因果关系。
+
+**未做（等用户拍板）**
+
+- 崩溃那一篇**没有重出成稿**（会消耗 LLM 调用）。下一次 `启动续传.bat` 启动时
+  `_auto_decade_bios`（`pipeline.py:1528`）会立即重新排队（`player_38665.json` 的
+  `bio_decades` 里没有被标记、磁盘上也没有该篇），也可手动 `python pipeline.py bio 38665 --decade 3`。
+  注意排队只在「启动时」与「并入新档时」触发；原进程内失败后要等 `_BIO_RETRY_SECONDS = 300`
+  的重试退避，而失败那轮之后没有新档（日志「无新存档 (已空转 1 轮)」），故原进程不会自愈。
+
 ## 环境准备
 
 1. **Python 依赖**：`python -m pip install -r requirements.txt`（requests）。
