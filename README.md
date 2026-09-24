@@ -1700,7 +1700,21 @@ d17b69a fix(v62)   范围C + 范围B + e_japan 关白/幕府将军；verify_v62_
 **56** 条、裸囚禁 **110** 条；**907.1.16 那批 7 人已全部改写为「拘押」，不再出现战阵字样**
 （改前该批被标战阵俘获）；**915.7.2 那批（改前模型写成「以和谈为名设局扣住」）维持裸「囚禁」**。
 
-**提交纪律（每步一条 commit，共 9 条）**
+### v63 第三轮（代码侧调研 §11 ⇒ 又一条硬判据，并纠掉一个假阳性源）
+
+`docs/调研_囚禁方式与存档留痕.md` §11（+834 行）把两条路径逐行读完（`combat_events.txt`
+战败链 vs `siege_events.txt` 破城链），给出两条可落地判据，其中一条顺带暴露了旧判据的假阳性：
+
+| 项 | 内容 |
+| --- | --- |
+| **假阳性源（真 bug）** | `_battle_by_date` 把 `war_won` / `war_lost`（**战争结束**记忆）与 `battle_*_memory`（**一仗**）混在一档 ⇒ 旧 `battle` 档在「战争结束那天入狱」的日子也敢说「战阵俘获」。实测：24 条被这么判的在押者里 **9 条只匹配到 war_\***，而这 9 条的 `prison_data.type` **全是 dungeon** —— 战阵俘获路径恒写 `house_arrest`（`combat_events.txt:1295-1298`），故这正是「战争结束 ≠ 沙场被擒」的存档铁证。改后 `battle` 档只收 `battle_` 前缀，那类日子退回裸「囚禁」 |
+| **硬判据 A（否证律）** | 待判那次 `prison_data.type == dungeon` 且 `date == imprison_type_date` ⇒ **排除战阵俘获**（只否证、不正面定档；`raid` 档不受限 —— 劫掠走裸 `imprison`，本就是 dungeon）。日期三不全等（`change_prison_type` 覆盖过，本档 3 例）一律不用 —— 宁可不用，不猜 |
+| **硬判据 C（POI 补严）** | `battle_poi_enemy_commander_imprisoned` 只在**败方主指挥官**被俘时写（`combat_events.txt:2326-2333`），故命中还须 `loser == 被囚者`；不比对身份会把同省同日的别场仗算进来 |
+| 实测（`tools/probe_v63_powveto.py`，462 名在押者） | 否证律开 ＝ 否证律关（改判 **0** 行 —— war_* 闸已吸收全部矛盾）；`battle` 档 **7** 条且**全部** `house_arrest`（7/7 与代码预言一致）；全档 `prison_data` 312 `house_arrest` / 147 `dungeon`（+3 换过牢房） |
+| 成稿事实面 | `snap_v63_final.json` vs `snap_v63_veto2.json` **逐字符串全等（0 差异）**；4 条战阵俘获各有硬证（871.2.7 / 906.10.14 / 906.11.1 同日 `battle_won_memory`；891.1.24 省份 241 `battle_poi`） |
+
+
+**提交纪律（每步一条 commit，共 11 条）**
 
 ```
 07dad97 chore(v63)  只读取证入库（13 支探针 + 两份机制调研 + 方案稿），未改生产代码
@@ -1711,16 +1725,20 @@ cb577f1 feat(v63-2) 家室列传按门庭分组逐组请求（household_groups +
 a38db8e fix(v63-1b) 记忆归属改由角色 memories 反查（记忆对象不带 owner）
 3916ff0 fix(v63-5b) 亲缘生年改行文并列（不用括注）+ 囚禁行判据按动词族匹配
 40e6def docs(v63)   调研 §10 收尾（信号表 S1–S11 + 判定流程）
+fed3f72 feat(v63-1c) 群体俘获优先（batch）+ raid / not_battle 两档
+7da24ad docs(v63)   调研 §11（代码侧增量 834 行 + 硬判据 A/B）
+131ba1b fix(v63-1d) 战阵俘获只认真·战斗记忆 + 牢房档位否证律 + POI 须比对 loser
 ```
 
 **回归与验收状态**
 
 | 项 | 结果 |
 | --- | --- |
-| `tools/verify_v63_unit.py`（假数据，秒级，不载熔件） | **53/53 PASS**（6 组：宝物名去逗号 / 亲缘自检与性别化取词 / 性事出口 / 门庭分组与板块拆分 / 囚禁方式七档含 raid 与 not_battle / 括注与三档口径） |
-| `tools/verify_fast.py output/菲利普2/data/snap_v63_final.json` | 新增 `[V63b]` 组 **3/3 PASS**（宝物名无逗号、女性死者无「妻」、亲缘自检 0 命中）；`[V63]` 36 处插入 0 违规；全套**仅余 3 条改动前既存 FAIL**（《阴私录》疾病行同源、`[6]` 灭门死因、`[V56][1]` 把柄行点名 — 三者与 v63 五问无关，见下「既有 FAIL 基线」） |
+| `tools/verify_v63_unit.py`（假数据，秒级，不载熔件） | **61/61 PASS**（6 组：宝物名去逗号 / 亲缘自检与性别化取词 / 性事出口 / 门庭分组与板块拆分 / 囚禁方式档位含 raid、not_battle、牢房档位否证、war_* 不认战斗 / 括注与三档口径） |
+| `tools/verify_fast.py output/菲利普2/data/snap_v63_veto2.json` | `[V63b]` 组 **3/3 PASS**（宝物名无逗号、女性死者无「妻」、亲缘自检 0 命中）；`[V63]` 36 处插入 0 违规；全套**仅余 3 条改动前既存 FAIL**（《阴私录》疾病行同源、`[6]` 灭门死因、`[V56][1]` 把柄行点名 — 三者与 v63 五问无关，见下「既有 FAIL 基线」） |
 | 事实面实测（`snap.py 菲利普2 38665 922.1.1 --name=snap_v63_final`） | 请求 **22 个**（《家室列传》由 2 段拆为 `jiashi_lead` + `mid1..mid5`）；`jiashi_mid*` 家室档案按组降为 2,564 / 1,173 / 989 / 4,918 / 9,646 字符（改前单块 11,895）；丰子亲缘行实测成「父大三轮氏国司大三轮经言，864年生、母藤原恂子，868年生、夫藤原范宗、女藤原敬子」 |
 | 囚禁行实测（`capture_manner` 对真档） | 170 条囚禁类行 → 战阵俘获 **4**、拘押（含年龄）**56**、裸囚禁 **110**；逐例：`871.2.7` 乌尔夫尔 → `battle`（同日 `battle_won_memory` loser=11156 winner=38665）、`891.1.24` → `battle_poi`（省份 241）、`895.1.14` 唐文举 → `batch`（3 人同日）、**`907.1.16` 7 人 → `batch`（不再标战阵）**、`915.7.2` 埃德伯 → `unknown`（**不写方式**，改前模型写「以和谈为名设局扣住」） |
+| 第三轮改后不回归 | `snap_v63_final` vs `snap_v63_veto2` 逐字符串全等；462 名在押者判级 `unknown 320 / not_battle 108 / raid 25 / battle 7 / batch 2`，`battle` 档 7/7 `house_arrest` |
 | 既有 FAIL 基线 | 上述 3 条在 v62 快照（`snap_devour_d3.json` 与工作树 stash 对照）**同样 FAIL**，属 v56/v40 遗留，本轮不动 |
 
 ## 热修（v62 期间）: continue 生成十年传记崩溃 —— facts 模块级函数里的裸名
