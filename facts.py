@@ -11938,9 +11938,14 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     _sp = _prison_span(r["date"], d_date)
                     sp = W["prison_same_day"] if _sp == W["prison_same_day"] \
                         else (f"{_sp}后" if _sp else f"至{f.date(d_date)}")
+                    # 凶手与监禁者同一人 → 刑杀 (`_death_int` 是 Facts 的方法,
+                    # 本函数是模块级函数, 故必须经 `f.` 调用; 哨兵 4294967295
+                    # 一律视同「无凶手」)
+                    _killer_same = (f._death_int(dd.get("killer"))
+                                    == f._death_int(r["jailer"]))
                     key = "prison_died_executed" \
                         if (dd.get("reason") in _PRISON_EXEC_REASONS
-                            or _death_int(dd.get("killer")) == _death_int(r["jailer"])) \
+                            or _killer_same) \
                         else "prison_died_in_prison"
                     body += W[key].format(sp=sp)
                     o_kind = ("executed" if key == "prison_died_executed"
@@ -13861,7 +13866,7 @@ def _realm_facts(f):
         key = t.get("key") or ""
         if not key:
             return ""
-        nm = f._name_at_date(tid, span_end) or L.loc(self.table, key) or key
+        nm = f._name_at_date(tid, span_end) or L.loc(f.table, key) or key
         return str(nm).strip()
 
     def _tier_tail(name):
