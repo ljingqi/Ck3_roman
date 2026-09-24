@@ -1588,7 +1588,7 @@ test(v60)     verify_fast 新增 V60 断言组 + tools/diag_v60.py
 2. **旧版 dsh，或其它会给工作区盖 Low 标签的沙箱**：双击 `tools\fix_bat_label.bat`——它会请求
    一次 UAC；它自己也在工作区里，所以会先弹一次「无法验证发布者」，点「运行」即可。它给根目录
    **顶层**的 `.bat/.cmd/.exe` 写一条显式「信息性」Medium 标签（不附带任何强制限制，故不缩小
-   沙箱的写边界）。`-Check` 只报告不改，`-Clear` 撤销，`-Root D:\X` 换目录；子目录里的可执行
+   沙箱的写边界）。`-Check` 只报告不改，`-Clear` 撤销，`-Root <data-drive>\X` 换目录；子目录里的可执行
    文件（如 `tools\rakaly.exe`）仍需自行处理。
 
 写标签要的是**该对象上的 `WRITE_OWNER`**。数据盘上继承 `Authenticated Users: Modify` 的目录给不出
