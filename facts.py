@@ -1949,14 +1949,41 @@ class Facts:
             liege = t.get("de_facto_liege")
             cur = str(liege) if liege is not None else None
         # v62: 日本最高头衔 (天皇座/日本帝国) 补一层**头衔侧**政体 —— 持有者政体史
-        # 早于缓存窗口时 (藤原良房 858–879 的 e_japan 任期) 上面取不到, 由头衔自己的
-        # history_government 定时代: japan_administrative_government = 关白时代,
-        # japan_feudal_government = 幕府/将军时代 (history/titles/e_japan.txt:68-71)。
+        # 取不到时 (藤原良房 858–879 的 e_japan 任期早于缓存窗口) 由头衔自己的
+        # history_government 定词: japan_administrative_government = 律令制 (关白),
+        # japan_feudal_government = 惣領制 (幕府将军)。**仍是游戏数据的政体值, 不按年代**。
         if gov == "" and \
                 ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
-            gov = (self._lt.get(str(tid)) or {}).get("history_government") or ""
+            gov = self._title_government_hist(tid, date) \
+                or (self._lt.get(str(tid)) or {}).get("history_government") or ""
         self._gov_cache[ck] = gov
         return gov
+
+    def _title_government_hist(self, tid, date=None):
+        """头衔历史里 date (含) 之前**最后一个显式记录的政体**; 无则 ''。
+
+        v62: 日本最高头衔的政体兜底用它 —— 存档的 title history 条目在政体变更那天会带
+        `government` 字段 (本体 `history/titles/e_japan.txt:68-71` 1167 年即 `japan_feudal_government`),
+        故即便持有者逐档政体史缺失 (早于缓存窗口), 也能按**游戏自己的政体记录**取词,
+        而不是拿末档政体冒充早期、更不是按年代猜。"""
+        t = self._lt.get(str(tid)) or {}
+        hist = t.get("history") or {}
+        if not isinstance(hist, dict):
+            return ""
+        ao = cl.date_key(date) if date else None
+        best_d, best_g = None, ""
+        for d, e in hist.items():
+            if not isinstance(e, dict):
+                continue
+            g = e.get("government") or ""
+            if not g:
+                continue
+            dk = cl.date_key(d)
+            if ao is not None and dk > ao:
+                continue
+            if best_d is None or dk >= best_d:
+                best_d, best_g = dk, g
+        return best_g
 
     def _gov_for_word(self, cid, tid, date):
         """称谓取词用的政体 (v47): 头衔该日政体 → 本人该日政体 → **死者卒档政体**。
@@ -3526,17 +3553,23 @@ class Facts:
         "barony":  "baron_administrative_male_japanese",     # 郡司
     }
     _TENNO_TITLE_KEYS = {"k_chrysanthemum_throne"}  # 天皇座持有人 → 天皇
-    # v62 (问题: 关白/将军): 日本最高头衔的官职词**按头衔自身**定, 不按「该日持有者」
-    # 的政体史 —— e_japan 的持有人是日本实际统治者, 随时代换词 (游戏同一组 flavorization):
-    #   japan_administrative_government → emperor_administrative_male_japanese = 关白
-    #     (10_tgp_japan_flavorization.txt:336-347, priority 1000)
-    #   japan_feudal_government        → emperor_shogun_male_japanese = 幕府将军
-    #     (同文件 :398-410, priority 1001, 另需 flag = shogun_flag; 无旗的封建持有者
-    #      是 :363 太政大臣 —— 缓存与熔件都不存角色旗标, 故封建期统一取「幕府将军」,
-    #      即幕府时代的通行称呼; 平安期一律走上面的关白)
-    #   k_chrysanthemum_throne         → king_tenno_male_japanese = 天皇 (同文件 :591)
-    # 旧稿取「该日持有者」的政体: 持有者的政体史早于缓存窗口时 (藤原良房卒 879)
-    # 取不到, 落回通用词「皇帝」, 于是同一顶 e_japan 在源融写「关白」、在藤原良房写「皇帝」。
+    # v62 (问题: 关白/将军): 日本最高头衔的官职词**按政体出词, 不看年代**
+    # (用户 2026-09-24 指正: CK3 一局不是史实重演 —— 律令制可能被推翻成惣領制,
+    #  也可能被「恢复天皇亲政」翻回律令制, 还可能整局不出现幕府; 故任何按年份分支
+    #  的写法都是错的)。判据 = 游戏内的政体值, 与游戏同一组 flavorization:
+    #   japan_administrative_government (律令制)
+    #     → e_japan: emperor_administrative_male_japanese = 关白
+    #       (10_tgp_japan_flavorization.txt:336-347, priority 1000)
+    #   japan_feudal_government (惣領制)
+    #     → e_japan: emperor_shogun_male_japanese = 幕府将军
+    #       (同文件 :398-410, priority 1001, 游戏另需 flag = shogun_flag; 无旗的封建
+    #        持有者是 :363 太政大臣 —— 缓存与熔件都不存角色旗标, 故惣領制统一取
+    #        「幕府将军」)
+    #   k_chrysanthemum_throne → king_tenno_male_japanese = 天皇 (同文件 :591, 不分政体)
+    # 政体取值顺序 (见 `_title_government` / `_gov_for_word`): 持有者逐档政体史
+    # → 头衔自身的 history_government → 通用词。旧稿只取「该日持有者」的政体,
+    # 持有者政体史早于缓存窗口时 (藤原良房卒 879) 取不到, 落通用词「皇帝」,
+    # 于是同一顶 e_japan 在源融写「关白」、在藤原良房写「皇帝」。
     _JAPAN_TOP_OFFICE_KEYS = {
         ("e_japan", "japan_administrative_government"): "emperor_administrative_male_japanese",
         ("e_japan", "japan_feudal_government"): "emperor_shogun_male_japanese",
@@ -3951,8 +3984,8 @@ class Facts:
         v17: 日式律令制政体 (japan_administrative_government) 单独分支 — 查游戏键
         帝国=关白/王国=帅/郡县=国司/堡=郡司 (修复方案_汤利五问题.md 问题2);
         tid 传入时, 天皇座 (k_chrysanthemum_throne) 持有人直称「天皇」。
-        v62: 日本最高头衔另走 `_JAPAN_TOP_OFFICE_KEYS` 直表 —— e_japan 按头衔时代
-        出「关白」(律令制) 或「幕府将军」(封建期), 不再落通用词「皇帝」。"""
+        v62: 日本最高头衔另走 `_JAPAN_TOP_OFFICE_KEYS` 直表 —— e_japan **按政体**出词
+        (律令制=关白 / 惣領制=幕府将军; 不看年代), 不再落通用词「皇帝」。"""
         gov = government or ""
         # v52 (问题2): 无地冒险者营地的持有者称呼走游戏键
         # (`duke_landless_adventurer_camp_<宗旨>` = 头目/领袖/队长…; 宗旨未知回退
@@ -4585,7 +4618,7 @@ class Facts:
             gov = (rec.get("landed") or {}).get("government") or ""
         if not gov:
             gov = (c.get("landed_data") or {}).get("government") or ""
-        # v62: 日本最高头衔 (天皇座/e_japan) 的取词政体按**头衔侧**时代补 ——
+        # v62: 日本最高头衔 (天皇座/e_japan) 的取词政体按**头衔侧**政体补 ——
         # 持有者政体史早于缓存窗口时 (藤原良房卒 879, 政体史 884 起) 上面三项皆空,
         # 旧稿落通用词「皇帝」, 于是同一顶 e_japan 在源融写「关白」、在藤原良房写「皇帝」。
         if ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
