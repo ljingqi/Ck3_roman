@@ -2754,7 +2754,7 @@ class Facts:
         memo[key] = out
         return out
 
-    def _primary_title_at(self, cid, as_of=None):
+    def _primary_title_at(self, cid, as_of=None, held_through=None):
         """角色在 as_of 日期的首要头衔 (tier, tid): 最高层级中最早获得者;
         无头衔 (仅营地) 返回 (None, tid)。
         v36 (用户拍板5): **男爵领 (rank 1) 不入首要头衔** — 头衔材料最低取到州府 (c_),
@@ -2763,15 +2763,35 @@ class Facts:
         v41 (问题1) 关键修正: 持有区间按 **as_of 与末档之间**的持有状态算,
         区间起点可能晚于 as_of (福尔科 1078 年的事件里, 他被 1080 年才到手的
         热那亚公爵挤出称谓); 故此处再按 as_of 过滤一次 —— 取得日晚于 as_of 的
-        头衔在那一刻**尚未持有**。"""
+        头衔在那一刻**尚未持有**。
+
+        v61 (问题2): `held_through` 非空时改判「**与 held_through 相交**」——
+        区间 (gain, loss) 满足 gain <= held_through <= loss 即算持有
+        (loss 为空 = 仍持; 卒日当天失去也算持有)。缺省 (None) 行为与 v60 前一致;
+        仅**已卒传主**需要它: 卒日当天失去全部头衔, 旧判据「末档仍在持」会判成
+        「无头衔」, 使 `_my_realm_tids()` 空集、朝廷职司的政权门槛 fail-open
+        (唐六部因此混进别国传记; 实测崔佛终传)。"""
         held = {}
         ao = cl.date_key(as_of) if as_of else None
+        through = cl.date_key(held_through) if held_through else None
         for tid, ivs in self._hold_intervals(cid, as_of).items():
-            if not (ivs and ivs[-1][1] is None):
-                continue
-            gain = ivs[-1][0]
-            if ao is not None and gain and cl.date_key(gain) > ao:
-                continue
+            if through is not None:
+                gain = None
+                for (g, l, _lt) in ivs:      # 与 held_through 相交的那一段
+                    if g and cl.date_key(g) > through:
+                        continue
+                    if l and cl.date_key(l) < through:
+                        continue
+                    gain = g
+                    break
+                if gain is None:
+                    continue
+            else:
+                if not (ivs and ivs[-1][1] is None):
+                    continue
+                gain = ivs[-1][0]
+                if ao is not None and gain and cl.date_key(gain) > ao:
+                    continue
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
             if self._TT_RANK.get(key[:2], 0) == 1:
                 continue
@@ -5123,12 +5143,23 @@ class Facts:
         """主角所处政权的头衔 id 集 (v34, 问题3):
         主角首要头衔 + 其上位链上的全部头衔。朝廷职司 (`e_minister_*`) 的
         `de_facto_liege` 落在这个集合里, 才算「主角所处朝廷的职司」。
-        独立领主上位链到顶, 集合即其自身领地头衔 → 别国职司不再混入。"""
+        独立领主上位链到顶, 集合即其自身领地头衔 → 别国职司不再混入。
+
+        v61 (问题2): **已卒传主**补一条 `held_through` 路子 —— 终传 (as_of 为空) 取卒日
+        (`player_death.date`; 缺则末档日), 十年篇取 as_of。旧稿只认「末档仍在持」,
+        传主卒于末档时头衔全带 loss 日 ⇒ 本函数返回空集 ⇒ 下面两处职司门槛
+        的 `if mine and …` 被短路 (fail-open), 全图 `e_minister_*` (唐六部) 混入。"""
         pid = self.cache.get("player_id")
         if pid is None:
             return set()
         out = set()
         _tier, ptid = self._primary_title_at(pid)
+        if ptid is None:
+            cut = (self.as_of
+                   or (self.cache.get("player_death") or {}).get("date")
+                   or self.cache.get("last_date"))
+            if cut:
+                _tier, ptid = self._primary_title_at(pid, held_through=cut)
         if ptid is not None:
             out.add(int(ptid))
             for tid, _h in self.liege_chain(ptid) or []:
@@ -5211,7 +5242,10 @@ class Facts:
         后来的任命写进早期十年 (田所2 @878 写出 883 年才上任的宰相)。
         v34 (问题3): **只收主角所处政权的职司** — 此前遍历全图所有
         `e_minister_*`, 于是贝内文托亲王的《朝局风云录》里永远挂着唐六部
-        (实测 9 个职司的 de_facto_liege 全为 h_china)。"""
+        (实测 9 个职司的 de_facto_liege 全为 h_china)。
+        v61 (问题2): 过滤改 **fail-closed** —— 政权判不明 (`mine` 空) 时一律不收。
+        旧写法 `if mine and lc not in mine` 在空集时把整条过滤短路, 于是传主卒于末档时
+        唐六部九卿 (与其隐事) 又混进《朝局风云录》。"""
         d = date if date is not None else self.as_of
         mine = self._my_realm_tids()
         out = []
@@ -5222,7 +5256,7 @@ class Facts:
             if not key.startswith("e_minister_"):
                 continue
             lc = t.get("de_facto_liege")
-            if mine and lc not in mine:
+            if lc not in mine:      # v61: mine 空 ⇒ 一律不收 (宁缺勿滥)
                 continue
             holder = self.holder_at(int(tid), d)
             if not isinstance(holder, int):
@@ -5239,7 +5273,8 @@ class Facts:
 
     def minister_ids(self, date=None):
         """朝廷职司 (e_minister_*) 在 date 的持有者 id 列表 (要员隐事取材用)。
-        v34 (问题3): 与 `_current_ministers` 同口径 — 只取主角所处政权的职司。"""
+        v34 (问题3): 与 `_current_ministers` 同口径 — 只取主角所处政权的职司。
+        v61 (问题2): 同 `_current_ministers` 改 fail-closed (mine 空 ⇒ 不收)。"""
         d = date if date is not None else self.as_of
         mine = self._my_realm_tids()
         out = []
@@ -5249,7 +5284,7 @@ class Facts:
             if not (t.get("key") or "").startswith("e_minister_"):
                 continue
             lc = t.get("de_facto_liege")
-            if mine and lc not in mine:
+            if lc not in mine:      # v61: mine 空 ⇒ 一律不收 (宁缺勿滥)
                 continue
             h = self.holder_at(int(tid), d)
             if isinstance(h, int) and h not in out:
