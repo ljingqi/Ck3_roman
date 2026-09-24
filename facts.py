@@ -6963,6 +6963,33 @@ class Facts:
         d = self.date(when) if when else ""
         return f"，{d}转归{name}" if d else f"，转归{name}"
 
+    def _mem_holder_index(self):
+        """{记忆 id: 持有者 id} —— 由各角色 `alive_data/dead_data.memories` 反查 (惰性)。
+
+        v63 (问题1) 修: 记忆对象本身**不带** `owner` 字段 (归属由角色侧的
+        `memories` 列表记载), 而记忆 id 与角色 id 共用同一个 id 池 —— 旧稿拿
+        「记忆 id」当持有人会得到**另一个角色的 id** (实测 20276 这条
+        `battle_won_memory` 被读成「持有者 20276」, 而它其实是主角 38665 的记忆,
+        于是 871.2.7 那次战阵俘获判不出来)。这里一次性建反查索引。"""
+        cached = getattr(self, "_mem_holder", None)
+        if cached is not None:
+            return cached
+        out = {}
+        for bucket in (self.melt.get("living") or {},
+                       self.melt.get("dead_unprunable") or {},
+                       (self.melt.get("characters") or {}).get("dead_prunable") or {}):
+            for cid, c in bucket.items():
+                if not isinstance(c, dict):
+                    continue
+                ad = c.get("alive_data") or c.get("dead_data") or {}
+                for mid in (ad.get("memories") or []):
+                    try:
+                        out[int(mid)] = int(cid)
+                    except (TypeError, ValueError):
+                        continue
+        self._mem_holder = out
+        return out
+
     def _battle_by_date(self):
         """{日期: [(类型, loser, winner, owner)]} —— 本档全部战斗/战争记忆 (惰性)。
 
@@ -6979,6 +7006,7 @@ class Facts:
         if cached is not None:
             return cached
         out = {}
+        holder = self._mem_holder_index()
         db = (self.melt.get("character_memory_manager") or {}).get("database") or {}
         for mid, e in db.items():
             if not isinstance(e, dict):
@@ -6991,7 +7019,7 @@ class Facts:
             owner = e.get("owner")
             if owner is None:
                 try:
-                    owner = int(mid)
+                    owner = holder.get(int(mid))
                 except (TypeError, ValueError):
                     owner = None
             d = e.get("creation_date")
