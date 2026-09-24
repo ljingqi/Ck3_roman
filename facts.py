@@ -176,6 +176,15 @@ PARTICIPANT_SLOTS = {
 # 用 `<type>_no_other` 模板 (不出「A之妻A」)。
 _SELF_NO_OTHER_TYPES = {"child_stillborn", "child_premature"}
 
+# v63 (行内定语基准): 句面**已把对手方与本行主语的关系写明**的记忆型 —— 成婚事写
+# 「与X成婚」、生育写「添子X/得长女X/之{妻}Y产下死婴」、丧偶写「丧偶，X去世」。
+# 这些行里的人名不再插亲缘定语 (否则出「与丈夫X成婚」「得长女女儿X」这类赘语;
+# 妻/夫/妾 是单字, 进不了 `biography._KIN_MARK_RE` 的「已写明」判据)。
+_REL_STATED_TYPES = frozenset({
+    "married", "had_sex", "spouse_died", "child_born", "first_born",
+    "twins_born", "child_premature", "child_stillborn",
+})
+
 # v32 (问题3): 需带配偶称谓 ({rel}) 的记忆型
 _CONSORT_MEM_TYPES = {"child_stillborn", "child_premature"}
 
@@ -779,20 +788,25 @@ class KinScope:
                     self.held[w] = self.held.get(w, 0) + 1
         return self
 
-    def word_for(self, cid, facts):
+    def word_for(self, cid, facts, subject=None):
         """首次出现 → 返回该人的亲缘定语词并占名额; 否则返回 ''。
 
-        v45 (档 B) 的行内插词入口 (与 `mark` 共用一张名额表)。"""
-        if cid is None or self.subject is None:
+        v45 (档 B) 的行内插词入口 (与 `mark` 共用一张名额表)。
+        v63: `subject` 可覆盖算词基准 —— 句子有自己的主语时 (家人档案/刺客列传
+        的逐人条目、隐事持有人的隐事句), 句中**第三方**人名的定语按该主语算,
+        否则会把「主角的岳父」插进讲妻子的句子里读成「她的岳父」。
+        名额 (`seen`) 仍按板块共用 —— 同一人每板块至多一处定语。"""
+        subj = self.subject if subject is None else subject
+        if cid is None or subj is None:
             return ""
         try:
             cidi = int(cid)
         except (TypeError, ValueError):
             return ""
-        if cidi == self.subject or cidi in self.seen:
+        if cidi == subj or cidi in self.seen:
             return ""
         self.seen.add(cidi)
-        w = facts.kin_word_for(cidi, self.subject)
+        w = facts.kin_word_for(cidi, subj)
         if not w:
             return ""
         self.stats[w] = self.stats.get(w, 0) + 1
@@ -1392,6 +1406,15 @@ class Facts:
         # 时, 别人的出词不得混进本行 (混进就会把定语插错地方)。
         self._tls = threading.local()
         self.name_index = {}     # 行文本 -> [[cid, label], …] (按出词顺序)
+        # v63 (行内定语基准): 行文本 -> **本行主语** cid (句子讲的是谁)。
+        # 板块期插亲缘定语时, 句中第三方人名按它算词 —— 否则会把「主角的岳父」
+        # 插进讲妻子的句子里, 读成「她的岳父」(菲利普2: 于尔莎受业于岳父乱发哈拉尔,
+        # 而乱发哈拉尔正是她的生父)。无主语的行 (年表外的多方言情句等) 不登记,
+        # 板块期回落旧口径 (按本篇传主算词)。
+        self.line_owner = {}
+        # v63: 行文本 -> [已写明关系的对手方 cid, …] —— 句面自带的亲缘 (成婚/添子/
+        # 丧偶/夭折), 板块期不再给这些人插定语 (见 `_REL_STATED_TYPES`)。
+        self.line_stated = {}
         # v16: 游戏关系原因 (opinions.active_opinions 索引, 惰性构建)
         self._opinion_index = None
         # v50: 缓存里的关系缘由 (cache["relation_reasons"], 惰性构建) —— 熔件里
@@ -5029,10 +5052,18 @@ class Facts:
         的字符串做正则猜测 (档 C 的同名子串误插问题由此消失)。"""
         return _NameLog(self)
 
-    def index_names(self, text, log):
-        """把一行文本与它用到的 (cid, label) 登记进 `name_index`。"""
+    def index_names(self, text, log, owner=None):
+        """把一行文本与它用到的 (cid, label) 登记进 `name_index`。
+
+        v63: `owner` = 本行**主语** (句子讲的是谁, 一般是记忆/死亡记录的持有人)。
+        板块期给句中第三方人名出定语时以它为准 (见 `biography._kin_tag_line`)。"""
         if text and log is not None and log.items:
             self.name_index[text] = [list(x) for x in log.items]
+            if owner is not None:
+                try:
+                    self.line_owner[text] = int(owner)
+                except (TypeError, ValueError):
+                    pass
         return text
 
     def _log_label(self, cid, label):
@@ -5725,14 +5756,34 @@ class Facts:
                 parts.append(f"{who}，自{yr}起")
         return "知情者：" + "；".join(parts)
 
-    def secret_line(self, rec, owner_label=None, knowers=True, self_cid=None):
+    def note_line_stated(self, text, mem, owner_id=None):
+        """v63: 句面已写明关系的行 → 登记对手方 (板块期不再给他插亲缘定语)。
+
+        判据是**记忆型 + 参与槽** (不猜措辞): 成婚/同房(配偶)/丧偶/生育/夭折 这些
+        模板本身就写着对手方与主语的关系 (「与X成婚」「添子X」「A之妻B产下死婴」),
+        故这些人名不再加定语 —— 旧稿实测出「与丈夫金敏恭成婚」「得长女女儿X」。"""
+        mtype = str((mem or {}).get("type") or "")
+        if not text or mtype not in _REL_STATED_TYPES:
+            return
+        slot = PARTICIPANT_SLOTS.get(mtype)
+        oid = ((mem or {}).get("participants") or {}).get(slot) if slot else None
+        if not isinstance(oid, int) or oid == owner_id:
+            return
+        # 「同房」只在双方确为配偶时才是关系句 (非配偶档走「有私情」, 那句没写关系)
+        if mtype == "had_sex" and not self.is_spouse_pair(owner_id, oid):
+            return
+        self.line_stated[text] = [int(oid)]
+
+    def secret_line(self, rec, owner_label=None, knowers=True, self_cid=None,
+                    owner=None):
         """隐事一行 (v28b): 「{owner}有一桩隐事：{topic}，事涉X，Y年见于记载；
         知情者：A，同年；B，自Z年起。」— 隐事与知情者同句, 一眼看出谁知道了哪桩事。
-        v45 (档 B): 外层包一层出词登记 (整行一次登记 —— 一行一位持有人)。"""
+        v45 (档 B): 外层包一层出词登记 (整行一次登记 —— 一行一位持有人)。
+        v63: `owner` = 隐事持有人 id (本行主语, 与 owner_label 同一人)。"""
         with self.log_names() as lg:
             out = self._secret_line_body(rec, owner_label=owner_label,
                                          knowers=knowers, self_cid=self_cid)
-        return self.index_names(out, lg)
+        return self.index_names(out, lg, owner=owner)
 
     def _secret_line_body(self, rec, owner_label=None, knowers=True, self_cid=None):
         s = self.secret_sentence(rec, owner_label=owner_label, self_cid=self_cid)
@@ -5742,7 +5793,8 @@ class Facts:
         return s[:-1] + "；" + kl + "。" if kl else s
 
 
-    def secret_lines(self, recs, owner_label=None, self_cid=None, with_knowers=True):
+    def secret_lines(self, recs, owner_label=None, self_cid=None, with_knowers=True,
+                     owner=None):
         """同一持有人的隐事合并成一行 (v28b 省词元):
 
             「陆荣廷有隐事二桩：科举舞弊（涉及樊骥）；会试舞弊
@@ -5750,17 +5802,18 @@ class Facts:
 
         持有人只写一次, 每桩自带见载年与自己的知情者; 单桩时与 secret_line 同形
         (「陆荣廷有隐事：…」)。返回 [str] (无可用主题时返回 [])。
-        v45 (档 B): 外层包一层出词登记 (每行单独登记, 供板块期插亲缘定语)。"""
+        v45 (档 B): 外层包一层出词登记 (每行单独登记, 供板块期插亲缘定语)。
+        v63: `owner` = 持有人 id (本行主语) —— 传给同名的单桩出口并登记本行主语。"""
         with self.log_names() as lg:
             out = self._secret_lines_body(recs, owner_label=owner_label,
                                           self_cid=self_cid,
-                                          with_knowers=with_knowers)
+                                          with_knowers=with_knowers, owner=owner)
         for ln in (out or []):
-            self.index_names(ln, lg)
+            self.index_names(ln, lg, owner=owner)
         return out
 
     def _secret_lines_body(self, recs, owner_label=None, self_cid=None,
-                           with_knowers=True):
+                           with_knowers=True, owner=None):
         items = [r for r in (recs or []) if isinstance(r, dict)]
         if not items:
             return []
@@ -5771,7 +5824,7 @@ class Facts:
             return []
         if len(items) == 1:
             ln = self.secret_line(items[0], owner_label=owner, self_cid=self_cid,
-                                  knowers=with_knowers)
+                                  knowers=with_knowers, owner=owner)
             return [ln] if ln else []
         # v58 (问题2): 谓词型主题逐桩成句 (「X与Y私通，1072年见于记载。」),
         # 名词型仍并成「X有隐事N桩：…」—— 两类混在一起会写出
@@ -5788,7 +5841,7 @@ class Facts:
             if pred:
                 for r in group:
                     ln = self.secret_line(r, owner_label=owner, self_cid=self_cid,
-                                          knowers=with_knowers)
+                                          knowers=with_knowers, owner=owner)
                     if ln:
                         out.append(ln)
                 continue
@@ -10672,10 +10725,14 @@ def _mem_sentence(f, owner_id, mem):
     v40「性病传播当次的自愿档出体位句 + 句末补注」这一特例随之删除
     (补注只挂在年表性事行上, 该行已不存在)。
     v45 (档 B): 外层包一层出词登记 —— 本句用到的每个 (cid, 称谓) 记进
-    `f.name_index[本句]`, 供板块期在**确切位置**插入亲缘定语。"""
+    `f.name_index[本句]`, 供板块期在**确切位置**插入亲缘定语。
+    v63: 同时登记本行主语 (`owner_id` = 记忆持有人, 各模板皆以他起句) —— 句中
+    第三方人名的定语按本行主语算词, 不按板块传主 (见 `biography._kin_tag_line`)。"""
     with f.log_names() as lg:
         out = _mem_sentence_body(f, owner_id, mem)
-    return f.index_names(out, lg)
+    out = f.index_names(out, lg, owner=owner_id)
+    f.note_line_stated(out, mem, owner_id)
+    return out
 
 
 class _NameLog:
@@ -11024,11 +11081,12 @@ _FEUD_CHAR_RE = re.compile(r"ONCLICK:CHARACTER,(\d+)")
 def _death_sentence(f, cid, killer_pronoun=False, annotated=False):
     """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
 
-    v45 (档 B): 外层包一层出词登记 (同 `_mem_sentence`)。"""
+    v45 (档 B): 外层包一层出词登记 (同 `_mem_sentence`)。
+    v63: 同时登记本行主语 (`cid` = 死者) —— 行内第三方人名按他算词。"""
     with f.log_names() as lg:
         out = _death_sentence_body(f, cid, killer_pronoun=killer_pronoun,
                                    annotated=annotated)
-    return f.index_names(out, lg)
+    return f.index_names(out, lg, owner=cid)
 
 
 def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False):
@@ -13999,7 +14057,7 @@ def _realm_secret_lines(f):
     for oid in owners:
         for rec in f.secrets_owned_by(oid, f.as_of):
             s = f.secret_line(rec, owner_label=f.person_label(oid, date=f.as_of, style="brief"),
-                              self_cid=pid)
+                              self_cid=pid, owner=oid)
             if not s:
                 continue
             out.append(s)
@@ -15240,7 +15298,7 @@ def _secrets_facts(f):
     plabel = f.event_name(pid, f.as_of) or f.name_or(pid)
     if held:
         # 主角称谓与全篇一致 (时间线/档案同为 event_name)
-        lines = f.secret_lines(held, owner_label=plabel, self_cid=pid)
+        lines = f.secret_lines(held, owner_label=plabel, self_cid=pid, owner=pid)
         revealed = any(f.secret_knowers(r, self_cid=pid) for r in held)
         if lines:
             out["held"] = lines
@@ -15276,7 +15334,7 @@ def _secrets_facts(f):
         if recs:
             # v28b: 同一家人的多桩隐事并成一行
             kin_lines.extend(f.secret_lines(recs, owner_label=f.kin_label(kid),
-                                            self_cid=pid))
+                                            self_cid=pid, owner=kid))
     if kin_lines:
         out["kinsmen"] = kin_lines[:10]
     # 主角握有的他人把柄 (v28b: 按对方持有人归并, 主角名只写一次)
@@ -15334,7 +15392,7 @@ def _secrets_facts(f):
         # v28b: 事件行同样用统一称谓 (主角/家人)
         olabel = plabel if owner == pid else f.kin_label(owner)
         s = f.secret_line(dict(rec, first=True), owner_label=olabel,
-                          knowers=False, self_cid=pid)
+                          knowers=False, self_cid=pid, owner=owner)
         if s:
             # 事件行前缀已给日期, 句内不再重复年份
             events.append(f"{f.date(fs)}，{s}")
@@ -15429,6 +15487,11 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # v45 (档 B): 行文本 -> [[cid, 称谓], …] —— 事件句/隐事句的行内出词登记
         # (与 f 同一对象, 后续构建器继续往里记)。板块期据此在确切位置插亲缘定语。
         "name_index": f.name_index,
+        # v63 (行内定语基准): 行主语 (句子讲的是谁) 与「句面已写明关系」的对手方 ——
+        # 与 f 同一对象。板块期给句中第三方人名出定语时按行主语算词; 落进快照后
+        # `verify_fast` 的 [V63] 也能照原数据复算 (与 name_index 同源同键)。
+        "line_owner": f.line_owner,
+        "line_stated": f.line_stated,
         "realm": _realm_facts(f),
         "player_death": pd,
         "last_date": cache.get("last_date"),

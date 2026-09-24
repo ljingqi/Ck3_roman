@@ -1242,8 +1242,9 @@ _KIN_MARKS = tuple(sorted(set(_KIN_MARKS) | {w for w in F.kin_texts() if len(w) 
                           key=len, reverse=True))
 # v58 (问题8): 亡故句的**通用/非血亲**关系词也一并算「已写明关系」——
 # 旧稿「的亲属X去世」会被再插一次定语，写成「的亲属公公X去世」。
+# v63: 补「生父」—— 生育句的「添子X，生父Y。」已写明 Y 与句子的关系。
 _KIN_MARKS = tuple(sorted(set(_KIN_MARKS) | {"亲属", "仇人", "友人", "情人",
-                                             "灵魂伴侣", "挚友", "死敌"},
+                                             "灵魂伴侣", "挚友", "死敌", "生父"},
                           key=len, reverse=True))
 _KIN_MARK_RE = re.compile("|".join(_KIN_MARKS))
 
@@ -1252,34 +1253,57 @@ def _names_for_line(facts, line):
     """取该行 facts 侧登记的 (cid, 称谓) 表 + 行内偏移量 (v45 档 B)。
 
     索引键是**句本体**; 下发时可能被套上「日期，」前缀 (隐事/恩怨/家人行迹),
-    故精确命中失败时, 只在标点之后试几段后缀 (最多 24 字)。"""
+    故精确命中失败时, 只在标点之后试几段后缀 (最多 24 字)。
+    v63: 第三个返回值 = 命中的**句本体** —— 据它查本行主语 (facts 里的
+    `line_owner` / `line_stated`, 与 `name_index` 同源同键)。"""
     idx = facts.get("name_index") or {}
     hit = idx.get(line)
     if hit is not None:
-        return hit, 0
+        return hit, 0, line
     for i in range(len(line) - 1):
         if i >= 24:
             break
         if line[i] in "，；。、 ":
             hit = idx.get(line[i + 1:])
             if hit is not None:
-                return hit, i + 1
-    return None, 0
+                return hit, i + 1, line[i + 1:]
+    return None, 0, None
 
 
 def _kin_tag_line(facts, scope, line):
-    """v45 (档 B): 行内**首见**人名前加亲缘定语 (无名额/无亲缘/已写明者原样返回)。"""
+    """v45 (档 B): 行内**首见**人名前加亲缘定语 (无名额/无亲缘/已写明者原样返回)。
+
+    v63 (行内定语基准): 句子有自己的主语时 (家人档案/刺客列传的逐人条目、隐事
+    持有人的隐事句 —— facts 侧登记为 `facts["line_owner"]`), 句中**第三方**人名
+    (不是本行主语的那个) 的定语按**本行主语**算词。旧稿一律按本篇传主算词, 于是
+    「于尔莎受业于西福尔酋长乱发哈拉尔」被插成「受业于**岳父**乱发哈拉尔」——
+    乱发哈拉尔是传主的岳父, 却是于尔莎的**生父**, 一句之内与同行家世行「父X」
+    相抵, 模型只好写「谱系交错，史家当另作考辨」。本行主语自己的人名仍按传主
+    算词 (年表旁称「姻亲姊妹X」即此档)。"""
     if scope is None or not line:
         return line
     fi = facts.get("_facts")
     if fi is None:
         return line
-    names, off = _names_for_line(facts, line)
+    names, off, key = _names_for_line(facts, line)
     if not names:
         return line
+    # v63: 本行主语 (无登记 → None, 回落旧口径「按本篇传主算词」)。表在 facts 字典里
+    # (与 `name_index` 同源同键, 由 facts 侧登记) —— 快照重跑时也能照原数据复算。
+    owner = (facts.get("line_owner") or {}).get(key) if key else None
+    # v63: 句面**已写明关系**的对手方 (成婚/添子/丧偶/夭折) → 不再插定语
+    # (否则出「与丈夫X成婚」「得长女女儿X」这类赘语; 妻/夫/妾 是单字, 进不了
+    #  `_KIN_MARK_RE` 的「已写明」判据)
+    stated = set((facts.get("line_stated") or {}).get(key) or ()) if key else set()
     scan = off
     for cid, label in names:
         if not label:
+            continue
+        if cid in stated:
+            continue
+        # v45 拍板: 从不标本篇传主 (传主的事迹遍篇皆是, 加定语只是噪声;
+        # v63 换基准后要在此显式挡住 —— 家人条目里传主可能以「句中第三人」出现)
+        if cid == scope.subject:
             continue
         i = line.find(label, scan)
         if i < 0:
@@ -1292,7 +1316,11 @@ def _kin_tag_line(facts, scope, line):
         if _KIN_MARK_RE.search(line[max(off, i - 12):i]):
             scan = i + len(label)
             continue
-        w = scope.word_for(cid, fi)
+        # v63: 句中第三方人名 → 按本行主语算词; 本行主语自己 → 按本篇传主算词
+        _subj = scope.subject
+        if owner is not None and int(cid) != owner:
+            _subj = owner
+        w = scope.word_for(cid, fi, subject=_subj)
         if not w:
             scan = i + len(label)
             continue
