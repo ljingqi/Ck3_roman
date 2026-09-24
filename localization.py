@@ -63,9 +63,18 @@ _REF_RE = re.compile(r"\$([A-Za-z0-9_]+)\$")
 #   ② 新增 `PROVINCE.GetName` —— 60 个 reason 键用 (72 处), 此前剥掉后模板成病句
 #      (「…在的酒馆中共享了一顿美餐…」); facts 侧早有「当地」兜底, 却因标签已被
 #      剥掉而永远走不到。现保留, 由 facts 解析成**真实地名**。
+# v63 (第五轮, 2026-09-24 用户报告「仇敌结仇原因没传过去」):
+#   ③ 新增 `GetDynastyHouseName(?:NoTooltip)?` —— 78 处 (37+37+4)。旧表把它剥掉后,
+#      `rival_house_feud_start_of_feud` 的中文模板 (「[house]家族和[house]家族爆发
+#      世仇后，A和B成为了仇敌。」) 渲染成「**家族和家族**爆发世仇后…」——
+#      因由整句变成无信息量的病句, 模型遂自造「因海关/关税结仇」。现保留, 由
+#      facts 解析成真实家族名 (埃德伯案 → 「威塞克斯家族和菲利普家族」)。
+#      (同类未认标签还有 `GetName`/`GetFirstName`/`GetPossessive`, 各 1–2 处, 不在
+#       本次报告范围内, 暂维持旧行为。)
 _KEEP_DYN_RE = re.compile(
     r"\[(?:(?:TARGET_CHARACTER_2|TARGET_CHARACTER|CHARACTER)\."
-    r"(?:GetShortUIName(?:Possessive)?(?:NoTooltip)?|GetHerHis(?:Your)?)"
+    r"(?:GetShortUIName(?:Possessive)?(?:NoTooltip)?|GetHerHis(?:Your)?"
+    r"|GetDynastyHouseName(?:NoTooltip)?)"
     r"|PROVINCE\.GetName)"
     r"(?:\|[A-Za-z0-9_]+)?\]")
 

@@ -7249,6 +7249,32 @@ class Facts:
                 return "house"
         return None
 
+    def house_flow_on(self, house_a, house_b, date):
+        """两族关系流水在**该日**的条目 → [渲染句, …] (v63 第五轮)。
+
+        数据源与《家族恩怨录》同 (`house_relations.database[*].history`), 句面走
+        `_rerender_feud_event` (两端角色按事件日期重渲染, 与家族恩怨录逐字同源)。
+        用途: 仇人列传的「结仇缘由」补**近因** —— 见 `relation_cause_lines` ④。
+        该日无条目 / 渲染不出来时返回 []。"""
+        if house_a is None or house_b is None or not date:
+            return []
+        db = (self.melt.get("house_relations") or {}).get("database") or {}
+        out = []
+        for r in db.values():
+            if not isinstance(r, dict):
+                continue
+            hs = r.get("houses") or []
+            if house_a not in hs or house_b not in hs:
+                continue
+            for e in (r.get("history") or []):
+                if not isinstance(e, dict) or str(e.get("date")) != str(date):
+                    continue
+                txt = self._rerender_feud_event(e.get("change_reason") or "",
+                                                date, houses=hs)
+                if txt and txt not in out:
+                    out.append(txt)
+        return out
+
     def _prison_type_fresh(self, cid, date):
         """该角色**当次**入狱的牢房档位 → `'dungeon'` / `'house_arrest'` / None。
 
@@ -14975,7 +15001,11 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
     v56 (地点): `[PROVINCE.GetName]` 由 `province` 解析成真实地名 (伯爵领名), 无值时
     退「当地」(旧稿因标签已在建表时被剥, 这句兜底是死代码)。
     v56 (§10): `names` 可显式给出 (owner, target, 第三人) 三个称谓 —— 供事实面走
-    `event_name` 口径 (同一人全篇称谓一致), 缺省仍用 `name_or` (保持 v16 起的行为)。"""
+    `event_name` 口径 (同一人全篇称谓一致), 缺省仍用 `name_or` (保持 v16 起的行为)。
+    v63 (第五轮): 新增 `[X.GetDynastyHouseName]` → **真实家族名** (本地化层已保留该
+    标签, 见 `localization._KEEP_DYN_RE` ③)。旧表格把它整段剥掉, 于是
+    `rival_house_feud_start_of_feud` 渲染成「家族和家族爆发世仇后…」—— 结仇因由
+    整句失真, 模型遂自造「因海关/关税结仇」。"""
     if names is not None:
         oname, tname, xname = (list(names) + ["", "", ""])[:3]
     else:
@@ -14984,11 +15014,32 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
         xname = f.name_or(extra) if isinstance(extra, int) else ""
     pname = _province_label(f, province) if province is not None else ""
     need_x = [False]
+    _hcache = {}
+
+    def _hname(cid):
+        """角色所属**家族名** (无家族返回空串; 按 id 记忆化)。"""
+        if not isinstance(cid, int):
+            return ""
+        if cid in _hcache:
+            return _hcache[cid]
+        try:
+            hid = f._house_of_cid(cid)
+        except Exception:                                 # noqa: BLE001
+            hid = None
+        nm = (cl.house_name_zh(f.melt, hid) or "") if hid is not None else ""
+        if not nm:
+            did = cl.dynasty_id_of(f.melt, hid) if hid is not None else None
+            nm = (cl.dynasty_name_zh(f.melt, did) or "") if did is not None else ""
+        _hcache[cid] = nm
+        return nm
 
     def _rep(m):
         role, acc = m.group(1), m.group(2)
         if role == "PROVINCE":
             return pname or "当地"
+        if acc.startswith("GetDynastyHouseName"):
+            return _hname({"CHARACTER": owner, "TARGET_CHARACTER": target,
+                           "TARGET_CHARACTER_2": extra}.get(role))
         if acc.startswith("GetHerHis"):
             return "其"
         if role == "CHARACTER":
@@ -15120,6 +15171,27 @@ def relation_cause_lines(f, cid, rel_date):
             sex = "女" if f._is_female(cid2) else "子"
             out.append(f"其抚养之{c2name}实为{pname}之{sex}")
             break
+    # ④ 同日两族决裂的**触发条** (v63 第五轮, 2026-09-24 用户报告)
+    #    埃德伯 907.10.27 那条游戏原因是 `rival_house_feud_start_of_feud`
+    #    (「威塞克斯家族和菲利普家族爆发世仇后，A和B成为了仇敌」)—— 它只说
+    #    **结果**, 不说世仇因何而起; 而起因就写在**同日**的家族关系流水里
+    #    (「昆伯被崔佛无理由囚禁」)。判据: 同日该两族的流水条目中, **点到主角、
+    #    没点到仇人本人**的那一条 —— 点到仇人的那条就是「成为仇敌」这一结果本身
+    #    (故排除)。措辞与《家族恩怨录》同源 (同一 `_rerender_feud_event`)。
+    #    称谓注: 该条流水的两端是**游戏烘焙的短名** (「崔佛」), 未经 v42 的
+    #    `event_name` 重渲染, 故同时按全名与名 (「·」前) 两种形态比对。
+    try:
+        _cname = f.name_or(cid)
+        _pforms = {x for x in (pname, (pname or "").split("·")[0]) if x}
+        for _txt in f.house_flow_on(f._house_of_cid(pid), f._house_of_cid(cid),
+                                    rel_date):
+            if _cname and _cname in _txt:
+                continue
+            if any(x in _txt for x in _pforms):
+                out.append(f"{f.date(rel_date)}，{_txt}")
+                break
+    except Exception:
+        pass
     return out
 
 
