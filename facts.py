@@ -6719,6 +6719,9 @@ class Facts:
         "recruit": "遭强征入仕", "vows": "被迫出家获释", "escape": "越狱脱身",
         "enslaved": "没为奴隶", "punished": "受刑获释", "executed": "处决",
         "died_in_prison": "死于狱中",
+        # 热修 (2026-09-24): 囚期被**吃掉**收口 —— 与 `executed` 同为死亡族,
+        # 但走食人硬证 (`devoured_by`), 措辞与死者名录的「被其吃掉」同词。
+        "devoured": "被吃掉",
         # v60 (问题4): 收句以**本档为界** —— 旧措辞「此后一直未见释放」把
         # 「本传数据窗口内在押」写成一句无限期的断言 (崔佛 881.1.1 卒、四名
         # 囚犯此后转归继位者, 传记却读成永远没放)。{bound} 由调用方给:
@@ -11943,13 +11946,24 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     # 一律视同「无凶手」)
                     _killer_same = (f._death_int(dd.get("killer"))
                                     == f._death_int(r["jailer"]))
-                    key = "prison_died_executed" \
-                        if (dd.get("reason") in _PRISON_EXEC_REASONS
-                            or _killer_same) \
-                        else "prison_died_in_prison"
+                    _exec_like = (dd.get("reason") in _PRISON_EXEC_REASONS
+                                  or _killer_same)
+                    # 热修 (2026-09-24, 用户报告): 食人硬证优先于笼统的「处决」——
+                    # Mod「食人赋能」把吃掉写成 `death_execution`, 遗骨是唯一确证
+                    # (`devoured_by`, v60 问题2)。旧稿收口不问硬证, 于是同一份事实里
+                    # 年表写「处决」而死者名录用 `execution_method` 写「被其吃掉」
+                    # (第 3 个十年: 桂王唐文举 895.1.14 入狱, 6 个月后写「处决」,
+                    # 而同一人的遗骨与死句都写「吃掉」)。死因与硬证须一致: 只在
+                    # 本已是刑杀、且遗骨确由本监禁者造成时改写, 病故不因此改口。
+                    _devour = bool(_exec_like and r["jailer"] is not None
+                                   and f.devoured_by(r["jailer"], victim))
+                    if _devour:
+                        key, o_kind = "prison_died_devoured", "devoured"
+                    elif _exec_like:
+                        key, o_kind = "prison_died_executed", "executed"
+                    else:
+                        key, o_kind = "prison_died_in_prison", "died_in_prison"
                     body += W[key].format(sp=sp)
-                    o_kind = ("executed" if key == "prison_died_executed"
-                              else "died_in_prison")
                 else:
                     # v34 (问题7): 记得到此为止 — 释放记忆、狱史与死亡记录三者皆无
                     # 时, 程序把「此后如何」说全, 不把沉默留给模型去补

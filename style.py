@@ -376,6 +376,12 @@ FACT_WORDING = {
     # 旧稿一律写「此后一直未见释放」(诺兰 1088 那 10 人其实 6 个月后被杀)。
     "prison_died_executed": "，{sp}处决",
     "prison_died_in_prison": "，{sp}死于狱中",
+    # 热修 (2026-09-24, 用户报告): 囚期以**吃掉**收口 —— Mod「食人赋能」把吃掉写成
+    # `death_execution`, 遗骨 (`devour_bone_visual`, 见 `Facts._devour_bones`) 是唯一
+    # 确证。旧稿收口只判「刑杀/狱死」, 于是同一个人在本篇里年表写「处决」、
+    # 死者名录用 `EXECUTION_DEVOUR_BONE` 写「被其吃掉」, 自相矛盾。
+    # 「其」= 句首点名的监禁者 (「X囚禁Y，6个月后被其吃掉」), 与名录同词。
+    "prison_died_devoured": "，{sp}被其吃掉",
     # v31 (问题5): 牵制句 — 强牵制与普通牵制分档 (游戏 [strong_hook] / [hook] 同义);
     # {name} 由 facts 传引号形态 (「干了我老婆」), 本地化查不到时为空串;
     # {since} 为「（X年起）」或到期日, 对象只有一个时逐条写, 同类多条归并一行。
