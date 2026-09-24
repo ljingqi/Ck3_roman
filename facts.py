@@ -7373,6 +7373,76 @@ class Facts:
             return ("not_battle", "同簇含未成年人")
         return ("unknown", "")
 
+    def sex_mem_lines(self, cid, as_of=None, player=None):
+        """该角色相关的**强迫/半强迫性事** → [「日期，句」] (v63 问题3, 用户拍板)。
+
+        出口**只有《列传·好友》《列传·仇人》**: 用户 2026-09-24 拍板「只需要补
+        埃德伯的强奸记忆……只有仇人/好友列传需要加, 其他的都不需要」。角色档案
+        (`_characters` 的「行迹」) 与公开年表 (`_timeline`) 两侧都按 v59 口径
+        不收性事, 旧稿因此**两侧互相指认对方出句而实际谁都没出** —— 本方法补上
+        这条唯一的出口, 由 `biography._subject_facts` 挂进该篇纪事块。
+
+        两个数据源取并集并按 (日期, 体位, 自愿档, 对方) 去重:
+          ① **当事人自己持有的**性事记忆 —— 键名带 `giving/receiving` 即方向,
+             受害方那一条直接得「X被Y强迫…」;
+          ② **主角持有的**同一次记忆 (`sex_partner == cid`) —— 受害方的记忆会随
+             当事人死亡被引擎回收 (见 `docs/调研_Carnalitas性事记忆留痕.md`),
+             主角侧那条 (playable 线, 1300+ 年) 才耐久; 这一路按**受害方口径**
+             渲染, 免得把「主角强迫埃德伯」写成「埃德伯强迫主角」。
+
+        只收 `noncon` / `dubcon` (用户 2026-09-14 拍板); `as_of` 之后的不出。"""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return []
+        try:
+            player = int(player) if player is not None else None
+        except (TypeError, ValueError):
+            player = None
+        db = (self.melt.get("character_memory_manager") or {}).get("database") or {}
+        holder = self._mem_holder_index()
+        out = {}
+        for mid, e in db.items():
+            if not isinstance(e, dict):
+                continue
+            t = str(e.get("type") or "")
+            info = sex_mem_info(t)
+            if info is None or not info["kept"]:
+                continue
+            parts = e.get("participants") or {}
+            other = parts.get(_SEX_PARTNER_SLOT)
+            if not isinstance(other, int):
+                continue
+            try:
+                h = holder.get(int(mid))
+            except (TypeError, ValueError):
+                h = None
+            if h == cid and other != cid:
+                s = _sex_mem_sentence(self, cid, e, info)
+                key_other = other
+            elif player is not None and h == player and other == cid:
+                # ② 主角侧反查: 该条记的是「主角 giving」, 但句面要站受害方
+                act = info["act"] or "base"
+                w = _style.SEX_MEM_WORDING["victim_noncon" if info["consent"] == "noncon"
+                                           else "victim_dubcon"]
+                nm = self.event_name(cid, date=e.get("creation_date"))
+                om = self.event_name(player, date=e.get("creation_date"))
+                s = w.get(act, w["base"]).format(name=nm, other=om) if (nm and om) else ""
+                # 去重键站**当事人视角**的对方 —— 否则同一次性事的
+                # 「自己那条 (sex_partner=主角)」与「主角那条 (sex_partner=自己)」
+                # 会算成两条, 同一句话出两遍 (实测 44335 出两行)。
+                key_other = player
+            else:
+                continue
+            if not s:
+                continue
+            _md = self.mem_date(cid, e)
+            if as_of and _md and cl.date_key(_md) > cl.date_key(as_of):
+                continue
+            out[(_md, info["act"], info["consent"], key_other)] = \
+                f"{self.date(_md)}，{s}"
+        return [out[k] for k in sorted(out, key=lambda x: cl.date_key(str(x[0])))]
+
     def _prison_opinion_index(self):
         """{(owner, target): [(modifier, start_date)]} + 按 owner 的兜底索引 (惰性)。"""
         cached = getattr(self, "_prison_opinions", None)

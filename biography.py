@@ -1492,6 +1492,16 @@ def _article_facts(facts, cache, key, section=None):
                 _prof = facts.get("characters", {}).get(str(cid)) or {}
                 ev = _prof.get("events_subjectless") or events
                 _set_block(blocks, "传主行迹", "\n".join(ev))
+                # v63 (问题3, 用户拍板): 性事 (强迫/半推半就) 的唯一出口 ——
+                # 角色档案与公开年表两侧都按 v59 口径不收, 好友/仇人列传这里单独出块。
+                _gi = facts.get("_facts")
+                if _gi is not None:
+                    try:
+                        _sx = _gi.sex_mem_lines(cid, as_of=facts.get("as_of"),
+                                                player=facts.get("player_id"))
+                    except Exception:
+                        _sx = []
+                    _set_block(blocks, "强迫之事", "\n".join(_sx))
                 tl = F.slice_events(facts.get("timeline") or [], key, sk,
                                     exclude=_has_assassins(facts))
                 # v52 (问题5): 传主篇年表只收传主本人参与的事件 (防第三者串味)
