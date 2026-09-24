@@ -1561,6 +1561,45 @@ test(v60)     verify_fast 新增 V60 断言组 + tools/diag_v60.py
 改出「纳妾与门庭」题面与三条带日期的纳妾事实；四囚行含「至末档仍在押，881年1月1日转归
 居拉辛斯勒格女大酋长埃尔梅辛达·加通斯」。
 
+## v61 修正（两问题：《宝物志》遗骨泛滥（菲利普2）/《朝局风云录》混入唐廷职司（崔佛））
+
+方案与取证见 `docs/方案_v61_遗骨稀有度与朝廷职司.md`；机制调研见
+`docs/调研_宝物稀有度与部件宝物.md`（游戏档位序、颜色与 Mod 遗骨档位映射，均带 `文件:行`）。
+测试集 `output/菲利普2`（玩家 38665，传主崔佛·菲利普 850–，末档 `melt_888_01_01`）
+与 `output/崔佛`（38660，卒 881.1.1，末档 `melt_882_01_01`）。
+
+| # | 用户所见 | 根因（file:line 为实施前） | 修法（落点） |
+| --- | --- | --- | --- |
+| 1 | 《宝物志》里遗骨一具一具报名字，档位全是「常见」 | 乙档（身体部件）**不限稀有度**（`facts.py:7466-7473`）；而 Mod「食人赋能」按**被吃者头衔档**赋 rarity（`scripted_effects/devour_effects.txt:553-611`：帝国 illustrious / 王国 famed / **公爵 masterwork** / 伯爵·无地 common），实测菲利普2 26 件全常见、崔佛 22 件里 21 常见 | 新增 `ARTIFACT_PART_RARITY = ("masterwork","famed","illustrious")`（绿色以上），乙档判定加档位门槛（`facts.py`）；等价于「只收公爵及以上头衔者的遗骨」＋本体高稀部件宝物 |
+| 2 | 《终传·朝局风云录》把唐六部九卿写成法兰克朝廷朝臣（「宰相路岩…」），并带出唐臣隐事 | 两处守卫写成 `if mine and lc not in mine`（`facts.py:5225,5252`）＝**fail-open**；且 `_my_realm_tids()` 在**传主卒于 as_of 时**返回空集 —— `_primary_title_at()` 要求「末档仍在持」（`:2769-2771`），卒后头衔全带 loss 日，兜底 `landed.domain` 又因卒档无 `landed_data` 而为空（`cache_lib.py:2527-2540` 覆盖式写入）⇒ 全图 9 个 `e_minister_*`（`de_facto_liege = h_china`）入选 | ①`_primary_title_at()` 新增 `held_through`（判「与某日相交」）＋`_my_realm_tids()` 卒后兜底（cut = `as_of` → `player_death.date` → `last_date`）②两处守卫改 **fail-closed**（`mine` 空 ⇒ 一律不收） |
+
+**提交纪律（每步一条 commit）**
+
+```
+5d51213 chore(v61)  检查点 —— 方案/机制调研落档 + 只读探针 (probe_v61_tang + requests 替身)
+1fd9d37 fix(v61-1)  部件宝物只收绿色以上 (ARTIFACT_PART_RARITY)
+f137164 fix(v61-2)  朝廷职司 fail-closed + 卒后首要头衔 held_through 兜底
+63d9bf4 test(v61)   V60 组件数断言改口径 + common 遗骨反例 (v39 单测 4g/4h)
+```
+
+**回归与验收状态**（全部在快照上跑，熔件每档只读一次）
+
+| 项 | 结果 |
+| --- | --- |
+| 崔佛终传 改前基线 → v61-1（`snapdiff --facts-only`） | 仅 `artifacts_lead/mid` 2678→614 字符（22 件 → 1 件「安达卢斯苏丹穆罕默德·伍麦叶之骨，著名」），其余事实面不变 |
+| 崔佛终传 v61-1 → v61-2 | 仅 `chaoju_lead`、`chaoju_mid`（1434→1230、3050→2868）：删掉「朝廷职司：宰相路岩…」一行与 5 条唐臣隐事，其余不变 |
+| 崔佛第 1 个十年（as_of 878.1.1） | **朝局块逐块不变**；只有 `artifacts_*` 1217→0（11 件全 common） |
+| 菲利普2 第 2 个十年（888.1.1） | 仅 `artifacts_lead/mid` 2647→0 ⇒ 26 件全 common，《宝物志》篇目按 `biography.py:2585` 不生成 |
+| 斯卡利茨终传（中国档防回归：`snap.py 斯卡利茨 33572063 final --melt=melt_924_01_01.json.xz`） | `realm.ministers` **7 条与改前逐字相同**（弗兹纳塔·切尔宁…张庭玉），fail-closed 未误删 |
+| `tools/verify_fast.py` 崔佛终传 / 十年篇 | **全部 PASS** |
+| `tools/verify_v39_unit.py` | **55/55 PASS**（新增 4g「common 部件宝物不得入志」/ 4h「masterwork 入志」） |
+| `tools/verify_fast.py` 菲利普2 快照 | 仅剩 1 条**既有 FAIL**：`[1] 把柄行仍点名主角` —— 改前基线快照同样 FAIL，非本轮引入 |
+| 食人硬证链 | 未受影响：`_devour_bones()`（`facts.py:8002-8038`）直读熔件、不看 rarity；崔佛终传快照仍过「死者名录里被吃者写『吃掉』」 |
+
+> 成稿重出（`pipeline.py bio 38660` / `--decade 1`）**未做**：会消耗 LLM 调用，待用户拍板。
+> 另注：遗骨被门槛筛掉后，《宝物志》只在「还有绿色以上部件宝物或名望级重宝」的档期出现
+> —— 崔佛第 1 个十年与菲利普2 第 2 个十年本轮即无此篇（属筛选的预期结果）。
+
 ## 环境准备
 
 1. **Python 依赖**：`python -m pip install -r requirements.txt`（requests）。
