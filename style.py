@@ -355,6 +355,14 @@ FACT_WORDING = {
     "prison_escape_same_day": "，当日越狱脱身",
     "prison_jailed": "{jailer}囚禁{victim}",
     "prison_held": "{victim}被囚",
+    # v63 (问题1, 用户 2026-09-24 拍板): 囚禁的**获取方式**只写有硬证的那几种。
+    # 追加调研的结论是「破城俘虏」与「战败俘虏」在本档**不可区分**(三者共用裸
+    # `imprison`, `melt["sieges"]` 只留在进行的攻城, 省份 occupant 只是当前状态),
+    # 故判不出时仍走 `prison_jailed` 的裸「囚禁」——**不写方式**, 模型也就没有
+    # 「在宴会上擒获」这类自造场景的落点了。
+    "prison_captured_battle": "{jailer}于战阵俘获{victim}",
+    "prison_captured_diarch": "{jailer}以摄政之权拘押{victim}",
+    "prison_batch_seized": "{jailer}拘押{victim}",
     # v56 (§10-D): 相恋缘由的**程序兜底** (拿不到游戏 reason 键时) —— 双方同囚于
     # 同一监禁者、同为 house_arrest (软禁)、且关系起始日落在共同在押区间内。
     # 措辞只陈述**可判定的事实** (「同在X的软禁中」), 不冒用游戏 lover_prison
@@ -362,8 +370,8 @@ FACT_WORDING = {
     "lovers_same_prison": "{name}与{other}同在{jailer}的软禁中相恋",
     "lovers_same_prison_no_jailer": "{name}与{other}同在软禁中相恋",
     # v56 (问题2, 用户拍板案 A): 同日「入狱＋获释」且同日该被囚者的战争结束 ——
-    # 这不是「抓了又放」, 而是**战末俘获**: 原囚禁行改写为战胜句 (同日那条 war_won
-    # 行被本句吃掉, 免两行重复), 事件型改 `war_capture` 不进囚禁集群折叠。
+    # 这不是「抓了又放」, 而是**战末俘获**。v63 (问题1) 起该档改写为统一的
+    # 战阵俘获措辞 (`prison_captured_battle`), 本键停用 (保留仅供旧断言引用)。
     "prison_war_end": "{jailer}战胜{victim}，俘之",
     # v42 (问题3): 阉割/致盲**必然与释放同日**（存档 21/21 例实证）——
     # 刑名不再另起一行, 而是充当出狱缘由并入囚禁句。{sp} = 「当日」或「14日后」。

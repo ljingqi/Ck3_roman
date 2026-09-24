@@ -6963,6 +6963,183 @@ class Facts:
         d = self.date(when) if when else ""
         return f"，{d}转归{name}" if d else f"，转归{name}"
 
+    def _battle_by_date(self):
+        """{日期: [(类型, loser, winner, owner)]} —— 本档全部战斗/战争记忆 (惰性)。
+
+        用于「同日打了仗且被囚者正是输家 ⇒ 战阵俘获」这一判据 (v63 问题1)。
+        来源 = `character_memory_manager.database` 里**任何角色**持有的
+        `battle_won_memory` / `battle_lost_memory` / `war_won` / `war_lost`,
+        故不依赖「主角当时在不在场」。
+
+        胜方判定: 记忆持有人即该记忆的主语 —— `*_won` 的持有人是**胜方**
+        (`battle_won_memory` 的 participants 只有 `loser`), `*_lost` 的持有人是
+        **败方** (`participants.winner`); 两者互补, 故两条都收录, 由调用方按
+        「被囚者是不是 loser」判。"""
+        cached = getattr(self, "_battle_idx", None)
+        if cached is not None:
+            return cached
+        out = {}
+        db = (self.melt.get("character_memory_manager") or {}).get("database") or {}
+        for mid, e in db.items():
+            if not isinstance(e, dict):
+                continue
+            t = e.get("type") or ""
+            if t not in ("battle_won_memory", "battle_lost_memory",
+                         "war_won", "war_lost"):
+                continue
+            parts = e.get("participants") or {}
+            owner = e.get("owner")
+            if owner is None:
+                try:
+                    owner = int(mid)
+                except (TypeError, ValueError):
+                    owner = None
+            d = e.get("creation_date")
+            if not d:
+                continue
+            out.setdefault(str(d), []).append(
+                (t, parts.get("loser"), parts.get("winner"), owner))
+        self._battle_idx = out
+        return out
+
+    @staticmethod
+    def _battle_winner(rec):
+        """战斗/战争记忆 → (loser, winner); 胜方缺字段时由持有人补。"""
+        t, loser, winner, owner = rec
+        if winner is None:
+            # `*_won` 的持有人就是胜方; `*_lost` 的 participants 应带 winner
+            if t.endswith("_won") or "won" in t:
+                winner = owner
+        return loser, winner
+
+    def _var_flags(self, cid):
+        """角色 `alive_data.variables` 的 flag 名集 (死者的 `dead_data` 兜底)。"""
+        chars = self.melt.get("living") or {}
+        if str(cid) not in chars:
+            chars = self.melt.get("dead_unprunable") or {}
+        if str(cid) not in chars:
+            chars = (self.melt.get("characters") or {}).get("dead_prunable") or {}
+        ad = (chars.get(str(cid)) or {}).get("alive_data") \
+            or (chars.get(str(cid)) or {}).get("dead_data") or {}
+        vs = ad.get("variables")
+        items = vs.get("data") if isinstance(vs, dict) else vs
+        out = set()
+        for it in (items or []):
+            if isinstance(it, dict) and it.get("flag"):
+                out.add(str(it["flag"]))
+        return out
+
+    def _battle_poi_hits(self, jailer, date):
+        """省份战场兴趣点命中 (v63 问题1 最强判据之一) → 省份 id 列表。
+
+        游戏在「战斗所在省」写 `battle_poi_winner` / `battle_poi_date_{year,month,day}`
+        / `battle_poi_enemy_commander_imprisoned` (`events/war_events/combat_events.txt:2333`),
+        且写变量的事件 `combat_event.3000` 与关人的 `combat_event.1001` 由**同一
+        on_action 同一次触发** (`common/on_action/combat_on_actions.txt:12-24`),
+        故二者严格同场。日期三个变量落盘时 ×100000 (实测 year identity
+        89100000 → 891 年, day 2400000 → 24)。覆盖率极窄 (本档实测 9 处),
+        但一旦命中即确定性。"""
+        cached = getattr(self, "_poi_idx", None)
+        if cached is None:
+            cached = {}
+            provs = self.melt.get("provinces") or {}
+            for pid, p in provs.items():
+                if not isinstance(p, dict):
+                    continue
+                vs = (p.get("variables") or {})
+                items = vs.get("data") if isinstance(vs, dict) else vs
+                flags = {}
+                for it in (items or []):
+                    if isinstance(it, dict) and it.get("flag"):
+                        d = it.get("data") or {}
+                        flags[str(it["flag"])] = d.get("identity")
+                if not flags.get("battle_poi_enemy_commander_imprisoned"):
+                    continue
+                def _div(name):
+                    v = flags.get(name)
+                    try:
+                        return int(v) // 100000
+                    except (TypeError, ValueError):
+                        return None
+                cached[str(pid)] = {
+                    "winner": flags.get("battle_poi_winner"),
+                    "year": _div("battle_poi_date_year"),
+                    "month": _div("battle_poi_date_month"),
+                    "day": _div("battle_poi_date_day"),
+                }
+            self._poi_idx = cached
+        try:
+            y, mo, d = (int(x) for x in str(date).split(".")[:3])
+        except (TypeError, ValueError):
+            return []
+        return [pid for pid, v in cached.items()
+                if v.get("winner") == jailer and v.get("year") == y
+                and v.get("month") == mo and v.get("day") == d]
+
+    def capture_manner(self, victim, jailer, date):
+        """该次囚禁的**获取方式** (v63 问题1) → (档位, 证据说明)。
+
+        用户 2026-09-24 口径: 不确定能否区分「破城俘虏」与「战败俘虏」就再查 ——
+        追加调研 (`docs/调研_囚禁方式与存档留痕.md` §10) 的结论是:
+        **本档无法把任何一次同日多人入狱判成破城或战败**, 因为
+
+          · 战斗俘获 / 城破俘获 / 劫掠掳人 三者最终都是裸 `imprison`
+            (`combat_events.txt:1295`; `00_prison_effects.txt:1950/1958`;
+            `raid_events.txt:1017`), 存档字段完全一致;
+          · `melt["sieges"]` 只保留**存档时点仍在进行**的攻城 (922 档最早
+            start_date 只到 918.3.31), 895–915 的六个批次全在窗口之外;
+          · 省份 `occupant` 是**当前状态**而非历史;
+          · 主角侧六个批次日期没有任何 `battle_won_memory`。
+
+        故这里只给**有硬证**的档位, 其余一律 `unknown` —— 而 `unknown` 的措辞
+        不含任何方式词 (这正是「模型自己造出宴会擒获」的缺口被关掉的地方):
+
+          | 档位 | 判据 |
+          | --- | --- |
+          | `diarchy` | 在押者带 `imprisoned_by_diarch` 变量 (全库唯一 set 点) |
+          | `battle_poi` | 省份战场兴趣点 winner/日期与该次入狱对齐 (确定性, 覆盖窄) |
+          | `battle` | 同日该 (监禁者, 被囚者) 有战斗记忆: 被囚者是 `loser`、监禁者是胜方 |
+          | `batch` | 同日同监禁者 ≥3 人 (司法逮捕只针对本方一人, 批量必为军事/诛族行动) |
+          | `unknown` | 以上皆不成立 → **不写方式** |
+
+        返回 `(tag, note)`; `note` 只作日志/断言用, 不进提示词。"""
+        try:
+            victim = int(victim)
+            jailer = int(jailer) if jailer is not None else None
+        except (TypeError, ValueError):
+            return ("unknown", "")
+        if victim is None or not date:
+            return ("unknown", "")
+        # ① diarchy 摄政绑架 (确定性)
+        if "imprisoned_by_diarch" in self._var_flags(victim):
+            return ("diarchy", "imprisoned_by_diarch")
+        # ② 省份战场兴趣点 (确定性, 覆盖窄)
+        if jailer is not None:
+            hits = self._battle_poi_hits(jailer, date)
+            if hits:
+                return ("battle_poi", f"province={hits[0]}")
+        # ③ 同日战斗且被囚者是输家 (监禁者已知时必须同时是胜方 —— 同一天可能有多场仗)
+        for rec in self._battle_by_date().get(str(date), []):
+            loser, winner = self._battle_winner(rec)
+            _ok = (loser == victim) and (winner == jailer if jailer is not None
+                                         else True)
+            if _ok:
+                return ("battle", f"{rec[0]} loser={loser} winner={winner}")
+        # ④ 同日同监禁者批量入狱 (司法逮捕只针对本方一人)
+        if jailer is not None:
+            n = 0
+            db = (self.melt.get("character_memory_manager") or {}).get("database") or {}
+            for e in db.values():
+                if not isinstance(e, dict) or e.get("type") != "imprisoned":
+                    continue
+                if str(e.get("creation_date")) != str(date):
+                    continue
+                if (e.get("participants") or {}).get("imprisoner") == jailer:
+                    n += 1
+            if n >= 3:
+                return ("batch", f"{n}人同日")
+        return ("unknown", "")
+
     def _prison_opinion_index(self):
         """{(owner, target): [(modifier, start_date)]} + 按 owner 的兜底索引 (惰性)。"""
         cached = getattr(self, "_prison_opinions", None)
@@ -12130,8 +12307,26 @@ def _pair_imprisonments(events, f, pid, pname=""):
             if r["jailer"] is not None:
                 jn = f.event_name(r["jailer"], date=f.as_of)
             W = _style.FACT_WORDING
-            body = W["prison_jailed"].format(jailer=jn, victim=vn) if jn \
-                else W["prison_held"].format(victim=vn)
+            # v63 (问题1): 有硬证时才写获取方式 (diarchy / 战阵俘获 / 批量擒获),
+            # 判不出时维持裸「囚禁」——方式词只在程序确知时出现。
+            _cm, _cm_note = ("unknown", "")
+            try:
+                _cm, _cm_note = f.capture_manner(victim, r["jailer"], r["date"])
+            except Exception:
+                _cm, _cm_note = ("unknown", "")
+            if _cm == "diarchy":
+                body = W["prison_captured_diarch"].format(jailer=jn or "其监禁者",
+                                                          victim=vn)
+            elif _cm in ("battle", "battle_poi"):
+                body = W["prison_captured_battle"].format(jailer=jn or "其监禁者",
+                                                          victim=vn)
+            elif _cm == "batch" and jn:
+                # 批量入狱必为军事/诛族行动 (非司法逮捕), 但破城与战败不可分 ——
+                # 措辞到此为止, 不写方式 (见 `capture_manner` 的档位表)。
+                body = W["prison_batch_seized"].format(jailer=jn, victim=vn)
+            else:
+                body = W["prison_jailed"].format(jailer=jn, victim=vn) if jn \
+                    else W["prison_held"].format(victim=vn)
             head = body          # v54: 句首「X囚禁Y」—— 尾巴即结局, 折叠按尾巴分组
             o_kind = "other"     # v54: 结局**族** (同日折叠的一致性判据)
             # v35 (问题4): 出狱缘由先问「这一步是不是没为奴隶」——
@@ -12156,7 +12351,11 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     drop.add(_war[0])
                     _wn = f.event_name(_war[1], date=f.as_of) \
                         if isinstance(_war[1], int) else ""
-                    body = W["prison_war_end"].format(jailer=_wn or jn, victim=vn)
+                    # v63 (问题1): 战末俘获并入统一的战阵俘获措辞 —— 旧稿另起
+                    # `prison_war_end`(「战胜X，俘之」), 与同日的战阵俘获得出两种
+                    # 说法; 语义同为「战中被俘」, 词形收到一处 (仍带「俘」字)。
+                    body = W["prison_captured_battle"].format(
+                        jailer=_wn or jn or "其监禁者", victim=vn)
                     o_kind = "war_end"
                 elif pun is not None:
                     # pun = (W 的模板键, 事件下标) —— 见 _punishment_on;
@@ -12263,7 +12462,8 @@ def _pair_imprisonments(events, f, pid, pname=""):
             # v54 (问题3d): 留给同日集群折叠用 (被囚者 id / 称谓 / 结局族 / 结局原文);
             # `_fold_prison_clusters` 收口时逐条 pop, 不进最终 facts。
             e["_pm"] = {"v": victim, "vn": vn, "jn": jn,
-                        "h": head, "t": body[len(head):], "o": o_kind}
+                        "h": head, "t": body[len(head):], "o": o_kind,
+                        "cm": _cm}
     # v54 (顺带, v42 口径收口): 未被任何囚禁行消费的释放/越狱记忆不再单独成行 ——
     # v42 定规「释放/越狱一律写在囚禁行**之内**」, 裸「X获释。」行即残留形态。
     # 实测成因 (斯卡利茨 919.8.25 内莫伊): 同一人被囚两次而引擎只留了一条入狱记忆,
@@ -12422,7 +12622,8 @@ def _fold_prison_clusters(events, f):
             rows.append({"i": i, "rank": rank, "since": since,
                          "cid": pm.get("v") or 0, "vn": pm.get("vn") or "",
                          "jn": pm.get("jn") or "", "tail": pm.get("t") or "",
-                         "o": pm.get("o") or "released"})
+                         "o": pm.get("o") or "released",
+                         "cm": pm.get("cm") or "unknown"})
         rows.sort(key=lambda r: (-r["rank"],
                                  cl.date_key(r["since"]) if r["since"] else _DATE_KEY_MAX,
                                  r["cid"]))
@@ -12437,6 +12638,10 @@ def _fold_prison_clusters(events, f):
             tails[r["tail"]] = tails.get(r["tail"], 0) + 1
         jn = named[0]["jn"]
         body = f"{jn}囚禁{shown}" if jn else f"{shown}被囚"
+        # v63 (问题1): 簇内若有战斗硬证, 整簇改写为战阵俘获; 否则维持裸「囚禁」
+        # —— 破城与战败不可分 (调研 §10), 故不为簇另安方式词。
+        if any((r.get("cm") or "") in ("battle", "battle_poi") for r in named):
+            body = (f"{jn}于战阵俘获{shown}" if jn else f"{shown}于战阵被俘")
         # v55 (§3, 用户拍板「多人不带时长」): 收口按**出狱缘由族**计数, 不再按结局原文
         # (含时长) 报菜名 —— 旧稿「其中15人1个月后获释、2人4日后获释、…」7 款并列。
         words = getattr(f, "_PRISON_KIND_WORD", {}) or {}
