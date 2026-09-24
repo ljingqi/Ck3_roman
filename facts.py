@@ -1948,6 +1948,13 @@ class Facts:
                     break
             liege = t.get("de_facto_liege")
             cur = str(liege) if liege is not None else None
+        # v62: 日本最高头衔 (天皇座/日本帝国) 补一层**头衔侧**政体 —— 持有者政体史
+        # 早于缓存窗口时 (藤原良房 858–879 的 e_japan 任期) 上面取不到, 由头衔自己的
+        # history_government 定时代: japan_administrative_government = 关白时代,
+        # japan_feudal_government = 幕府/将军时代 (history/titles/e_japan.txt:68-71)。
+        if gov == "" and \
+                ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
+            gov = (self._lt.get(str(tid)) or {}).get("history_government") or ""
         self._gov_cache[ck] = gov
         return gov
 
@@ -3519,6 +3526,72 @@ class Facts:
         "barony":  "baron_administrative_male_japanese",     # 郡司
     }
     _TENNO_TITLE_KEYS = {"k_chrysanthemum_throne"}  # 天皇座持有人 → 天皇
+    # v62 (问题: 关白/将军): 日本最高头衔的官职词**按头衔自身**定, 不按「该日持有者」
+    # 的政体史 —— e_japan 的持有人是日本实际统治者, 随时代换词 (游戏同一组 flavorization):
+    #   japan_administrative_government → emperor_administrative_male_japanese = 关白
+    #     (10_tgp_japan_flavorization.txt:336-347, priority 1000)
+    #   japan_feudal_government        → emperor_shogun_male_japanese = 幕府将军
+    #     (同文件 :398-410, priority 1001, 另需 flag = shogun_flag; 无旗的封建持有者
+    #      是 :363 太政大臣 —— 缓存与熔件都不存角色旗标, 故封建期统一取「幕府将军」,
+    #      即幕府时代的通行称呼; 平安期一律走上面的关白)
+    #   k_chrysanthemum_throne         → king_tenno_male_japanese = 天皇 (同文件 :591)
+    # 旧稿取「该日持有者」的政体: 持有者的政体史早于缓存窗口时 (藤原良房卒 879)
+    # 取不到, 落回通用词「皇帝」, 于是同一顶 e_japan 在源融写「关白」、在藤原良房写「皇帝」。
+    _JAPAN_TOP_OFFICE_KEYS = {
+        ("e_japan", "japan_administrative_government"): "emperor_administrative_male_japanese",
+        ("e_japan", "japan_feudal_government"): "emperor_shogun_male_japanese",
+        ("k_chrysanthemum_throne", "japan_administrative_government"): "king_tenno_male_japanese",
+        ("k_chrysanthemum_throne", "japan_feudal_government"): "king_tenno_male_japanese",
+    }
+    # v62 (菲利普2 问题1/2): 日本最高头衔 = 天皇座 (高御座) + 日本帝国 (e_japan)。
+    # 二者的**头衔名/国号一律不作「王子/公主」称号的前缀** —— 旧稿在父/母已故或已失位时
+    # 走「一生最高头衔」兜底, 把它们拼成「高御座王子」「日本王子」, 而游戏侧从无此词:
+    #   · 御座名不作人名前缀 (10_tgp_japan_flavorization.txt:634「亲王」只给
+    #     special=ruler_child 且 titles={k_chrysanthemum_throne} 的在位天皇子女);
+    #   · e_japan 的持有人是关白/幕府将军 (同文件 :336 关白 / :398 幕府将军),
+    #     其子女在游戏里无王子/公主词可用 (全文件 prince*/princess*_japanese 仅 :634,644 两条)。
+    # 日本皇族的称号只由 _tenno_prince_word 一条路出词。
+    _JAPAN_TOP_TITLE_KEYS = {"k_chrysanthemum_throne", "e_japan"}
+    # v62 (史实口径 B): 日本皇籍宗族 —— 天皇一家的宗族 (dynn_Yamato = 大和)。
+    # 皇族与臣的分界是**臣籍降下 (赐姓源/平)**, 不是「父是否在位」:
+    #   · 《大日本史》卷十七 / 维基实测: 惟喬親王 (文德天皇之子) 在父 858 年崩御后
+    #     仍以親王身分活到 897 年; 本康親王・人康親王・秀良親王・業良親王同例;
+    #   · 受源姓者即入臣籍 (嵯峨弘仁 5 年/814 诏「赐皇子皇女未为亲王者姓源朝臣…除亲王之号」):
+    #     源融・源信・源常・源弘・源定・源明・源澄・源昇・源本有・文德源氏 皆为臣。
+    # 游戏侧对应机制: `tgp_japan_imperial_branch_decision`「请求皇室本姓」
+    # (game/common/decisions/dlc_decisions/tgp/tgp_japan_decisions.txt:826-1005, 皇室 → 源/平)。
+    _IMPERIAL_DYNASTY_KEYS = {"japanese_yamato"}
+    _IMPERIAL_DYNASTY_NAMES = {"大和"}   # dynn_Yamato 的简中名 (本项目本地化表口径)
+
+    def _imperial_clan_state(self, cid):
+        """日本皇籍三态 (v62): 'imperial' 在皇籍 / 'subject' 已臣籍降下 / '' 判不明。
+
+        取值链: ① 本项目统一宗族名链 `dynasty_name` (缓存逐角色字段, 最稳 —
+        v44 起每篇按沿革取值, 源/平/藤原/大和 直接可读);
+        ② 宗族 key (熔件 `dynasties.dynasties[<id>].key` == japanese_yamato)。
+        判不明返回 '', 由调用方**拒绝**出亲王词 (宁可退裸名, 不凭空给皇族称号)。"""
+        nm = self.dynasty_name(cid) or ""
+        if nm:
+            return "imperial" if nm in self._IMPERIAL_DYNASTY_NAMES else "subject"
+        did = self._dynasty_of_cid(cid)
+        if did is None:
+            return ""
+        key = (((self.melt.get("dynasties") or {}).get("dynasties") or {})
+               .get(str(did)) or {}).get("key") or ""
+        if not key:
+            return ""
+        return "imperial" if key in self._IMPERIAL_DYNASTY_KEYS else "subject"
+
+    def _ever_held_throne(self, cid, date=None):
+        """父/母是否**曾**持天皇座 (含已退位/已崩御) —— v62: 親王是终身身分,
+        故认「一生持有过」, 不限于取词当日仍在位。"""
+        for tid, ivs in (self._hold_intervals(cid, date) or {}).items():
+            if ((self._lt.get(str(tid)) or {}).get("key") or "") not in self._TENNO_TITLE_KEYS:
+                continue
+            for (g, _l, _lt) in ivs:
+                if g:
+                    return True
+        return False
 
     def title_base_name(self, tid):
         """头衔基础名 (不含层级词/官职词): 动态名 → custom → name → 本地化 → key。"""
@@ -3877,7 +3950,9 @@ class Facts:
         回退到通用 king「国王」→ 渲染成「粤国王」, 与游戏「桂王/粤王」口径不符 (修复方案_菲利普2.md 问题3)。
         v17: 日式律令制政体 (japan_administrative_government) 单独分支 — 查游戏键
         帝国=关白/王国=帅/郡县=国司/堡=郡司 (修复方案_汤利五问题.md 问题2);
-        tid 传入时, 天皇座 (k_chrysanthemum_throne) 持有人直称「天皇」。"""
+        tid 传入时, 天皇座 (k_chrysanthemum_throne) 持有人直称「天皇」。
+        v62: 日本最高头衔另走 `_JAPAN_TOP_OFFICE_KEYS` 直表 —— e_japan 按头衔时代
+        出「关白」(律令制) 或「幕府将军」(封建期), 不再落通用词「皇帝」。"""
         gov = government or ""
         # v52 (问题2): 无地冒险者营地的持有者称呼走游戏键
         # (`duke_landless_adventurer_camp_<宗旨>` = 头目/领袖/队长…; 宗旨未知回退
@@ -3895,11 +3970,15 @@ class Facts:
                                date=date)
         if fw:
             return fw
-        if gov == "japan_administrative_government":
-            key = self._JAPAN_OFFICE_KEYS.get(tier)
-            if tid is not None and \
-                    (self._lt.get(str(tid)) or {}).get("key") in self._TENNO_TITLE_KEYS:
-                key = "king_tenno_male_japanese"
+        if gov in ("japan_administrative_government", "japan_feudal_government"):
+            tkey = (self._lt.get(str(tid)) or {}).get("key") or ""
+            # v62: 日本最高头衔 (e_japan / 天皇座) 先查 (头衔, 政体) 直表 ——
+            # 关白 (律令制) / 幕府将军 (封建期) / 天皇, 不再落通用词「皇帝」。
+            key = self._JAPAN_TOP_OFFICE_KEYS.get((tkey, gov))
+            if key is None:
+                key = self._JAPAN_OFFICE_KEYS.get(tier)
+                if tkey in self._TENNO_TITLE_KEYS:
+                    key = "king_tenno_male_japanese"
             if key:
                 v = L.loc(self.table, key)
                 if v and not v.startswith("$") and not v.startswith("["):
@@ -4506,6 +4585,11 @@ class Facts:
             gov = (rec.get("landed") or {}).get("government") or ""
         if not gov:
             gov = (c.get("landed_data") or {}).get("government") or ""
+        # v62: 日本最高头衔 (天皇座/e_japan) 的取词政体按**头衔侧**时代补 ——
+        # 持有者政体史早于缓存窗口时 (藤原良房卒 879, 政体史 884 起) 上面三项皆空,
+        # 旧稿落通用词「皇帝」, 于是同一顶 e_japan 在源融写「关白」、在藤原良房写「皇帝」。
+        if ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
+            gov = self._gov_for_word(cid, tid, anchor) or gov
         _indep = self._is_independent(cid, anchor)
         word = self._office_word(tier, gov,
                                  independent=bool(_indep) if _indep is not None else True,
@@ -6382,23 +6466,44 @@ class Facts:
         return [int(x) for x in parents if isinstance(x, int) or str(x).isdigit()]
 
     def _tenno_prince_word(self, cid, date=None):
-        """天皇座 (k_chrysanthemum_throne) 非统治者子女的称号词 → '亲王'/'内亲王';
+        """天皇座 (k_chrysanthemum_throne) 子女的称号词 → '亲王'/'内亲王';
         不适用返回 ''。v20: 现实/中文史传口径 — 天皇后代称「惟仁亲王/井上内亲王」,
-        名在前、称号在后, 无「高御座」前缀 (高御座是御座名, 游戏模组虚构的家族式前缀)。"""
+        名在前、称号在后, 无「高御座」前缀 (高御座是御座名, 游戏模组虚构的家族式前缀)。
+
+        v62 (史实口径 B, 用户拍板「按 C 或 B 动工」): 判据由「父/母**当下在位**」
+        改为「父/母**一生持有过**天皇座 **且 本人仍在皇籍**」——
+          · 親王/内親王是终身身分, 与父退位/崩御无关 (《大日本史》实测: 惟喬親王
+            为文德天皇之子, 父 858 年崩御后仍以親王身分活到 897 年; 本康/人康/
+            秀良/業良 同例); 旧判据把前代天皇之子全部漏掉, 交给兜底路拼出
+            「高御座王子」这种游戏里不存在的词。
+          · 判据的另一半是**臣籍降下**: 受源/平之姓者即入臣籍 (源融/源澄/源升/
+            源信/源常/源弘/源定/源本有…), 本人宗族不再是皇籍大和 → 不出亲王/内亲王。
+        游戏侧旁证: `tgp_japan_imperial_branch_decision`(请求皇室本姓) 把皇室成员
+        改为源/平宗族 (game/common/decisions/dlc_decisions/tgp/tgp_japan_decisions.txt:826);
+        亲王词本身只给 `special = ruler_child` + `titles = { k_chrysanthemum_throne }`
+        (game/common/flavorization/10_tgp_japan_flavorization.txt:634,644)。"""
         try:
             tier0, _ = self._primary_title_at(cid, as_of=date)
             if tier0 is not None:
                 return ""  # 自己已有头衔, 不适用
         except Exception:
             return ""
+        if self._imperial_clan_state(cid) != "imperial":
+            return ""      # v62: 臣籍降下 (源/平/藤原…) 或宗族判不明 → 不出亲王/内亲王
         for pid2 in self._parents_of_cid(cid):
             try:
                 _t, ptid = self._primary_title_at(pid2, as_of=date)
             except Exception:
-                continue
-            if ptid is None:
-                continue
-            if (self._lt.get(str(ptid)) or {}).get("key") not in self._TENNO_TITLE_KEYS:
+                ptid = None
+            on_throne = bool(ptid) and \
+                ((self._lt.get(str(ptid)) or {}).get("key") in self._TENNO_TITLE_KEYS)
+            if not on_throne:
+                # v62: 父/母已崩御或已退位 —— 親王是终身身分, 认一生持有过天皇座
+                try:
+                    on_throne = self._ever_held_throne(pid2, date)
+                except Exception:
+                    on_throne = False
+            if not on_throne:
                 continue
             female = self._is_female(cid)
             key = ("princess_tenno_female_japanese" if female
@@ -6474,7 +6579,14 @@ class Facts:
             如汉/晋/隋/唐/宋) → 前缀加「大」: 「大唐皇女 / 大唐皇子」(用户拍板例);
           · 游戏「简称」头衔 (`definite_form = yes`, 神圣罗马帝国/拜占庭帝国/教宗国)
             与名称已含国号者保持本名, 不叠词也不加「大」(旧稿曾写出
-            「神圣罗马帝国国皇女」「神圣罗马帝国帝国公主」)。"""
+            「神圣罗马帝国国皇女」「神圣罗马帝国帝国公主」)。
+
+        v62 (菲利普2 问题1/2): 日本最高头衔 (天皇座/日本帝国) 一律不在此出词 ——
+        其持有人是「天皇」或「关白/幕府将军」, 子女称号由 `_tenno_prince_word` 专管;
+        旧稿把御座名/国号拼成「高御座王子源澄」「日本王子源升」(父已故时的
+        一生最高头衔兜底), 属游戏里不存在的词。"""
+        if ((self._lt.get(str(ptid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
+            return ""
         pgov = self._title_government(ptid, date)
         pbase = self._name_at_date(ptid, date or self.as_of) or self.title_base_name(ptid)
         if not pbase:
@@ -6502,10 +6614,14 @@ class Facts:
         return prefix + word
 
     def _parent_prince_style(self, cid, date):
-        """父/母为王国级以上统治者时的子女称号 (取层级最高的一位父母)。"""
+        """父/母为王国级以上统治者时的子女称号 (取层级最高的一位父母)。
+        v62: 日本最高头衔 (天皇座/日本帝国) 的父/母**不参与**挑选 —— 他们的子女称号
+        只由 `_tenno_prince_word` 出词; 这样另一位父/母若是普通王国之主, 仍能正常出词。"""
         best = None  # (rank, ptier, ptid, parent_cid)
         for pid2 in self._parents_of_cid(cid):
             t, tid = self._style_parent_title(int(pid2), date)
+            if ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
+                continue
             rank = {"hegemon": 6, "empire": 5, "kingdom": 4}.get(t, 0)
             if rank > 0 and (best is None or rank > best[0]):
                 best = (rank, t, tid, int(pid2))
