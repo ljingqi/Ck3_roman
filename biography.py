@@ -1150,8 +1150,15 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
             return None
 
     def _with_year(cid, name):
+        """父/母附生年 —— 用**行文**而非括注 (v63 问题5)。
+
+        项目铁律 (v55 拍板) 是「事实层括注一律自然语言化」, 故生年写成
+        「父X，787年生」这种并列短句, 不用 `（787年生）` —— 括注形态会被
+        `verify_fast` 的「无「名词（名词）」括注同位语」判为违规。
+        目的仍是消掉方向歧义: 生年摆在名号旁, 「父比子女晚出生」在事实面上
+        就不可读错 (同类矛盾另有 `facts.audit_kin_lines` 兜底)。"""
         y = _byear(cid)
-        return f"{name}（{y}年生）" if y else name
+        return f"{name}，{y}年生" if y else name
 
     bits = []
     seen_bits = set()
