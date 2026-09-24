@@ -7637,7 +7637,10 @@ class Facts:
         s = re.sub(r"high\s*", "", s)
         s = s.replace("!", "").replace(";", "")
         s = re.sub(r"\s{2,}", " ", s).strip()
-        s = re.sub(r"(?<=[\u4e00-\u9fff]) (?=[\u4e00-\u9fff])", "", s)
+        # v63 (问题4): 空格剥离把「·」也当作中文相邻位 —— Mod 遗骨名实测有
+        # 「妮克· 阿利尔‑獾」「伊本· 希沙姆」这类「间隔号后多一个空格」的烘焙形态,
+        # 旧规则只认汉字-汉字相邻, 于是「· 妮克」的空格原样进了提示词。
+        s = re.sub(r"(?<=[\u4e00-\u9fff·]) (?=[\u4e00-\u9fff·])", "", s)
         if _vic is not None:
             vn = self.event_name(_vic, date) or ""
             if vn:
@@ -7658,6 +7661,26 @@ class Facts:
         直接下发会把 `\\x15`/`high` 与多余空格写进提示词 (违反「干净事实」口径)。
         名称里的 `\\x15high …\\x15!` 是**修饰片段**而非角色引用, 就地剥除即可。"""
         return self._artifact_material(raw, date)
+
+    def _artifact_name(self, raw, date=None):
+        """宝物**名称** → 干净中文 (v63 问题4)。
+
+        与 `_artifact_material` 同一套清洗, 再多一条**只对名称**成立的规则:
+        游戏用 `GetUINameNoTooltip` 渲染「称号+名字」时, 中文在称号后带一个全角
+        逗号, 于是遗骨名在存档里实测为
+        `桂\\x15high 王\\x15!，\\x15high 唐\\x15!\\x15high 文举\\x15!之骨`
+        (`3802979803\\localization\\simp_chinese\\devour_l_simp_chinese.yml:5`
+        的 `devour_bone_name = "[bone_victim.GetUINameNoTooltip]之骨"`),
+        清洗后成「桂王，唐文举之骨」—— 提示词里与「宝物：{名}，{稀有度}」的逗号
+        同位语连读, 模型据此把「桂王」当成宝物名 (成稿「此物名唤『桂王』」)。
+        故名称把「称号，名字」之间的逗号删去 (与 `_clean_ck3_loc` 的同名规则同源),
+        材质句不适用 —— 描述里的逗号是正常行文。"""
+        s = self._artifact_material(raw, date)
+        if not s:
+            return ""
+        # 称号 (≤5 汉字) 与紧随其后的汉字之间的逗号 → 删
+        # (「桂王，唐文举之骨」→「桂王唐文举之骨」; 「哈兰酋长，阿尔尼之骨」同例)
+        return re.sub(r"([\u4e00-\u9fff]{1,5})，(?=[\u4e00-\u9fff])", r"\1", s)
 
     def _is_part_artifact(self, a, desc=""):
         """是否「以角色部件制成」的宝物: visuals 类型或名字/描述用词任一命中。
@@ -7847,7 +7870,9 @@ class Facts:
                 continue
             # v60 (问题2): 名字同样过清洗 —— 存档宝物名带 `\x15high …\x15!`
             # 数据函数块与烘焙短名 (「奥斯蒂亚\x15high 市长\x15!，…之骨」)。
-            name = self._artifact_text(a.get("name"), self.as_of) or "一件宝物"
+            # v63 (问题4): 名字另走 `_artifact_name` —— 额外删去「称号，名字」的逗号
+            # (「桂王，唐文举之骨」→「桂王唐文举之骨」), 防模型把称号读成宝物名。
+            name = self._artifact_name(a.get("name"), self.as_of) or "一件宝物"
             rarity = rarity_zh.get(a.get("rarity")) or a.get("rarity") or ""
             # v29b: 稀有度改逗号同位语 (「宝物：X，名望级」), 不用括注
             lines = [f"宝物：{name}，{rarity}"]
