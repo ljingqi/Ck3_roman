@@ -1125,6 +1125,34 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
                 continue
         return out
 
+    # v63 (问题5): 亲缘行的取词与补注
+    #   · 配偶位按**死者性别**取词 (旧稿写死「妻/前妻/妾」, 女性死者因此被写成
+    #     「妻藤原范宗」—— 实测本篇 19 条亲缘行里 4 条如此);
+    #   · 父/母附生年, 并补「子/女」位 —— 事实面自己把方向说明白, 相邻两条记录
+    #     才不会被串成「其父藤原敬子时年三岁」。
+    _fi = facts.get("_facts")
+
+    def _gword(subject, other, kind):
+        if _fi is not None:
+            return _fi.kin_word_gendered(subject, other, kind)
+        return {"spouse": "妻", "former": "前妻",
+                "concubine": "妾", "f_concubine": "前妾"}.get(kind, "")
+
+    def _byear(cid):
+        """生年 (int|None) —— 缓存优先, 熔件兜底。"""
+        rec = (cache.get("characters") or {}).get(str(cid)) or {}
+        b = rec.get("birth")
+        if not b and _fi is not None:
+            b = (getattr(_fi, "_chars", {}) or {}).get(str(cid), {}).get("birth")
+        try:
+            return int(str(b).split(".")[0])
+        except (TypeError, ValueError):
+            return None
+
+    def _with_year(cid, name):
+        y = _byear(cid)
+        return f"{name}（{y}年生）" if y else name
+
     bits = []
     seen_bits = set()
     if grp:
@@ -1132,28 +1160,61 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
             sets = [s for s in (_fids(e, key) for e in [k] + grp) if s]
             common = set.intersection(*sets) if sets else set()
             for x in sorted(common):
-                bits.append(f"{label}{_kin_or(facts, cache, x)}")
+                bits.append(f"{label}{_with_year(x, _kin_or(facts, cache, x))}")
         for e in [k] + grp:
-            for key, label in (("primary_spouse", "妻"), ("spouse", "妻"),
-                               ("former_spouses", "前妻"), ("concubine", "妾")):
+            for key, kind in (("primary_spouse", "spouse"), ("spouse", "spouse"),
+                              ("former_spouses", "former"),
+                              ("concubine", "concubine")):
                 for x in (_fam_of(e).get(key) or []):
-                    b = f"{e.get('name')}之{label}{_kin_or(facts, cache, x)}"
+                    try:
+                        x = int(x)
+                    except (TypeError, ValueError):
+                        continue
+                    b = f"{e.get('name')}之{_gword(e.get('id'), x, kind)}" \
+                        f"{_kin_or(facts, cache, x)}"
                     if b not in seen_bits:
                         seen_bits.add(b)
                         bits.append(b)
     else:
         fam = _fam_of(k)
-        for x in (fam.get("father") or []):
-            bits.append(f"父{_kin_or(facts, cache, x)}")
-        for x in (fam.get("mother") or []):
-            bits.append(f"母{_kin_or(facts, cache, x)}")
-        for key, label in (("primary_spouse", "妻"), ("spouse", "妻"),
-                           ("former_spouses", "前妻"), ("concubine", "妾")):
+        for key, label in (("father", "父"), ("mother", "母")):
             for x in (fam.get(key) or []):
-                b = f"{label}{_kin_or(facts, cache, x)}"
+                try:
+                    x = int(x)
+                except (TypeError, ValueError):
+                    continue
+                bits.append(f"{label}{_with_year(x, _kin_or(facts, cache, x))}")
+        for key, kind in (("primary_spouse", "spouse"), ("spouse", "spouse"),
+                          ("former_spouses", "former"),
+                          ("concubine", "concubine")):
+            for x in (fam.get(key) or []):
+                try:
+                    x = int(x)
+                except (TypeError, ValueError):
+                    continue
+                lbl = _gword(k.get("id"), x, kind)
+                b = f"{lbl}{_kin_or(facts, cache, x)}"
                 if b not in seen_bits:
                     seen_bits.add(b)
                     bits.append(b)
+    # 子女 (v63 问题5): 与父/母同位并读 —— 「夫藤原范宗、女藤原敬子」使
+    # 「敬子是丰子的女儿」在同一条记录内成立, 与下一条敬子的「父范宗、母丰子」互证。
+    for e in [k] + grp:
+        kids = _fids(e, "child")
+        if not kids:
+            continue
+        if _fi is not None:
+            try:
+                kids = set(F._asof_ids(_fi, sorted(kids)))
+            except Exception:
+                pass
+        for x in sorted(kids):
+            kf = ((cache.get("characters") or {}).get(str(x)) or {}).get("female")
+            lbl = "女" if kf else "子"
+            b = f"{lbl}{_kin_or(facts, cache, x)}"
+            if b not in seen_bits:
+                seen_bits.add(b)
+                bits.append(b)
     if bits:
         lines.append("亲缘：" + "、".join(bits))
     # 婚恋记忆: 只收婚恋类 (过滤 k["events"], 其文本带日期前缀)
@@ -1161,21 +1222,28 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
     # 与 events 逐位对应) —— 旧稿按句面关键词匹配, 而相恋句改出游戏缘由句
     # (「…在地牢里相爱了」) 后「相恋」二字不再出现, 该行会整条从《刺客列传》消失。
     # `event_types` 缺失时 (旧快照) 回退关键词, 行为与旧稿一致。
+    # v63 (问题3, 用户拍板): 性事族 (`had_sex_*`, 由 facts.is_sex_memory 判定) 一并
+    # 收录 —— 用户明确「只需要补埃德伯的强奸记忆, 只有仇人/好友列传需要加」,
+    # 刺客列传是唯一承载被主角杀死者生平的名录, 其婚恋行即该篇的性事出口。
     _MAR_TYPES = ("married", "became_lovers", "became_lovers_spouse",
                   "had_sex", "had_sex_spouse", "broke_up_lovers", "spouse_died")
-    _MAR_WORDS = ("成婚", "相恋", "私情", "分手", "丧偶", "离婚")
+    _MAR_WORDS = ("成婚", "相恋", "私情", "分手", "丧偶", "离婚", "强迫", "半推半就")
     mar = []
     for e in [k] + grp:
         ev = e.get("events") or []
         et = e.get("event_types") or []
         for i, x in enumerate(ev):
             if i < len(et):
-                if et[i] in _MAR_TYPES:
+                if et[i] in _MAR_TYPES or F.is_sex_memory(et[i]):
                     mar.append(x)
             elif any(m in x for m in _MAR_WORDS):
                 mar.append(x)
+    # v63 (问题5): 逐人最多 3 条 —— 同簇 19 人 × 各自婚恋履历会挤满名录; 取最近 3 条
+    if len(mar) > 3:
+        mar = mar[-3:]
     if mar:
-        lines.append("婚恋：")
+        lines.append("婚恋与强迫之事：" if any(
+            ("强迫" in x or "半推半就" in x) for x in mar) else "婚恋：")
         lines.extend("  " + e for e in mar)
     return lines
 

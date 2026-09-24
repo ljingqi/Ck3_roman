@@ -3805,6 +3805,41 @@ class Facts:
                 ids += [x for x in (fam.get(k) or []) if isinstance(x, int)]
         return b in {int(x) for x in ids if isinstance(x, int)}
 
+    def kin_word_gendered(self, subject, other, kind):
+        """配偶/情偶类亲缘词的**性别化**形态 (v63 问题5)。
+
+        旧稿的《刺客列传》亲缘行把标签写死成男性视角
+        (`("primary_spouse","妻"), ("former_spouses","前妻"), ("concubine","妾")`),
+        女性死者的配偶因此被写成「妻藤原范宗」(用户实测: 大三轮丰子那行,
+        实测该篇 19 条亲缘行里 4 条如此)。这里按**主体性别**取词:
+
+          | kind          | 主体为男 | 主体为女 |
+          |---------------|---------|---------|
+          | `spouse`      | 妻      | 夫      |
+          | `former`      | 前妻    | 前夫    |
+          | `concubine`   | 妾      | 男宠    |
+          | `f_concubine` | 前妾    | 前男宠  |
+
+        性别不可判 (缓存无 `female` 且熔件无此人) 时回落中性词「配偶」/「前配偶」,
+        **不猜**。词形只在这一个出口定义, 供 `biography._assassin_kill_lines` /
+        `_assassin_lead_line` 共用 —— 与 `_profile_lines` 的 `spouse_lbl` 同口径
+        (`biography.py` 的 `夫婿/妻室` 二档), 避免同一人两套写法。"""
+        # 性别不可判 → 中性词 (不猜): 缓存无 female 且熔件也无此人时才会走到这里
+        rec = (self.cache.get("characters") or {}).get(str(subject)) or {}
+        v = rec.get("female")
+        if v is None:
+            v = (self._chars.get(str(subject)) or {}).get("female")
+        if v is None:
+            return "配偶" if kind in ("spouse", "former") else "情偶"
+        fem = bool(v)
+        if kind == "concubine":
+            return "男宠" if fem else "妾"
+        if kind == "f_concubine":
+            return "前男宠" if fem else "前妾"
+        if kind == "former":
+            return "前夫" if fem else "前妻"
+        return "夫" if fem else "妻"
+
     def _consort_word(self, owner, other):
         """owner 对 other 的配偶称谓 (v32, 问题3): 妻 / 夫 / 妾 / 情人。
 
@@ -11087,6 +11122,164 @@ def sanitize_stats():
     """兜底统计 (供回归/审计脚本断言与打印)。"""
     return {"lines": _SANITIZE_LOG["lines"],
             "samples": list(_SANITIZE_LOG["samples"])}
+
+
+# ---------------------------------------------------------------------------
+# v63 (问题5): 亲缘关系的**程序自检** —— 让「不可能的关系」在事实面就被抓住
+# ---------------------------------------------------------------------------
+# 用户实测: 「藤原范宗之妻，907年9月6日成婚，其父藤原敬子时年三岁」——
+# 事实面本身是对的 (丰子＝范宗之妻; 敬子＝范宗与丰子之女, 生 909), 错在
+# 《刺客列传》把女性死者的配偶写成「妻」, 且亲缘行是缺生年的扁平名单, 模型
+# 于是把相邻两条记录串成了「其父敬子」。词形一侧由
+# `Facts.kin_word_gendered` 修掉; 这里只查**逻辑上不可能**的关系 ——
+# 判据一律「后出生者不得是长辈」, 与游戏的实际年龄分布无关, 故零误报:
+#
+#   K1 亲子不可能: 父/母生年 ≥ 子女生年 (父母比子女晚出生);
+#   K2 业师不可能: 童年业师 (`childhood_education_guardian`) 比学生晚出生;
+#   K3 单边亲缘:   孩子的 `father`/`mother` 指向 X, 而 X 的 `child` 里没有这个孩子
+#                  (或反向: X 的 `family.child` 指向孩子, 孩子两亲里没有 X);
+#   K4 亲属当配偶: 互为配偶的两人同时又互为父/母/子女 (伦理与逻辑都不可能)。
+#
+# 刻意**不查**两类看着像错、其实合法的数据:
+#   · 「年龄差过小」: CK3 的业师/父母可以与子女只差一两岁 (实测本档 188 例合法业师
+#     年龄差 < 12 年), 那是游戏数据常态;
+#   · 「妻比夫年长」: 完全正常。
+# 命中即写 logs/journal.log, 并作为 verify_fast 的 FAIL 呈现。
+
+# 配偶位键 (K4 用; 与 `_family_ids_by_kind` 同源)
+_SPOUSE_KEYS = ("primary_spouse", "spouse", "former_spouses", "ever_spouses",
+                "concubine", "former_concubines")
+
+
+def _audit_name(f, cid):
+    """审计报告里的人名 (失败则退裸 id)。"""
+    try:
+        return f.name_or(cid) or str(cid)
+    except Exception:
+        return str(cid)
+
+
+def _audit_year(f, cid):
+    """角色生年 (int); 取不到返回 None。"""
+    rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
+    b = rec.get("birth")
+    if not b:
+        b = (getattr(f, "_chars", {}) or {}).get(str(cid), {}).get("birth")
+    try:
+        return int(str(b).split(".")[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _audit_ids(seq):
+    """family 字段 → int id 列表 (跳过 'none'/哨兵)。"""
+    out = []
+    for x in (seq or []):
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def audit_kin_lines(facts, limit=60):
+    """facts 事实集的亲缘自检 (v63 问题5) → [「K1 …」, …]。
+
+    只查**存在于事实集里的角色** (`facts["characters"]`) 及其直系亲属,
+    逐条核对生年与反向指针; 返回可读字符串 (最多 limit 条)。
+    纯函数、无副作用, 供日志与 `verify_fast` 断言共用。"""
+    out = []
+    f = facts.get("_facts") if isinstance(facts, dict) else None
+    if f is None:
+        return out
+    chars = facts.get("characters") or {}
+    cache_chars = f.cache.get("characters") or {}
+
+    def _push(kind, msg):
+        if len(out) < limit:
+            out.append(f"{kind} {msg}")
+
+    def _fam(cid):
+        return (cache_chars.get(str(cid)) or {}).get("family") or {}
+
+    for cid_s, _prof in chars.items():
+        try:
+            cid = int(cid_s)
+        except (TypeError, ValueError):
+            continue
+        cy = _audit_year(f, cid)
+        fam = _fam(cid)
+        # ---- K1 亲子不可能: 长辈比晚辈晚出生 ----
+        for key, label in (("father", "父"), ("mother", "母")):
+            for p in _audit_ids(fam.get(key)):
+                py = _audit_year(f, p)
+                if cy is not None and py is not None and py >= cy:
+                    _push("K1", f"{label}{_audit_name(f, p)} ({py} 年生) → "
+                                f"{_audit_name(f, cid)} ({cy} 年生): 长辈晚出生")
+        # ---- K3 单边亲缘 ----
+        for key, label in (("father", "父"), ("mother", "母")):
+            for p in _audit_ids(fam.get(key)):
+                if str(p) not in chars:
+                    continue          # 父母不在事实集内 → 本板块不下发, 不判
+                if cid not in _audit_ids(_fam(p).get("child")):
+                    _push("K3", f"{_audit_name(f, cid)} 记 {label}"
+                                f"{_audit_name(f, p)}, 而对方 `child` 无此人")
+        for c in _audit_ids(fam.get("child")):
+            if str(c) not in chars:
+                continue
+            cf = _fam(c)
+            if cid not in (_audit_ids(cf.get("father"))
+                           + _audit_ids(cf.get("mother"))):
+                _push("K3", f"{_audit_name(f, cid)} 的 `child` 含 "
+                            f"{_audit_name(f, c)} 而其两亲无此人")
+        # ---- K4 亲属当配偶 (互为配偶同时又互为父/母/子女) ----
+        my_sp = set()
+        for k in _SPOUSE_KEYS:
+            my_sp |= set(_audit_ids(fam.get(k)))
+        my_kin = set(_audit_ids(fam.get("father")) + _audit_ids(fam.get("mother"))
+                     + _audit_ids(fam.get("child")))
+        for b in sorted(my_sp & my_kin):
+            _push("K4", f"{_audit_name(f, cid)} 与 {_audit_name(f, b)} "
+                        f"既是配偶又是直系亲属")
+    # ---- K2 业师不可能: 业师比学生晚出生 (记忆侧, 不依赖 family) ----
+    for cid_s, rec in cache_chars.items():
+        try:
+            cid = int(cid_s)
+        except (TypeError, ValueError):
+            continue
+        cy = _audit_year(f, cid)
+        if cy is None:
+            continue
+        for mem in (rec.get("memories") or []):
+            if (mem.get("type") or "") != "childhood_education_guardian":
+                continue
+            for v in (mem.get("participants") or {}).values():
+                if not isinstance(v, int) or v == cid:
+                    continue
+                gy = _audit_year(f, v)
+                if gy is not None and gy >= cy:
+                    _push("K2", f"业师{_audit_name(f, v)} ({gy} 年生) → "
+                                f"{_audit_name(f, cid)} ({cy} 年生): 业师晚出生")
+                break
+    return out
+
+
+def audit_kin_report(facts, where=""):
+    """`audit_kin_lines` 的落盘形态 (v63 问题5): 写 journal.log, 返回条数。
+
+    刻意**不**写进提示词 —— 这是程序能确定性完成的事 (铁律), 且断言可回归。"""
+    issues = audit_kin_lines(facts)
+    if not issues:
+        return 0
+    try:
+        import llm as _llm
+        for s in issues[:12]:
+            _llm.log(f"亲缘自检: {s}" + (f" (来自 {where})" if where else ""),
+                     detail=True)
+    except Exception:
+        pass
+    return len(issues)
+
 
 
 # 恩怨史事件文本中的角色块: \x15ONCLICK:CHARACTER,id \x15TOOLTIP:CHARACTER,id \x15L
