@@ -7176,6 +7176,79 @@ class Facts:
                 break
         return None
 
+    def _house_raid_index(self):
+        """家族关系流水里的**劫掠**条目索引 → `{日期: [(raider, target, raw)…]}`
+        (惰性, 一次扫描)。
+
+        v63 第四轮 (2026-09-24 用户追加口径「家族记忆里有没有被劫掠相关的」):
+        本档**记忆库里没有任何 raid 类记忆** (185 个记忆类型全表普查, 0 命中),
+        按日的劫掠留痕只有一个地方 —— `house_relations.database[*].history[*]`
+        的 `change_reason`。写入点: 游戏 `common/on_action/army_on_actions.txt:761`
+        `on_raid_action_completion` → `:803-816` `change_house_relation_effect = {
+        REASON = raid, CHAR = scope:raider, TARGET_CHAR = scope:county.holder }`
+        —— 即**劫掠完成当日**, 记「劫掠者劫掠了被劫郡之持有者」。
+
+        句面已本地化且带两端角色块, 两端 id 用 `_FEUD_CHAR_RE` 取; 序为
+        (CHAR, TARGET_CHAR) = (劫掠者, 被劫者)。`raided_estate` /
+        `raided_estate_attempt` (劫掠庄园) 同样带「劫掠」字样, 一并收 ——
+        它们同属「当日正在劫掠此人」的正证。
+
+        本档实测: 5704 对家族关系 / 15671 条流水 / 601 条含劫掠字样;
+        主角侧 10 条 (877.7.6 … 916.5.29)。
+        **不是全史**: 只有「劫掠改变了家族关系」时才写 (值 `house_relation_damage_minor_value`
+        会落盘), 故覆盖面窄 —— 它只能**正证**, 查不到什么都不排除。"""
+        cached = getattr(self, "_house_raid_idx", None)
+        if cached is not None:
+            return cached
+        idx = {}
+        db = (self.melt.get("house_relations") or {}).get("database") or {}
+        for r in db.values():
+            if not isinstance(r, dict):
+                continue
+            for e in (r.get("history") or []):
+                if not isinstance(e, dict):
+                    continue
+                raw = str(e.get("change_reason") or "")
+                if not any(k in raw for k in _RAID_WORDS):
+                    continue
+                ids = [int(x) for x in _FEUD_CHAR_RE.findall(raw)]
+                if len(ids) < 2:
+                    continue
+                idx.setdefault(str(e.get("date")), []).append((ids[0], ids[1], raw))
+        self._house_raid_idx = idx
+        return idx
+
+    def _house_raid_on(self, jailer, victim, date):
+        """监禁者当日的**劫掠流水**是否指向被囚者本人或其同族 → `'own'` /
+        `'house'` / None (v63 第四轮)。
+
+        两条判据, 都要求流水两端序为 (劫掠者=监禁者, 被劫者=…):
+          · `'own'`  —— 流水第二端**就是被囚者** ⇒ 当局劫掠的对象本人被擒 (硬证);
+          · `'house'` —— 流水第二端与被囚者**同族** ⇒ 当日在劫其族之地而擒其人
+                        (家族级旁证; 同日两事巧合的概率极低, 但确实弱于上一条)。
+
+        与 `_last_raid_on` 的关系: 后者读 `landed_data.last_raid`, 只记**最后一次**
+        劫掠 (主角该字段已被 919.5.19 覆盖, 915.7.2 因此读不到); 本方法读家族流水,
+        是**逐日累积**的, 故补上了那一类日子。"""
+        if not date or jailer is None or victim is None:
+            return None
+        try:
+            jailer = int(jailer)
+            victim = int(victim)
+        except (TypeError, ValueError):
+            return None
+        vhouse = None
+        for raider, target, _raw in self._house_raid_index().get(str(date), []):
+            if raider != jailer:
+                continue
+            if target == victim:
+                return "own"
+            if vhouse is None:
+                vhouse = self._house_of_cid(victim)
+            if vhouse is not None and self._house_of_cid(target) == vhouse:
+                return "house"
+        return None
+
     def _prison_type_fresh(self, cid, date):
         """该角色**当次**入狱的牢房档位 → `'dungeon'` / `'house_arrest'` / None。
 
@@ -7279,11 +7352,11 @@ class Facts:
 
           | 档位 | 判据 |
           | --- | --- |
-          | `batch` | 同日同监禁者 ≥3 人 ⇒ 群体俘获, 排除战败俘获 (一次打仗不会同时抓来 3 名以上互不相干的人) |
           | `diarchy` | 在押者带 `imprisoned_by_diarch` 变量 (全库唯一 set 点) |
+          | `raid` | 监禁者当日劫掠过: ②a `landed_data.last_raid` == 入狱日, 或 ②b 家族关系流水同日一条「劫掠者=监禁者, 被劫者=被囚者本人/同族」(见 `_house_raid_on`)。**排在 `batch` 之前** —— 硬证优先于启发式 |
+          | `batch` | 同日同监禁者 ≥3 人 ⇒ 群体俘获, 排除战败俘获 (一次打仗不会同时抓来 3 名以上互不相干的人) |
           | `battle_poi` | 省份战场兴趣点 winner/**loser**/日期与该次入狱三者对齐 (确定性, 覆盖窄) |
           | `battle` | 同日**真·战斗**记忆 (`battle_won_memory` / `battle_lost_memory`): 被囚者是 `loser`、监禁者是胜方 |
-          | `raid` | 监禁者的 `landed_data.last_raid` == 入狱日 (正证劫掠) |
           | `not_battle` | 被囚者本人 < 16 岁, 或同簇内有未成年人 ⇒ 排除战败俘获 |
           | `unknown` | 以上皆不成立 → **不写方式** |
 
@@ -7320,7 +7393,25 @@ class Facts:
             return ("unknown", "")
         if victim is None or not date:
             return ("unknown", "")
-        # ⓪ **同日同监禁者 ≥3 人即为群体俘获** ⇒ 排除战败俘获。
+        # ① diarchy 摄政绑架 (确定性)
+        if "imprisoned_by_diarch" in self._var_flags(victim):
+            return ("diarchy", "imprisoned_by_diarch")
+        # ② 正证劫掠 —— 两条判据 (任一成立即判):
+        #    ②a 监禁者的 `landed_data.last_raid` == 入狱日 (只记最后一次, 覆盖窄);
+        #    ②b **家族关系流水**里同日一条劫掠条目, 劫掠者=监禁者, 被劫者=被囚者
+        #        本人或其同族 (逐日累积, 补上 ②a 被覆盖掉的日子 —— 实测 915.7.2
+        #        埃德伯正是这一类: 记忆库里两条只有「入狱」, 而家族流水写着
+        #        「国王崔佛劫掠了女王埃德伯」)。
+        #    第四轮定序: 本档排在 `batch` **之前** —— `batch` 只给一个无方式词的
+        #    「拘押」, 它的作用是**阻止**战阵俘获档 (见下), 本身不是方式词; 而劫掠
+        #    是有存档硬证的方式, 硬证优先于启发式。全档改判面实测 24 行/11 簇
+        #    (皆为 batch→raid), 本战役 915.7.2 那一簇 (埃德伯等 7 人) 即其一。
+        if self._last_raid_on(jailer, date):
+            return ("raid", f"last_raid={date}")
+        _hk = self._house_raid_on(jailer, victim, date)
+        if _hk:
+            return ("raid", f"house_relation_raid/{_hk}")
+        # ③ **同日同监禁者 ≥3 人即为群体俘获** ⇒ 排除战败俘获。
         #    战败俘获的池子是败方主指挥官 ＋ 骑士 (逐人成擒), 一次打仗不会同时
         #    抓来 3 名以上互相不相干的人; 本战役实测 895.1.14 三人全是儿童、
         #    907.1.16 七人含 9/11 岁男童、911.3.20 十一人含 8 名未成年 ——
@@ -7332,23 +7423,17 @@ class Facts:
         #    故不能在这里回查记忆库。
         if cluster_n >= 3:
             return ("batch", f"{cluster_n}人同日")
-        # ① diarchy 摄政绑架 (确定性)
-        if "imprisoned_by_diarch" in self._var_flags(victim):
-            return ("diarchy", "imprisoned_by_diarch")
-        # ①' 牢房档位否证 (第三轮): `dungeon` + 日期三全等 ⇒ 排除战阵俘获。
+        # ③' 牢房档位否证 (第三轮): `dungeon` + 日期三全等 ⇒ 排除战阵俘获。
         #     战阵俘获恒写 `type = house_arrest` (`combat_events.txt:1295-1298`),
         #     而裸 `imprison` 默认 dungeon; 故 dungeon 与 battle / battle_poi
-        #     两档互斥。**只否证、不正面定档** —— 劫掠(③)不受影响。
+        #     两档互斥。**只否证、不正面定档** —— 劫掠(②)不受影响。
         _no_battle = self._prison_type_fresh(victim, date) == "dungeon"
-        # ② 省份战场兴趣点 (确定性, 覆盖窄; 须 winner + loser + 日期三者对齐)
+        # ④ 省份战场兴趣点 (确定性, 覆盖窄; 须 winner + loser + 日期三者对齐)
         if jailer is not None and not _no_battle:
             hits = self._battle_poi_hits(jailer, date, victim=victim)
             if hits:
                 return ("battle_poi", f"province={hits[0]}")
-        # ③ 正证劫掠 (监禁者当日劫掠过)
-        if self._last_raid_on(jailer, date):
-            return ("raid", f"last_raid={date}")
-        # ④ 同日**真·战斗**记忆 (只认 `battle_*_memory`) 且被囚者是输家
+        # ⑤ 同日**真·战斗**记忆 (只认 `battle_*_memory`) 且被囚者是输家
         #    (监禁者已知时必须同时是胜方 —— 同一天可能有多场仗)。
         #    第三轮修正: `war_won` / `war_lost` 是**战争结束**记忆, 不是战斗 ——
         #    实测 24 条被旧判据判成「战阵俘获」的在押者里, 9 条其实只匹配到
@@ -7364,7 +7449,7 @@ class Facts:
                                          else True)
             if _ok:
                 return ("battle", f"{rec[0]} loser={loser} winner={winner}")
-        # ⑤ 被囚者本人未成年, 或同簇内有未成年人 ⇒ 排除战败俘获
+        # ⑥ 被囚者本人未成年, 或同簇内有未成年人 ⇒ 排除战败俘获
         #    (战败池只有成年参战者; 城破池含宫廷与家眷)
         _age = self._age_at(victim, date)
         if _age is not None and _age < 16:
@@ -11775,6 +11860,12 @@ _FEUD_ROLE_RE = re.compile(
 # 的退化条目 (见 Facts._rerender_feud_event)。
 _FEUD_CHAR_RE = re.compile(r"ONCLICK:CHARACTER,(\d+)")
 
+# v63 第四轮: 家族关系流水里的**劫掠**措辞 —— 游戏本地化
+# `house_relation_reason_raid_desc`(劫掠了X)、`_raided_estate_desc`(劫掠了X的庄园)、
+# `_raided_estate_attempt_desc`(企图劫掠X的庄园) 三个键共用这三个词根。
+# 写入点见 `Facts._house_raid_index` (army_on_actions.txt:761/803-816)。
+_RAID_WORDS = ("劫掠", "掠夺", "洗劫")
+
 
 def _death_sentence(f, cid, killer_pronoun=False, annotated=False):
     """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
@@ -12973,6 +13064,12 @@ def _fold_prison_clusters(events, f):
         # —— 破城与战败不可分 (调研 §10), 故不为簇另安方式词。
         if any((r.get("cm") or "") in ("battle", "battle_poi") for r in named):
             body = (f"{jn}于战阵俘获{shown}" if jn else f"{shown}于战阵被俘")
+        # v63 第四轮: 簇内有**劫掠硬证** (家族关系流水: 监禁者当日劫掠了簇内某人
+        # 或其同族) ⇒ 整簇写「劫掠中掳走」。915.7.2 那一簇 (埃德伯等 7 人) 正是
+        # 如此 —— 旧稿此处只有裸「囚禁」, 模型遂自造「以商谈赎金为名」的捕获场景。
+        elif jn and any((r.get("cm") or "") == "raid" for r in named):
+            body = _style.FACT_WORDING["prison_raid_captured"].format(
+                jailer=jn, victim=shown)
         # v55 (§3, 用户拍板「多人不带时长」): 收口按**出狱缘由族**计数, 不再按结局原文
         # (含时长) 报菜名 —— 旧稿「其中15人1个月后获释、2人4日后获释、…」7 款并列。
         words = getattr(f, "_PRISON_KIND_WORD", {}) or {}
