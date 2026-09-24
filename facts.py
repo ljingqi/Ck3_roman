@@ -721,8 +721,27 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
         if _married(_fam(k), k, c, chars):
             return "daughter_in_law" if c_female else "son_in_law"
     # 11) 同胞之配偶 (嫂/弟媳/姐夫/妹夫, 按同胞性别+长幼) 与 配偶之同胞 (姻亲)
+    #     v63 (问题7, 用户 2026-09-24 拍板): **姻亲称谓只由正妻之婚产生** ——
+    #     妾 (`concubine`) 与侧室 (`spouse`) 不产生「妹夫/姐夫/嫂/弟媳/姻亲」。
+    #     实测: 崔佛娶埃德伯之妹昆伯为**妾**, 旧稿因此把崔佛写成埃德伯的「妹夫」
+    #     (「英格兰女王埃德伯被妹夫维京人崔佛·菲利普强迫性交」); 妾婚无此关系。
+    #     判据 = 双方 `primary_spouse` 互见 (只看正妻键, 双向)。
+    def _primary_spouse(a, b):
+        if b in _ids(_fam(a), "primary_spouse"):
+            return True
+        return a in _ids(_fam(b), "primary_spouse")
+
+    def _primary_spouses(x):
+        """x 的正妻/正夫集 (反向边只收对端把 x 记在 `primary_spouse` 上的)。"""
+        out = set(_ids(_fam(x), "primary_spouse"))
+        if spouse_back:
+            for y in (spouse_back.get(int(x)) or []):
+                if int(x) in _ids(_fam(y), "primary_spouse"):
+                    out.add(int(y))
+        return out
+
     for sb in sorted(_sibs(s)):
-        if _married(_fam(sb), sb, c, chars) or c in _sp(sb):
+        if _primary_spouse(sb, c):
             sbf = _female(sb)
             older = _older(sb, s)           # 同胞比 subject 年长?
             if sbf is not None and older is not None:
@@ -730,7 +749,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
                     return "brother_in_law_older" if older else "brother_in_law_younger"
                 return "sister_in_law_older" if older else "sister_in_law_younger"
             return "sister_in_law" if c_female else "brother_in_law"
-    for sid in sorted(sp_s):
+    for sid in sorted(_primary_spouses(s)):
         if c in _sibs(sid):
             return "sister_in_law" if c_female else "brother_in_law"
     # 12) 继子 / 继女 (配偶的子女, 且不是我的子女)
