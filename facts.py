@@ -7104,7 +7104,113 @@ class Facts:
                 if v.get("winner") == jailer and v.get("year") == y
                 and v.get("month") == mo and v.get("day") == d]
 
-    def capture_manner(self, victim, jailer, date):
+    def imprison_batch_sizes(self):
+        """{(日期, 监禁者): 人数} —— 「同日同监禁者囚禁了几人」(惰性)。
+
+        v63 (问题1): 群体俘获判据的数据源。两个来源取**较大值**:
+          ① 事件面 (见 `_pair_imprisonments` 的 `_pm["n"]`): 双视角事件计数;
+          ② **施囚者侧的 `imprisoned_other` 记忆** —— 这条最耐久: 实测 907.1.16
+             那七人里六人已死, 其 `imprisoned` 记忆被引擎连对象一起回收, 事件面
+             只能数到几人; 而主角自己的 `imprisoned_other` 七条全在 (记忆时长
+             1350 年、不随被囚者死亡消失), 故这一侧才是群体捕获的可靠计数。"""
+        cached = getattr(self, "_batch_sizes", None)
+        if cached is not None:
+            return cached
+        out = {}
+        holder = self._mem_holder_index()
+        db = (self.melt.get("character_memory_manager") or {}).get("database") or {}
+        for mid, e in db.items():
+            if not isinstance(e, dict) or e.get("type") != "imprisoned_other":
+                continue
+            try:
+                jailer = holder.get(int(mid))
+            except (TypeError, ValueError):
+                jailer = None
+            if jailer is None:
+                continue
+            key = (str(e.get("creation_date")), jailer)
+            out[key] = out.get(key, 0) + 1
+        self._batch_sizes = out
+        return out
+
+    def _age_at(self, cid, date):
+        """该角色在 date 当日的岁数 (int|None)。无生年返回 None。"""
+        cy = _audit_year(self, cid)
+        if cy is None or not date:
+            return None
+        try:
+            y = int(str(date).split(".")[0])
+        except (TypeError, ValueError):
+            return None
+        return y - cy
+
+    def _last_raid_on(self, jailer, date):
+        """监禁者当日是否正在劫掠 → `last_raid` 原值或 None (v63 问题1)。
+
+        游戏把「最近一次劫掠日」写在 `landed_data.last_raid` (本档 410/40429
+        在世者有值)。它是「最后一次」而非全史, 故只可**正证**劫掠: 与入狱日相同
+        ⇒ 劫掠掳人; 不同 ⇒ 什么都不能排除 (后续劫掠会覆盖)。"""
+        if jailer is None or not date:
+            return None
+        for bucket in (self.melt.get("living") or {},
+                       self.melt.get("dead_unprunable") or {},
+                       (self.melt.get("characters") or {}).get("dead_prunable") or {}):
+            c = bucket.get(str(jailer))
+            if isinstance(c, dict):
+                lr = (c.get("landed_data") or {}).get("last_raid")
+                if lr and str(lr) == str(date):
+                    return str(lr)
+                break
+        return None
+
+    def _same_day_imprisoned(self, jailer, date):
+        """该 (监禁者, 日) 同日入狱的**记忆 id** 列表 → [mid, …] (惰性缓存)。
+
+        v63 (问题1 第二轮): 「同日同监禁者」这一簇是**一次行动**, 故簇级的
+        人口学判据 (有没有未成年人) 要按整簇看, 不能只看当前这一行 ——
+        实测 907.1.16 那一簇 7 人里含 9 岁与 11 岁男童, 但被囚者本人可能是
+        成年骑士, 只看本人的年龄就会误判成战阵俘获。被囚者 id 由
+        `_mem_holder_index()` 反查 (记忆对象本身不带 owner)。"""
+        key = (jailer, str(date))
+        cache = getattr(self, "_same_day_cache", None)
+        if cache is None:
+            cache = {}
+            self._same_day_cache = cache
+        if key in cache:
+            return cache[key]
+        out = []
+        if jailer is not None:
+            db = (self.melt.get("character_memory_manager") or {}).get("database") or {}
+            for mid, e in db.items():
+                if not isinstance(e, dict) or e.get("type") != "imprisoned":
+                    continue
+                if str(e.get("creation_date")) != str(date):
+                    continue
+                if (e.get("participants") or {}).get("imprisoner") != jailer:
+                    continue
+                try:
+                    out.append(int(mid))
+                except (TypeError, ValueError):
+                    continue
+        cache[key] = out
+        return out
+
+    def _has_minor_victim(self, jailer, date, victim):
+        """该日该监禁者的入狱簇里是否有未成年人 (含被囚者本人)。"""
+        a = self._age_at(victim, date)
+        if a is not None and a < 16:
+            return True
+        holder = self._mem_holder_index()
+        for mid in self._same_day_imprisoned(jailer, date):
+            v = holder.get(mid)
+            if v is None or v == victim:
+                continue
+            av = self._age_at(v, date)
+            if av is not None and av < 16:
+                return True
+        return False
+
+    def capture_manner(self, victim, jailer, date, cluster_n=1):
         """该次囚禁的**获取方式** (v63 问题1) → (档位, 证据说明)。
 
         用户 2026-09-24 口径: 不确定能否区分「破城俘虏」与「战败俘虏」就再查 ——
@@ -7124,11 +7230,24 @@ class Facts:
 
           | 档位 | 判据 |
           | --- | --- |
+          | `batch` | 同日同监禁者 ≥3 人 ⇒ 群体俘获, 排除战败俘获 (一次打仗不会同时抓来 3 名以上互不相干的人) |
           | `diarchy` | 在押者带 `imprisoned_by_diarch` 变量 (全库唯一 set 点) |
           | `battle_poi` | 省份战场兴趣点 winner/日期与该次入狱对齐 (确定性, 覆盖窄) |
-          | `battle` | 同日该 (监禁者, 被囚者) 有战斗记忆: 被囚者是 `loser`、监禁者是胜方 |
-          | `batch` | 同日同监禁者 ≥3 人 (司法逮捕只针对本方一人, 批量必为军事/诛族行动) |
+          | `battle` | 同日战斗记忆: 被囚者是 `loser`、监禁者是胜方 |
+          | `raid` | 监禁者的 `landed_data.last_raid` == 入狱日 (正证劫掠) |
+          | `not_battle` | 被囚者本人 < 16 岁, 或同簇内有未成年人 ⇒ 排除战败俘获 |
           | `unknown` | 以上皆不成立 → **不写方式** |
+
+        `not_battle` 的依据 (2026-09-24 第二轮追加调研实测): 战败俘获的候选池被
+        硬限制为败方**主指挥官**(`combat_events.txt:640-641`)＋ `every_side_knight`
+        (`:760-762`), 必为成年参战者; 而城破俘获的池子是**男爵领 holder ＋
+        `every_courtier_or_guest`**(`siege_events.txt:115-134`), 含婴幼儿。
+        正样本对照: 9 处 `battle_poi_enemy_commander_imprisoned` 的被俘主帅年龄为
+        21/35/36/38/45/46/49/52/53/61 —— **无一个未成年人**。
+        故「< 16 岁被囚」可高置信排除战败俘获 (措辞只写「拘押」＋当时年龄);
+        **反向不成立**: 全成年全男性既不能排除战败, 也不能反推战败 (围城亦可只抓
+        成年男性)。注意「有女性 ⇒ 非战败」是**错的** —— 正样本里就有 49 岁的女
+        主帅 (16726), 唯一可靠判据是年龄。
 
         返回 `(tag, note)`; `note` 只作日志/断言用, 不进提示词。"""
         try:
@@ -7138,6 +7257,18 @@ class Facts:
             return ("unknown", "")
         if victim is None or not date:
             return ("unknown", "")
+        # ⓪ **同日同监禁者 ≥3 人即为群体俘获** ⇒ 排除战败俘获。
+        #    战败俘获的池子是败方主指挥官 ＋ 骑士 (逐人成擒), 一次打仗不会同时
+        #    抓来 3 名以上互相不相干的人; 本战役实测 895.1.14 三人全是儿童、
+        #    907.1.16 七人含 9/11 岁男童、911.3.20 十一人含 8 名未成年 ——
+        #    用户 2026-09-24 的观察 (「多数同日批次不是战败俘虏」) 在六个批次上
+        #    全部成立。
+        #    `cluster_n` 由调用方给 (见 `_pair_imprisonments` 的 `_pm["n"]`) ——
+        #    实测**囚犯侧记忆会被引擎回收** (907.1.16 七人中六人已死, 其
+        #    `imprisoned` 记忆全无, 只能靠主角侧 `imprisoned_other` 数出人数),
+        #    故不能在这里回查记忆库。
+        if cluster_n >= 3:
+            return ("batch", f"{cluster_n}人同日")
         # ① diarchy 摄政绑架 (确定性)
         if "imprisoned_by_diarch" in self._var_flags(victim):
             return ("diarchy", "imprisoned_by_diarch")
@@ -7146,26 +7277,23 @@ class Facts:
             hits = self._battle_poi_hits(jailer, date)
             if hits:
                 return ("battle_poi", f"province={hits[0]}")
-        # ③ 同日战斗且被囚者是输家 (监禁者已知时必须同时是胜方 —— 同一天可能有多场仗)
+        # ③ 正证劫掠 (监禁者当日劫掠过)
+        if self._last_raid_on(jailer, date):
+            return ("raid", f"last_raid={date}")
+        # ④ 同日战斗且被囚者是输家 (监禁者已知时必须同时是胜方 —— 同一天可能有多场仗)
         for rec in self._battle_by_date().get(str(date), []):
             loser, winner = self._battle_winner(rec)
             _ok = (loser == victim) and (winner == jailer if jailer is not None
                                          else True)
             if _ok:
                 return ("battle", f"{rec[0]} loser={loser} winner={winner}")
-        # ④ 同日同监禁者批量入狱 (司法逮捕只针对本方一人)
-        if jailer is not None:
-            n = 0
-            db = (self.melt.get("character_memory_manager") or {}).get("database") or {}
-            for e in db.values():
-                if not isinstance(e, dict) or e.get("type") != "imprisoned":
-                    continue
-                if str(e.get("creation_date")) != str(date):
-                    continue
-                if (e.get("participants") or {}).get("imprisoner") == jailer:
-                    n += 1
-            if n >= 3:
-                return ("batch", f"{n}人同日")
+        # ⑤ 被囚者本人未成年, 或同簇内有未成年人 ⇒ 排除战败俘获
+        #    (战败池只有成年参战者; 城破池含宫廷与家眷)
+        _age = self._age_at(victim, date)
+        if _age is not None and _age < 16:
+            return ("not_battle", f"{_age}岁")
+        if self._has_minor_victim(jailer, date, victim):
+            return ("not_battle", "同簇含未成年人")
         return ("unknown", "")
 
     def _prison_opinion_index(self):
@@ -12291,6 +12419,24 @@ def _pair_imprisonments(events, f, pid, pname=""):
             break
     if not ins:
         return events
+    # v63 (问题1): 同日同监禁者的人数 —— 群体俘获判据 (见 `Facts.capture_manner` ⓪)。
+    # 数的是**事件面**里当天入狱的人数 (双视角都算), 而不是回查记忆库: 实测
+    # 907.1.16 那七人里六人已死、其 `imprisoned` 记忆被引擎回收, 回查只能数到 1 人。
+    _cluster = {}
+    for r in ins:
+        _cluster[(str(r["date"]), r["jailer"])] = \
+            _cluster.get((str(r["date"]), r["jailer"]), 0) + 1
+    # v63 (问题1): 与施囚者侧 `imprisoned_other` 记忆的人数取较大值 —— 被囚者
+    # 死亡后其 `imprisoned` 记忆被引擎回收, 事件面会少算 (907.1.16 事件面 6 人、
+    # 施囚者侧 7 条), 而群体俘获判据正需要这个人数。
+    _side = {}
+    try:
+        _side = f.imprison_batch_sizes()
+    except Exception:
+        _side = {}
+    for r in ins:
+        _k = (str(r["date"]), r["jailer"])
+        r["n"] = max(_cluster.get(_k, 1), _side.get(_k, 0))
     drop = set()
     by_victim = {}
     for r in ins:
@@ -12339,7 +12485,8 @@ def _pair_imprisonments(events, f, pid, pname=""):
             # 判不出时维持裸「囚禁」——方式词只在程序确知时出现。
             _cm, _cm_note = ("unknown", "")
             try:
-                _cm, _cm_note = f.capture_manner(victim, r["jailer"], r["date"])
+                _cm, _cm_note = f.capture_manner(victim, r["jailer"], r["date"],
+                                                 cluster_n=r.get("n") or 1)
             except Exception:
                 _cm, _cm_note = ("unknown", "")
             if _cm == "diarchy":
@@ -12348,6 +12495,15 @@ def _pair_imprisonments(events, f, pid, pname=""):
             elif _cm in ("battle", "battle_poi"):
                 body = W["prison_captured_battle"].format(jailer=jn or "其监禁者",
                                                           victim=vn)
+            elif _cm == "raid":
+                body = W["prison_raid_captured"].format(jailer=jn or "其监禁者",
+                                                        victim=vn)
+            elif _cm == "not_battle" and jn:
+                # 未成年被囚 ⇒ 非战败俘获; 只写「拘押」并点出当时年龄
+                _age = f._age_at(victim, r["date"]) if hasattr(f, "_age_at") else None
+                _nm = W["prison_note_age"].format(victim=vn, n=_age) \
+                    if _age is not None else vn
+                body = W["prison_batch_seized"].format(jailer=jn, victim=_nm)
             elif _cm == "batch" and jn:
                 # 批量入狱必为军事/诛族行动 (非司法逮捕), 但破城与战败不可分 ——
                 # 措辞到此为止, 不写方式 (见 `capture_manner` 的档位表)。

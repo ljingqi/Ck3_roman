@@ -363,6 +363,13 @@ FACT_WORDING = {
     "prison_captured_battle": "{jailer}于战阵俘获{victim}",
     "prison_captured_diarch": "{jailer}以摄政之权拘押{victim}",
     "prison_batch_seized": "{jailer}拘押{victim}",
+    # v63 (问题1 第二轮): ① 未成年人被囚 ⇒ 排除战败俘获 (战败池只有败方主指挥官
+    # 与骑士, 必为成年参战者; 正样本 9 处被俘主帅年龄 21–61 无未成年人)。
+    # 措辞只写「拘押」＋当时年龄 —— 年龄本身即事实, 且与「妇孺同俘」的场景自然相合。
+    "prison_note_age": "{victim}，时年{n}岁",
+    # ② 正证劫掠: 监禁者的 `landed_data.last_raid` 与入狱日同日 (游戏写明他那天
+    # 在劫掠) —— 这是唯一能确定性判出「劫掠掳人」的字段。
+    "prison_raid_captured": "{jailer}劫掠中掳走{victim}",
     # v56 (§10-D): 相恋缘由的**程序兜底** (拿不到游戏 reason 键时) —— 双方同囚于
     # 同一监禁者、同为 house_arrest (软禁)、且关系起始日落在共同在押区间内。
     # 措辞只陈述**可判定的事实** (「同在X的软禁中」), 不冒用游戏 lover_prison
