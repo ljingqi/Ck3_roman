@@ -7297,6 +7297,17 @@ class Facts:
     # 玩家偷来的宋御玺/帝国皇冠等 (illustrious) 进不了板块; 狩猎战利品类型
     # (毛皮/角/颅骨) 一律剔除 (即使高稀也是凑数); 最多 20 件防提示词膨胀。
     ARTIFACT_RARITY = ("illustrious",)
+    # v61 (问题1, 用户拍板): **部件宝物只收绿色以上**。
+    # 游戏档位序 common(白) < masterwork(绿) < famed(蓝) < illustrious(紫) ——
+    # `game/common/customizable_localization/ledger_custom_loc.txt:1-30` 的 I–IV 序 +
+    # `game/localization/simp_chinese/inventory/inventory_l_simp_chinese.yml:130-137`
+    # 的中文名 (大师级/名作级/卓越级); 完整调研见 `docs/调研_宝物稀有度与部件宝物.md`。
+    # 旧稿乙档**不限稀有度**, 于是 Mod「食人赋能」按**被吃者头衔档**生成的 common 遗骨
+    # 成批入志 (实测: 菲利普2 档 26 件全常见、崔佛档 22 件里 21 常见)。
+    # 该 Mod 的映射出处: `workshop\<CK3_appid>\3802979803\common\scripted_effects\
+    # devour_effects.txt:553-611` —— 帝国 illustrious / 王国 famed / **公爵 masterwork**
+    # / 其余 (伯爵·男爵·无地) common, 故本门槛等价于「只收公爵及以上头衔者的遗骨」。
+    ARTIFACT_PART_RARITY = ("masterwork", "famed", "illustrious")
     ARTIFACT_FILLER_TYPES = {
         "animal_hide", "animal_hide_big", "animal_trinket",
         "animal_skull", "VIET_clutter",
@@ -7468,7 +7479,8 @@ class Facts:
 
         两档 (kind):
           · "relic" 名望级重宝 —— v13/v21 旧口径: 高稀 + 被外族持有过;
-          · "part"  角色部件宝物 —— 本宗族持有的遗骸/部件所制之宝, **不限稀有度**,
+          · "part"  角色部件宝物 —— 本宗族持有的遗骸/部件所制之宝, **v61 起只收
+            绿色以上** (`ARTIFACT_PART_RARITY`: masterwork/famed/illustrious),
             亦不要求曾入外族之手 (头骨高脚杯是主角自铸的战利品)。
         归属一律按 as_of 判定 (十年传记不穿越; 见 v39 注释)。"""
 
@@ -7530,7 +7542,10 @@ class Facts:
                         break
                 if cross:
                     kind = "relic"
-            if not kind and self._artifact_ever_own_kin(hist):
+            # v61 (问题1): 乙档先过档位门槛 (绿色以上), 再看是否部件宝物 ——
+            # 门槛在前, 顺带省掉对 common 遗骨的描述清洗开销。
+            if not kind and a.get("rarity") in self.ARTIFACT_PART_RARITY \
+                    and self._artifact_ever_own_kin(hist):
                 desc = self._artifact_material(a.get("description"), as_of
                                                or self.as_of)
                 if self._is_part_artifact(a, desc):
@@ -7576,7 +7591,7 @@ class Facts:
         return out
 
     def family_artifacts(self):
-        """《宝物志》数据源 (v43): 甲档名望级重宝 + 乙档角色部件宝物。
+        """《宝物志》数据源 (v43): 甲档名望级重宝 + 乙档角色部件宝物 (v61: 限绿色以上)。
         返回 [多行文本] (名称/稀有度/材质/流转史)。
 
         v39: 十年传记按 as_of 判归属 (旧逻辑只截断流转条目、归属按最新档判:
