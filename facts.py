@@ -6998,6 +6998,11 @@ class Facts:
         `battle_won_memory` / `battle_lost_memory` / `war_won` / `war_lost`,
         故不依赖「主角当时在不在场」。
 
+        v63 第三轮: 四类**语义不同**, 调用方必须自己筛 —— 只有 `battle_*_memory`
+        是「当天打了一仗」; `war_won` / `war_lost` 是**战争结束**记忆 (实测 9 条
+        只匹配到 war_* 的「战阵俘获」在押者, 其 `prison_data.type` 全是 dungeon,
+        即战争结束 ≠ 沙场被擒)。`capture_manner` 因此只收 `battle_` 前缀的条目。
+
         胜方判定: 记忆持有人即该记忆的主语 —— `*_won` 的持有人是**胜方**
         (`battle_won_memory` 的 participants 只有 `loser`), `*_lost` 的持有人是
         **败方** (`participants.winner`); 两者互补, 故两条都收录, 由调用方按
@@ -7057,16 +7062,22 @@ class Facts:
                 out.add(str(it["flag"]))
         return out
 
-    def _battle_poi_hits(self, jailer, date):
+    def _battle_poi_hits(self, jailer, date, victim=None):
         """省份战场兴趣点命中 (v63 问题1 最强判据之一) → 省份 id 列表。
 
-        游戏在「战斗所在省」写 `battle_poi_winner` / `battle_poi_date_{year,month,day}`
-        / `battle_poi_enemy_commander_imprisoned` (`events/war_events/combat_events.txt:2333`),
-        且写变量的事件 `combat_event.3000` 与关人的 `combat_event.1001` 由**同一
-        on_action 同一次触发** (`common/on_action/combat_on_actions.txt:12-24`),
-        故二者严格同场。日期三个变量落盘时 ×100000 (实测 year identity
-        89100000 → 891 年, day 2400000 → 24)。覆盖率极窄 (本档实测 9 处),
-        但一旦命中即确定性。"""
+        游戏在「战斗所在省」写 `battle_poi_winner` / `battle_poi_loser`
+        / `battle_poi_date_{year,month,day}` / `battle_poi_enemy_commander_imprisoned`
+        (`events/war_events/combat_events.txt:2262-2334`), 且写变量的事件
+        `combat_event.3000` 与关人的 `combat_event.1001` 由**同一 on_action 同一次
+        触发** (`common/on_action/combat_on_actions.txt:12-24`), 故二者严格同场。
+        日期三个变量落盘时 ×100000 (实测 year identity 89100000 → 891 年,
+        day 2400000 → 24)。覆盖率极窄 (本档实测 9 处), 但一旦命中即确定性。
+
+        v63 第三轮: `battle_poi_enemy_commander_imprisoned` 只在**败方主指挥官**
+        进了 `prisoners_of_war` 时才写 (`combat_events.txt:2326-2333`, 判据是
+        `this = root.enemy_side.side_primary_participant`), 而 `battle_poi_loser`
+        正是同一位败方主指挥官 (`:2274-2276`)。故命中还须 `loser == victim` ——
+        同一省同日可能有别场仗, 不比对身份就会把不相干的人算成战阵俘获。"""
         cached = getattr(self, "_poi_idx", None)
         if cached is None:
             cached = {}
@@ -7091,6 +7102,7 @@ class Facts:
                         return None
                 cached[str(pid)] = {
                     "winner": flags.get("battle_poi_winner"),
+                    "loser": flags.get("battle_poi_loser"),
                     "year": _div("battle_poi_date_year"),
                     "month": _div("battle_poi_date_month"),
                     "day": _div("battle_poi_date_day"),
@@ -7102,7 +7114,8 @@ class Facts:
             return []
         return [pid for pid, v in cached.items()
                 if v.get("winner") == jailer and v.get("year") == y
-                and v.get("month") == mo and v.get("day") == d]
+                and v.get("month") == mo and v.get("day") == d
+                and (victim is None or v.get("loser") == victim)]
 
     def imprison_batch_sizes(self):
         """{(日期, 监禁者): 人数} —— 「同日同监禁者囚禁了几人」(惰性)。
@@ -7161,6 +7174,42 @@ class Facts:
                 if lr and str(lr) == str(date):
                     return str(lr)
                 break
+        return None
+
+    def _prison_type_fresh(self, cid, date):
+        """该角色**当次**入狱的牢房档位 → `'dungeon'` / `'house_arrest'` / None。
+
+        v63 问题1 第三轮 (2026-09-24 代码调研 §11.A): `prison_data.type` 只在
+        「这一档就是待判的那次入狱」时才可用, 判据是三个日期全等:
+
+            `date == pd["date"] == pd["imprison_type_date"]`
+
+        ① `pd["date"]` 是**当前**这次囚禁的开始日 —— 与待判日期不同就说明当事人
+           后来又被关过一次 (或已出狱), 这一档描述的不是待判的那次;
+        ② `imprison_type_date` 是**档位被设定的那天**, 由 `change_prison_type`
+           改写 (`common/scripted_effects/00_intrigue_lifestyle_effects.txt:780`
+           等三处调用); 两者不等 ⇒ 原始档位已被覆盖 (本档实测 3 例), 一律返回
+           None —— 宁可不用, 不猜。
+
+        用途见 `capture_manner` ④': 战阵俘获路径**恒写 `type = house_arrest`**
+        (`combat_events.txt:1295-1298`), 故读到 `dungeon` 即可排除战阵俘获。"""
+        if cid is None or not date:
+            return None
+        for bucket in ((self.melt.get("living") or {}),
+                       (self.melt.get("dead_unprunable") or {}),
+                       ((self.melt.get("characters") or {}).get("dead_prunable") or {})):
+            c = bucket.get(str(cid))
+            if not isinstance(c, dict):
+                continue
+            pd = ((c.get("alive_data") or {}).get("prison_data")
+                  or (c.get("dead_data") or {}).get("prison_data"))
+            if not isinstance(pd, dict):
+                return None
+            if str(pd.get("date")) != str(date) \
+                    or str(pd.get("imprison_type_date")) != str(date):
+                return None
+            t = pd.get("type")
+            return str(t) if t else None
         return None
 
     def _same_day_imprisoned(self, jailer, date):
@@ -7232,11 +7281,25 @@ class Facts:
           | --- | --- |
           | `batch` | 同日同监禁者 ≥3 人 ⇒ 群体俘获, 排除战败俘获 (一次打仗不会同时抓来 3 名以上互不相干的人) |
           | `diarchy` | 在押者带 `imprisoned_by_diarch` 变量 (全库唯一 set 点) |
-          | `battle_poi` | 省份战场兴趣点 winner/日期与该次入狱对齐 (确定性, 覆盖窄) |
-          | `battle` | 同日战斗记忆: 被囚者是 `loser`、监禁者是胜方 |
+          | `battle_poi` | 省份战场兴趣点 winner/**loser**/日期与该次入狱三者对齐 (确定性, 覆盖窄) |
+          | `battle` | 同日**真·战斗**记忆 (`battle_won_memory` / `battle_lost_memory`): 被囚者是 `loser`、监禁者是胜方 |
           | `raid` | 监禁者的 `landed_data.last_raid` == 入狱日 (正证劫掠) |
           | `not_battle` | 被囚者本人 < 16 岁, 或同簇内有未成年人 ⇒ 排除战败俘获 |
           | `unknown` | 以上皆不成立 → **不写方式** |
+
+        第三条排除战败俘获的硬判据 (第三轮, 见 `_prison_type_fresh`): 待判那次的
+        `prison_data.type == dungeon` 且日期三全等 ⇒ **排除战阵俘获**, 于是 `battle`
+        与 `battle_poi` 两档都被关掉 (本档实测 147/462 = 31.8% 的在押者可这样排除)。
+        依据: 战阵俘获路径恒写 `type = house_arrest` (`combat_events.txt:1295-1298`),
+        而裸 `imprison` 的默认档位是 `dungeon`。反向不成立 —— `house_arrest` 并不
+        蕴含战阵俘获 (312/462 在押者是 `house_arrest`), 故它**只能否证、不能正证**。
+        `raid` 档不受此限 (劫掠掳人走裸 `imprison`, 本就是 dungeon)。
+
+        同一次实验还纠掉了一个**假阳性来源** (第三轮): `war_won` / `war_lost`
+        是**战争结束**记忆, 曾经也进 `battle` 档 —— 实测 24 条被判「战阵俘获」的
+        在押者里, 9 条只匹配到 war_* (战争结束当天入狱), 这 9 条的 `type` 全是
+        `dungeon`。现在 `battle` 档只收 `battle_` 前缀的条目, 战争结束不再被说成
+        「战阵俘获」, 那类日子退回裸「囚禁」(方式词只在程序确知时出现)。
 
         `not_battle` 的依据 (2026-09-24 第二轮追加调研实测): 战败俘获的候选池被
         硬限制为败方**主指挥官**(`combat_events.txt:640-641`)＋ `every_side_knight`
@@ -7272,16 +7335,30 @@ class Facts:
         # ① diarchy 摄政绑架 (确定性)
         if "imprisoned_by_diarch" in self._var_flags(victim):
             return ("diarchy", "imprisoned_by_diarch")
-        # ② 省份战场兴趣点 (确定性, 覆盖窄)
-        if jailer is not None:
-            hits = self._battle_poi_hits(jailer, date)
+        # ①' 牢房档位否证 (第三轮): `dungeon` + 日期三全等 ⇒ 排除战阵俘获。
+        #     战阵俘获恒写 `type = house_arrest` (`combat_events.txt:1295-1298`),
+        #     而裸 `imprison` 默认 dungeon; 故 dungeon 与 battle / battle_poi
+        #     两档互斥。**只否证、不正面定档** —— 劫掠(③)不受影响。
+        _no_battle = self._prison_type_fresh(victim, date) == "dungeon"
+        # ② 省份战场兴趣点 (确定性, 覆盖窄; 须 winner + loser + 日期三者对齐)
+        if jailer is not None and not _no_battle:
+            hits = self._battle_poi_hits(jailer, date, victim=victim)
             if hits:
                 return ("battle_poi", f"province={hits[0]}")
         # ③ 正证劫掠 (监禁者当日劫掠过)
         if self._last_raid_on(jailer, date):
             return ("raid", f"last_raid={date}")
-        # ④ 同日战斗且被囚者是输家 (监禁者已知时必须同时是胜方 —— 同一天可能有多场仗)
-        for rec in self._battle_by_date().get(str(date), []):
+        # ④ 同日**真·战斗**记忆 (只认 `battle_*_memory`) 且被囚者是输家
+        #    (监禁者已知时必须同时是胜方 —— 同一天可能有多场仗)。
+        #    第三轮修正: `war_won` / `war_lost` 是**战争结束**记忆, 不是战斗 ——
+        #    实测 24 条被旧判据判成「战阵俘获」的在押者里, 9 条其实只匹配到
+        #    war_* (战争结束那天入狱, 且那一仗的败方是该人), 而这 9 条的
+        #    `prison_data.type` **全是 dungeon** —— 正是「战争结束 ≠ 沙场被擒」
+        #    的存档铁证 (战阵俘获路径恒写 house_arrest)。故 war_* 不再进本档,
+        #    让这类日子退回裸「囚禁」而不声称战阵俘获。
+        for rec in (() if _no_battle else self._battle_by_date().get(str(date), [])):
+            if not str(rec[0]).startswith("battle_"):
+                continue
             loser, winner = self._battle_winner(rec)
             _ok = (loser == victim) and (winner == jailer if jailer is not None
                                          else True)
