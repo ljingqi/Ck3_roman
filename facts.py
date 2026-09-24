@@ -15798,7 +15798,105 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         facts["consort_affairs"] = []
         facts["forced_concubines"] = []
         facts["concubine_divorces"] = []
+    # v63 (问题2, 用户拍板): 《家室列传》纪事按「配偶一（＋其所出子女）→ 配偶二（＋…）」
+    # 逐组下发, 每组一个独立请求 (上限见 JIASHI_GROUP_MAX)。
+    facts["household_groups"] = household_groups(f, facts)
     return facts
+
+
+# ---------------------------------------------------------------------------
+# v63 (问题2): 《家室列传》的**门庭分组** —— 一组 = 一位配偶 + 其所出子女
+# ---------------------------------------------------------------------------
+# 用户口径 (2026-09-24): 「按照主角的配偶一，怎么怎么样，有儿子谁谁谁，做了什么；
+# 然后配偶二又怎么怎么样这么来分」——即纪事不再是一篇大散文, 而是逐配偶成篇,
+# 每位配偶带出她/他所生的子女。上限 5 组 (`JIASHI_GROUP_MAX`), 超出的尾组并入
+# 末组 (末组标题另作「其余门庭」)。
+#
+# 为什么这么做 (实测): 旧稿把 26 名家人 (12 配偶 + 14 子女同胞) 的整档一次性下发,
+# `jiashi_mid` 的家室档案实测 **11,895 字符**, 而正文只要求 1200–1800 字 ——
+# 平均每人 60–90 字, 模型只能平铺报名字。分组后每组 2–5 人, 素材与篇幅匹配。
+JIASHI_GROUP_MAX = 5
+
+
+def household_groups(f, facts):
+    """门庭分组 (v63 问题2) → [{"label":…, "ids":[…], "children":[…],
+    "kind": "spouse"|"other"}, …]。
+
+    规则 (全部程序判定):
+      · 主角的配偶/妾按 **as_of 前的首见次序** 排 (primary_spouse 优先, 其余按
+        缓存 family 键的先后与 id 稳定排序) —— 与《家室列传》开篇的「结缡」次序一致;
+      · 每个子女归入其**生母**所在组 (`family.mother` ∩ 配偶集); 生母不在配偶集
+        (情妇/前妾已出册) 的子女归入末组「其余子女」;
+      · 主角的同胞 (`siblings`) 单列一组 (他们与配偶无涉);
+      · 每位成员的 id 只出现一次; 空组不产出。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return []
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    fam = f.merge_spouse_latch(rec.get("family") or {}, f.as_of)
+    chars = cache.get("characters") or {}
+
+    def _ids(key):
+        return [int(x) for x in (fam.get(key) or [])
+                if isinstance(x, int) or str(x).isdigit()]
+
+    # 配偶次序: 正妻/正夫 → 其余现配偶 → 前配偶 → 妾 → 前妾 (去重保序)
+    spouses = []
+    for key in ("primary_spouse", "spouse", "former_spouses",
+                "concubine", "former_concubines"):
+        for x in _ids(key):
+            if x not in spouses:
+                spouses.append(x)
+    # 只保留下发给模型的成员 (数据不足的略, 与 `_character_profiles` 同门)
+    spouses = [x for x in spouses if str(x) in chars]
+
+    # 子女/同胞
+    kids = [x for x in _ids("child") if str(x) in chars]
+    sibs = [x for x in _ids("siblings") if str(x) in chars]
+
+    # 子女 → 生母 (缓存 family.mother; 取不到则看父系)
+    kid_mother = {}
+    for c in kids:
+        cf = (chars.get(str(c)) or {}).get("family") or {}
+        m = [int(x) for x in (cf.get("mother") or [])
+             if isinstance(x, int) or str(x).isdigit()]
+        kid_mother[c] = m[0] if m else None
+
+    used = set()
+    out = []
+    for s in spouses:
+        members = [s] + [c for c in kids if kid_mother.get(c) == s]
+        members = [m for m in members if m not in used]
+        if not members:
+            continue
+        used.update(members)
+        prof = facts["characters"].get(str(s)) or {}
+        out.append({"label": prof.get("name") or f"配偶{s}",
+                    "ids": members, "children": [m for m in members if m != s],
+                    "kind": "spouse"})
+    rest_kids = [c for c in kids if c not in used]
+    if rest_kids:
+        used.update(rest_kids)
+        out.append({"label": "其余子女", "ids": rest_kids,
+                    "children": rest_kids, "kind": "other"})
+    rest_sibs = [s for s in sibs if s not in used]
+    if rest_sibs:
+        used.update(rest_sibs)
+        out.append({"label": "同胞手足", "ids": rest_sibs,
+                    "children": [], "kind": "other"})
+    # 上限: 超出的尾组并入末组 (末组另标「其余门庭」)
+    if len(out) > JIASHI_GROUP_MAX:
+        head = out[: JIASHI_GROUP_MAX - 1]
+        tail = out[JIASHI_GROUP_MAX - 1:]
+        merged = {"label": "其余门庭",
+                  "ids": [i for g in tail for i in g["ids"]],
+                  "children": [i for g in tail for i in g["children"]],
+                  "kind": "other"}
+        head.append(merged)
+        out = head
+    return out
+
 
 
 def facts_to_text(facts, keys=None):

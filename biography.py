@@ -1546,9 +1546,16 @@ def _article_facts(facts, cache, key, section=None):
             fam_ids = set(F._asof_ids(fi, sorted(fam_ids)))
         # v27: 开篇发妻妾 (结缡与离异), 纪事发子女与同胞 (门庭恩怨)
         # (此前两块各拿全部家人档案, 家室档案 3,243 字符逐字节重复)
-        spouse_ids = _family_ids_by_kind(cache, "spouse")
-        pick = ([c for c in sorted(fam_ids) if c in spouse_ids] if sk == "lead"
-                else [c for c in sorted(fam_ids) if c not in spouse_ids])
+        # v63 (问题2, 用户拍板): 纪事**按门庭分组**下发 —— 每个请求只拿
+        # 「一位配偶 + 其所出子女」的档案 (见 `facts.household_groups`)。
+        members = section.get("members") if isinstance(section, dict) else None
+        if members:
+            pick = [c for c in members if c in fam_ids]
+        else:
+            spouse_ids = _family_ids_by_kind(cache, "spouse")
+            pick = ([c for c in sorted(fam_ids) if c in spouse_ids]
+                    if sk == "lead"
+                    else [c for c in sorted(fam_ids) if c not in spouse_ids])
         # v45 (档 B, 阅读顺序): 先把此前的块 (传主档案等) 行内人名标好, 再标逐人条目头
         _tag_blocks(facts, scope, blocks)
         for cid in pick:
@@ -1563,7 +1570,8 @@ def _article_facts(facts, cache, key, section=None):
             ev = p.get("events") or []
             if ev:
                 fam_lines.append("  " + "\n  ".join(ev))
-        _set_block(blocks, "家室档案", "\n".join(fam_lines))
+        _set_block(blocks, section.get("block_title") or "家室档案",
+                   "\n".join(fam_lines))
         # v31 (问题4): 妻室情事脉络 — 逐情人一行 (身份 + 私通→相恋→灵魂伴侣的关系弧),
         # 让「妻子怎么交到情人和灵魂伴侣」有脉络可写 (此前只有孤立日期句)。
         if sk != "lead":
@@ -2602,6 +2610,28 @@ def _assassin_sections(n):
     return secs
 
 
+def _mid_req_for_group(base_req, idx, total, group):
+    """《家室列传》纪事**分组请求**的板块要求 (v63 问题2)。
+
+    `base_req` = 原「纪事·门庭恩怨」的整段要求 (含篇幅与主旨); 这里只在前面
+    接一句**本组范围**的正向说明 —— 本请求只写这一房 (配偶 + 其所出子女),
+    素材块也只给这一房的档案。用户拍板的口径是「按照主角的配偶一…然后配偶二…」,
+    故要求句照此写: 本组是哪一房、第几房 (共几房)、这几个人是谁。
+    人数与关系全部由程序给出, 不留空位让模型猜。"""
+    label = (group or {}).get("label") or ""
+    kids = list((group or {}).get("children") or [])
+    head = f"本请求只写这一房：{label}"
+    if total > 1:
+        head += f"（第{idx + 1}房，共{total}房）"
+    head += "。"
+    if kids:
+        head += f"这一房所出的子女共{len(kids)}人，已随本组档案一并给出；" \
+                "本板块写这一房的夫妻、子女与其家门之事。"
+    else:
+        head += "这一房名下未载子女；本板块写这一房夫妻与其家门之事。"
+    return head + "\n\n" + (base_req or "")
+
+
 def build_articles(facts, cache, cfg):
     """按 cfg.bio_sections 组装文章列表 (标题含主角/好友/仇人姓名)。
     v5: 动态追加 刺客列传/游侠列传/妻族传/群英录 (依数据条件)。"""
@@ -2633,6 +2663,35 @@ def build_articles(facts, cache, cfg):
             titles["lead"] = _var["lead_title"]
             titles["mid"] = _var["mid_title"]
         defaults = {"lead": "开篇", "mid": "纪事"}
+        # v63 (问题2, 用户拍板): 《家室列传》纪事**按门庭分组**逐组成篇 ——
+        # 「配偶一 + 其所出子女 → 配偶二 + 其所出子女 …」, 上限 5 个请求
+        # (`facts.JIASHI_GROUP_MAX`)。无分组 (无配偶无子女) 时回落单块。
+        if key == "jiashi":
+            groups = facts.get("household_groups") or []
+            mid_title = titles.get("mid") or defaults["mid"]
+            mid_req = _section_req((_var or {}).get("mid")
+                                   or style.SECTION_REQ.get(key, {}).get("mid")
+                                   or "按传记笔法写作。", facts)
+            secs = [{"key": "lead",
+                     "title": titles.get("lead") or defaults["lead"],
+                     "req": _section_req(
+                         (_var or {}).get("lead")
+                         or style.SECTION_REQ.get(key, {}).get("lead")
+                         or "按传记笔法写作。", facts)}]
+            if groups:
+                for i, g in enumerate(groups):
+                    secs.append({
+                        "key": f"mid{i + 1}",
+                        "title": f"{mid_title}·{g.get('label') or ('第%d房' % (i + 1))}",
+                        "req": _mid_req_for_group(mid_req, i, len(groups),
+                                                  g),
+                        "members": list(g.get("ids") or []),
+                        "block_title": f"家室档案·{g.get('label') or ''}",
+                    })
+            else:
+                secs.append({"key": "mid",
+                             "title": mid_title, "req": mid_req})
+            return secs
         return [{
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
