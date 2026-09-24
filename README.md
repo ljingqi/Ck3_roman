@@ -1591,6 +1591,10 @@ test(v60)     verify_fast 新增 V60 断言组 + tools/diag_v60.py
    沙箱的写边界）。`-Check` 只报告不改，`-Clear` 撤销，`-Root D:\X` 换目录；子目录里的可执行
    文件（如 `tools\rakaly.exe`）仍需自行处理。
 
+写标签要的是**该对象上的 `WRITE_OWNER`**。数据盘上继承 `Authenticated Users: Modify` 的目录给不出
+这一位（提权令牌才带着 `BUILTIN\Administrators:(F)`），这时第 1 条的自动修复会安静地不生效——
+直接走第 2 条的脚本（自提权）即可。
+
 证据链与备选方案见 [docs/排查_启动器无法验证发布者_沙箱Low标签.md](docs/排查_启动器无法验证发布者_沙箱Low标签.md)。
 
 ## 用法
