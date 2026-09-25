@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm                 # noqa: E402
 import localization as L    # noqa: E402
 
-_SCHEMA = 2   # v53: 条目含 obligation_flags, 合同义务旗标可求值
+_SCHEMA = 3   # v64: ruler_child (王子/公主) 条目入表并可求值 (special 过滤)
 _TABLE = None
 
 
@@ -127,8 +127,13 @@ def build_flavorization(cfg):
                     or items.get("holding") or items.get("council_position")
                     or items.get("faith")
                     or items.get("_de_jure_liege"))
-                if special not in ("holder", ""):
-                    unsupported = True   # 教宗/议员/太后/王子等由既有分支渲染
+                # v64 (问题2): `special = ruler_child` (王子/公主) 改**可求值** ——
+                # 其 `governments` 是穷举, 部落/游牧制在**任何层级**都没有条目,
+                # 故「有没有称号」这件事必须问表 (旧稿由 `facts._prince_word` 的
+                # 末档无条件回落「王子/公主」兜住, 于是游牧/部落子女凭空得号)。
+                # 其余 special (教宗/议员/太后/居所) 仍由各自分支渲染, 保持 unsupported。
+                if special not in ("holder", "", "ruler_child"):
+                    unsupported = True
                 try:
                     prio = int(float(items.get("priority") or 0))
                 except (TypeError, ValueError):
@@ -189,17 +194,21 @@ def table(cfg=None):
 
 def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             faith="", religion="", title_key="", independent=True, top=None,
-            obligation_flags=None, cfg=None):
+            obligation_flags=None, cfg=None, special="holder"):
     """按游戏规则取词: 返回**本地化键** (块名) 或 ''。
 
     与游戏同序: priority 高者先试, 全部条件命中即取 (governments / name_lists /
-    heritages / faiths / religions 为空视为不限; special 非 holder 与含 flag 的
-    条目在建表时已标 unsupported)。`titles` 是**限定头衔**条件 — 只有传入的
-    title_key 在其中时才命中 (不传即跳过这类条目)。`independent` 用于
-    only_vassals/only_independent 两条规则; `top` 传入最高领主的同名字段后,
-    未显式写 `top_liege = no` 的条目改按最高领主判定 (游戏默认行为)。
+    heritages / faiths / religions 为空视为不限; 含 flag 的条目在建表时已标
+    unsupported)。`titles` 是**限定头衔**条件 — 只有传入的 title_key 在其中时才
+    命中 (不传即跳过这类条目)。`independent` 用于 only_vassals/only_independent
+    两条规则; `top` 传入最高领主的同名字段后, 未显式写 `top_liege = no` 的条目
+    改按最高领主判定 (游戏默认行为)。
     v53: `obligation_flags` 是角色当时封臣合同解码出的义务旗标列表
-    (如 celestial_province_standard); 条目要求旗标时须有交集才命中。"""
+    (如 celestial_province_standard); 条目要求旗标时须有交集才命中。
+    v64 (问题2): `special` 过滤条目类别 —— 缺省 "holder" (统治者称谓, 旧行为逐字
+    不变); 传 "ruler_child" 时只取 `special = ruler_child` 的王子/公主条目
+    (由 `facts._prince_word` 用来判「此处游戏有没有称号」)。两类互不相干:
+    不传 special 时 ruler_child 条目一律不参与, 防「王子」压过统治者称谓。"""
     fl = table(cfg)
     ents = (fl.get("entries") or {})
     if not ents:
@@ -209,6 +218,8 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
         if e.get("type") != kind or e.get("tier") != tier:
             continue
         if e.get("unsupported"):
+            continue
+        if (e.get("special") or "holder") != (special or "holder"):
             continue
         tls = e.get("titles") or []
         if tls and title_key not in tls:
@@ -262,6 +273,76 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             have = set(obligation_flags or [])
             if not have.intersection(want_flags):
                 continue
+        best_key, best_pri = e["key"], prio
+    return best_key
+
+
+def ruler_child_exists(tier, gender, *, government="", name_list="", heritage="",
+                       faith="", religion="", title_key="", independent=True,
+                       top=None, obligation_flags=None, cfg=None):
+    """游戏侧在 (层级 × 性别 × 政体 × 独立/封臣) 下**有没有**王子/公主称号 ——
+    返回命中的本地化键, 无则 '' (v64, 问题2)。
+
+    与 `resolve` 的两处**刻意不同** (本项目口径, 见 `facts._prince_word` 与 v54):
+
+    ① 只取 `special = ruler_child` 的条目 (与统治者称谓互不相干);
+    ② **带 `governments` 的条目不查文化/信仰** —— 项目对天朝/行政类称谓早已采
+       「与文化无关」口径 (v54: 诺斯伯爵在中国亦为刺史), 故中华皇朝的非汉人天子
+       (斯卡利茨档捷克人建岭南) 照样出皇子/皇女; 文化专属条目 (`governments` 为空:
+       伊朗/达罗毗荼/东南亚/党项/关契) 仍按 name_lists/heritages/faiths/religions 判定。
+
+    为什么需要它: `prince`/`princess`/`prince_empire`/`princess_empire` 的
+    `governments` 是**穷举**且不含 tribal/nomad (`00_flavorization.txt:354-400`),
+    故部落制/游牧制在任何层级都没有王子/公主称号 —— 「有没有」必须问表, 而不能由
+    末档无条件回落「王子/公主」。
+    """
+    fl = table(cfg)
+    ents = (fl.get("entries") or {})
+    if not ents:
+        return ""
+    best_key, best_pri = "", None
+    for e in ents.values():
+        if e.get("type") != "character" or e.get("tier") != tier:
+            continue
+        if (e.get("special") or "holder") != "ruler_child" or e.get("unsupported"):
+            continue
+        if e.get("gender") and e["gender"] != gender:
+            continue
+        prio = e.get("priority") or 0
+        if best_pri is not None and prio <= best_pri:
+            continue
+        tls = e.get("titles") or []
+        if tls and title_key not in tls:
+            continue
+        rules = e.get("rules") or {}
+        use_top = bool(top) and rules.get("top_liege", True) is not False
+        gov_x = (government if (not use_top
+                               or rules.get("ignore_top_liege_government"))
+                 else (top.get("government") or government))
+        govs = e.get("governments") or []
+        if govs and gov_x not in govs:
+            continue
+        if not govs:
+            # 文化专属条目 —— 按文化/信仰判 (带 governments 的条目见 docstring ②)
+            nls = e.get("name_lists") or []
+            if nls and (top.get("name_list") if use_top else name_list) not in nls:
+                continue
+            hs = e.get("heritages") or []
+            if hs and (top.get("heritage") if use_top else heritage) not in hs:
+                continue
+            fs = e.get("faiths") or []
+            if fs and (top.get("faith") if use_top else faith) not in fs:
+                continue
+            rs = e.get("religions") or []
+            if rs and (top.get("religion") if use_top else religion) not in rs:
+                continue
+        if rules.get("only_independent") and not independent:
+            continue
+        if rules.get("only_vassals") and independent:
+            continue
+        want_flags = e.get("obligation_flags") or []
+        if want_flags and not set(obligation_flags or []).intersection(want_flags):
+            continue
         best_key, best_pri = e["key"], prio
     return best_key
 

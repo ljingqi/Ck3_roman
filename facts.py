@@ -4381,9 +4381,13 @@ class Facts:
         return holder, top_tid
 
     def _flavor_key(self, kind, tier, cid, tid=None, gender=None, gov=None,
-                    date=None):
+                    date=None, special=None, independent=None):
         """flavorization 取词的本地化键; 未命中/无表返回 ''。
-        v41: date 锚点 — 本人与领主的政体均按该日期取 (封建期/行政期词不同)。"""
+        v41: date 锚点 — 本人与领主的政体均按该日期取 (封建期/行政期词不同)。
+        v64 (问题2): `special` 透传给 `FZ.resolve` (缺省 None → holder 类);
+        `independent` 可显式覆盖独立性 —— 王子/公主词的「独立/封臣」档看的是
+        **父/母** (ruling parent) 的独立性, 而 `cid` 传的是子女本人 (无地,
+        `_is_independent` 取不到 ruling parent 的值)。"""
         if not self._flavor or tier is None or cid is None:
             return ""
         tkey = self._FLAVOR_TIER.get(tier, tier)
@@ -4396,7 +4400,8 @@ class Facts:
         title_key = ""
         if tid is not None:
             title_key = ((self._lt.get(str(tid)) or {}).get("key") or "")
-        independent = self._is_independent(cid, date)
+        if independent is None:
+            independent = self._is_independent(cid, date)
         if independent is None:
             independent = True
         # 封臣: 未显式 top_liege = no 的条目按最高领主判定 (游戏默认行为)
@@ -4418,9 +4423,67 @@ class Facts:
                 heritage=ce.get("heritage") or "",
                 faith=ftag, religion=rtag, title_key=title_key,
                 independent=bool(independent), top=top,
-                obligation_flags=self._obligation_flags_at(cid, date))
+                obligation_flags=self._obligation_flags_at(cid, date),
+                special=(special or "holder"))
         except Exception:
             return ""
+
+    def _prince_word_exists(self, ptier, government, independent, cid, tid, date,
+                            owner=None):
+        """游戏侧**有没有**王子/公主称号 (v64, 问题2) —— 问 `special = ruler_child`
+        条目表 (`FZ.ruler_child_exists`): 命中任一 (条件全中、priority 最高者) 即「有」。
+
+        为什么必须问表: tribal_government / nomad_government **在任何层级**都没有
+        ruler_child 条目 (`00_flavorization.txt:354-400` 的 prince/princess 是
+        `governments = { feudal_government clan_government }` 穷举), 故部落制与
+        游牧制的王国级/帝国级无头衔子女在游戏里没有任何称号; 旧稿末档无条件回落
+        「王子/公主」, 于是卡尔 15 名子女全带「库曼顿巴斯部王子/公主」。
+        仅作**闸门**用: 出词仍走 `_PRINCE_WORD_OVERRIDE` / 本地化表的既有中文口径
+        (v16 把西式王国之女的「郡主」写作「公主」等定规不变)。
+
+        **政体取不到时放行** —— 已毁/已剪除的头衔 `_title_government` 为空
+        (阿基坦公国、意大利王国等 9 世纪旧衔), 此时先退持有者本人的政体史
+        (`_character_government_or_earliest`), 仍取不到就返回 True: 闸门只挡
+        「确知游戏不给」的部落制/游牧制, 判不出来的情形一律照旧出词。"""
+        if cid is None or ptier is None or not self._flavor:
+            return True
+        gov = (government or "").strip()
+        if not gov and owner is not None:
+            try:
+                gov = (self._character_government_or_earliest(owner, date) or "")
+            except Exception:
+                gov = ""
+        if not gov:
+            return True
+        ce = self._culture_entry(cid, date)
+        ftag, rtag = self._faith_tags(cid, date)
+        title_key = ((self._lt.get(str(tid)) or {}).get("key") or "") \
+            if tid is not None else ""
+        # 封臣: 未显式 top_liege = no 的条目按最高领主判定 (与 `_flavor_key` 同式)
+        top = None
+        if not independent and tid is not None:
+            lid, ltid = self._top_liege_of(cid, tid)
+            if lid is not None and int(lid) != int(cid):
+                lce = self._culture_entry(lid, date)
+                lft, lrt = self._faith_tags(lid, date)
+                top = {"government": (self._title_government(ltid, date)
+                                      if ltid else ""),
+                       "name_list": lce.get("name_list") or "",
+                       "heritage": lce.get("heritage") or "",
+                       "faith": lft, "religion": lrt}
+        try:
+            k = FZ.ruler_child_exists(
+                self._FLAVOR_TIER.get(ptier, ptier),
+                "female" if self._is_female(cid) else "male",
+                government=gov,
+                name_list=ce.get("name_list") or "",
+                heritage=ce.get("heritage") or "",
+                faith=ftag, religion=rtag, title_key=title_key,
+                independent=bool(independent), top=top,
+                obligation_flags=self._obligation_flags_at(cid, date))
+        except Exception:
+            return True
+        return bool(k)
 
     def _flavor_word(self, kind, tier, cid, tid=None, gender=None, gov=None,
                      date=None):
@@ -6633,10 +6696,21 @@ class Facts:
                            f"{self.date(loss)}{verb}，在位仅{span}日")
         return out
 
-    def _prince_word(self, ptier, government, independent, female):
+    def _prince_word(self, ptier, government, independent, female,
+                     child=None, ptid=None, date=None, owner=None):
         """王子词: 按父头衔层级 × 政体 × 独立/封臣 × 性别。
         天朝制: 皇朝/帝国=皇子/皇女; 独立王国=王子/郡主 (大理国王子);
-        封臣王国=公子/公女 (青徐路公子)。封建: 王子/公主。"""
+        封臣王国=公子/公女 (青徐路公子)。封建: 王子/公主。
+
+        v64 (问题2) 闸门: 出词前先问游戏 `special = ruler_child` 条目表
+        (`_prince_word_exists`) —— 表里没有该 (层级 × 政体 × 文化/信仰) 组合时
+        **游戏本就不给称号**, 此处返回 '' (部落制/游牧制的王国级、帝国级子女即此:
+        `prince`/`princess`/`prince_empire` 的 governments 均不含 tribal/nomad)。
+        出词口径不变 (仍走中式键 + `_PRINCE_WORD_OVERRIDE`); `child`/`ptid` 缺省
+        (旧调用) 时跳过闸门, 行为与 v63 逐字相同。"""
+        if child is not None and not self._prince_word_exists(
+                ptier, government, independent, child, ptid, date, owner=owner):
+            return ""
         gov = government or ""
         if gov in self._CELESTIAL_LIKE_GOVS:
             if ptier in ("hegemon", "empire"):
@@ -6816,10 +6890,15 @@ class Facts:
         else:
             # v52: 省层级词 (国/路/皇朝/王国/帝国一律不拼), 简称头衔直接用本名
             prefix = pbase
-        word = self._prince_word(ptier, pgov, independent, self._is_female(child))
+        word = self._prince_word(ptier, pgov, independent, self._is_female(child),
+                                 child=child, ptid=ptid, date=date, owner=owner)
+        # v64 (问题2): 游戏在此处不给称号 (闸门未命中, word='') → 整句不成立,
+        # 防「库曼顿巴斯部王子」退化成只剩前缀的「库曼顿巴斯部」
+        if not word:
+            return ""
         # 称号已并入显示名时不叠前缀 (绰号「时尚王子」+ 父为国主 → 防「新罗国王子时尚王子金晸」;
         # 与 _tenno_prince_word 的同名守卫同口径)
-        if word and word in (self.name_with_regnal(child, date) or ""):
+        if word in (self.name_with_regnal(child, date) or ""):
             return ""
         return prefix + word
 
