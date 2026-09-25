@@ -2483,6 +2483,11 @@ def _appendix_text(facts):
     if gen:
         lines.append("### 世系")
         lines.extend("- " + g for g in gen)
+        # v64 (问题3): 家格沿革 (别立家族 / 家族改名) —— 程序直出, 终传附录因此
+        # 必然有这一句 (事实面本有 house_history, 旧稿只下发进【传主档案】)。
+        for ln in ((facts.get("protagonist") or {}).get("house_history") or []):
+            if ln:
+                lines.append("- " + ln)
     # 主角 + 家人姓名集
     names = set()
     p = facts["protagonist"] or {}

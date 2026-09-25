@@ -322,6 +322,16 @@ def house_display(h):
     return h
 
 
+def _house_shi(nm):
+    """家格句/立家年表行用的家族称法 (「顿巴斯」→「顿巴斯氏」; 已带氏/家/部者原样)。
+
+    v64: 由 `house_history_lines` 内的局部函数提为模块级 —— 家格句与年表事件
+    (`_house_founding_events`) 两处同源, 免得一处写「顿巴斯氏」一处写「顿巴斯」。"""
+    if not nm:
+        return ""
+    return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
+
+
 def _year_of(d):
     """日期文本 → 四位数年份 (兼容 '872.1.1' 与 '872年' 两式); 取不到返回 ''。"""
     if d is None:
@@ -3237,17 +3247,12 @@ class Facts:
         if len(pts) < 2:
             return []
 
-        def _shi(nm):
-            if not nm:
-                return ""
-            return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
-
         segs = []
         for i, (d, hid, hn, dn) in enumerate(pts):
             dm = self.date(d)
             if not dm or "未知" in dm:
                 dm = d
-            nm = _shi(hn or dn)
+            nm = _house_shi(hn or dn)
             if i == 0:
                 segs.append(f"原属{nm}")
                 continue
@@ -3261,11 +3266,11 @@ class Facts:
             if new_house:
                 segs.append(f"{dm}起别立{nm}{clan}")
             elif house_changed and dyn_changed:
-                segs.append(f"{dm}起家族与宗族并称{_shi(dn or hn)}")
+                segs.append(f"{dm}起家族与宗族并称{_house_shi(dn or hn)}")
             elif house_changed:
                 segs.append(f"{dm}起家族改称{nm}{clan}")
             elif dyn_changed:
-                segs.append(f"{dm}起宗族改称{_shi(dn)}")
+                segs.append(f"{dm}起宗族改称{_house_shi(dn)}")
         return ["家格：" + "，".join(segs) + "。"] if len(segs) > 1 else []
 
     def _kin_word(self, a, b):
@@ -12244,8 +12249,12 @@ MODULE_SLICE = {
     # v59 (问题2): 婚配联姻/情变私通**撤出本纪** —— 与 `研究_戏剧模块化.md`
     # 的模块表 (「18 婚配联姻 → 家室; 19 情变私通 → 家室」) 对齐; 且 v59 起
     # 性事行本就不进年表, 留着这两个模块只会把「成婚/相恋/分手」与权力线索并列。
+    # v64 (问题3): `家格宗支` = 别立家族/家族改名的年表事件 (`_house_founding_events`)。
+    # 用户 2026-09-25 指认的句子在《本纪·开篇·家世与出身》(「934年5月7日，卡尔别立
+    # 顿巴斯氏，为菲利普宗族分支，自成一脉，家格自此改易。」), 故只进本纪开篇;
+    # 与纪事不相交 (v27 铁律), 门庭内情仍由《家室列传》承担。
     ("benji", "lead"): {"教化求学", "科考功名", "人质质任",
-                        "信仰皈依", "拥戴加冕", "丧亲之恸"},
+                        "信仰皈依", "拥戴加冕", "丧亲之恸", "家格宗支"},
     ("benji", "mid"): {"起家发迹", "失位让土", "开战兴兵", "战和胜负",
                        "战死负伤", "囚禁入狱", "获释出狱", "刑虐残暴",
                        "受辱含冤", "拥戴加冕", "结仇结怨", "死敌之仇",
@@ -13711,8 +13720,77 @@ def _timeline(f):
     out = _merge_same_day_events(out, f)
     # v15: 同月同型流水事件聚合 (结怨/结仇/助战…), 聚合后再限量
     out = _merge_same_month_events(out, f)
+    # v64 (问题3): 别立家族 / 家族改名 —— 补成**年表事件** (见 `_house_founding_events`)
+    out.extend(_house_founding_events(f))
     # v14/v56: 末道稳定排序 + 年表限量 (判据与次序见 `_cap_timeline`)
     return _cap_timeline(out, f)
+
+
+# v64 (问题3): 「别立家族 / 家族改名」写成年表事件。
+#
+# 起因 (菲利普2 卡尔): 「934年5月7日，卡尔别立顿巴斯氏，为菲利普宗族分支，自成一脉，
+# 家格自此改易」只出现在第 1 个十年正文里, 第 2 个十年与终传都没有。逐请求核对
+# `logs/prompts.log` 后确认: 事实面**没丢** —— 「家格：原属菲利普氏，934年5月7日起
+# 别立顿巴斯氏，属菲利普宗族。」在三篇的每一次「传主类」请求里都在 (家格=1)。
+# 真正缺的是**事件位**: 游戏只为立家留一个 `found_date` (cache 的 house_history),
+# 它不是记忆事件, 故时间线 150 条里与立家相关者 0 条 ——
+#   · 《本纪》纪事的【大事年表】切片 (module 白名单) 拿不到它;
+#   · 终传附录·大事年表由程序渲染自 `facts["timeline"]`, 因此**必然**没有它。
+# 补成事件后, 开篇/纪事/附录三处同源, 「别立」不再随该篇材料拥挤程度时有时无。
+#
+# 约定: module = 起家发迹 (使其进《本纪》开篇切片; 会给该模块在十年主题里 +3 分,
+# 语义正确); type = house_founded (不在 `_TYPE2MODULE`/`_STATS_LABEL` 内, 概览统计
+# 不受影响); ident.owner = 主角 (使 `_cap_timeline` 判级别 1, 封顶时不被裁)。
+def _house_founding_events(f):
+    """立家/家族改名/宗族改名的年表事件 (无沿革返回 [])。"""
+    pid = f.cache.get("player_id")
+    if pid is None:
+        return []
+    rec = (f.cache.get("characters") or {}).get(str(pid)) or {}
+    hist = [h for h in (rec.get("house_history") or []) if h.get("from")]
+    if f.as_of:
+        ao = cl.date_key(f.as_of)
+        hist = [h for h in hist if cl.date_key(str(h["from"])) <= ao]
+    if len(hist) < 2:
+        return []
+    out = []
+    for i in range(1, len(hist)):
+        cur, prev = hist[i], hist[i - 1]
+        d = str(cur["from"])
+        hn = _house_shi(house_display(cur.get("house_name") or ""))
+        dn_raw = house_display(cur.get("dynasty_name") or "")
+        dn = _house_shi(dn_raw)
+        p_hn = _house_shi(house_display(prev.get("house_name") or ""))
+        p_dn = _house_shi(house_display(prev.get("dynasty_name") or ""))
+        nm = f.event_name(pid, d) or f.name_or(pid)
+        if not nm:
+            continue
+        new_house = cur.get("house_id") != prev.get("house_id")
+        house_changed = hn != p_hn
+        dyn_changed = dn != p_dn
+        # 宗族名按家格句的称法 (「属菲利普宗族」, 不带「氏」)
+        clan = f"，属{dn_raw}宗族" if dn_raw and hn and dn != hn else ""
+        if new_house:
+            body = f"{nm}别立{hn or dn}{clan}。"
+        elif house_changed and dyn_changed:
+            body = f"{nm}家族与宗族并称{hn or dn}。"
+        elif house_changed:
+            body = f"{nm}家族改称{hn}{clan}。"
+        elif dyn_changed:
+            body = f"{nm}宗族改称{dn}。"
+        else:
+            continue
+        out.append({
+            "date": d,
+            "type": "house_founded",
+            # v64: 专用模块 (只进《本纪》开篇白名单) —— 语义上属「起家发迹」,
+            # 但那一档落在本纪**纪事**/朝局开篇, 而用户指认的句子在本纪**开篇**。
+            "module": "家格宗支",
+            "text": f"{f.date(d)}，{body}",
+            "ident": {"owner": pid, "parts": {"owner": pid},
+                      "type": "house_founded"},
+        })
+    return out
 
 
 # v14: 十年戏剧主题抽取 (研究_戏剧模块化.md 3.2) — 时间线事件按模块计数,
