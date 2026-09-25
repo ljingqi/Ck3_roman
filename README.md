@@ -1858,6 +1858,65 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 | 第三轮改后不回归 | `snap_v63_final` vs `snap_v63_veto2` 逐字符串全等；462 名在押者判级 `unknown 320 / not_battle 108 / raid 25 / battle 7 / batch 2`，`battle` 档 7/7 `house_arrest` |
 | 既有 FAIL 基线 | 上述 3 条在 v62 快照（`snap_devour_d3.json` 与工作树 stash 对照）**同样 FAIL**，属 v56/v40 遗留，本轮不动 |
 
+## v64 修正（菲利普2 五问题：游牧历任横跳 / 部落制子女称号 / 立家只在第一篇 / 朝局空帝国 / 勋号骑士）
+
+方案见 `docs/方案_v64_菲利普2五问题.md`；机制依据两份 subagent 调研（逐条 `文件:行` ＋
+本机活档实测）：游牧毡帐与动态地名（`x_c_nomad_*` / `nomad_title_name` /
+`TITLE_NOMAD_NAME_HOUSE_HEAD` / `type = migration|destroyed|created` 的写入点）与
+勋号（`common/accolade_types|names` / `ACCOLADE_GLORY_LEVELS` / 存档 `accolades.database`）。
+测试集 `output/菲利普2`（战役 35726ef2…，四位传主 38665 崔佛 → 46174 富兰克林 →
+60836 卡尔 → 98095 尼克，末档 `melt_955_01_01.json`）。用户 2026-09-25 拍板五处：
+① 游牧地级头衔被游戏毁弃写「**迁离**」；② **做**【游牧行踪】块；③ 确认 tribal/nomad
+子女**不出**称号（与游戏一致）；④ 问题3 指认的句子 = 《本纪·开篇·家世与出身》
+「934年5月7日，卡尔别立顿巴斯氏，为菲利普宗族分支，自成一脉，家格自此改易。」；
+⑤ 勋号落点 = 「只在涉及到某个宫廷角色带有勋号时，在名字前面加上勋号」。
+
+| # | 用户所见 | 根因（改前） | 修法（落点） |
+| --- | --- | --- | --- |
+| 1 | 历任反复出现「**任菲利普游牧营地，毁弃库曼顿巴斯部**」（6 行同型） | 毡帐 `x_c_nomad_4351` 全程只有**一个**持有区间（934.4.26 created → 954.7.12 换主），但每次 `migration` 迁离、领地清空那天角色**只剩毡帐**，`_primary_group` 的回落 `cands` 分支把毡帐当相位 ⇒ 造出 6 行「任毡帐」＋当日失地。游戏侧毡帐 `landless: true`，UI 首要头衔栏本就为空。（另：「库曼顿巴斯部」是 `TITLE_NOMAD_NAME_HOUSE_HEAD`＝文化集合名词＋宗族名＋「部」的**动态名**，同时贴在 `c_uman`/`d_barsuki`/`d_chah`/`k_dzungaria` 四个真实头衔上；`destroyed` 是游戏 Change-4 自动毁弃顶层地级头衔） | A1 `_primary_group` 的 `cands` 分支同样排除毡帐（只剩毡帐返回 `[]`）；A2 `held_titles` 增**空组相位** —— 手上仍有毡帐而领地清空时出失地句「935年2月25日迁离库曼顿巴斯部」（判据限于「仍有毡帐」，使「被褫夺殆尽」等情形逐字不变）；A3 失去词按显示名去重 ＋ 游牧当日**地级** `destroyed` 出「迁离」（毡帐/营地自身仍「毁弃」）。**B** 新增 `facts._nomad_stations` → 共享前缀【游牧行踪】（「934年4月26日立菲利普游牧营地」＋逐年「驻X」），`camp_intervals/in_camp_period` 增 `kind` 参数（缺省 camp，旧行为逐字不变） |
+| 2 | 游牧/部落制王国级无头衔子女全带「库曼顿巴斯部王子／公主」（卡尔 15 名子女） | `_prince_word` 只有「天朝系／其它」两档，末档**无条件回落**「王子/公主」；而游戏 `prince`/`princess`/`prince_empire`/`princess_empire` 的 `governments` 是**穷举**（`00_flavorization.txt:354-400`，只含 feudal/clan/meritocratic），**tribal 与 nomad 在任何层级都没有** ruler_child 条目 —— 游戏里这类子女压根没有称号 | `flavorization.py`：`special = ruler_child` 条目改**可求值**（`_SCHEMA` 2→3 强制重建表，条目数不变 1230），`resolve` 增 `special` 过滤（缺省 `holder`，统治者称谓逐字不变）；新增 `FZ.ruler_child_exists()` 专供闸门 —— 只取 ruler_child 条目，且**只对 `_PRINCE_CN_KEYS`（本项目会出词的中文键）放宽文化判定**（v54「天朝/行政类称谓与文化无关」口径；文化专属条目 guanches/tangut/roman/iranian 等仍按游戏条件判，否则 `title_prince_male_guanches` 的 governments 含 tribal＋priority 130 会让任何文化的部落制子女都通过闸门）。`facts._prince_word` 出词前先过闸门，未命中返回 `''`；`_prince_style_from_title` 在 word 为空时整句不成立（防退化成只剩前缀「库曼顿巴斯部」）；**政体取不到时放行**（已毁/已剪除的头衔 `_title_government` 为空：阿基坦公国、意大利王国等 9 世纪旧衔先退持有者政体史，仍取不到即照旧出词 —— 闸门只挡「确知游戏不给」者） |
+| 3 | 「创建了新家族」只见于第一篇正文 | 事实面**没丢**：`logs/prompts.log` 逐请求核对，「家格：原属菲利普氏，934年5月7日起别立顿巴斯氏，属菲利普宗族。」在三篇的每一次「传主类」请求里都在（家格=1，16:28／22:39／22:53 三批各 8 处），三档 `as_of` 复算逐字相同。真正缺的是**事件位**：立家只有游戏 `found_date`，不是记忆事件 ⇒ `facts["timeline"]` 150 条里与立家相关者 **0** 条，本纪年表切片拿不到、终传附录（程序渲染）**必然**没有 | C1 新增 `facts._house_founding_events`：由 `house_history` 第 2..n 点生成年表事件「934年5月7日，屠狼者卡尔·崔佛松别立顿巴斯氏，属菲利普宗族。」—— module = `家格宗支`（新档，只进**本纪开篇**白名单，与 v27「开篇/纪事素材不相交」一致）、type = `house_founded`（不在 `_TYPE2MODULE`/`_STATS_LABEL` 内 ⇒ 概览与十年主题不受影响）、`ident.owner` = 主角（`_cap_timeline` 判级别 1，封顶不裁）；家族称法抽为模块级 `_house_shi`（「顿巴斯」→「顿巴斯氏」），与家格句同源。C3 `biography._appendix_text` 的 ### 世系 下追一行程序渲染的家格句 ⇒ 终传附录逐字保证有此句 |
+| 4 | 《朝局风云录》引用**从未创建**的帝国（「他所属的鞑靼帝国，乃当世屈指可数的巨邦」；《第2个十年》另有图兰帝国） | `_realm_facts._up_liege` 在 `de_facto_liege` 缺失时回落 `de_jure_liege`，却**不校验目标是否存在**：`k_dzungaria.de_jure_liege = e_tartaria`（holder=None、**history=null**、realm 快照从未见）⇒ 「库曼顿巴斯部：…为鞑靼帝国封臣」。同源 `e_turan`（d_barsuki → k_oghuz_il → e_turan）。全档同类空衔 **177** 个，含 e_britannia / e_scandinavia / e_golden_horde / e_mongol_empire | D1 新增 `Facts._ever_held_title`（三档：① `history` 非空 ② 此刻有 `holder` ③ `realm_history` 快照曾见非空持有者 —— 项目 v11 已注明 title history 会被剪除，故 ③ 不可省），`_up_liege` 的法理回落仅在目标「存在过」时成立；D2 `liege_of` 收口处再自检一次（命中即不写宗主标注、计数并写 journal，`facts.phantom_liege_stats()` 供回归读取）。正例保留：`h_china`（history 59 条、快照 19 档）等真实宗主照旧出词 |
+| 5 | 勋号骑士完全没进提示词（本档崔佛持「葛洛夫枪手」、富兰克林持「诺斯最高尚者」，传记一字未提） | `facts.py` 从未读 `melt["accolades"]["database"]`（顶层键 `accolades` → `database`：`name` 已是渲染好的中文串、`owner`＝授予领主、`acclaimed`＝当前勋号骑士、`history`＝新→旧的更替史、`glory`＝末档快照） | 用户拍板「名字前加勋号」⇒ 收进**唯一称谓出口** `Facts.person_label`：新增 `_accolade_index`（由 `history` 逐段展开为 {骑士: [(起始日, 勋号名)]}，无更替史用 `acclaimed` 兜底）＋ `accolade_word_at(cid, date)`（**按 date 取**，十年传记不会把十年后的勋号写到十年前的人身上）；`pn = 勋号 + 姓名`，full/brief/event/office 各式与宗教领袖式一并生效，**主角的年表行仍只出名字**（v42 口径不变），**授予者本人不带**勋号。连带：`_strip_subject_prefix` 增 `alt_labels` 备选剥离键（档案称谓按篇末取、句内主语按事件日取，两者只差一个勋号前缀时旧稿会剥不掉，省主语版重新冒出光秃秃的主语名 —— 实测 5 例） |
+
+**取证与回归脚本（本轮新增，均为只读）**
+
+```
+tools/probe_v64.py            历任区间/毡帐原文/子女称号/朝局链（一次熔件加载出三档报告）
+tools/probe_v64b.py           de jure 上溯逐环 + 相位逐日演算 + 家格三档 + 时间线 + 勋号
+tools/probe_v64_accolade.py   24 熔件的勋号归属时序（含已故传主须走 cl.all_characters 的坑）
+tools/probe_v64_exist.py      高位头衔三档「存在过」判据普查（history / holder / realm 快照）
+tools/probe_v64_prince.py     某档全部「带王子/公主称号者 + 其父母政体」（前后对比用）
+tools/diag_v64_prince.py      闸门逐条件打印（哪一条把某个子女挡掉）
+tools/check_v64_prince_dist.py  / tools/diff_snap_paths.py / tools/check_snap_delta_pure.py
+tools/check_accolade_delta.py 判定快照差异是否**只**是「勋号插入名字前」
+tools/verify_v64_unit.py      本轮 33 条断言（一轮熔件加载跑完）
+```
+
+**提交清单**
+
+```
+5f23503 docs(v64)   五问方案 + 五个取证探针（只读，未改生产代码）
+b206d5a fix(v64-1)  游牧毡帐不占历任相位 + 迁离失地句 + 【游牧行踪】块
+b48eadd fix(v64-4)  朝局法理回落只认「存在过」的高位头衔（鞑靼帝国等幽灵政权不再进事实面）
+4e33ff3 fix(v64-2)  王子/公主称号改问游戏 ruler_child 条目表（部落制/游牧制子女不再凭空得号）
+6cb2aa5 fix(v64-3)  别立家族写成年表事件 + 附录补家格行
+49d350c feat(v64-5) 勋号骑士称谓（戴勋号者名字前带勋号，收进 person_label）
+```
+
+**回归与验收状态**
+
+| 项 | 结果 |
+| --- | --- |
+| `tools/verify_v64_unit.py`（菲利普2 实档，一轮熔件） | **33/33 PASS**（6 组：历任无「任毡帐」/迁离失地句/无「毁弃库曼顿巴斯部」/同名不重复；游牧行踪立帐+驻X；闸门 nomad·tribal 无条目、feudal 命中、关契按文化判、汉文化天朝命中；立家事件（文本/模块/ident/进开篇切片/附录两处）；朝局不出现鞑靼·图兰·不列颠尼亚·斯堪的纳维亚·金帐 + 幽灵自检 0 命中；勋号索引非空/骑士带勋号/授予者不带/主角年表裸名） |
+| 问题1 自比（38665 终传，前后两快照逐键对比） | 差异仅 4 处 `titles_held`（两处是他人的游牧历任，如 17056「任阿帕德游牧营地，并迁离可萨布兰部」→「迁离可萨布兰部」）＋新增键 `facts.nomad_stations`；卡尔历任修后 **15 行、无一条「任毡帐」** |
+| 问题1 成稿事实面 | 【游牧行踪】实测：934年4月26日立菲利普游牧营地 → 935年驻切尔卡瑟 → … → 954年驻阿盖里克（19 行）；【冒险者行踪】4 行照旧 |
+| 问题2 影响面（前后快照逐键对比 + `check_snap_delta_pure.py`） | 快照差异 **162** 处，消失的称号串仅「库曼顿巴斯部王子/公主」「佩切涅格王子」「威尼斯公主」；封建/氏族/天朝称号**一条未动**，前后病句模式均 0。**诺兰**（拜占庭行政制档）3 人、**斯卡利茨** 13 人前后**完全一致**（含独立行政制王国/帝国子女 —— 命中的是 `prince_king_male_administrative` 等 `only_independent` 条目） |
+| 问题3 三篇切片 | 本纪开篇切片：终传 11 条 / 第1个十年 9 条 / 第2个十年 10 条，**三篇各含立家 1 条**；终传附录世系含家格句、大事年表 934 年段含「7日 …别立顿巴斯氏，属菲利普宗族。」；十年戏剧主题不变（`家格宗支` 3 分，远低于 Top5）；崔佛（无立家沿革）快照前后 **0 差异** |
+| 问题4 影响面 | `holder_changes` 11 → 9 行（两行「X朝廷所辖，同属一廷：…」随幽灵宗主一并消失），6 行去掉行尾幽灵宗主（如英格兰/威尔士王国的「，为不列颠尼亚帝国封臣」）；幽灵宗主自检 **0** 命中（D1 已在上游拦住）；正例 `h_china` 保留 |
+| 问题5 影响面（38665 终传 + `check_accolade_delta.py`） | 差异 **252** 条，**全部**为「勋号插入名字前」（把两侧文本里的 321 个勋号名删掉后逐字相同）；实测样本：「挪威王子**葛洛夫枪手**富兰克林·崔佛松」（900 年）、33597825 在 900 年为空、915 年为「葛洛夫枪手」；授予者崔佛本人不带该勋号 |
+| `tools/verify_fast.py`（新出 38665／60836 快照） | FAIL 集合与改动前**完全一致**：38665 快照 3 条（《阴私录》疾病行同源 / `[6]` 灭门死因 / `[V56][1]` 把柄行点名），60836 快照 5 条（另加 `[4]` 俘获行句面为 v63 改前措辞、`[V63b]` 埃德伯行与 K2 亲缘自检 —— 断言按其他战役/传主写就）—— 两者都用「改前代码同档快照」对照确认，属既存基线，本轮不动 |
+
 ## 热修（v62 期间）: continue 生成十年传记崩溃 —— facts 模块级函数里的裸名
 
 用户 2026-09-24 16:20 跑 `启动续传.bat` 报

@@ -277,6 +277,27 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
     return best_key
 
 
+# v64 (问题2): 本项目**会出词**的中华/天朝词族 —— 这几条的名字条件 (name_lists =
+# name_list_han) 按项目 v54 口径「天朝/行政类称谓与文化无关」处理, 故闸门对它们
+# 放宽文化判定 (斯卡利茨档捷克人建岭南照样出皇子/皇女)。
+# 其余带 name_lists/heritages/religions 的 ruler_child 条目 (guanches 关契人 /
+# tangut 党项 / roman 罗马 / iberian 伊比利亚 / iranian 伊朗 / dravidian 达罗毗荼 /
+# southeast_asian 东南亚) 是**文化专属原生词**, 本项目不出这些词, 一律照游戏条件判定
+# —— 否则 `title_prince_male_guanches` (governments 含 tribal, priority 130) 会让
+# 任何文化的部落制王国级子女都通过闸门。
+_PRINCE_CN_KEYS = frozenset({
+    "prince_duchy_chinese", "princess_duchy_chinese",
+    "prince_kingdom_feudal_chinese", "princess_kingdom_feudal_chinese",
+    "prince_kingdom_celestial_chinese", "princess_kingdom_celestial_chinese",
+    "prince_kingdom_celestial_chinese_independent",
+    "princess_kingdom_celestial_chinese_independent",
+    "prince_empire_chinese", "princess_empire_chinese",
+    "prince_empire_celestial_chinese", "princess_empire_celestial_chinese",
+    "prince_hegemony_chinese", "princess_hegemony_chinese",
+    "prince_male_celestial_chinese", "princess_female_celestial_chinese",
+})
+
+
 def ruler_child_exists(tier, gender, *, government="", name_list="", heritage="",
                        faith="", religion="", title_key="", independent=True,
                        top=None, obligation_flags=None, cfg=None):
@@ -286,10 +307,11 @@ def ruler_child_exists(tier, gender, *, government="", name_list="", heritage=""
     与 `resolve` 的两处**刻意不同** (本项目口径, 见 `facts._prince_word` 与 v54):
 
     ① 只取 `special = ruler_child` 的条目 (与统治者称谓互不相干);
-    ② **带 `governments` 的条目不查文化/信仰** —— 项目对天朝/行政类称谓早已采
+    ② **中华/天朝词族** (`_PRINCE_CN_KEYS`) 不查文化/信仰 —— 项目对天朝类称谓早已采
        「与文化无关」口径 (v54: 诺斯伯爵在中国亦为刺史), 故中华皇朝的非汉人天子
-       (斯卡利茨档捷克人建岭南) 照样出皇子/皇女; 文化专属条目 (`governments` 为空:
-       伊朗/达罗毗荼/东南亚/党项/关契) 仍按 name_lists/heritages/faiths/religions 判定。
+       (斯卡利茨档捷克人建岭南) 照样出皇子/皇女; 其余文化专属条目
+       (guanches/tangut/roman/iberian/iranian/dravidian/southeast_asian) 仍按
+       name_lists/heritages/faiths/religions 判定。
 
     为什么需要它: `prince`/`princess`/`prince_empire`/`princess_empire` 的
     `governments` 是**穷举**且不含 tribal/nomad (`00_flavorization.txt:354-400`),
@@ -322,8 +344,8 @@ def ruler_child_exists(tier, gender, *, government="", name_list="", heritage=""
         govs = e.get("governments") or []
         if govs and gov_x not in govs:
             continue
-        if not govs:
-            # 文化专属条目 —— 按文化/信仰判 (带 governments 的条目见 docstring ②)
+        if e.get("key") not in _PRINCE_CN_KEYS:
+            # 文化/信仰条件: 中华词族除外 (见 docstring ②)
             nls = e.get("name_lists") or []
             if nls and (top.get("name_list") if use_top else name_list) not in nls:
                 continue
