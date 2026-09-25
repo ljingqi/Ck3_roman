@@ -966,19 +966,27 @@ def is_unknown(word):
 _SUBJ_DATE_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
 
 
-def _strip_subject_prefix(text, label):
+def _strip_subject_prefix(text, label, alt_labels=None):
     """删去句首传主称谓 (含其后的「的」); 无可删处原样返回。
 
     v32 (问题3): 夭折句形如「<传主>之妻<生母>产下死婴。」, 只删传主名会留下悬空的
-    「之妻…」; 故配偶称谓一并删去, 让生母自己作主语 (「<生母>产下死婴。」)。"""
+    「之妻…」; 故配偶称谓一并删去, 让生母自己作主语 (「<生母>产下死婴。」)。
+    v64 (问题5): `alt_labels` = 备选剥离键 (按序试) —— 勋号随时点变化, 档案称谓
+    与事件当日的主语形态可能只差一个勋号前缀, 备选键使那句仍能省主语。"""
     if not text or not label:
         return text
+    cands = [label] + [x for x in (alt_labels or []) if x]
     m = _SUBJ_DATE_RE.match(text)
     head = m.group(0) if m else ""
     rest = text[len(head):]
-    if not rest.startswith(label):
+    hit = None
+    for cand in cands:
+        if rest.startswith(cand):
+            hit = cand
+            break
+    if hit is None:
         return text
-    rest = rest[len(label):]
+    rest = rest[len(hit):]
     if rest.startswith("的"):
         rest = rest[1:]
     else:
@@ -5235,6 +5243,73 @@ class Facts:
         for lg in self._name_logs:
             lg.items.append((cid, label))
 
+    # ---- v64 (问题5): 勋号骑士称谓 -------------------------------------------
+    # 用户 2026-09-25 拍板: 「只在涉及到某个宫廷角色带有勋号时，在名字前面加上勋号」。
+    # 故勋号不进独立板块、不加新行, 而是收进**唯一称谓出口** `person_label` ——
+    # 谁戴着勋号, 他出现的地方 (档案名号句/年表行/隐事句/亲缘句) 名字前就带勋号。
+    #
+    # 存档字段 (melt["accolades"]["database"]): `name` 是**已经渲染好的中文串**
+    # (「曼苏拉之云雀」「葛洛夫枪手」, 不必拼本地化键); `owner` = 授予的领主;
+    # `acclaimed` = 当前勋号骑士; `history` = 新→旧的 [{acclaimed, date}] 更替史
+    # (末条 = 立号/首位受勋日), 故「某人在某日戴哪个勋号」可由 history 逐段定日。
+    # 时代性: 一律按 date 取 (十年传记不会把十年后的勋号写到十年前的人身上)。
+    def _accolade_index(self):
+        """{角色id: [(起始日|None, 勋号名), …]} —— 勋号骑士更替史 (惰性建一次)。"""
+        if getattr(self, "_acc_idx", None) is not None:
+            return self._acc_idx
+        idx = {}
+        db = (self.melt.get("accolades") or {}).get("database") or {}
+        if isinstance(db, dict):
+            for _aid, a in db.items():
+                if not isinstance(a, dict):
+                    continue
+                nm = str(a.get("name") or "").strip()
+                if not nm:
+                    continue
+                hist = []
+                for h in (a.get("history") or []):
+                    if not isinstance(h, dict):
+                        continue
+                    c, dd = h.get("acclaimed"), h.get("date")
+                    if isinstance(c, int) and dd:
+                        hist.append((str(dd), c))
+                if not hist:
+                    # 无更替史 (旧档/脚本授予): 用当前 acclaimed, 无日期 (任何 date 都算)
+                    c = a.get("acclaimed")
+                    if isinstance(c, int):
+                        idx.setdefault(c, []).append((None, nm))
+                    continue
+                hist.sort(key=lambda x: cl.date_key(x[0]))
+                for dd, c in hist:
+                    idx.setdefault(c, []).append((dd, nm))
+        self._acc_idx = idx
+        return idx
+
+    def accolade_word_at(self, cid, date=None):
+        """该角色在 date 所戴的**勋号名** (无则 '') —— 供称谓前置。"""
+        if cid is None:
+            return ""
+        try:
+            rows = self._accolade_index().get(int(cid)) or []
+        except (TypeError, ValueError):
+            return ""
+        if not rows:
+            return ""
+        cut = date or self.as_of or self.cache.get("last_date")
+        lim = cl.date_key(cut) if cut else None
+        best, best_dk = "", None
+        for dd, nm in rows:
+            if dd is None:            # 无日期的兜底行: 仅在没有带日期的行时生效
+                if best_dk is None:
+                    best, best_dk = nm, (0, 0, 0)
+                continue
+            dk = cl.date_key(dd)
+            if lim is not None and dk > lim:
+                continue
+            if best_dk is None or dk >= best_dk:
+                best, best_dk = nm, dk
+        return best
+
     def person_label(self, cid, date=None, style="full"):
         """人物称谓统一入口 (v28b)。style:
         - "full": 家室/世系 (kin_label) — 「[前X，]现职Y 姓名」;
@@ -5245,7 +5320,9 @@ class Facts:
         ① 宗教领袖 → 「教宗X」; ② 天皇座子女称号已并入姓名, 不叠前缀;
         ③ 起义领袖 (农民/民粹/游牧) 无领地头衔时 → 「农民起义领袖X」;
         ④ 名不可考 (占位串) → 返回 '' 由调用方整条略去;
-        ⑤ 无头衔者 → full 式按父/母头衔取王子/公主称号, 其余只给显示名。"""
+        ⑤ 无头衔者 → full 式按父/母头衔取王子/公主称号, 其余只给显示名;
+        ⑥ v64 (问题5): 戴勋号者 (accolades.database 的 `acclaimed`) → 勋号紧接在
+           名字前面 (「葛洛夫枪手贝奥武夫」), 时代按 date 取; 主角的年表行仍只出名字。"""
         if cid is None:
             return ""
         key = (int(cid), date or "", style)
@@ -5270,9 +5347,13 @@ class Facts:
             return nm
         if self._tenno_prince_word(cid, date):
             return nm
+        # v64 (问题5): 戴勋号者 —— 勋号紧接在**名字前面** (「葛洛夫枪手贝奥武夫」),
+        # 与官职/称号并列而不互相顶替; 主角的年表行仍只出名字 (v42 口径)。
+        acc = self.accolade_word_at(cid, date)
+        pn = f"{acc}{nm}" if acc else nm
         rhw = self.religious_head_word(cid)
         if rhw:
-            return f"{rhw}{nm}"
+            return f"{rhw}{pn}"
         off = self._event_office(cid, date) if style == "event" \
             else self.official_title(cid, date)
         if not off:
@@ -5284,8 +5365,8 @@ class Facts:
             if word:
                 off = f"{word}领袖"
         if style == "full":
-            return self._full_label(cid, date, off, nm)
-        return f"{off}{nm}" if off else nm
+            return self._full_label(cid, date, off, pn)
+        return f"{off}{pn}" if off else pn
 
     def event_name(self, cid, date=None):
         """年表/事实行的**主语名** (v42 问题4): 主角只出名字, 其余人出 brief 称谓。
@@ -14883,9 +14964,18 @@ def _character_profiles(f):
             mems.append(f"{f.date(_dd)}，{_line}")
         mems.sort()
         prof["events"] = mems
-        # v29 (问题4): 「传主行迹」用省主语版 — 块内主语恒为传主, 重复姓名无信息
+        # v29 (问题4): 「传主行迹」用省主语版 — 块内主语恒为传主, 重复姓名无信息。
+        # v64 (问题5 连带): 剥离键仍取档案称谓 (旧行为逐字不变), 但另备一条
+        # **去掉勋号前缀**的同形键 —— 勋号随时点变化 (某人在事件当日还没戴上,
+        # 而档案称谓按篇末取), 只用档案称谓做键会剥不掉, 省主语版里于是重新冒出
+        # 一个光秃秃的主语名 (实测 5 例: 阿农德尔·塞卡尔 / 富兰克林·崔佛松等)。
         _subj = prof.get("label") or name
-        prof["events_subjectless"] = [_strip_subject_prefix(x, _subj) for x in mems]
+        _alts = []
+        _acc = f.accolade_word_at(cid, f.as_of)
+        if _acc and _acc in _subj:
+            _alts.append(_subj.replace(_acc, "", 1))
+        prof["events_subjectless"] = [
+            _strip_subject_prefix(x, _subj, _alts) for x in mems]
         # v31: 死亡句按 as_of 截断 — 十年传记不写十年末之后的死 (旧文本把 878.3.17
         # 的死写进截至 878.01.01 的十年传; 时间线本有截断, 只有档案漏了)
         _dd = (rec.get("death") or {}).get("date")
