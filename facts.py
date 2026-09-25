@@ -5414,6 +5414,40 @@ class Facts:
         """兼容别名 (v34): 见 `_my_realm_tids`。"""
         return self._my_realm_tids()
 
+    def _ever_held_title(self, tid):
+        """该高位头衔是否「存在过」(v64, 问题4) —— 三档任一成立即算:
+
+        ① `history` 非空 (有人做过它的主人);
+        ② 此刻有 `holder`;
+        ③ `realm_history` 快照里曾见非空持有者 —— 项目 v11 已注明 title history
+           会被剪除 (「如已毁的王国」), 故 ③ 是不可省的补充判据 (实测本档这一档
+           为空集, 但换档即可能出现)。
+
+        用途: 朝局事实面的法理回落 (`_realm_facts._up_liege`) 只许落在存在过的
+        头衔上 —— 存档对**从未创建**的空衔同样给 `de_jure_liege` (本档 177 个高位
+        空衔: e_tartaria / e_turan / e_britannia / e_scandinavia …), 旧稿照名写出
+        「为鞑靼帝国封臣」, 模型据此编出不存在的帝国。"""
+        if tid is None:
+            return False
+        t = self._lt.get(str(tid)) or {}
+        if t.get("history") or t.get("holder") is not None:
+            return True
+        if getattr(self, "_rh_seen_tids", None) is None:
+            seen = set()
+            for h in (self._realm_snaps or []):
+                for _t, _h in (h.get("holders") or {}).items():
+                    if _h is None:
+                        continue
+                    try:
+                        seen.add(int(_t))
+                    except (TypeError, ValueError):
+                        continue
+            self._rh_seen_tids = seen
+        try:
+            return int(tid) in self._rh_seen_tids
+        except (TypeError, ValueError):
+            return False
+
     def legal_children(self, cid):
         """cid 的**法理子女** id 集 (v34, 问题8, 用户拍板):
         存档 `family.father` 含 cid 的孩子 — 不论其是否另有实父 (非婚生亦然),
@@ -11726,6 +11760,16 @@ _PLACEHOLDER_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
 _KEY_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]{2,}(?![A-Za-z0-9_])")
 _SANITIZE_LOG = {"lines": 0, "samples": []}
 
+# v64 (问题4) 幽灵宗主自检 —— 朝局事实面里凡「宗主」指向一个**从未创建**的高位
+# 头衔 (history 空且此刻无 holder) 者, 整条不写并记在此处 (verify_fast 呈现)。
+_PHANTOM_LIEGE_LOG = {"lines": 0, "samples": []}
+
+
+def phantom_liege_stats():
+    """幽灵宗主自检统计 (供回归/审计脚本断言与打印)。"""
+    return {"lines": _PHANTOM_LIEGE_LOG["lines"],
+            "samples": list(_PHANTOM_LIEGE_LOG["samples"])}
+
 
 def loc_text_ok(s):
     """本地化文本是否可读: 含中日韩字符, 且整体不是裸键/哨兵串。"""
@@ -14821,6 +14865,13 @@ def _realm_facts(f):
     # 甚至「李润改元以青徐国为号」。现按熔件的 `de_facto_liege` (跟不动时沿
     # `de_jure_liege` 上溯) 求出每个头衔的**最近帝国/霸主级宗主**, 逐条标注,
     # 并给出「同属一个朝廷」的归组行。实测 k_qingxu 的 de_facto_liege = h_china。
+    #
+    # v64 (问题4): 法理回落必须落在**存在过的**头衔上 —— 存档里 `de_jure_liege`
+    # 对**从未创建**的空衔同样有值 (本档 177 个高位头衔的 `history` 为 null、
+    # holder 亦空, 且 realm_history 快照从未见过), 旧稿照名输出, 于是朝局事实面
+    # 写出「库曼顿巴斯部：…为鞑靼帝国封臣」, 模型据此编出一个不存在的鞑靼帝国
+    # (终传实测「他所属的鞑靼帝国，乃当世屈指可数的巨邦」)。判据见
+    # `Facts._ever_held_title` (三档: history / 此刻 holder / realm 快照曾见)。
     def _up_liege(tid):
         seen = set()
         cur = tid
@@ -14829,7 +14880,9 @@ def _realm_facts(f):
             t = f._lt.get(str(cur)) or {}
             nxt = t.get("de_facto_liege")
             if not isinstance(nxt, int):
-                nxt = t.get("de_jure_liege")
+                cand = t.get("de_jure_liege")
+                nxt = cand if (isinstance(cand, int)
+                               and f._ever_held_title(cand)) else None
             if not isinstance(nxt, int):
                 return cur if cur != tid else None
             cur = nxt
@@ -14839,6 +14892,22 @@ def _realm_facts(f):
     for tid in sorted(keep_tids):
         sup = _up_liege(tid)
         if sup is not None and sup != tid:
+            # v64 (问题4) 自检: 宗主必须是「存在过的」头衔。de_facto 链理论上只会
+            # 指向有人持有的头衔, 此处兜住存档异常, 防幽灵政权 (鞑靼帝国/图兰帝国)
+            # 经任何路径再漏进事实面。
+            if not f._ever_held_title(sup):
+                _PHANTOM_LIEGE_LOG["lines"] += 1
+                if len(_PHANTOM_LIEGE_LOG["samples"]) < 12:
+                    _PHANTOM_LIEGE_LOG["samples"].append(
+                        f"{f.cache.get('player_id')}: 头衔 {tid} 的法理宗主 "
+                        f"{sup} ({(f._lt.get(str(sup)) or {}).get('key') or ''}) 从未创建")
+                try:
+                    llm.log(f"幽灵宗主: 头衔 {tid} 的法理宗主 {sup} "
+                            f"({(f._lt.get(str(sup)) or {}).get('key') or ''}) "
+                            f"history 空且无持有者 — 不写宗主标注", detail=True)
+                except Exception:
+                    pass
+                continue
             liege_of[tid] = sup
     # 归组: 宗主 → 其下的高层头衔 (下辖层级词按 tier 取)
     vassal_groups = {}
