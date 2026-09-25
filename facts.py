@@ -2565,14 +2565,17 @@ class Facts:
         return "_laamp_" in key or key.startswith(self._CAMP_KEY_PREFIXES)
 
     # v29 (问题2): 冒险者（营地）时期区间 — 【冒险者行踪】只记这段时期
-    def camp_intervals(self, cid=None):
-        """角色持有无地冒险者营地的区间 [(gain, loss|None)] (按起始日排序)。"""
+    def camp_intervals(self, cid=None, kind="camp"):
+        """角色持有该种驻地头衔的区间 [(gain, loss|None)] (按起始日排序)。
+
+        v64 (问题1): `kind` 可取 "camp" (无地冒险者营地) / "nomad" (游牧毡帐) ——
+        【冒险者行踪】与【游牧行踪】各取一种; 缺省 "camp" 与旧行为逐字相同。"""
         pid = self.cache.get("player_id") if cid is None else cid
         if pid is None:
             return []
         out = []
         for tid, ivs in (self._hold_intervals(pid) or {}).items():
-            if self.title_kind(tid) != "camp":
+            if self.title_kind(tid) != kind:
                 continue
             for iv in ivs:
                 if iv and iv[0]:
@@ -2580,12 +2583,12 @@ class Facts:
         out.sort(key=lambda x: cl.date_key(x[0]))
         return out
 
-    def in_camp_period(self, date, cid=None):
-        """date 是否落在某个营地持有区间内 (含端点)。"""
+    def in_camp_period(self, date, cid=None, kind="camp"):
+        """date 是否落在某个驻地头衔持有区间内 (含端点; kind 见 `camp_intervals`)。"""
         dk = cl.date_key(date) if date else None
         if dk is None:
             return False
-        for g, l in self.camp_intervals(cid):
+        for g, l in self.camp_intervals(cid, kind=kind):
             if cl.date_key(g) <= dk and (not l or dk <= cl.date_key(l)):
                 return True
         return False
@@ -2633,7 +2636,13 @@ class Facts:
         - v13: 朝廷职司 (e_minister_*) 不进组 (官职非领地, 由官职行呈现)。
         - v26: 游牧毡帐 (x_c_nomad_*) 是驻地不是领地 — 持有任何领地头衔时
           不进 major 组, 否则「伯爵领 + 毡帐」的游牧主角历任只出现营地,
-          取得伯爵领一事完全丢失 (田所2: 891 得也勒克河/巴赫穆特两领无记录)。"""
+          取得伯爵领一事完全丢失 (田所2: 891 得也勒克河/巴赫穆特两领无记录)。
+        - v64 (问题1): 毡帐**任何情形**都不占相位 —— 旧稿只排除了 major 组,
+          回落的 `cands` 分支仍会把毡帐当相位, 于是游牧者每次 migration 迁离、
+          领地清空的那一天都多出一行「任菲利普游牧营地」(实测卡尔 6 行:
+          935.2.25 / 936.1.19 / 937.10.17 / 939.10.22 / 945.2.11 / 950.10.18)。
+          游戏侧毡帐 `landless: true`, UI 的首要头衔栏本就为空, 故此处返回 []
+          (无地可「任」), 当日的失地由 `held_titles` 的空组相位留痕。"""
         if not held:
             return []
         items = []
@@ -2655,7 +2664,10 @@ class Facts:
             #  陆氏 869 受任阶州此前被 x_nf_ 庄园挤掉, 历任只剩一行)
             # v36 (用户拍板5): 男爵领 (rank 1) 不入相位 — 头衔材料最低取到州府 (c_);
             # 只剩男爵领时返回 [] (该日不改相位, 由祖业/营地行承担)。
-            cands = [it for it in items if it[1] != 1]
+            # v64 (问题1): 游牧毡帐同样不占相位 (理由见 docstring) —— 只剩毡帐
+            # 的游牧者返回 [], 由 `held_titles` 出「迁离X」的失地句。
+            cands = [it for it in items
+                     if it[1] != 1 and not self._is_nomad_camp(it[0])]
             if not cands:
                 return []
             t0 = sorted(cands, key=lambda it: (-it[1], order.get(int(it[0]), 10 ** 6),
@@ -2922,8 +2934,16 @@ class Facts:
                 else:
                     held.pop(tid, None)
             group = self._primary_group(held, cid)
+            # v64 (问题1): 只剩游牧毡帐的相位 —— 毡帐不算领地, 故不「任」毡帐,
+            # 但当日失去的领地要留痕 (空组相位, 渲染成「935年2月25日迁离库曼顿巴斯部」)。
+            # 判据限于「手上仍有毡帐」, 使「被褫夺殆尽」等其它情形逐字不变。
+            nomad_only = (not group) and any(
+                self.title_kind(t) == "nomad" for t in held)
             if group and group != prev_group:
-                phases.append((d, group, set(prev_held) - set(held)))
+                phases.append((d, group, set(prev_held) - set(held), False))
+                prev_group = group
+            elif nomad_only and prev_group:
+                phases.append((d, [], set(prev_held) - set(held), True))
                 prev_group = group
             prev_held = set(held)
         if not phases:
@@ -2932,7 +2952,7 @@ class Facts:
         span_end = self.as_of or self.cache.get("last_date")
         out = []
         prev_ids = []
-        for i, (d, group, lost_now) in enumerate(phases):
+        for i, (d, group, lost_now, nomad_only) in enumerate(phases):
             end = phases[i + 1][0] if i + 1 < len(phases) else span_end
             ids = [tid for _g, tid in group]
             parts = []
@@ -2969,6 +2989,36 @@ class Facts:
                     w = self._ruler_word_at(cid, t, d)
                     parts.append(f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else ""))
             parts = [p for p in parts if p]
+            # 真正失去 (不在持有集) 且此前在组内的头衔 (v64: 空组相位也要算)
+            lost_names = []
+            _seen_lost = set()
+            for t in prev_ids:
+                if t in ids or t not in lost_now:
+                    continue
+                lt = loss_types.get((t, cl.date_key(d)))
+                nm = self._title_name_at(t, d, cid)
+                if not nm or nm in _seen_lost:
+                    continue
+                # v28: 失去缘由按 title history 事件类型出词 (卸任/调任/被褫夺/
+                # 失守/转授…), 未知回退旧词「让出」; 毁弃单列。
+                # v64 (问题1): 游牧者迁离日, 游戏会自动毁弃其顶层地级头衔
+                # (`09_dlc_mpo_scripted_effects.txt` Change 4), 该头衔与该日
+                # migration 失去的郡**同名** (动态名 = 文化集合名词+宗族名+部),
+                # 故出「迁离」而非「毁弃」, 并按名去重 (毡帐/营地自身的毁弃照旧)。
+                _rank = self._TT_RANK.get(
+                    ((self._lt.get(str(t)) or {}).get("key") or "")[:2], 0)
+                if lt == "destroyed":
+                    verb = "迁离" if (nomad_only and _rank >= 2) else "毁弃"
+                else:
+                    verb = TITLE_LOSS_VERBS.get(lt or "", "让出")
+                _seen_lost.add(nm)
+                lost_names.append(f"{verb}{nm}")
+            if not ids:
+                # v64 (问题1): 空组相位 —— 无地可「任」, 只写当日失去的领地
+                if lost_names:
+                    out.append(self.date(d) + "、".join(lost_names))
+                prev_ids = ids
+                continue
             if not parts:
                 continue
             # v41 (问题1/2): 阶段行写出**取得经过** —— 首要头衔 (组内最高层级者)
@@ -2989,20 +3039,6 @@ class Facts:
                 line = f"{self.date(d)}{gain}{'／'.join(parts)}"
             else:
                 line = f"{self.date(d)}任{'／'.join(parts)}"
-            # 真正失去 (不在持有集) 且此前在组内的头衔
-            lost_names = []
-            for t in prev_ids:
-                if t in ids or t not in lost_now:
-                    continue
-                lt = loss_types.get((t, cl.date_key(d)))
-                nm = self._title_name_at(t, d, cid)
-                if not nm:
-                    continue
-                # v28: 失去缘由按 title history 事件类型出词 (卸任/调任/被褫夺/
-                # 失守/转授…), 未知回退旧词「让出」; 毁弃单列。
-                verb = "毁弃" if lt == "destroyed" \
-                    else TITLE_LOSS_VERBS.get(lt or "", "让出")
-                lost_names.append(f"{verb}{nm}")
             prev_ids = ids
             if lost_names:
                 # v55 (问题2): 失去缘由去括注 (旧稿「…夺得魏博镇（褫夺魏博镇）」)
@@ -16043,6 +16079,67 @@ def _protagonist_stations(f):
     return out[:40]
 
 
+def _nomad_stations(f):
+    """【游牧行踪】(v64, 问题1): 游牧时期的**大帐位置**轨迹。
+
+    用户 2026-09-25 拍板: 「和冒险者类似, 只记录大帐位置的移动」。毡帐本身
+    `landless: true`, 不作领地进历任 (`_primary_group` 已排除), 故「大帐在哪」
+    由本块承担:
+      · 立帐行 = 毡帐头衔 (x_c_nomad_*) 的取得日 + 游戏显示名
+        (`nomad_title_name` = 宗族名 + 「游牧营地」, 故写作「立菲利普游牧营地」);
+      · 驻X 行 = 毡帐持有区间内的逐年 location (只取本档玩家, 旅行落点不收)。
+    无游牧毡帐期一律返回 [] → 整块不下发。十年传记按 as_of 截断。"""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return []
+    camps = f.camp_intervals(pid, kind="nomad")
+    if not camps:
+        return []
+    items = []
+    for tid, ivs in (f._hold_intervals(pid) or {}).items():
+        if f.title_kind(tid) != "nomad":
+            continue
+        for iv in ivs:
+            g = iv[0] if iv else None
+            if not g:
+                continue
+            if f.as_of and cl.date_key(g) > cl.date_key(f.as_of):
+                continue
+            nm = f._name_at_date(tid, g) or f.title_base_name(tid) or ""
+            if nm:
+                items.append((cl.date_key(g), f"{f.date(g)}立{nm}"))
+    hist = cache.get("player_locations") or []
+    if f.as_of:
+        aok = cl.date_key(f.as_of)
+        hist = [loc for loc in hist
+                if not loc.get("date") or cl.date_key(loc["date"]) <= aok]
+    seen = set()
+    for loc in hist:
+        if not loc.get("date") or not f.in_camp_period(loc["date"], pid, kind="nomad"):
+            continue
+        county = f.county_at_province(loc.get("province"))
+        if county is None:
+            continue
+        cname = f.title(county)
+        if not cname:
+            continue
+        key = (loc.get("date"), cname)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append((cl.date_key(loc["date"]), f"{f.date(loc['date'])}驻{cname}"))
+    items.sort(key=lambda x: x[0])
+    out = []
+    seen_line = set()
+    for _dk, ln in items:
+        if ln in seen_line:
+            continue
+        seen_line.add(ln)
+        out.append(ln)
+    return out[:40]
+
+
 _PLAGUE_INTENSITY_ZH = {"minor": "轻疫", "major": "重疫", "apocalyptic": "毁灭之疫"}
 
 
@@ -16451,6 +16548,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "plagues": _plague_facts(f),
         # v20 (B3): 主角身份/驻地变化年表 (共享前缀【主角处境】数据源)
         "protagonist_stations": _protagonist_stations(f),
+        # v64 (问题1): 游牧时期的大帐位置轨迹 (共享前缀【游牧行踪】数据源) ——
+        # 毡帐不占历任相位, 故「大帐在哪」需要独立一块 (与【冒险者行踪】同式)
+        "nomad_stations": _nomad_stations(f),
         "luminaries": _court_luminaries(f),
         "genealogy": _genealogy(f),
         # v7 新增: 宫廷/营地官职 + 家族家训

@@ -1985,6 +1985,13 @@ def _shared_facts_block(facts, subject=None, key=None):
     stations = facts.get("protagonist_stations") or []
     if stations:
         stations_txt = _render_block("【冒险者行踪】", stations)
+    # v64 (问题1, 用户拍板): 【游牧行踪】— 只记游牧时期**大帐位置的移动**
+    # (立帐 + 逐年驻地)。毡帐不作领地进行历任相位 (`facts._primary_group`),
+    # 故大帐轨迹另出一块, 与【冒险者行踪】同式同源。
+    nomad_txt = ""
+    nomad_st = facts.get("nomad_stations") or []
+    if nomad_st:
+        nomad_txt = _render_block("【游牧行踪】", nomad_st)
     # v29 (问题7): 瘟疫风味 — 游戏给的动态疫名 (李黯之火/撒丁痘), 只在
     # 触及主角封地/所在郡或家人染疫时下发; 远地瘟疫不写
     plague_txt = ""
@@ -2001,6 +2008,8 @@ def _shared_facts_block(facts, subject=None, key=None):
     out = [f"{head}\n{life_note}" if life_note else head]
     if stations_txt:
         out.append("\n\n" + stations_txt)
+    if nomad_txt:
+        out.append("\n\n" + nomad_txt)
     if plague_txt:
         out.append("\n\n" + plague_txt)
     if stats_txt:
