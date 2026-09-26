@@ -15842,7 +15842,9 @@ def _character_profiles(f):
                 _rel = f._consort_word(_best, _mom)
                 _bl = f.kin_label(_best)
                 if _rel and _bl:
-                    prof["mother_note"] = f"（{_bl}之{_rel}）"
+                    # 不带括注 (项目铁律: 事实面无「名词（名词）」括注同位语) ——
+                    # 由 `biography._profile_lines` 作为独立一句下发。
+                    prof["mother_note"] = f"生母为{_bl}之{_rel}。"
         if not _is_pchild:
             prof["siblings"] = "、".join(
                 f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))

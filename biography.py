@@ -917,10 +917,7 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     if p.get("father"):
         kin_bits.append(f"父{p['father']}")
     if p.get("mother"):
-        # v74 (问题3 C4): 生母另有婚配时, 内宅档补「（Y之妻）」—— 只讲生母的身份,
-        # 不讲孩子的来历 (公开私生不专门写)。
-        _mn = (p.get("mother_note") or "") if with_real_parentage else ""
-        kin_bits.append(f"母{p['mother']}{_mn}")
+        kin_bits.append(f"母{p['mother']}")
     if with_real_parentage and p.get("real_father") \
             and p.get("real_father") != p.get("father"):
         kin_bits.append(f"实父{p['real_father']}")
@@ -931,6 +928,11 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         kin_bits.append(f"兄弟姊妹{p['siblings']}")
     if kin_bits:
         lines.append("，".join(kin_bits) + "。")
+    # ---- v74 (问题3 C4): 生母另有婚配时, 内宅档补一句「生母为X之妻。」 ----
+    # 只讲生母的身份, 不讲孩子的来历 (公开私生不专门写); 独立成句以免与亲缘
+    # 名单混读, 也不用括注 (项目铁律: 事实面无「名词（名词）」括注同位语)。
+    if with_real_parentage and p.get("mother_note"):
+        lines.append(p["mother_note"])
     # ---- v41 (问题5): 宗族宗支句 —— 分家与宗族不同名时点明同宗 ----
     # (「东盎格利亚为布里奥讷宗族的分支」; 初始家族与宗族同名, 不出句)
     if p.get("clan_line"):
