@@ -1618,10 +1618,10 @@ def _article_facts(facts, cache, key, section=None):
             dashi = []
             if realm.get("liege_chain"):
                 dashi.append(f"主角所处疆域：{realm['liege_chain']}")
+            # v69 (用户拍板): 事实层改「每朝一行 + 该朝历代(含即位缘由)」的行形
+            # (朝代行/历代行不再带「国号沿革：」「历代：」前缀), 故整块按原序发出。
             for ln in (realm.get("top_title_history") or []):
-                if ln.startswith(("本朝：", "国号沿革：", "历代：", "本朝疆域：",
-                                  "主角本朝任期：")):
-                    dashi.append(ln)
+                dashi.append(ln)
             _set_block(blocks, "王朝历代", "\n".join(dashi))
         else:
             # 纪事: 本朝人事 (朝廷职司 / 主角受任 / 廷中僚属任免 / 朝中要员 / 要员隐事)
@@ -2761,16 +2761,16 @@ def build_articles(facts, cache, cfg):
          "sections": mk_sections("jiashi")},
     ])
     # v68 (问题1, 用户拍板): 《朝局风云录》改为《XX历代记》—— 以主角当前最高头衔
-    # (无真领地而有家业者取其最高领主的头衔) 从**战役起点**以来的国号沿革与历代
-    # 持有者为纲。头衔无从取得 (仅冒险者营地) 时**整篇略去** (事实层不发
-    # top_title_history ⇒ 无处可写, 不留给模型补白)。
+    # (无真领地而有家业者取其最高领主的头衔) 从**战役起点**以来的历代为纲
+    # (v69: 每朝一行, 该朝历代由老到新并写明即位缘由)。头衔无从取得 (仅冒险者营地)
+    # 时**整篇略去** (事实层不发 top_title_history ⇒ 无处可写, 不留给模型补白)。
     _rlm = facts.get("realm") or {}
     _ttn = _rlm.get("top_title_name") or ""
     if _rlm.get("top_title_history") and _ttn:
         articles.append(
             {"key": "chaoju", "title": f"{_ttn}历代记", "subject": None,
-             "theme": f"{_ttn}王朝的国号沿革与历代承继",
-             "focus": "以本朝国号与历代持有者为纲，写改朝换代、疆域归并与主角的升沉",
+             "theme": f"{_ttn}王朝的历代承继与改朝换代",
+             "focus": "以各朝代的起止与历代即位缘由为纲，写改朝换代、疆域归并与主角的升沉",
              "sections": mk_sections("chaoju")})
     # v9: 家族恩怨录 / 宝物志 — 插在中间 (家室列传之后, 朝局风云录之前)
     if facts.get("house_feuds"):

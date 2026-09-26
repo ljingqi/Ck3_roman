@@ -15543,10 +15543,43 @@ def _campaign_start(f):
     return best
 
 
-def _title_holder_seq(f, tid, end=None):
-    """头衔 history 的持有者序列 [(date, holder|None)] (≤end)。
+# v69 (用户 2026-09-27 拍板): 《XX历代记》每人的**即位缘由** —— 存档 `landed_titles.
+# <tid>.history` 每条事件的 `type` 就是游戏自己的继位方式 (子代理取证 `logs/
+# probe_v69_succ4.txt`: 20 种取值里除 `destroyed` 外**全部**是「取得」事件, 即事件的
+# `holder` 是取得者; `destroyed` 的 `holder` 是失去者)。措辞取自游戏本地化
+# (`game/localization/simp_chinese/`: succession_laws 「任命继承制」、
+# memories_l_simp_chinese.yml:630-731 的 ascended_throne 各缘由句)。
+# 无 type 的裸 holder 条目 = 常规继承 (CK3 存档即以此区分, 全局 32234 条)。
+_SUCC_WORD = {
+    "appointment_succession": "受任命继位",
+    "appointment": "受任命",
+    "abdication": "受禅继位",
+    "faction_demand": "被派系拥立",
+    "election": "被选举继位",
+    "granted": "受封头衔",
+    "conquest": "征服夺取",
+    "conquest_claim": "凭宣称夺取",
+    "conquest_holy_war": "借圣战夺取",
+    "conquest_populist": "借民粹叛乱夺取",
+    "usurped": "篡夺继位",
+    "migration": "率部迁徙入主",
+    "stepped_down": "因前任下台而继位",
+    "revoked": "收回头衔",
+    "leased_out": "承租头衔",
+    "lease_revoked": "收回租约",
+    "independency": "自立",
+    "returned": "收回",
+    "swear_fealty": "宣誓效忠",
+}
+# 这些缘由写「从某某处…」(前任是同一枚头衔的上一任, 继承链可读)
+_SUCC_FROM_PREV = (None, "appointment_succession", "abdication")
 
-    `holder` 为 None 表示该日头衔无主 (毁弃/待封), 供调用方截断上一任的任期。"""
+
+def _title_hist_events(f, tid, end=None):
+    """头衔 history 的事件序列 [(date, holder|None, type|None)] (≤end)。
+
+    `type` = 游戏记的继位方式 (无 = 常规继承); `holder` 为 None 表示该日头衔无主
+    (毁弃/待封)。同日多事件 (列表形) 按存档原序展开 (v15 起既有口径)。"""
     t = f._lt.get(str(tid)) or {}
     hist = t.get("history") or {}
     out = []
@@ -15555,16 +15588,19 @@ def _title_holder_seq(f, tid, end=None):
     for d, ev in sorted(hist.items(), key=lambda x: cl.date_key(x[0])):
         if end and cl.date_key(d) > cl.date_key(end):
             break
-        holder = ev.get("holder") if isinstance(ev, dict) else ev
-        if isinstance(holder, list):
-            for h2 in holder:
-                if isinstance(h2, dict):
-                    out.append((d, h2.get("holder")))
-                else:
-                    out.append((d, h2))
-        else:
-            out.append((d, holder))
+        for e in (ev if isinstance(ev, list) else [ev]):
+            if isinstance(e, dict):
+                out.append((d, e.get("holder"), e.get("type")))
+            else:
+                out.append((d, e, None))
     return out
+
+
+def _title_holder_seq(f, tid, end=None):
+    """头衔 history 的持有者序列 [(date, holder|None)] (≤end)。
+
+    `holder` 为 None 表示该日头衔无主 (毁弃/待封), 供调用方截断上一任的任期。"""
+    return [(d, h) for d, h, _ty in _title_hist_events(f, tid, end=end)]
 
 
 def _realm_holder_seq(f, tid, end=None):
@@ -15696,56 +15732,115 @@ def _top_title_history(f, group_lines=None):
         segs = [s for s in segs
                 if not (s[2] and cl.date_key(s[2]) <= cl.date_key(start))]
 
-    if len(segs) >= 2:
-        # v68: 括注一律不用 (项目 v55 定规: 事实层除四类白名单外无括注) ——
-        # 国号链用「X 起 / 至Y」表述, 每段之止即下一段之起。
-        # 只有一段 (= 该头衔从未更名, 沿革表里只有它自己的名字) 时不发本行。
-        bits = []
-        for nm, s, e in segs:
-            if e:
-                bits.append(f"{nm} {f.date(e)}止" if (start and s
-                            and cl.date_key(s) < cl.date_key(start))
-                            else f"{nm} {f.date(s)}起")
-            else:
-                bits.append(f"{nm} {f.date(s)}起至今")
-        lines.append("国号沿革：" + " → ".join(bits))
-
-    # ---- 历代: 每次更替一段, 按国号分段归并 (只收与战役窗口相交的任期) ----
-    seq = _title_holder_seq(f, tid, end=as_of) or _realm_holder_seq(f, tid, end=as_of)
-    spans = []
-    for i, (d, h) in enumerate(seq):
-        if h is None:
+    # ---- 历代 (v69 用户 2026-09-27 拍板): 每个朝代**单独一行**「国号（起年至止年）」,
+    # 次行由老到新列出该朝历代, 每人附即位缘由 (受任命继位/被派系拥立/正常继位…) 与
+    # 失位/失天命; 天命毁弃而国号未改的**空位期**记作「群雄争霸」(用户指定, 不写
+    # 「中华皇朝」)。缘由取 history 条目的 `type` (见 `_SUCC_WORD` 与探针取证)。
+    # 旧稿把国号链与历代压成两行, 中华段因毁弃无主而把李漼写成该段起首之君,
+    # 63 年空位一行不可见, 且全无继位缘由。
+    is_h = key.startswith("h_")
+    _evs = _title_hist_events(f, tid, end=as_of)
+    plain = False
+    if not _evs:                    # 无逐档头衔史 (游牧毡帐等) → 逐档快照兜底, 无缘由
+        _evs = [(d, h, None) for d, h in _realm_holder_seq(f, tid, end=as_of)]
+        plain = True
+    accs, losses = [], []           # accs[(date, holder, type, reign_end, 空位中?)]; losses[(date, holder)]
+    _prev, _vacant = None, False
+    for _i, (_d, _h, _ty) in enumerate(_evs):
+        if _h is None:
             continue
-        e = seq[i + 1][0] if i + 1 < len(seq) else None
-        if start and e and cl.date_key(e) <= cl.date_key(start):
-            continue                      # 开局前就已卸任者不入历代 (汉晋隋唐古史)
-        spans.append((d, e, h))
-    parts = []
-    # 无国号更名史的头衔 (游牧毡帐/自创头衔) 仍出历代 —— 全窗口作一段, 段名用该日显示名
-    for nm, s, e in (segs or [[tname, start, None]]):
-        ss = cl.date_key(s) if s else None
-        ee = cl.date_key(e) if e else None
-        hs = []
-        for (d, de, h) in spans:
-            dk = cl.date_key(d)
-            if ss is not None and dk < ss:
+        if _ty == "destroyed":      # 毁弃: holder = 失去者 (全局 2983/2985 与前一主相同)
+            if _prev is not None and _h == _prev:
+                losses.append((_d, _h))
+            _prev, _vacant = None, True
+            continue
+        if _prev is None or _h != _prev:
+            accs.append((_d, _h, _ty,
+                         _evs[_i + 1][0] if _i + 1 < len(_evs) else None, _vacant))
+        _prev, _vacant = _h, False
+
+    seg_rows = [[_nm, _s, _e, []] for _nm, _s, _e in (segs or [[_disp, None, None]])]
+    # 国号更名比持有者变更晚 0–3 天落账 (950.6.1 珉·奄美建天命 → 950.6.3 改号「和」;
+    # 963.1.9 格尔木噶玛即位 → 963.1.11 改号「毕」), 故即位日落在某国号段起点之后
+    # 7 天内的归入**新**段 —— 否则开国之君会被算进上一朝。
+    for _gi, (_d, _h, _ty, _end, _vac) in enumerate(accs):
+        if start and _end and cl.date_key(_end) <= cl.date_key(start):
+            continue                # 开局前就已卸任者不入历代 (汉晋隋唐古史)
+        _dk, _pick, _best = _date_ord(_d), 0, None
+        for _j, (_nm2, _s2, _e2, _hs2) in enumerate(seg_rows):
+            if not _s2:
                 continue
-            if ee is not None and dk >= ee:
+            _sk = _date_ord(_s2)
+            if _sk <= _dk + 7 and (_best is None or _sk > _best):
+                _best, _pick = _sk, _j
+        seg_rows[_pick][3].append((_gi, _d, _h, _ty))
+
+    def _span(s, e):
+        """朝代行的年代区间 (用户样例用年; 同一年内改朝者补月份)。"""
+        y1, m1 = str(s).split(".")[0], str(s).split(".")[1]
+        if e is None:
+            return f"{y1}年至今"
+        y2, m2 = str(e).split(".")[0], str(e).split(".")[1]
+        if y1 == y2:
+            return f"{y1}年{m1}月至{y1}年{m2}月"
+        return f"{y1}年至{y2}年"
+
+    # 朝代名 = 国号段名 + 层级后缀。后缀取**叙事末日的显示名**(元皇朝 → 皇朝;
+    # 挪威王国 → 王国) 而非各段起始日 —— 天朝 `h_` 的层级词只在持有者行天朝制时
+    # 才出「皇朝」(v8 口径), 950/963/972 三段的开国者都还是游牧制, 逐段取会得到
+    # 「和」「毕」「元」这样的裸国号, 与「本朝：元皇朝」不一致。
+    _base_now = f._name_at_date(tid, as_of) or ""
+    _full_now = f.title(tid, as_of) or ""
+    _suf = _full_now[len(_base_now):] if (_base_now and _full_now.startswith(_base_now)) else ""
+
+    for _i, (_nm, _s, _e, _hs) in enumerate(seg_rows):
+        _st = _hs[0][1] if _hs else _s
+        if _st is None:
+            continue
+        if start and _date_ord(_st) < _date_ord(start):
+            _st = start                    # 朝代行按战役窗口起算 (用户样例 867→868 口径)
+        _nx = (seg_rows[_i + 1][3][0][1] if (_i + 1 < len(seg_rows)
+                                             and seg_rows[_i + 1][3])
+               else (seg_rows[_i + 1][1] if _i + 1 < len(seg_rows) else None))
+        if _nx is not None and start and _date_ord(_nx) < _date_ord(start):
+            continue
+        _hdr = ((_nm + _suf) if (_suf and _nm and not _nm.endswith(_suf)) else _nm) \
+            if _nm else (_full_now or tname)
+        if not _hs and is_h:
+            _hdr = "群雄争霸"              # 天命毁弃、国号未改的空位期 (用户指定)
+        lines.append(_hdr + "（" + _span(_st, _nx) + "）")
+        _items = []
+        for (_gi, _d, _h, _ty) in _hs:
+            _hn = f.name_or(_h, "") or ""
+            if not _hn:
                 continue
-            hn = f.name_or(h, "") if h is not None else ""
-            if not hn:
-                continue
-            # 逐档快照序列里同一人多段 (中间那位查不到名) → 只留首个
-            if hs and hs[-1].startswith(hn + " "):
-                continue
-            if start and dk < cl.date_key(start):
-                hs.append(f"{hn} 至{f.date(de) if de else '今'}")
+            if plain:
+                _txt = f"{_hn}（{f.date(_d)}起在位"
+            elif _ty == "created":
+                # 空位期后重建 (珉·奄美 950.6.1 续 887 之绝) 与开国 (尼克 972.10.10
+                # 从奄美崇业手中另立天命) 是两码事 —— 看**紧邻的上一条事件**是否毁弃。
+                _w = ("重建天命" if is_h else "重建头衔") if accs[_gi][4] \
+                    else ("建立天命" if is_h else "自立建国")
+                _txt = f"{_hn}（{f.date(_d)}{_w}"
             else:
-                hs.append(f"{hn} {f.date(d)}起")
-        if hs:
-            parts.append(f"{nm}：" + "、".join(hs))
-    if parts:
-        lines.append("历代：" + "；".join(parts))
+                _w = _SUCC_WORD.get(_ty or "", "继位")
+                _pn = (f.name_or(accs[_gi - 1][1], "") or "") \
+                    if (_ty in _SUCC_FROM_PREV and _gi > 0) else ""
+                _txt = f"{_hn}（{f.date(_d)}" + (f"从{_pn}处{_w}" if _pn else _w)
+            for (_ld, _lh) in losses:
+                if _lh == _h and _date_ord(_ld) >= _date_ord(_d):
+                    _txt += "，随后于" + f.date(_ld) \
+                        + ("失去天命" if is_h else "失去头衔")
+                    break
+            _items.append(_txt + "）")
+        if _items:
+            lines.append("、".join(_items))
+        elif is_h:
+            _lo = [ld for ld, _lh in losses if _date_ord(ld) <= _date_ord(_st)]
+            lines.append((f.date(max(_lo, key=_date_ord)) if _lo else "")
+                         + "天命中绝，天下无主")
+        else:
+            lines.append("其间无主")
     gl = (group_lines or {}).get(tid)
     if gl:
         lines.append("本朝疆域：" + gl.split("：", 1)[-1])
