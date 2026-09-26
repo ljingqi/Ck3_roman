@@ -6144,6 +6144,83 @@ class Facts:
                     out.add(k)
         return out
 
+    def wife_other_children_line(self, cid, kids=None):
+        """配偶与他人所出的孩子 → **可直接落笔的一句** (v74 问题3, 用户拍板)。
+
+        旧稿由 `biography._profile_lines` 拼成「妻室另育有和气敬子、和气孝成、藤原咲，
+        此数人之**法理父**并非主角。」——「法理父」三字把模型推向「丈夫是法理父」的
+        错解 (第 1 个十年成稿即写「法理父为浩二，生父则为和气丰永」，与游戏数据相反)。
+        游戏口径 (见 docs/调研_v74_大和私生子与法理父.md): 公开私生的孩子
+        `father` 直接被置为真父、随生父之氏, **不存在**法理父与生物父的分野。
+        故此处**按生父分人直陈**, 全句不出现「法理父」:
+
+            「藤原诸子与和气氏当主和气丰永生子和气敬子、和气孝成；
+              与远江国司藤原玄上生女藤原咲。此三人各随生父之氏。」
+
+        单亲查不到生父时退回「<生母>另育有<子女>，随其生父之氏」的简式。
+        返回 '' 表示无料 (调用方整句省略)。"""
+        chars = self.cache.get("characters") or {}
+        kids = list(kids if kids is not None else self.wife_other_children(cid))
+        if not kids:
+            return ""
+        # (生母, 生父) → [孩子 id]，按 (生母首次出现, 生父首次出现) 稳定排序
+        groups = {}
+        order = []
+        for k in sorted(kids, key=lambda x: str(x)):
+            rec = chars.get(str(k)) or {}
+            kf = rec.get("family") or {}
+            mom = (kf.get("mother") or [None])[0]
+            dad = (kf.get("real_father") or kf.get("father") or [None])[0]
+            key = (mom, dad)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(k)
+        parts = []
+        total = 0
+        _kids_all = []
+        prev_mom = None
+        for (mom, dad) in order:
+            mname = self.kin_label(mom) if isinstance(mom, int) else ""
+            dname = self.kin_label(dad) if isinstance(dad, int) else ""
+            sons, daughters = [], []
+            for k in groups[(mom, dad)]:
+                if not self.name(k):
+                    continue
+                _kids_all.append(k)
+                (daughters if self._is_female(k) else sons).append(self.kin_label(k))
+            bits = []
+            if sons:
+                bits.append("子" + "、".join(sons))
+            if daughters:
+                bits.append("女" + "、".join(daughters))
+            if not bits:
+                continue
+            body = "、".join(bits)
+            total += len(sons) + len(daughters)
+            if dname:
+                if mname and mom == prev_mom:
+                    lead = f"又与{dname}生"          # 同一生母的第二个情夫
+                elif mname:
+                    lead = f"{mname}与{dname}生"
+                else:
+                    lead = f"与{dname}生"
+            else:
+                lead = f"{mname}另育有" if mname else "另育有"
+            parts.append(f"{lead}{body}")
+            prev_mom = mom
+        if not parts:
+            return ""
+        if total == 1:
+            n = "此女" if self._is_female(_kids_all[0]) else "此子"
+        elif total == 2:
+            n = "此二人"
+        elif total == 3:
+            n = "此三人"
+        else:
+            n = f"此{total}人"
+        return "；".join(parts) + f"。{n}各随生父之氏。"
+
     def _current_ministers(self, date=None):
         """朝廷职司在 date (缺省熔件当前) 的持有者 →
         ['兵部尚书任清', …] (朝局风云录·朝廷职司用)。
@@ -12321,7 +12398,7 @@ def _mem_sentence_body(f, owner_id, mem):
                 tpl = MEMORY_TEMPLATES.get(mem.get("type") + "_female") or tpl
         # v34 (问题8, 用户拍板): 「添子」句的持有者若是孩子的**法理父亲**, 句义已明确,
         # 不加血缘补注 (非婚生仍是他的子女, 本纪只写家门);
-        # 法理父另有其人时 (句首是生母/他人) 才补「（生父X）」, 免把生母的生育
+        # 法理父另有其人时 (句首是生母/他人) 才补「生父X」, 免把生母的生育
         # 读成持有人得子 (法霍·索丹的生父是索丹·索丹, 法理父也是索丹·索丹)。
         kid = parts.get("child")
         if isinstance(kid, int):
@@ -12332,6 +12409,21 @@ def _mem_sentence_body(f, owner_id, mem):
             if isinstance(who, int) and owner_id is not None \
                     and who != owner_id and kfather != owner_id:
                 wname = f.event_name(who, date=f.as_of) or f.name_or(who)
+                # v74 (问题3, 用户拍板): 持有人**既非孩子生父亦非生母**时 (典型:
+                # 丈夫的 `child_born`/`first_born` 记忆 —— 游戏在妻子受孕时也给丈夫
+                # 记一条), 句首改由**生母**作主语, 丈夫只作限定:
+                # 「田所浩二之妻藤原诸子生女和气敬子，生父和气丰永。」
+                # 旧稿只往句尾追加「，生父X。」而主语仍是丈夫, 于是写出
+                # 「田所浩二得长女和气敬子，生父和气丰永。」—— 模型据此把敬子读成
+                # 主角之女 (第 1 个十年成稿「敬子遂入田所氏」)。见方案 §3.4。
+                kmother = (kfam.get("mother") or [None])[0]
+                if isinstance(kmother, int) and kmother != owner_id and wname:
+                    mn = f.event_name(kmother, date=f.as_of) or f.name_or(kmother)
+                    if mn:
+                        word = "女" if f._is_female(kid) else "子"
+                        rel_w = f._consort_word(owner_id, kmother)
+                        subj = f"{owner}之{rel_w}{mn}" if rel_w else mn
+                        return f"{subj}生{word}{other}，生父{wname}。"
                 if wname:
                     # v55 (问题2): 去括注 —— 「添子X，生父Y。」
                     tpl = tpl.rstrip("。") + "，生父{fname}。"
@@ -15261,12 +15353,9 @@ def _protagonist(f):
     if _has_fam:
         child_ids = [c for c in child_ids if c in _legal]
     _wife_other = f.wife_other_children(pid)
-    if _wife_other:
-        _wo_names = "、".join(
-            f.kin_label(c) for c in sorted(_wife_other, key=lambda x: str(x))
-            if f.name(c))
-        if _wo_names:
-            p["wife_other_children"] = _wo_names
+    _wo_line = f.wife_other_children_line(pid, _wife_other) if _wife_other else ""
+    if _wo_line:
+        p["wife_other_children"] = _wo_line
     p["children"] = "、".join(f.kin_label(c) for c in child_ids)
     # v26: 子女按性别分列 (「子A、B，女C、D」) — 与 _character_profiles 同口径
     p["children_sons"] = "、".join(
@@ -15292,8 +15381,16 @@ def _protagonist(f):
     if f.is_custom_start(pid):
         p["custom_start"] = True
     # v5: 真正父亲 (私生子场景; 与法理父不同才渲染)
+    # v74 (问题3, 用户拍板): 判据改为**按 id 与法理父比对** —— 公开私生的孩子
+    # `real_father == father` (游戏 `on_action/child_birth_on_actions.txt:781-817`
+    # 在 `is_bastard = yes` 的同一分支里 `set_father = scope:real_father`), 生父就是父,
+    # 不另出「实父」; 只有真托卵 (`father != real_father`, 田所档方子) 才下发。
+    # 旧稿无条件写 `p["real_father"]`, 配合「父」行被抑制, 把九位公开私生写成
+    # 「另有一个法理父」。见 docs/方案_v74_田所三问题.md §3.3。
+    _father_ids = {int(x) for x in (fam.get("father") or [])
+                   if isinstance(x, int)}
     rf = (fam.get("real_father") or [None])[0]
-    if rf is not None:
+    if rf is not None and int(rf) not in _father_ids:
         rfname = f.kin_label(rf)
         if rfname:
             p["real_father"] = rfname
@@ -15515,18 +15612,61 @@ def _character_profiles(f):
         _pchildren = {int(x) for x in ((_prec.get("family") or {}).get("child") or [])}
         _is_pchild = int(cid) in _pchildren
         _fathers = [x for x in (fam.get("father") or []) if f.name(x)]
+        _fids = {int(x) for x in (fam.get("father") or []) if isinstance(x, int)}
         if not (_is_pchild and _pid in _fathers):
             prof["father"] = "、".join(f.kin_label(x) for x in _fathers)
         prof["mother"] = "、".join(
             f.kin_label(x) for x in (fam.get("mother") or []) if f.name(x))
+        # v74 (问题3 C4, 用户拍板「公开私生不需要专门写」—— 本条只写**生母的婚配
+        # 身份**, 不写孩子是否私生): 生母在**孩子出生时**另有配偶 (该配偶不是孩子的父)
+        # 时, 记一句生母的婚配身份 (多家取门第最高的那位), 由 `biography._profile_lines`
+        # 只在**内宅档** (with_real_parentage) 追加到「母」行后。
+        # 本档最有戏的一层关系即此: 田所浩二的情人 藤原高子 / 大和忠子 都是
+        # **前任天皇大和惟仁之妻**, 所生子女随田所氏 (见方案 §3.6)。
+        # 「出生时仍在婚」判据 (全由缓存记忆/字段直算, 不猜):
+        #   ① 有 `married` 记忆者: 成婚日 ≤ 孩子生日 (成婚日晚于出生的排除);
+        #   ② 无 `married` 记忆者 (实测 藤原高子 × 大和惟仁 即此类, 婚姻早于缓存
+        #      窗口): 以「该配偶在孩子出生时仍在世」为准 —— 该配偶在孩子出生前已卒
+        #      即婚配已终 (藤原珍子 × 橘良根: 良根 871 卒, 其子女皆 874 后出生, 排除)。
+        _mom = (fam.get("mother") or [None])[0]
+        _birth = str(rec.get("birth") or "")
+        if _is_pchild and isinstance(_mom, int) and _birth:
+            _chars = f.cache.get("characters") or {}
+            _mrec = _chars.get(str(_mom)) or {}
+            _mfam = _mrec.get("family") or {}
+            _cand = []
+            for _s in dict.fromkeys(
+                    list(_mfam.get("spouse") or [])
+                    + list(_mfam.get("former_spouses") or [])
+                    + list(_mfam.get("primary_spouse") or [])):
+                if not isinstance(_s, int) or _s in _fids or not f.name(_s):
+                    continue
+                _wd = f.wedding_date(_mom, _s)
+                if _wd and cl.date_key(_wd) > cl.date_key(_birth):
+                    continue
+                _sd = ((_chars.get(str(_s)) or {}).get("death") or {}).get("date")
+                if _sd and cl.date_key(_sd) < cl.date_key(_birth):
+                    continue
+                _cand.append(_s)
+            if _cand:
+                def _rank_(sid):
+                    _t, _tid = f._primary_title_at(sid, as_of=f.as_of)
+                    return f._eff_rank(_tid) if _tid is not None else -1
+                _best = max(_cand, key=_rank_)
+                _rel = f._consort_word(_best, _mom)
+                _bl = f.kin_label(_best)
+                if _rel and _bl:
+                    prof["mother_note"] = f"（{_bl}之{_rel}）"
         if not _is_pchild:
             prof["siblings"] = "、".join(
                 f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
         # v5: 自定义角色 + 真正父亲 (私生子)
         if f.is_custom_start(cid):
             prof["custom_start"] = True
+        # v74 (问题3): 同 `_protagonist_facts` —— 只在**真托卵** (`father != real_father`)
+        # 时下发「实父」; 公开私生的 `real_father == father`, 不写「实父」。
         rf = (fam.get("real_father") or [None])[0]
-        if rf is not None:
+        if rf is not None and int(rf) not in _fids:
             rfname = f.kin_label(rf)
             if rfname:
                 prof["real_father"] = rfname

@@ -899,16 +899,12 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # v34 (问题8, 用户拍板): 配偶与他人所出、本人不是其父/母的孩子 —
     # 不进「子/女」行, 单列一句, 供《家室列传》作「配偶的子女」交代
     # (《本纪》不收这条)。写成完整句, 不用括注同位语。
-    # v44 (问题3): 措辞按**本人性别**取 —— 本人为女时这些孩子缺的是母亲,
-    # 旧稿一律写「妻室另育有…法理父并非主角」, 女主亲生的子女因此被读成
-    # 「与丈夫没有关系」(阿德尔海德档整段血脉疑云即由此而来)。
+    # v44 (问题3): 措辞按**本人性别**取 —— 本人为女时这些孩子缺的是母亲。
+    # v74 (问题3, 用户拍板): 句子改由 `facts.wife_other_children_line` **整句生成**
+    # (按生父分人直陈、随生父之氏), 不再由本处拼「此数人之法理父并非主角」——
+    # 该措辞把模型推向「丈夫是法理父」的错解 (见 docs/方案_v74_田所三问题.md §3.5)。
     if cid is None and p.get("wife_other_children") and with_real_parentage:
-        if p.get("female"):
-            lines.append(f"夫婿另有子女{p['wife_other_children']}，"
-                         "此数人之法理母并非主角。")
-        else:
-            lines.append(f"妻室另育有{p['wife_other_children']}，"
-                         "此数人之法理父并非主角。")
+        lines.append(p["wife_other_children"])
     # ---- v27/v28: 言语关系句 (程序已判定相通或须通译, 模型照写) ----
     if p.get("language_relation"):
         lines.append(p["language_relation"])
@@ -921,7 +917,10 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     if p.get("father"):
         kin_bits.append(f"父{p['father']}")
     if p.get("mother"):
-        kin_bits.append(f"母{p['mother']}")
+        # v74 (问题3 C4): 生母另有婚配时, 内宅档补「（Y之妻）」—— 只讲生母的身份,
+        # 不讲孩子的来历 (公开私生不专门写)。
+        _mn = (p.get("mother_note") or "") if with_real_parentage else ""
+        kin_bits.append(f"母{p['mother']}{_mn}")
     if with_real_parentage and p.get("real_father") \
             and p.get("real_father") != p.get("father"):
         kin_bits.append(f"实父{p['real_father']}")
@@ -1903,19 +1902,26 @@ def _section_req(text, facts):
 
 
 def _jiashi_variant(facts, cache):
-    """《家室列传》素材档 (v60 问题3) → 'spouse' | 'concubine' | 'none'。
+    """《家室列传》素材档 (v60 问题3) → 'spouse' | 'spouse_plain' | 'concubine' | 'none'。
 
     判据全在程序侧: 主角的配偶集 (含前妻, 已在 `Facts.merge_spouse_latch` 里
     并入婚配闩存) 与妾集孰有孰无。无正妻而只有妾时不得再索要「结缡、离异、
     前妻之死、再娶」; 两者皆无时不得索要妻室子女 —— 否则模型只能编造
-    (崔佛档实测: 一生无正妻、无子女, 传记却写出「结缡三次」)。"""
+    (崔佛档实测: 一生无正妻、无子女, 传记却写出「结缡三次」)。
+    v74 (问题3, 用户拍板): 有妻室时再分两档 —— 只有存在**真托卵**
+    (`father != real_father`, 由 `facts._villain_chains` 的「托卵承嗣」链判定) 才用
+    「子女来历与**血脉之争**」的题面 (托卵按老方案); 公开私生的孩子随生父之氏,
+    不是血脉官司, 走 `spouse_plain`。"""
     pid = cache.get("player_id")
     if pid is None:
         return "none"
     fam = ((cache.get("characters") or {}).get(str(pid)) or {}).get("family") or {}
     if fam.get("primary_spouse") or fam.get("spouse") \
             or fam.get("former_spouses"):
-        return "spouse"
+        for _mod, _s, _p in (facts.get("villain_chains") or []):
+            if str(_mod) == "托卵承嗣":
+                return "spouse"
+        return "spouse_plain"
     if fam.get("concubine") or fam.get("former_concubines"):
         return "concubine"
     return "none"
