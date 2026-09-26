@@ -1230,17 +1230,33 @@ def name_order_of(melt, culture_id):
     return e.get("name_order_convention") or ""
 
 
-def _family_name_order(cache, rec, melt, chars=None):
-    """角色自身文化缺失 (死后清空/幼年未录) 时, 依亲属文化推断名序:
-    父 → 母 → 同胞 → 子女 → 配偶 (子承父/母文化, 同胞同源; 配偶跨族婚姻参考价值最低, 放最后)。
-    返回 name_order_convention 字符串 ('' = 西方默认); 亲属文化全部缺失时返回 None。
+# v71 (用户拍板「父系优先到底」): 名序亲属推断的**两段式**键序。
+#   · 父系侧 (PATERNAL): 命名文化沿父系继承 (CK3 子女随父文化) —— 父与同胞同源最可靠;
+#     **不含 `child`**: 子女随的是**父亲**的文化, 对一位女性来说子女的文化来自丈夫,
+#     不是她自己的证据 (实测 占婆公主 苏伦陀罗提毗·苾力瞿: 本人与父兄都无 culture 字段,
+#     她的子女是和皇帝所出、在册为 大和人 ⇒ 旧式「父→母→同胞→子女」把子女当证据会
+#     判成 JAPANESE, 出「苾力瞿苏伦陀罗提毗」, 而她本家是占人 ⇒ 应作西方名序)。
+#   · 母系侧 (MATERNAL): 姻亲/下辈跨族, 证据最弱 —— 只有在「父系侧无解 **且** 宗族模板
+#     也推不出」时才问, 否则会像 汶娘 (李氏、父系汉人, 但本人与父兄的存档记录都不带
+#     culture 字段) 那样被母亲的诺斯文化顶成西方名序, 出「汶娘·李」。
+KIN_ORDER_PATERNAL = ("father", "siblings")
+KIN_ORDER_MATERNAL = ("mother", "child", "primary_spouse", "spouse",
+                      "former_spouses")
+
+
+def _family_name_order(cache, rec, melt, chars=None, keys=KIN_ORDER_PATERNAL):
+    """角色自身文化缺失 (死后清空/幼年未录/游戏未落该字段) 时, 依亲属文化推断名序。
+
+    v71: 增 `keys` 参数 —— 默认只走**父系侧** (父 → 同胞); 母系/配偶/子女由
+    `resolved_name_order` 在宗族模板推断之后才问 (旧口径把母亲排在第二位,
+    父系字段一缺就取到母系, 见上方 KIN_ORDER_* 注释)。
+    返回 name_order_convention 字符串 ('' = 西方默认); 该组亲属文化全缺时返回 None。
     v19: 亲属不在玩家缓存时兼查熔件全量角色 (chars — display_name 已持有全角色索引)。"""
     if melt is None:
         return None
     cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
     fam = rec.get("family") or {}
-    for key in ("father", "mother", "siblings", "child",
-                "primary_spouse", "spouse", "former_spouses"):
+    for key in keys:
         for x in (fam.get(key) or []):
             r = (cache.get("characters") or {}).get(str(x)) or {}
             cul = r.get("culture")
@@ -1250,6 +1266,46 @@ def _family_name_order(cache, rec, melt, chars=None):
                 continue
             return cultures[str(cul)].get("name_order_convention") or ""
     return None
+
+
+def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None):
+    """角色名序判定 (**v71 全项目唯一链**, `display_name` 与 `Facts.name_order` 同源)。
+
+    次序 (每一步都只看「能不能解析出文化」, 不看结果是不是东方 ——
+    西方的 '' 同样是定案, 不得再往下走):
+
+      1) 本人: 族属沿革该日之文化 (v44) → 缓存 culture 字段 → 熔件 `culture_manager`
+         的 `name_order_convention`。**有文化 id 者一律在此定案**, 条目缺失按西方默认
+         (与旧 `name_order_of` 同值);
+      2) 文化不可解析 → **父系侧**亲属 (父 → 同胞) 的文化;
+      3) 仍无解 → 宗族模板推断 (`_culture_template_of`: 父系线 → 同胞 → 同宗族 →
+         母 → 语言) → 取**同模板**文化的名序 (游戏里同一 culture_template 名序一致);
+      4) 最后才问母系/配偶/子女 (姻亲与下辈跨族, 证据最弱);
+      5) 全无解返回 None —— 调用方宁缺勿错序 (display_name 退化为只写给定名)。
+
+    返回 ''=西方默认, 'DYNASTY_ALWAYS_FIRST'/'JAPANESE'=姓在前, None=无从判定。"""
+    if cid is None:
+        return None
+    rec = (cache.get("characters") or {}).get(str(cid)) or {}
+    cultures = ((melt or {}).get("culture_manager") or {}).get("cultures") or {}
+    cul = _culture_id_at_rec(rec, date)
+    if cul is None:
+        cul = rec.get("culture")
+    if cul is not None:
+        return (cultures.get(str(cul)) or {}).get("name_order_convention") or ""
+    if melt is None:
+        return None
+    order = _family_name_order(cache, rec, melt, chars=chars,
+                               keys=KIN_ORDER_PATERNAL)
+    if order is not None:
+        return order
+    tpl = _culture_template_of(cache, cid, melt, chars=chars, memo=memo)
+    if tpl:
+        for _e in cultures.values():
+            if isinstance(_e, dict) and _e.get("culture_template") == tpl:
+                return _e.get("name_order_convention") or ""
+    return _family_name_order(cache, rec, melt, chars=chars,
+                              keys=KIN_ORDER_MATERNAL)
 
 
 def name_display(cache, cid, melt=None, names_path=None):
@@ -1601,22 +1657,11 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
     ptn = _patronym_of(cache, cid, melt, names_path, chars=chars, memo=memo)
     if ptn:
         return nm if ptn == nm else f"{nm}·{ptn}"
-    # 2) 名序: 自身文化 → 亲属推断 → 文化模板反查 (v13)
-    # v44 (问题4): date 传本篇截止日时按**族属沿革**取该日文化 —— 名序随文化翻档
-    cul = _culture_id_at_rec(rec, date)
-    if cul is None:
-        cul = rec.get("culture")
-    order = name_order_of(melt, cul) if cul is not None else None
-    if order is None:
-        order = _family_name_order(cache, rec, melt, chars=chars)
-    if order is None:
-        tpl = _culture_template_of(cache, cid, melt, chars=chars, memo=memo)
-        if tpl:
-            for _cid2, _e in ((melt.get("culture_manager") or {})
-                              .get("cultures") or {}).items():
-                if isinstance(_e, dict) and _e.get("culture_template") == tpl:
-                    order = _e.get("name_order_convention") or ""
-                    break
+    # 2) 名序: v71 起走 `resolved_name_order` 单条链 (本人文化 → 父系侧 → 宗族模板 →
+    # 母系/配偶), 与 `Facts.name_order` 同源 —— 旧代码在此内联「父→母→同胞→…」的
+    # 亲属推断, 父系字段一缺就取到母系 (汶娘·李 即由此而来, 见该函数注释)。
+    order = resolved_name_order(cache, cid, melt=melt, chars=chars,
+                                memo=memo, date=date)
     if order in EASTERN_NAME_ORDERS:
         # v14: 东方名序姓 = 宗族名 (游戏 $DYNASTY$ 模板: 藤原/崔/金);
         # 缓存/names 缺失时 (旧缓存) 按家族 id 惰性从熔件解析, 同 house 记忆化。
@@ -1652,10 +1697,6 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
         return f"{nm}·{pfx}{surname}" if (surname and pfx) else \
             (f"{nm}·{surname}" if surname else nm)
 
-    cultures = (melt or {}).get("culture_manager") or {}
-    if cul is not None and str(cul) in (cultures.get("cultures") or {}):
-        # 文化已知且西方默认: 名·姓
-        return _west_surname(h)
     if order is not None and order == "":
         # 亲属/模板推断为西方默认: 名·姓
         return _west_surname(h)

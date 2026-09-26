@@ -273,9 +273,12 @@ def fmt_cn_date(date_str):
 # DeepSeek 调用
 # ---------------------------------------------------------------------------
 
-def _usage_line(usage, messages):
+def _usage_line(usage, messages, finish=None):
     """v27: 缓存用量单行 (口径见 DeepSeek 上下文硬盘缓存文档)。
-    命中 token 单价是未命中的 1/50, 因此「未命中」才是真实成本与验收指标。"""
+    命中 token 单价是未命中的 1/50, 因此「未命中」才是真实成本与验收指标。
+    v71: 末尾附带 `finish_reason` —— 官方取值 stop/length/content_filter/
+    tool_calls/insufficient_system_resource/aborted; 从日志即可判「这次收尾是否正常」
+    (旧日志只记 usage, 中断的响应与正常收尾在事后无从分辨)。"""
     u = usage if isinstance(usage, dict) else {}
     hit = u.get("prompt_cache_hit_tokens") or 0
     miss = u.get("prompt_cache_miss_tokens") or 0
@@ -283,9 +286,10 @@ def _usage_line(usage, messages):
     out = u.get("completion_tokens")
     chars = sum(len(m.get("content") or "") for m in (messages or [])
                 if isinstance(m, dict))
+    tail = f" | 收尾{finish}" if finish is not None else ""
     return (f"token: 输入{inp} = 命中{hit} + 未命中{miss}"
             f" | 输出{out if out is not None else '?'} | 字符{chars}"
-            f" (命中率{hit * 100 // inp if inp else 0}%)")
+            f" (命中率{hit * 100 // inp if inp else 0}%){tail}")
 
 
 # v39: 单次 call_deepseek 的墙钟预算 (三次尝试合计)。上游挂死时逐次 timeout
@@ -307,6 +311,10 @@ def call_deepseek(messages, cfg, retries=3):
     """调用 DeepSeek chat/completions, 返回正文文本。
 
     - max_tokens 截断时自动翻倍预算重试 (上限 16000);
+    - v71: 其余中断型收尾 (content_filter / insufficient_system_resource /
+      aborted) 按未完成处理 (重试, 三次皆中断则抛错) —— 这几种官方都会返回
+      部分内容, 旧代码只防 length, 半截正文会被静默当成功收下;
+      每次调用的 finish_reason 随 usage 一并落日志;
     - llm_thinking_disabled 时发送 thinking:disabled 关闭思考模式;
     - 失败退避重试 (3s / 6s ...);
     - v27: 每次调用把 usage (缓存命中/未命中 token) 落日志, 供上下文瘦身验收;
@@ -354,10 +362,10 @@ def call_deepseek(messages, cfg, retries=3):
                 raise RuntimeError(
                     f"上游返回非 OpenAI 形状 (status={resp.status_code}): "
                     f"{body[:200]}")
-            log(_usage_line(data.get("usage"), messages))
             choice = data["choices"][0]
             content = (choice.get("message") or {}).get("content") or ""
             finish = choice.get("finish_reason")
+            log(_usage_line(data.get("usage"), messages, finish))
             if finish == "length":
                 if max_tokens >= 16000:
                     log("输出仍被 max_tokens 截断(已达 16000 上限), 返回截断文本")
@@ -367,6 +375,16 @@ def call_deepseek(messages, cfg, retries=3):
                     max_tokens = min(max_tokens * 2, 16000)
                     log(f"输出因 max_tokens 不足被截断, 提高预算至 {max_tokens} 重试")
                     continue
+            elif finish and finish != "stop":
+                # v71: 上游中断 (content_filter / insufficient_system_resource /
+                # aborted 都会返回**部分内容**) —— 旧代码只防 length, 这几种一律
+                # 当成功收下, 半截正文于是写进成稿 (板块末尾落在开括号上, 见
+                # docs/调研_v71_姓名倒置与孤立括号.md)。此处按未完成处理: 重试;
+                # 三次都中断则抛出, 由流水线把该板块标成「生成失败」等待重跑。
+                raise RuntimeError(
+                    f"生成被上游中断 (finish_reason={finish}, "
+                    f"输出{(data.get('usage') or {}).get('completion_tokens')} token) "
+                    f"— 内容不完整, 按未完成处理")
             if content.strip():
                 return content
             if finish == "stop":

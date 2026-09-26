@@ -11561,9 +11561,15 @@ class Facts:
     # ---- v5: 文化名序 / 文风 ----
 
     def name_order(self, cid):
-        """角色文化名序约定 ('' = 西方; DYNASTY_ALWAYS_FIRST/JAPANESE = 姓在前)。"""
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        return cl.name_order_of(self.melt, rec.get("culture"))
+        """角色文化名序约定 ('' = 西方; DYNASTY_ALWAYS_FIRST/JAPANESE = 姓在前)。
+
+        v71: 与 `cl.display_name` **同一条判定链** (`cl.resolved_name_order`:
+        本人文化 → 父系侧亲属 → 宗族模板 → 母系/配偶)。旧口径只看缓存 `culture`
+        字段, 字段缺失 (实测李氏 82 人中 81 人无该字段) 即静默按西方,
+        与成稿侧口径相反。"""
+        return cl.resolved_name_order(self.cache, cid, melt=self.melt,
+                                      chars=self._chars, memo=self._tpl_memo,
+                                      date=self.as_of) or ""
 
     def is_eastern_culture(self, cid):
         """东方文化 (姓在前)? 文化未知按 False (保守回退西方/未知)。"""

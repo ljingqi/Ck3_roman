@@ -2103,6 +2103,35 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
 _MAG_HEAD_RE = re.compile(r"^#{1,6}\s+")
 
 
+# v71 (问题2): 板块尾部完整性 —— 上游把正文拦腰截断时, 残留物常是「末字为开括号」
+# 或「强调符只开不合」。实测 (2026-09-24 ~ 09-26 四篇): 板块末字分别为
+# `（`(卡尔第1个十年·门庭恩怨)、`“`(卡尔终传·恩怨始末)、`「`(尼克第1个十年·诸魂行迹)、
+# `【`(富兰克林终传·开篇); 另有 `**` 未闭合、末句断在词上 (`后世`/`——`) 等同类残迹。
+_DANGLING_OPEN = "「『“【《〈（([{"
+
+
+def _tail_issue(text):
+    """板块正文末尾是否被截断: 返回原因串, 正常收尾返回 None (纯函数)。"""
+    t = (text or "").rstrip()
+    if not t:
+        return None
+    if t[-1] in _DANGLING_OPEN:
+        return f"末字为开括号「{t[-1]}」"
+    if t.count("**") % 2:
+        return "强调符 ** 未闭合"
+    return None
+
+
+def _trim_dangling_tail(text):
+    """裁掉尾部残留的开括号 (成对闭符号与正文一字不动); 返回 (text, 是否裁过)。"""
+    t = (text or "").rstrip()
+    changed = False
+    while t and t[-1] in _DANGLING_OPEN:
+        t = t[:-1].rstrip()
+        changed = True
+    return t, changed
+
+
 def _strip_markdown_tables(text):
     """把模型输出的 Markdown 表格行转成自然语言句子 (兜底)。"""
     lines = (text or "").split("\n")
@@ -2152,6 +2181,10 @@ def _strip_markdown_tables(text):
 #   「记事者未署何时发觉」「档案不著一字」「无从深考」「莫得而闻」「不敢妄断」。
 # 判据 = 承载词 (本篇/档案/册上/记载…) 与否定词 (不细载/未著/未署/不着一字…)
 # 同现即连主语一起删; 两者都不在词表者一律保留 (有「正常句不被误改」用例守门)。
+# v71 (问题2, 用户拍板「两处都修」): 按语 regex 的尾组字符类一律**排除括注右符号**
+# `）】」』` —— 旧类 `[^，。；！？\n]` 允许吃掉右括号, 于是「（未载其名）」被整段删成
+# 一个逗号, 成稿里留下孤零零的「（，」或「（。」(实测 尼克第2个十年《纪事·诸魂行迹·中》
+# 「其弟边□□（，边般若收其骨于乱葬。」; 合成例「他（未详其名）生于乱世。」→「他（。」)。
 _META_NOTE_RE = re.compile(
     r"[，,]?\s*(?:据)?(?:资料|史料|史书|文献|典籍|记载|史册|年录|载籍|史笔"
     r"|正史|实录|旧史|至今|史|今|本篇|本纪|本传|档案|册子|册上|簿册|名册"
@@ -2161,10 +2194,10 @@ _META_NOTE_RE = re.compile(
     r"|不细载|不细述|未细载|未著一笔|未著一字|未着一字|未署|无载|未著"
     r"|未着一字|不着一字|未见详录|未见其详|未及详|莫得而闻|无从深考"
     r"|不敢妄断|不敢遽断|未可考|无由得知)"
-    r"(?:\s*其[^，。；！？\n]{1,10}|\s*其详|\s*其始末|\s*其原委|\s*其由来"
+    r"(?:\s*其[^，。；！？\n）】」』]{1,10}|\s*其详|\s*其始末|\s*其原委|\s*其由来"
     r"|\s*始末|\s*先后|\s*前后|\s*缘由|\s*由来|\s*究竟|\s*果真"
-    r"|\s*何时[^，。；！？\n]{0,6}|\s*何年[^，。；！？\n]{0,6}"
-    r"|\s*何地[^，。；！？\n]{0,6}|\s*何人[^，。；！？\n]{0,6})?\s*[，,]?")
+    r"|\s*何时[^，。；！？\n）】」』]{0,6}|\s*何年[^，。；！？\n）】」』]{0,6}"
+    r"|\s*何地[^，。；！？\n）】」』]{0,6}|\s*何人[^，。；！？\n）】」』]{0,6})?\s*[，,]?")
 # v35: 「承载词 + 否定词」连缀的整句按语 (一整句都是考据话, 整句删) ——
 # 「记事者未署何时发觉，亦未署何人最先看破。」「何时见载、何时知情，本篇未著其年，」
 # 这类句子的剩下成分只有「亦/然」等连接词, 逐词删会留残句, 故按整句处理。
@@ -2174,28 +2207,32 @@ _META_CLAUSE_RE = re.compile(
     r"(?:(?:本篇|本纪|本传|档案|册子|册上|簿册|名册|官册|旧籍|记注|史料"
     r"|资料|记载|史册|史笔|史官|记事者)\s*)?"
     r"(?:亦|也|只|惟|仅|皆|均|俱|并|尚|又)?\s*"
-    r"(?:未载|不载|未详|未著[^，。；！？\n]{0,8}|未署[^，。；！？\n]{0,8}"
-    r"|不著[^，。；！？\n]{0,8}|不详|无从[^，。；！？\n]{0,8}"
+    r"(?:未载|不载|未详|未著[^，。；！？\n）】」』]{0,8}|未署[^，。；！？\n）】」』]{0,8}"
+    r"|不著[^，。；！？\n）】」』]{0,8}|不详|无从[^，。；！？\n）】」』]{0,8}"
     r"|不可考|无可考|莫得而闻)\s*[，,]?"
     r"|[，,]?\s*(?:记事者|史官|史笔)\s*"
     r"(?:亦|也|只|惟|仅|皆|均|俱|并|尚|又)?\s*"
     r"(?:未署|未言|未明|未记|未载|不载|未详|不著|未著)"
-    r"[^，。；！？\n]{0,14}[。；]\s*"
+    r"[^，。；！？\n）】」』]{0,14}[。；]\s*"
     # v35: 「档案只此一行」「记载里也只有一句」式 —— 报道词 + 数量寡少
     # (第二分句会引出正文引文, 故只吃「，病名」这类补语与常见的「其余一概沉默」)
     r"|[，,]?\s*(?:档案|记载|史册|史料|资料|册子|册上|簿册|名册|本篇|本纪|本传"
     r"|记事者|史官|史笔)(?:里)?\s*(?:也|亦|只|惟|仅|均|皆|俱|并|尚|又)?\s*"
     r"(?:只|惟|仅)?\s*(?:此|有)?\s*一?\s*(?:行|句|言|条|笔|事|语)\s*[。；]?\s*"
-    r"|[，,]?\s*(?:其[余他]|别的|外的)[^，。；！？\n]{0,6}"
+    r"|[，,]?\s*(?:其[余他]|别的|外的)[^，。；！？\n）】」』]{0,6}"
     r"(?:一概沉默|一概从略|别无记述|无可考|不详|不载)\s*[。；]?\s*")
 # 清洗后可能残留的连接符 (，，/，。/、，/ 句首逗号)
-_META_FIXUPS = ((re.compile(r"[，,]{2,}"), "，"),
-                (re.compile(r"[，,]+([。；;！？\n])"), r"\1"),
-                (re.compile(r"([。；;！？\n])[，,]+"), r"\1"),
-                (re.compile(r"^[，,]+"), ""),
-                (re.compile(r"、[，,]"), "，"),
-                # v35: 按语删净后可能整段只剩标点 → 连标点一并去掉
-                (re.compile(r"^[。；;！？，,\s]+$"), ""))
+_META_FIXUPS = (
+    # v71: 按语删净后括注只剩空壳 (「（，」/「（。）」) → 整段并回一个标点。
+    # 放在最前 —— 并回的标点要交给下一条「连续逗号收拢」接力 (否则留「，，」)。
+    (re.compile(r"[（【「『“]\s*([，。；])\s*[）】」』]?"), r"\1"),
+    (re.compile(r"[，,]{2,}"), "，"),
+    (re.compile(r"[，,]+([。；;！？\n])"), r"\1"),
+    (re.compile(r"([。；;！？\n])[，,]+"), r"\1"),
+    (re.compile(r"^[，,]+"), ""),
+    (re.compile(r"、[，,]"), "，"),
+    # v35: 按语删净后可能整段只剩标点 → 连标点一并去掉
+    (re.compile(r"^[。；;！？，,\s]+$"), ""))
 
 
 def _fix_kin_roles(text, facts, cache):
@@ -2909,15 +2946,36 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     sec_cfg = dict(cfg)
     sec_cfg["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)
 
+    def _draft_section(msg, sec_title, article_title):
+        """生成一个板块正文, 并做 v71 尾部完整性检查 (`_tail_issue`)。
+
+        残句停在开括号 / 强调符未闭合 = 上游把正文截断 (llm 侧已按 finish_reason
+        重试过, 见 `llm.call_deepseek`), 此处再整段重生成一次; 仍不完整则只裁掉
+        尾部残留的开括号并落日志 —— 半截正文绝不当完成稿静默收下。"""
+        def _one(text):
+            # v52 (问题1): 成稿正文同做亲属词归正 (紧贴人名的错词才改)
+            body = _fix_kin_roles(
+                _normalize_section(text, sec_title, article_title), facts, cache)
+            return body, _tail_issue(body)
+
+        body, issue = _one(llm.call_deepseek(msg, sec_cfg).strip())
+        if not issue:
+            return body
+        llm.log(f"板块《{sec_title}》末尾不完整 ({issue}) — 重生成一次")
+        body2, issue2 = _one(llm.call_deepseek(msg, sec_cfg).strip())
+        if not issue2:
+            return body2
+        llm.log(f"板块《{sec_title}》重生成后仍不完整 ({issue2}) — 裁尾部残迹, 该板块请复核")
+        b1, _ = _trim_dangling_tail(body)
+        b2, _ = _trim_dangling_tail(body2)
+        return b2 if len(b2) >= len(b1) else b1
+
     def _gen_lead(article):
         try:
             msg = build_lead_messages(article, facts, cache, intro, cfg)
-            text = llm.call_deepseek(msg, sec_cfg).strip()
-            body = _normalize_section(text, article["sections"][0]["title"],
-                                      article["title"])
+            body = _draft_section(msg, article["sections"][0]["title"],
+                                  article["title"])
             body = re.sub(r"(?<!\n)\n(?!\n)", "\n\n", body)
-            # v52 (问题1): 成稿正文同做亲属词归正 (紧贴人名的错词才改)
-            body = _fix_kin_roles(body, facts, cache)
             return article["key"], body
         except Exception as e:
             llm.log(f"首段《{article['title']}》生成失败: {e}")
@@ -2935,10 +2993,8 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
         try:
             msg = build_section_messages(article, section, facts, cache,
                                          leads[article["key"]], cfg)
-            text = llm.call_deepseek(msg, sec_cfg).strip()
-            return article["key"], section["key"], _fix_kin_roles(
-                _normalize_section(text, section["title"], article["title"]),
-                facts, cache)
+            body = _draft_section(msg, section["title"], article["title"])
+            return article["key"], section["key"], body
         except Exception as e:
             llm.log(f"板块《{section['title']}》生成失败: {e}")
             return (article["key"], section["key"],
