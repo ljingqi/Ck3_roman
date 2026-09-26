@@ -15521,6 +15521,240 @@ def _character_profiles(f):
     return out
 
 
+def _campaign_start(f):
+    """战役起点 (开局日, v68 问题1) —— 本战役各传主缓存 `sources` 首档的最小值。
+
+    为什么不能只看本缓存: 每份缓存只覆盖自己当玩家的那批档期 (实测菲利普2:
+    崔佛 868–922 / 富兰克林 923–930 / 卡尔 931–954 / 尼克 955–976 /
+    伍尔夫克尔 978.1.1), 只读本缓存时《朝局风云录》的下界被砍到「本缓存首档 − 30 年」
+    = 925, h_china 的唐 (—886.1.2) 与中华 (887.1.2–950.6.1) 两段整个落选,
+    「改朝换代」一次也看不见 (用户问题1)。无 sources 时返回 None (调用方退回旧口径)。"""
+    best = None
+    for src in list((f.campaign or {}).values()) + [f.cache]:
+        srcs = (src or {}).get("sources") or []
+        if not srcs:
+            continue
+        d = str(srcs[0])
+        try:
+            if best is None or cl.date_key(d) < cl.date_key(best):
+                best = d
+        except Exception:
+            continue
+    return best
+
+
+def _title_holder_seq(f, tid, end=None):
+    """头衔 history 的持有者序列 [(date, holder|None)] (≤end)。
+
+    `holder` 为 None 表示该日头衔无主 (毁弃/待封), 供调用方截断上一任的任期。"""
+    t = f._lt.get(str(tid)) or {}
+    hist = t.get("history") or {}
+    out = []
+    if not isinstance(hist, dict):
+        return out
+    for d, ev in sorted(hist.items(), key=lambda x: cl.date_key(x[0])):
+        if end and cl.date_key(d) > cl.date_key(end):
+            break
+        holder = ev.get("holder") if isinstance(ev, dict) else ev
+        if isinstance(holder, list):
+            for h2 in holder:
+                if isinstance(h2, dict):
+                    out.append((d, h2.get("holder")))
+                else:
+                    out.append((d, h2))
+        else:
+            out.append((d, holder))
+    return out
+
+
+def _realm_holder_seq(f, tid, end=None):
+    """头衔在**各传主缓存的 realm_history 快照**里的持有者序列 [(date, holder)] (v68)。
+
+    兜底 `_title_holder_seq`: 无地头衔 (游牧毡帐/营地/新创头衔) 的熔件 title history
+    常常为空, 而快照逐档记着当时的 holder (旧《朝局风云录》的「库曼顿巴斯部：930年
+    1月2日：乞则里…」几行即出自这里)。逐档观测值按日期去重; 相邻同主只留首个。"""
+    seen = {}
+    for src in list((f.campaign or {}).values()) + [f.cache]:
+        for h in (src or {}).get("realm_history") or []:
+            d = h.get("date")
+            if not d:
+                continue
+            if end and cl.date_key(d) > cl.date_key(end):
+                continue
+            hs = h.get("holders") or {}
+            if not isinstance(hs, dict):
+                continue
+            if str(tid) in hs and hs[str(tid)] is not None:
+                seen[str(d)] = hs[str(tid)]
+    out = []
+    for d in sorted(seen, key=cl.date_key):
+        if out and out[-1][1] == seen[d]:
+            continue
+        out.append((d, seen[d]))
+    return out
+
+
+def _estate_court_tid(f, pid):
+    """家业持有者的「朝廷」头衔 (v68 问题1, 用户拍板 §7-2: 有庄园则写最高领主的头衔历史)。
+
+    取家业头衔的 `de_facto_liege` 上溯到顶 (中国世族庄园挂在 h_china 之下);
+    取不到再走主角所在地的上位链顶。无则 None。"""
+    for t in (f._hold_intervals(pid) or {}):
+        if not f._is_estate_title(t):
+            continue
+        l = (f._lt.get(str(t)) or {}).get("de_facto_liege")
+        if not isinstance(l, int):
+            continue
+        top, seen = l, set()
+        while top is not None and top not in seen:
+            seen.add(top)
+            nxt = (f._lt.get(str(top)) or {}).get("de_facto_liege")
+            if not isinstance(nxt, int):
+                break
+            top = nxt
+        if top is not None:
+            return top
+    try:
+        prov = f.character_location_province(pid)
+        ctid = f.county_at_province(prov)
+        chain = f.liege_chain(ctid) if ctid is not None else []
+        if chain:
+            return chain[-1][0]
+    except Exception:
+        pass
+    return None
+
+
+def _top_title_history(f, group_lines=None):
+    """本朝历代 (v68 问题1; 用户拍板 §7-1「篇名《XX历代记》」/§7-2「有庄园写最高领主的
+    头衔历史, 冒险者营地略去」) —— 主角当前最高头衔**从战役起点以来**的国号沿革与
+    历代持有者。返回 (篇名用朝代通称, [行...]); 无可写对象返回 ("", [])。
+
+    块的行序:
+      本朝：{该日头衔显示名}            (仅家业者写「（主角所附之朝）」; 另有主角在位段)
+      国号沿革：唐（…）→ 中华（887年1月2日）→ … → 元（972年10月11日至今）
+      历代：{国号}：{持有者}（{起}–{止}）、…  （按国号分段, 只收与战役窗口相交的任期）
+      本朝疆域：{同属一廷的封臣头衔}
+    为什么要有它: 旧《朝局风云录》的「天下大势」用 `holder_changes` 的「相关高位头衔」
+    口径, 同一家族名下被同一套游牧动态名统一命名的四枚头衔并列 (四行同名), 国号
+    (唐→中华→和→毕→越→元) 一行不可见 —— 模型于是把草原汗位更替当成中国王朝更替来写。"""
+    pid = f.cache.get("player_id")
+    if pid is None:
+        return "", []
+    as_of = f.as_of or f.cache.get("last_date")
+    start = _campaign_start(f)
+    tid, own = None, False
+    _t, _tid = f._primary_title_at(pid, as_of=f.as_of)
+    if _tid is not None and _t is not None:      # 有真领地 → 主角自己的最高头衔
+        tid, own = _tid, True
+    else:
+        cut = f.as_of or (f.cache.get("player_death") or {}).get("date") \
+            or f.cache.get("last_date")
+        if cut:
+            _t2, _tid2 = f._primary_title_at(pid, held_through=cut)
+            if _tid2 is not None and _t2 is not None:   # 已卒传主: 按卒日仍在持算
+                tid, own = _tid2, True
+        if tid is None:                              # 仅家业 → 最高领主之朝
+            if any(f._is_estate_title(t) for t in (f._hold_intervals(pid) or {})):
+                tid = _estate_court_tid(f, pid)
+    if tid is None:                                  # 仅冒险者营地 → 本篇略去
+        return "", []
+    t = f._lt.get(str(tid)) or {}
+    key = t.get("key") or ""
+    tnd = t.get("title_name_data") or {}
+    tname = f.title(tid, as_of) or f._name_at_date(tid, as_of) \
+        or f.title_base_name(tid) or ""
+    if not tname:
+        return "", []
+    common = tname
+    if f._has_reign_history(tid):     # 有国号更名史者用通称 (h_china → 中华)
+        common = L.loc(f.table, key) or tname
+    lines = [("本朝：" if own else "所附之朝：") + tname]
+
+    # ---- 国号分段 (title_history_names): [名, 起, 止] ----
+    segs = []
+    names = tnd.get("title_history_names") or []
+    for h in names:
+        if not isinstance(h, dict) or not h.get("date") or not h.get("name"):
+            continue
+        d = h.get("date")
+        if f.as_of and cl.date_key(d) > cl.date_key(f.as_of):
+            break
+        raw = str(h.get("name"))
+        v = L.loc(f.table, raw) or ""
+        if not v or re.search(r"[A-Za-z_]", v):
+            v = "" if re.search(r"[A-Za-z_]", raw) else raw
+        if not v:
+            continue
+        segs.append([v, d, None])
+    for i in range(len(segs) - 1):
+        segs[i][2] = segs[i + 1][1]
+    # 只留与 [战役起点, as_of] 相交的国号段 (汉/晋/隋等开局前的古史段整段落选)
+    if start:
+        segs = [s for s in segs
+                if not (s[2] and cl.date_key(s[2]) <= cl.date_key(start))]
+
+    if len(segs) >= 2:
+        # v68: 括注一律不用 (项目 v55 定规: 事实层除四类白名单外无括注) ——
+        # 国号链用「X 起 / 至Y」表述, 每段之止即下一段之起。
+        # 只有一段 (= 该头衔从未更名, 沿革表里只有它自己的名字) 时不发本行。
+        bits = []
+        for nm, s, e in segs:
+            if e:
+                bits.append(f"{nm} {f.date(e)}止" if (start and s
+                            and cl.date_key(s) < cl.date_key(start))
+                            else f"{nm} {f.date(s)}起")
+            else:
+                bits.append(f"{nm} {f.date(s)}起至今")
+        lines.append("国号沿革：" + " → ".join(bits))
+
+    # ---- 历代: 每次更替一段, 按国号分段归并 (只收与战役窗口相交的任期) ----
+    seq = _title_holder_seq(f, tid, end=as_of) or _realm_holder_seq(f, tid, end=as_of)
+    spans = []
+    for i, (d, h) in enumerate(seq):
+        if h is None:
+            continue
+        e = seq[i + 1][0] if i + 1 < len(seq) else None
+        if start and e and cl.date_key(e) <= cl.date_key(start):
+            continue                      # 开局前就已卸任者不入历代 (汉晋隋唐古史)
+        spans.append((d, e, h))
+    parts = []
+    # 无国号更名史的头衔 (游牧毡帐/自创头衔) 仍出历代 —— 全窗口作一段, 段名用该日显示名
+    for nm, s, e in (segs or [[tname, start, None]]):
+        ss = cl.date_key(s) if s else None
+        ee = cl.date_key(e) if e else None
+        hs = []
+        for (d, de, h) in spans:
+            dk = cl.date_key(d)
+            if ss is not None and dk < ss:
+                continue
+            if ee is not None and dk >= ee:
+                continue
+            hn = f.name_or(h, "") if h is not None else ""
+            if not hn:
+                continue
+            # 逐档快照序列里同一人多段 (中间那位查不到名) → 只留首个
+            if hs and hs[-1].startswith(hn + " "):
+                continue
+            if start and dk < cl.date_key(start):
+                hs.append(f"{hn} 至{f.date(de) if de else '今'}")
+            else:
+                hs.append(f"{hn} {f.date(d)}起")
+        if hs:
+            parts.append(f"{nm}：" + "、".join(hs))
+    if parts:
+        lines.append("历代：" + "；".join(parts))
+    gl = (group_lines or {}).get(tid)
+    if gl:
+        lines.append("本朝疆域：" + gl.split("：", 1)[-1])
+    ivs = (f._hold_intervals(pid) or {}).get(tid) or []
+    if own and ivs:
+        _g, _l = ivs[-1][0], ivs[-1][1]
+        lines.append("主角本朝任期：" + f.date(_g)
+                     + ("–" + f.date(_l) if _l else " 至今"))
+    return common, lines
+
+
 def _realm_facts(f):
     """朝局数据 (v4): 玩家上位链 + 帝国/王国级头衔持有者变化。"""
     out = {}
@@ -15779,6 +16013,8 @@ def _realm_facts(f):
             changes.append("，".join(bits) + _group_suffix(tid))
     # v38 (问题3): 同一宗主的头衔归组一行 —— 让「唐皇朝 / 青徐国」并列的两行
     # 一眼看出是同一个朝廷的上下级, 而不是两个并立的政权。
+    # v68 (问题1): 归组行按宗主 tid 另存一份, 供「本朝历代」的疆域行复用。
+    group_lines = {}
     for sup in sorted(vassal_groups):
         names = []
         for tid in vassal_groups[sup]:
@@ -15790,7 +16026,9 @@ def _realm_facts(f):
         snm = _base_name(sup) or _simple_name(sup)
         if not snm:
             continue
-        changes.append(f"{snm}朝廷所辖，同属一廷：" + "、".join(names))
+        _gln = f"{snm}朝廷所辖，同属一廷：" + "、".join(names)
+        changes.append(_gln)
+        group_lines[sup] = _gln
     # 排序: 上位链头衔在前 (按层级降序), 其余按最后更替日期降序 (近期先)
     def _sort_key(ln):
         nm = ln.split("：", 1)[0]
@@ -15815,6 +16053,13 @@ def _realm_facts(f):
     # v28: 要员隐事 — 最高领主链 (皇帝/路/王国) 与朝廷职司时任者的隐事
     # (用户 2026-09-10 决策: 《朝局风云录》收录最高统治者的秘密)
     out["secrets"] = _realm_secret_lines(f)
+    # v68 (问题1): 本朝历代 —— 主角当前最高头衔从**战役起点**以来的国号沿革与历代
+    # 持有者 (用户拍板: 篇名《XX历代记》, 移除「朝局动态」块; 有家业者写最高领主的
+    # 头衔历史, 仅冒险者营地者本篇略去)。`holder_changes` 保留给其它调用点与既有断言。
+    _tt_common, _tt_lines = _top_title_history(f, group_lines=group_lines)
+    if _tt_lines:
+        out["top_title_history"] = _tt_lines
+        out["top_title_name"] = _tt_common
     return out
 
 

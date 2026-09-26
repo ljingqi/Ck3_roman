@@ -1609,44 +1609,49 @@ def _article_facts(facts, cache, key, section=None):
     elif key == "chaoju":
         sk = _sec_key(section)
         realm = facts.get("realm") or {}
-        dashi = []
-        if realm.get("liege_chain"):
-            dashi.append(f"主角所处疆域：{realm['liege_chain']}")
-        # v13: 天下大势只收相关高位更替 (上位链 + 相关角色曾任), 已剔全球噪声;
-        # 上限 30 行防膨胀。v27: 开篇取前半 (早期国号更替), 纪事取后半 (近期易主)
-        hcs = list(realm.get("holder_changes") or [])[:30]
-        seg = 0 if sk == "lead" else 1
-        for hc in _split_span(hcs, seg):
-            dashi.append(hc)
-        # v13: 朝廷职司现任 (尚书省六部/御史台/枢密院)
-        if realm.get("ministers"):
-            dashi.append("朝廷职司：" + "、".join(realm["ministers"]))
-        # v36 (问题2, 用户拍板3): 主角获授的朝廷职位与任免 (朝局升沉段)
-        if realm.get("protagonist_offices"):
-            dashi.append("主角朝廷职位：" + "；".join(realm["protagonist_offices"]))
-        if realm.get("protagonist_office_changes"):
-            dashi.append("主角朝廷职位任免：" + "；".join(realm["protagonist_office_changes"]))
-        _set_block(blocks, "天下大势", "\n".join(dashi))
-        # 朝局动态: 模块切片 (v27, 与《本纪》纪事同口径; 排除谋害人命)
-        dyn = F.slice_timeline(facts.get("timeline") or [], key, sk,
-                                   exclude=_has_assassins(facts))
-        _set_block(blocks, "朝局动态", "\n".join(dyn))
-        link = _murder_link_line(facts, key, sk)
-        if link:
-            blocks["说明"] = link
-        # v7/v23: 玩家营/廷内僚属任免 (逐年数据驱动, 主语=任职者);
-        # 块首标注归属, 防止被读成主角在别家朝堂的任免升沉
-        # v27: 开篇发前半, 纪事发后半
-        cp_ch = list(facts.get("court_position_changes") or [])
-        cp_seg = _split_span(cp_ch, seg)
-        if cp_seg:
-            pr = facts.get("protagonist") or {}
-            tag = "营中" if pr.get("landless") else "廷中"
-            # v29b: 归属说明改主语句 (「主角廷中僚属任免如下：」), 不用整句括注
-            blocks["官职任免"] = (f"主角{tag}僚属任免如下：\n"
-                                  + "\n".join(cp_seg))
+        if sk == "lead":
+            # v68 (问题1): 开篇改「王朝历代」(用户拍板) —— 事实层 top_title_history =
+            # 主角当前最高头衔从**战役起点**以来的国号沿革与历代持有者 (旧稿用
+            # holder_changes 的「相关高位头衔」口径, 同一家族名下四枚被同一套游牧
+            # 动态名命名的头衔并列, 国号一行不可见, 模型遂把草原汗位更替写成中国
+            # 王朝更替, 并凭空补出「葛元方与石士良争权」这类朝堂戏)。
+            dashi = []
+            if realm.get("liege_chain"):
+                dashi.append(f"主角所处疆域：{realm['liege_chain']}")
+            for ln in (realm.get("top_title_history") or []):
+                if ln.startswith(("本朝：", "国号沿革：", "历代：", "本朝疆域：",
+                                  "主角本朝任期：")):
+                    dashi.append(ln)
+            _set_block(blocks, "王朝历代", "\n".join(dashi))
+        else:
+            # 纪事: 本朝人事 (朝廷职司 / 主角受任 / 廷中僚属任免 / 朝中要员 / 要员隐事)
+            dashi = []
+            if realm.get("ministers"):
+                dashi.append("朝廷职司：" + "、".join(realm["ministers"]))
+            # v36 (问题2, 用户拍板3): 主角获授的朝廷职位与任免 (朝局升沉段)
+            if realm.get("protagonist_offices"):
+                dashi.append("主角朝廷职位：" + "；".join(realm["protagonist_offices"]))
+            if realm.get("protagonist_office_changes"):
+                dashi.append("主角朝廷职位任免：" + "；".join(realm["protagonist_office_changes"]))
+            _set_block(blocks, "本朝纪事", "\n".join(dashi))
+            # v68: 「朝局动态」块**移除** —— 它的内容是主角本人的年表切片 (家眷死亡/
+            # 开战胜负/囚禁), 已在《本纪》《家族恩怨录》详写, 与「朝代沿革」无关;
+            # 而板块要求却写「写出帝位每次更替」, 素材支撑不了要求 ⇒ 终传整段虚构。
+            link = _murder_link_line(facts, key, sk)
+            if link:
+                blocks["说明"] = link
+            # v7/v23: 玩家营/廷内僚属任免 (逐年数据驱动, 主语=任职者);
+            # 块首标注归属, 防止被读成主角在别家朝堂的任免升沉
+            cp_ch = list(facts.get("court_position_changes") or [])
+            cp_seg = _split_span(cp_ch, 0)
+            if cp_seg:
+                pr = facts.get("protagonist") or {}
+                tag = "营中" if pr.get("landless") else "廷中"
+                # v29b: 归属说明改主语句 (「主角廷中僚属任免如下：」), 不用整句括注
+                blocks["官职任免"] = (f"主角{tag}僚属任免如下：\n"
+                                      + "\n".join(cp_seg))
         # 要员名录: 主角相关角色 (家人/好友/仇人/宫廷任官) 中有政治类记忆或历任高位头衔者
-        # (剔除路人; 截断 60 名防提示词膨胀; v27: 只放开篇)
+        # (剔除路人; 截断 60 名防提示词膨胀; v68: 随「本朝纪事」发在纪事板块)
         names = []
         related = set()
         for _fid in (_pick_friend(cache)[0], _select_primary_enemy(cache)):
@@ -1656,7 +1661,7 @@ def _article_facts(facts, cache, key, section=None):
             for p in h.get("positions") or []:
                 if isinstance(p.get("employee"), int):
                     related.add(p["employee"])
-        if sk == "lead":
+        if sk != "lead":
             # v45 (档 B, 阅读顺序): 年表/隐事行的行内人名先标, 再标要员名录
             _tag_blocks(facts, scope, blocks)
             _fi = facts.get("_facts")
@@ -1683,12 +1688,10 @@ def _article_facts(facts, cache, key, section=None):
         if names:
             blocks["朝中要员"] = "、".join(names)
         # v28: 要员隐事 — 最高领主链与朝廷职司时任者的隐事 (用户决策:
-        # 《朝局风云录》收录最高统治者的秘密); 开篇发前半, 纪事发后半
+        # 《朝局风云录》收录最高统治者的秘密); v68: 随「本朝纪事」发在纪事板块
         rs = list(realm.get("secrets") or [])
-        if rs:
-            seg_rs = _split_span(rs, seg)
-            if seg_rs:
-                blocks["要员隐事"] = "\n".join(seg_rs)
+        if rs and sk != "lead":
+            _set_block(blocks, "要员隐事", "\n".join(rs))
     # ---- v5 新增文章 ----
     elif key == "assassins":
         # v27: 主角档案已在共享前缀, 不再重复
@@ -2756,11 +2759,19 @@ def build_articles(facts, cache, cfg):
          "theme": _jv.get("theme") or "妻室子女的门庭画卷",
          "focus": _jv.get("focus") or "写门庭内情：结缡、情事脉络、子女来历与血脉之争",
          "sections": mk_sections("jiashi")},
-        {"key": "chaoju", "title": "朝局风云录", "subject": None,
-         "theme": "朝局官制沉浮",
-         "focus": "写主角所处政权的朝局与疆域，及其在其中的升沉",
-         "sections": mk_sections("chaoju")},
     ])
+    # v68 (问题1, 用户拍板): 《朝局风云录》改为《XX历代记》—— 以主角当前最高头衔
+    # (无真领地而有家业者取其最高领主的头衔) 从**战役起点**以来的国号沿革与历代
+    # 持有者为纲。头衔无从取得 (仅冒险者营地) 时**整篇略去** (事实层不发
+    # top_title_history ⇒ 无处可写, 不留给模型补白)。
+    _rlm = facts.get("realm") or {}
+    _ttn = _rlm.get("top_title_name") or ""
+    if _rlm.get("top_title_history") and _ttn:
+        articles.append(
+            {"key": "chaoju", "title": f"{_ttn}历代记", "subject": None,
+             "theme": f"{_ttn}王朝的国号沿革与历代承继",
+             "focus": "以本朝国号与历代持有者为纲，写改朝换代、疆域归并与主角的升沉",
+             "sections": mk_sections("chaoju")})
     # v9: 家族恩怨录 / 宝物志 — 插在中间 (家室列传之后, 朝局风云录之前)
     if facts.get("house_feuds"):
         articles.insert(4, {"key": "feuds", "title": "家族恩怨录",
