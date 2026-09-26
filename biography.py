@@ -3017,7 +3017,11 @@ def build_articles(facts, cache, cfg):
     _rlm = facts.get("realm") or {}
     _dc = _rlm.get("dynasty_chronicle") or {}
     _ttn = _rlm.get("top_title_name") or ""
-    if _ttn or _dc:
+    # v73 (用户 2026-09-27 拍板): 本篇只在**终传**触发 (事实层已按 `as_of`/`decade`/
+    # `player_death` 三闸收口, 此处按篇目复核一道 —— 在世传记与十年传记都不建本篇)。
+    _final = (not facts.get("as_of")) and (not facts.get("decade")) \
+        and bool(facts.get("player_death"))
+    if _final and (_ttn or _dc):
         _fam = bool(_dc.get("family"))
         _ttl = (_dc.get("name") or _ttn) if _fam else _ttn
         _t_fam = "家族历代" if _fam else "王朝的历代承继与改朝换代"

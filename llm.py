@@ -8,6 +8,7 @@
   - call_deepseek      : DeepSeek chat/completions 调用 (截断自动翻倍重试 / thinking 关闭 / 退避重试)
   - clean_number_spaces: 汉字与数字之间的空格清理 (提示词侧与输出侧统一)
 """
+import contextlib
 import datetime
 import json
 import os
@@ -51,6 +52,10 @@ DEFAULT_CONFIG = {
     # 与性事记忆渲染的「强迫之事」逐条重复 (无地点、无行为、无具体日),
     # 只增提示词长度。默认关闭; 需要在《阴私录》里看到这类评断时置 true。
     "carnal_opinions": False,
+    # v73: 并发上限 —— 传记的板块期是「一篇一请求」并行发出的
+    # (`biography.generate_biography` 的 ThreadPool), 六篇以上的传主可同时打出
+    # 二十余个请求; 给上游一个上限, 免得 `insufficient_system_resource` 中断变多。
+    "llm_max_concurrency": 6,
     # 传记板块结构: lead=首段, mid=中段 (v11: 尾段评曰已删, 太史公曰只留总纲)
     "bio_sections": ["lead", "mid"],
 }
@@ -307,6 +312,33 @@ def _resp_head(resp, limit=500):
     return " ".join(txt.split())[:limit]
 
 
+# v73: 并发上限 (档案期一次读 config.json 定死) —— 上游同时收到的请求数上限。
+# 0 或负值 = 不限 (旧口径)。`_LIMIT_LOCK` 只在首次建闸门时用一次。
+_LIMIT_LOCK = threading.Lock()
+_LIMIT_N = None
+_LIMIT_SEM = None
+
+
+def _limiter():
+    global _LIMIT_N, _LIMIT_SEM
+    n = _LIMIT_N
+    if n is None:
+        try:
+            with open(os.path.join(SCRIPT_DIR, "config.json"), encoding="utf-8") as f:
+                n = int((json.load(f) or {}).get("llm_max_concurrency")
+                        or DEFAULT_CONFIG["llm_max_concurrency"])
+        except Exception:
+            n = DEFAULT_CONFIG["llm_max_concurrency"]
+        _LIMIT_N = n
+    if n <= 0:
+        return contextlib.nullcontext()
+    if _LIMIT_SEM is None:
+        with _LIMIT_LOCK:
+            if _LIMIT_SEM is None:
+                _LIMIT_SEM = threading.BoundedSemaphore(n)
+    return _LIMIT_SEM
+
+
 def call_deepseek(messages, cfg, retries=3):
     """调用 DeepSeek chat/completions, 返回正文文本。
 
@@ -334,80 +366,82 @@ def call_deepseek(messages, cfg, retries=3):
     max_tokens = cfg.get("max_tokens", 8000)
     last_err = None
     t_start = time.monotonic()
-    for i in range(retries):
-        t_try = time.monotonic()
-        payload = {
-            "model": cfg.get("deepseek_model", "deepseek-chat"),
-            "messages": messages,
-            "temperature": cfg.get("temperature", 1.0),
-            "max_tokens": max_tokens,
-        }
-        if cfg.get("llm_thinking_disabled", True):
-            payload["thinking"] = {"type": "disabled"}
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=180)
-            resp.raise_for_status()
-            try:
-                data = resp.json()
-            except Exception as e:
-                body = _resp_head(resp)
-                log(f"上游响应非 JSON (status={resp.status_code}, "
-                    f"耗时{time.monotonic() - t_try:.0f}s): {body}")
-                raise RuntimeError(
-                    f"上游响应非 JSON (status={resp.status_code}, {e}): {body[:200]}")
-            if not isinstance(data, dict) or not data.get("choices"):
-                body = _resp_head(resp)
-                log(f"上游返回非 OpenAI 形状 (status={resp.status_code}, "
-                    f"耗时{time.monotonic() - t_try:.0f}s): {body}")
-                raise RuntimeError(
-                    f"上游返回非 OpenAI 形状 (status={resp.status_code}): "
-                    f"{body[:200]}")
-            choice = data["choices"][0]
-            content = (choice.get("message") or {}).get("content") or ""
-            finish = choice.get("finish_reason")
-            log(_usage_line(data.get("usage"), messages, finish))
-            if finish == "length":
-                if max_tokens >= 16000:
-                    log("输出仍被 max_tokens 截断(已达 16000 上限), 返回截断文本")
-                    if content.strip():
-                        return content
-                else:
-                    max_tokens = min(max_tokens * 2, 16000)
-                    log(f"输出因 max_tokens 不足被截断, 提高预算至 {max_tokens} 重试")
-                    continue
-            elif finish and finish != "stop":
-                # v71: 上游中断 (content_filter / insufficient_system_resource /
-                # aborted 都会返回**部分内容**) —— 旧代码只防 length, 这几种一律
-                # 当成功收下, 半截正文于是写进成稿 (板块末尾落在开括号上, 见
-                # docs/调研_v71_姓名倒置与孤立括号.md)。此处按未完成处理: 重试;
-                # 三次都中断则抛出, 由流水线把该板块标成「生成失败」等待重跑。
-                raise RuntimeError(
-                    f"生成被上游中断 (finish_reason={finish}, "
-                    f"输出{(data.get('usage') or {}).get('completion_tokens')} token) "
-                    f"— 内容不完整, 按未完成处理")
-            if content.strip():
-                return content
-            if finish == "stop":
-                return content
-            last_err = Exception(f"模型返回空内容 (finish_reason={finish})")
-        except Exception as e:
-            last_err = e
-            if isinstance(e, requests.HTTPError) and e.response is not None \
-                    and e.response.status_code == 400:
-                # 400 = 客户端错误 (上下文超限/参数非法): 同一 payload 重试必败且烧 token
-                body = _resp_head(e.response, 300)
-                log(f"DeepSeek 调用失败 (400, 不再重试, "
-                    f"耗时{time.monotonic() - t_try:.0f}s): {e} | {body}")
-                raise
-            if isinstance(e, RuntimeError) and "非 OpenAI 形状" in str(e):
-                # 形状错误是上游/网关给出的确定答复: 同一 payload 重发不会有别的结果
-                log("上游答复非 OpenAI 形状, 停止重试")
-                raise
-            log(f"DeepSeek 调用失败 (第{i + 1}/{retries}次, "
-                f"耗时{time.monotonic() - t_try:.0f}s): {e}")
-        if i < retries - 1:
-            if time.monotonic() - t_start > CALL_BUDGET_SECONDS:
-                log(f"调用失败累计超过 {CALL_BUDGET_SECONDS}s 预算, 停止重试")
-                break
-            time.sleep(3 * (i + 1))
+    # v73: 并发上限 —— 整个调用 (含重试) 占一个名额, 并发的板块请求各自排队
+    with _limiter():
+      for i in range(retries):
+          t_try = time.monotonic()
+          payload = {
+              "model": cfg.get("deepseek_model", "deepseek-chat"),
+              "messages": messages,
+              "temperature": cfg.get("temperature", 1.0),
+              "max_tokens": max_tokens,
+          }
+          if cfg.get("llm_thinking_disabled", True):
+              payload["thinking"] = {"type": "disabled"}
+          try:
+              resp = requests.post(url, json=payload, headers=headers, timeout=180)
+              resp.raise_for_status()
+              try:
+                  data = resp.json()
+              except Exception as e:
+                  body = _resp_head(resp)
+                  log(f"上游响应非 JSON (status={resp.status_code}, "
+                      f"耗时{time.monotonic() - t_try:.0f}s): {body}")
+                  raise RuntimeError(
+                      f"上游响应非 JSON (status={resp.status_code}, {e}): {body[:200]}")
+              if not isinstance(data, dict) or not data.get("choices"):
+                  body = _resp_head(resp)
+                  log(f"上游返回非 OpenAI 形状 (status={resp.status_code}, "
+                      f"耗时{time.monotonic() - t_try:.0f}s): {body}")
+                  raise RuntimeError(
+                      f"上游返回非 OpenAI 形状 (status={resp.status_code}): "
+                      f"{body[:200]}")
+              choice = data["choices"][0]
+              content = (choice.get("message") or {}).get("content") or ""
+              finish = choice.get("finish_reason")
+              log(_usage_line(data.get("usage"), messages, finish))
+              if finish == "length":
+                  if max_tokens >= 16000:
+                      log("输出仍被 max_tokens 截断(已达 16000 上限), 返回截断文本")
+                      if content.strip():
+                          return content
+                  else:
+                      max_tokens = min(max_tokens * 2, 16000)
+                      log(f"输出因 max_tokens 不足被截断, 提高预算至 {max_tokens} 重试")
+                      continue
+              elif finish and finish != "stop":
+                  # v71: 上游中断 (content_filter / insufficient_system_resource /
+                  # aborted 都会返回**部分内容**) —— 旧代码只防 length, 这几种一律
+                  # 当成功收下, 半截正文于是写进成稿 (板块末尾落在开括号上, 见
+                  # docs/调研_v71_姓名倒置与孤立括号.md)。此处按未完成处理: 重试;
+                  # 三次都中断则抛出, 由流水线把该板块标成「生成失败」等待重跑。
+                  raise RuntimeError(
+                      f"生成被上游中断 (finish_reason={finish}, "
+                      f"输出{(data.get('usage') or {}).get('completion_tokens')} token) "
+                      f"— 内容不完整, 按未完成处理")
+              if content.strip():
+                  return content
+              if finish == "stop":
+                  return content
+              last_err = Exception(f"模型返回空内容 (finish_reason={finish})")
+          except Exception as e:
+              last_err = e
+              if isinstance(e, requests.HTTPError) and e.response is not None \
+                      and e.response.status_code == 400:
+                  # 400 = 客户端错误 (上下文超限/参数非法): 同一 payload 重试必败且烧 token
+                  body = _resp_head(e.response, 300)
+                  log(f"DeepSeek 调用失败 (400, 不再重试, "
+                      f"耗时{time.monotonic() - t_try:.0f}s): {e} | {body}")
+                  raise
+              if isinstance(e, RuntimeError) and "非 OpenAI 形状" in str(e):
+                  # 形状错误是上游/网关给出的确定答复: 同一 payload 重发不会有别的结果
+                  log("上游答复非 OpenAI 形状, 停止重试")
+                  raise
+              log(f"DeepSeek 调用失败 (第{i + 1}/{retries}次, "
+                  f"耗时{time.monotonic() - t_try:.0f}s): {e}")
+          if i < retries - 1:
+              if time.monotonic() - t_start > CALL_BUDGET_SECONDS:
+                  log(f"调用失败累计超过 {CALL_BUDGET_SECONDS}s 预算, 停止重试")
+                  break
+              time.sleep(3 * (i + 1))
     raise last_err if last_err else Exception("生成失败")

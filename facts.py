@@ -16248,7 +16248,11 @@ def _top_title_history(f, group_lines=None):
     (唐→中华→和→毕→越→元) 一行不可见 —— 模型于是把草原汗位更替当成中国王朝更替来写。"""
     pid = f.cache.get("player_id")
     if pid is None:
-        return "", []
+        return "", [], {}
+    # v73 (用户 2026-09-27 拍板): 本篇**只在终传触发** —— 在世传记 (尚未卒) 与各十年
+    # 传记都不再建《XX历代记》 (历代既已完篇, 不必每十年重述一遍)。
+    if f.as_of or f.decade or not f.cache.get("player_death"):
+        return "", [], {}
     as_of = f.as_of or f.cache.get("last_date")
     start = _campaign_start(f)
     tid, own = None, False
@@ -16266,14 +16270,14 @@ def _top_title_history(f, group_lines=None):
             if any(f._is_estate_title(t) for t in (f._hold_intervals(pid) or {})):
                 tid = _estate_court_tid(f, pid)
     if tid is None:                                  # 仅冒险者营地 → 本篇略去
-        return "", []
+        return "", [], {}
     t = f._lt.get(str(tid)) or {}
     key = t.get("key") or ""
     tnd = t.get("title_name_data") or {}
     _disp = f._name_at_date(tid, as_of) or f.title_base_name(tid) or ""
     tname = f.title(tid, as_of) or _disp
     if not tname:
-        return "", []
+        return "", [], {}
     # 篇名通称: 有国号更名史者用它自己那一版通称 (h_china → 中华, 覆盖唐宋元…);
     # 其余用该日显示名的底名 (k_norway → 挪威 而非「挪威王国」)。
     common = L.loc(f.table, key) or _disp if f._has_reign_history(tid) else _disp
