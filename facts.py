@@ -15873,7 +15873,24 @@ def _chrono_rel_word(f, cid, other):
     return ""
 
 
-def _chrono_acc_text(f, cid, date, word, prev, from_prev=False):
+def _chrono_nm(f, cid, date=None):
+    """事件人名 (v73): 取**受业名** —— 先按熔件 `first_name` 与当地名序拼显示名,
+    退到缓存档案的 `name_full`。跨传主缓存取记录时, `name_full` 可能是另一档期算出的
+    父名/家名 (富兰克林档实测: 先王记成「比约恩·蒙索」而国号沿革里是「比约恩·朗纳尔松」),
+    故受业名优先, 与历代行同一套词。"""
+    cc = f._chars.get(str(cid)) or {}
+    if isinstance(cc, dict) and cc:
+        try:
+            nm = f.name(cid, date=date)
+        except Exception:
+            nm = ""
+        if nm:
+            return nm
+    return _chrono_rec(f, cid).get("name_full") or f.name_or(cid, "") or ""
+
+
+def _chrono_acc_text(f, cid, date, word, prev, from_prev=False,
+                       prev_date=None):
     """即位分句: 「953年6月6日从珉·奄美处被派系拥立」/「874年7月7日自立建国」。
 
     `from_prev` 只对**继承类**缘由置真 (与 v69 的 `_SUCC_FROM_PREV` 同口径):
@@ -15882,7 +15899,7 @@ def _chrono_acc_text(f, cid, date, word, prev, from_prev=False):
     if not word:
         return d
     if from_prev and prev is not None and isinstance(prev, int):
-        pn = _chrono_rec(f, prev).get("name_full") or f.name_or(prev, "") or ""
+        pn = _chrono_nm(f, prev, prev_date or date)
         if pn:
             rel = _chrono_rel_word(f, cid, prev)
             return "%s从%s%s处%s" % (d, rel, pn, word) if rel                 else "%s从%s处%s" % (d, pn, word)
@@ -15890,13 +15907,14 @@ def _chrono_acc_text(f, cid, date, word, prev, from_prev=False):
 
 
 def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
-                       vacant=False, is_h=False, family=False):
+                       vacant=False, is_h=False, family=False, nm=None,
+                       prev_date=None):
     """一位统治者一行 (v73 用户拍板「一人一行」):
 
     `奄美靖｜生933年12月27日，卒963年1月9日｜953年6月6日被派系拥立，时年19岁｜在位10年`
       (生卒/时年/享国/卒于位皆缺则整段省略)。
     `prev`(前任) 与 `vacant`(前一段是空位期) 支撑天朝「建立天命 / 取代」的用户判据。"""
-    nm = f.name_with_regnal(cid, date) or f.name_or(cid, "") or ""
+    nm = nm or _chrono_nm(f, cid, date)
     if not nm:
         return ""
     rec = _chrono_rec(f, cid)
@@ -15922,7 +15940,8 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
                 f.created_verb_kind(tid, cid, date)) or "创建"
     acq = _chrono_acc_text(f, cid, date, word, prev,
                            from_prev=(hist_type in (None, "", "appointment_succession",
-                                                    "abdication", "inheritance")))
+                                                    "abdication", "inheritance")),
+                           prev_date=prev_date)
     age = _chrono_year_age(birth, date)
     if age is not None:
         acq += "，时年%d岁" % age
@@ -16116,7 +16135,8 @@ def _chrono_build(f, tid, pid, is_h, own, periods, tname):
             claimed.add(gi)
             p["rows"].append(_chrono_ruler_line(
                 f, tid, d, h, ty, _chrono_prev_for(accs, gi), end,
-                vacant=vac, is_h=is_h))
+                vacant=vac, is_h=is_h,
+                prev_date=(accs[gi - 1][0] if gi > 0 else None)))
     if not any(p["rows"] for p in periods):
         return None
     cur = next((p for p in reversed(periods) if p.get("ids")), None)
@@ -16172,30 +16192,38 @@ def _family_chronicle(f, pid, tid, is_h=False):
     picked.sort(key=lambda x: cl.date_key(x[0]))
     picked = picked[-_CHRONICLE_ANCESTOR_MAX:]
     rows = []
-    for (d, cid, atid, loss, _lt2) in picked:
-        line = _chrono_ruler_line(f, atid, d, cid, f._gain_reason.get((cid, atid, d), ""),
-                                  f._gain_prev.get((cid, atid, d)), loss,
-                                  is_h=is_h, family=True)
+    for idx, (d, cid, atid, loss, _lt2) in enumerate(picked):
+        _pv = f._gain_prev.get((cid, atid, d))
+        if _pv is None and idx > 0:
+            _pv = picked[idx - 1][1]
+        line = _chrono_ruler_line(
+            f, atid, d, cid, f._gain_reason.get((cid, atid, d), ""),
+            _pv, loss, is_h=is_h, family=True,
+            nm=_chrono_nm(f, cid, d), prev_date=(picked[idx - 1][0] if idx else None))
         if line:
             rows.append(line)
     ivs = (f._hold_intervals(pid) or {}).get(tid) or []
     own_g = ivs[-1][0] if ivs else None
     own_l = ivs[-1][1] if ivs else None
-    own_line = _chrono_ruler_line(f, tid, own_g, pid, "created", None, own_l,
-                                  is_h=is_h, family=True)
+    own_line = _chrono_ruler_line(f, tid, own_g, pid, "created",
+                                  (picked[-1][1] if picked else None), own_l,
+                                  is_h=is_h, family=True,
+                                  nm=f.name(pid))
     if own_line:
         rows.append(own_line)
     if not rows:
         return None
     name = (f.name(pid) or f.cache.get("player_name") or "") + "家"
+    _fam_cur = {"name": "家族", "start": (picked[0][0] if picked else own_g),
+                "end": own_l, "vacant": False,
+                "ids": [p[1] for p in picked] + [pid], "rows": rows}
     return {
         "name": name,
         "family": True,
         "tid": int(tid),
         "is_h": bool(is_h),
-        "current": {"dynasty": "", "span": "", "ids": [pid]},
-        "periods": [{"dynasty": "家族", "span": "", "ids": [p[1] for p in picked] + [pid],
-                     "rows": rows}],
+        "current": _fam_cur,
+        "periods": [_fam_cur],
         "wars": _chrono_war_lines(f, tid) if is_h else [],
         "subs": _chrono_sub_lines(f, tid, pid),
     }

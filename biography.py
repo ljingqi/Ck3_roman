@@ -1634,19 +1634,41 @@ def _article_facts(facts, cache, key, section=None):
         # holder_changes 的「相关高位头衔」口径, 同一家族名下四枚被同一套游牧
         # 动态名命名的头衔并列, 国号一行不可见, 模型遂把草原汗位更替写成中国
         # 王朝更替, 并凭空补出「葛元方与石士良争权」这类朝堂戏)。
-        # v70 (用户 2026-09-27 拍板): 本分支只剩开篇 —— 纪事板块连同它的四块素材
-        # (朝廷职司 / 主角受任 / 廷中僚属任免 / 朝中要员 / 要员隐事) 整块删除。
-        # 用户原话: 「上一次要求中写了『同时改篇名《XX历代记》并移除朝局动态』,
-        # 怎么朝局动态又冒出来了?」并附正文「封臣二百二十六人，御前会议九席自此而设」。
+        # v70 (用户 2026-09-27 拍板): 纪事板块连同它的四块素材 (朝廷职司 / 主角受任 /
+        # 廷中僚属任免 / 朝中要员 / 要员隐事) 整块删除 —— 那正是「朝局动态」的复现路径。
+        # v73 (用户 2026-09-27 拍板「内容太短 → 扩充 + 分篇并发」): 素材扩到「一人一行」
+        # (事实层 `realm["dynasty_chronicle"]`), 并按朝代分节 —— 开篇只发总说, 各纪事
+        # 只发**本节**的历代明细与战事 (同请求内素材不重复, v27 铁律)。
         realm = facts.get("realm") or {}
         dashi = []
         if realm.get("liege_chain"):
             dashi.append(f"主角所处疆域：{realm['liege_chain']}")
-        # v69 (用户拍板): 事实层改「每朝一行 + 该朝历代(含即位缘由)」的行形
-        # (朝代行/历代行不再带「国号沿革：」「历代：」前缀), 故整块按原序发出。
-        for ln in (realm.get("top_title_history") or []):
-            dashi.append(ln)
-        _set_block(blocks, "王朝历代", "\n".join(dashi))
+        dc = realm.get("dynasty_chronicle") or {}
+        _segs = (section or {}).get("periods") \
+            if _sec_key(section) not in ("lead",) else None
+        if _segs:
+            rows, wars = [], []
+            for _p in _segs:
+                for _r in (_p.get("rows") or []):
+                    if _r and "｜" in _r:
+                        rows.append(_r)
+                wars.extend(_chrono_wars_in(dc, _p, prev_cut=(section or {}).get("prev_cut")))
+            # v73: 段首那位统治者的即位日在战役起点之前时, 明细行取不到生卒以外的
+            # 细目, 该行无料可写 —— 整行不下发 (时代行的缘由仍由总说块给出)。
+            rows = [r for r in rows if r.count("｜") >= 2]
+            if rows:
+                _set_block(blocks, "王朝历代·纪事", "\n".join(rows))
+            if wars:
+                _set_block(blocks, "本朝战事", "\n".join(_chrono_dedup_wars(wars)))
+        else:
+            # v69 (用户拍板): 事实层改「每朝一行 + 该朝历代(含即位缘由)」的行形
+            # (朝代行/历代行不再带「国号沿革：」「历代：」前缀), 故整块按原序发出。
+            for ln in (realm.get("top_title_history") or []):
+                dashi.append(ln)
+            for _x in (dc.get("subs") or []):
+                if _x:
+                    dashi.append(_x)
+            _set_block(blocks, "王朝历代", "\n".join(dashi))
     # ---- v5 新增文章 ----
     elif key == "assassins":
         # v27: 主角档案已在共享前缀, 不再重复
@@ -2680,6 +2702,136 @@ def _assassin_sections(n):
     return secs
 
 
+def _chrono_mid_req(base_req, idx, total, periods, last=False, family=False):
+    """《历代记》纪事**分段请求**的板块要求 (v73)。
+
+    `base_req` = 「纪事·王朝历代」的整段要求; 这里只在前面接一句**本段范围**的正向
+    说明 —— 本段是哪几朝、年代区间、共几段。段界与年代全部由程序给出 (与素材块同一份
+    `dynasty_chronicle`), 不留空位让模型猜。"""
+    names = [p.get("name") or "" for p in (periods or []) if p.get("name")]
+    head = "本请求只写这一节"
+    if total > 1:
+        head += f"（第{idx + 1}节，共{total}节）"
+    head += "。"
+    if family:
+        head += "本板块写先世诸位统治者的世次与其事迹：" + "、".join(names) + "。"
+    else:
+        spans = []
+        for p in (periods or []):
+            _s = str(p.get("start") or "").split(".", 1)[0]
+            _e = str(p.get("end") or "").split(".", 1)[0] if p.get("end") else ""
+            if _s:
+                spans.append(f"{p.get('name') or ''}（{_s}年至{_e or '今'}）")
+        head += "本板块写这几朝：" + "、".join(names) + "。"
+        if spans:
+            head += "年代区间：" + "、".join(spans) + "。"
+    if last:
+        head += "本板块是本篇末节，收束于传主在位的末年。"
+    return head + "\n\n" + (base_req or "")
+
+
+def _chrono_wars_in(dc, period, prev_cut=None):
+    """该节的战事行 (v73): 各节按**兴兵年的先后**切分战事 —— 本节的战事 = 兴兵年落在
+    [上一节的段止, 本节的段止) 之内的那些, 末节收全部余下。
+
+    因各朝代的年代区间之间夹着空位期 (群雄争霸) 与未被任何朝代覆盖的年份, 按**本朝
+    区间**硬切会把空位期的战事整批丢掉 (实测: 尼克档 19 行战事全在 902–947, 落在唐与
+    群雄争霸两段里); 故以「各节段止」为界。"""
+    wars = [w for w in ((dc or {}).get("wars") or []) if w]
+    if not wars:
+        return []
+    ps = (period or {}).get("periods") or [period or {}]
+
+    def _yr(s):
+        """日期串 → 四位年 (『868.1.1』→ 『868』; 空值 → 空串)。"""
+        return str(s or "").split(".", 1)[0]
+
+    cut = ""
+    for p in reversed(ps):
+        if p.get("end"):
+            cut = _yr(p.get("end"))
+            break
+    lo = _yr(prev_cut)
+    out = []
+    for w in wars:
+        m = re.match(r"^(\d{3,4})年", w)
+        yr = m.group(1) if m else ""
+        if not yr:
+            continue
+        if lo and yr < lo:
+            continue
+        if cut and yr >= cut:
+            continue
+        out.append(w)
+    return out
+
+
+def _chrono_dedup_wars(wars):
+    """同一场战事的双方视角合并为一条 (v73, 纯函数便于单测)。
+
+    记忆里同一战事有两侧各记一条 (「A兴兵讨B」在 A 的档里, 「B应战拒A」在 B 的档里),
+    胜负句也互为镜像 (A 侧「战胜B」/ B 侧「败于A」)。键 = (兴兵日, 双方名去序),
+    同一键只留**有胜负记载**的那一条 (两条都有则留先见者); 无胜负记载的两侧也合并为一条。"""
+    _RE = re.compile(r"^(\d{3,4}年\d{1,2}月\d{1,2}日)(.+?)(?:兴兵讨|应战拒)(.+?)；")
+    out, idx = [], {}
+    for w in wars:
+        if not w:
+            continue
+        m = _RE.match(w)
+        if not m:
+            out.append(w)
+            continue
+        key = (m.group(1), tuple(sorted((m.group(2), m.group(3)))))
+        tail = w.split("；", 1)[1] if "；" in w else ""
+        won = "战胜" in tail
+        j = idx.get(key)
+        if j is None:
+            idx[key] = len(out)
+            out.append(w)
+        elif won and "战胜" not in out[j].split("；", 1)[1]:
+            out[j] = w
+    return out
+
+
+def _same_period(a, b):
+    """两段是否同朝 (按段名 + 段起判定)。
+
+    进快照的事实面经 JSON 往返后, `current` 与 `periods` 里那一条**不再是同一个对象**,
+    按 `is` 判定会把本朝算成「前方各朝」而把同一朝写两遍 (富兰克林档实测)。"""
+    if not a or not b:
+        return False
+    return (a.get("name"), a.get("start")) == (b.get("name"), b.get("start"))
+
+
+def _chrono_split(periods, cap=None):
+    """把各朝尽量等分成 ≤cap 节 (v73; cap 缺省取 `facts.CHRONICLE_MID_MAX`)。
+
+    返回**合并后的段**: 每段的 `name` 是所含各朝名 (「唐皇朝、群雄争霸」), `start`/`end`
+    取该段首尾 (与素材块的段界同源)。只有一段时不再拆。"""
+    ps = [p for p in (periods or []) if p.get("rows")]
+    if not ps:
+        return []
+    cap = max(1, int(cap if cap is not None
+                     else getattr(F, "CHRONICLE_MID_MAX", 4)))
+    n = max(1, min(cap, len(ps)))
+    base, extra = divmod(len(ps), n)
+    out, i = [], 0
+    for k in range(n):
+        m = base + (1 if k < extra else 0)
+        chunk = ps[i:i + m]
+        i += m
+        if not chunk:
+            continue
+        out.append({
+            "name": "、".join(p.get("name") or "" for p in chunk),
+            "start": chunk[0].get("start"),
+            "end": chunk[-1].get("end"),
+            "ids": [x for p in chunk for x in (p.get("ids") or [])],
+            "rows": [r for p in chunk for r in (p.get("rows") or [])],
+            "periods": chunk})
+    return out
+
+
 def _mid_req_for_group(base_req, idx, total, group):
     """《家室列传》纪事**分组请求**的板块要求 (v63 问题2)。
 
@@ -2763,18 +2915,65 @@ def build_articles(facts, cache, cfg):
                              "title": mid_title, "req": mid_req})
             return secs
         if key == "chaoju":
-            # v70 (用户 2026-09-27 拍板): 《XX历代记》只留「开篇·王朝历代」一个板块。
-            # v68 只删了名叫「朝局动态」的块, 而纪事板块的四样素材 (朝廷职司 /
-            # 廷中僚属任免 / 朝中要员 / 要员隐事) 整块就是朝局 —— 用户 2026-09-27
-            # 报「朝局动态又冒出来了」并附正文「封臣二百二十六人，御前会议九席自此
-            # 而设」。板块要求同步停发, 本板块的四块素材随之不再下发
-            # (它们在 `_article_facts` 里都以 `sk != "lead"` 为条件)。
-            return [{"key": "lead",
-                     "title": titles.get("lead") or defaults["lead"],
-                     "req": _section_req(
-                         (_var or {}).get("lead")
-                         or style.SECTION_REQ.get(key, {}).get("lead")
-                         or "按传记笔法写作。", facts)}]
+            # v70 (用户 2026-09-27 拍板): 《XX历代记》纪事板块整块删除 (朝局动态的复现
+            # 路径), 只留「王朝历代」一个板块。
+            # v73 (用户 2026-09-27 拍板「内容太短 → 扩充 + 分篇并发」): 素材扩到「一人
+            # 一行」之后**按朝代分节并发** —— 本朝单独成末节 (「续篇」), 前方各朝尽量
+            # 等分成 ≤`facts.CHRONICLE_MID_MAX` 节 (上/中/下), 每节一个独立请求,
+            # 由 `generate_biography` 既有的第二波 ThreadPool 与其余篇目一起并发发出。
+            # 只创建且仅有传主一人的头衔改走**家族历代记** (先世 → 传主), 板块名同步改口。
+            _dc = (facts.get("realm") or {}).get("dynasty_chronicle") or {}
+            _periods = list(_dc.get("periods") or [])
+            _fam = bool(_dc.get("family"))
+            _src = style.SECTION_REQ.get(key, {})
+            _lead_req = _section_req((_var or {}).get("lead") or _src.get("lead")
+                                     or "按传记笔法写作。", facts)
+            _mid_base = _section_req((_var or {}).get("mid") or _src.get("mid")
+                                     or "按传记笔法写作。", facts)
+            _ttl = dict(titles)
+            if _fam:
+                _ttl["lead"] = _ttl.get("family_lead") or _ttl.get("lead")
+            secs = [{"key": "lead",
+                     "title": _ttl.get("lead") or defaults["lead"],
+                     "req": _lead_req}]
+            if _fam:
+                secs.append({"key": "mid", "title": _ttl.get("family_mid") or "纪事",
+                             "req": _mid_base, "periods": _periods})
+            else:
+                # 各朝 (含本朝) 按「尽量等分 + 末节留本朝」分节; 只有一段时就是单节。
+                _cur = _dc.get("current") or {}
+                _all = [p for p in _periods if p.get("rows")]
+                if _cur.get("rows") and _cur not in _all:
+                    _all.append(_cur)
+                _hist = [p for p in _all
+                         if not (_same_period(p, _cur))]
+                _cap = max(1, int(getattr(F, "CHRONICLE_MID_MAX", 4)))
+                if _cur.get("rows") and _hist:
+                    _parts = _chrono_split(_hist, cap=_cap - 1)
+                    _parts.append({
+                        "name": _cur.get("name"), "start": _cur.get("start"),
+                        "end": _cur.get("end"), "ids": list(_cur.get("ids") or []),
+                        "rows": list(_cur.get("rows") or []), "periods": [_cur]})
+                else:
+                    # 本朝是唯一的朝代 (单朝单君/单朝多君): 全篇只有一个纪事节,
+                    # 不再分出「前方各朝」—— 免得同一朝写两遍 (富兰克林档实测)。
+                    _parts = _chrono_split(_all, cap=_cap)
+                _n = len(_parts)
+                _prev_cut = None
+                for _i, _p in enumerate(_parts):
+                    _last = _i == _n - 1
+                    _base = (_section_req(style.SECTION_REQ.get(key, {}).get(
+                        "mid_last"), facts) if (_last and _n > 1) else _mid_base)
+                    _sec = {
+                        "key": "mid%d" % (_i + 1),
+                        "title": _ttl.get("mid%d" % (_i + 1)) or f"纪事·王朝历代·{_i + 1}",
+                        "req": _chrono_mid_req(_base, _i, _n, [_p],
+                                               last=(_last and _n > 1 and _p is _parts[-1]
+                                                     and bool(_cur.get("rows")))),
+                        "periods": [_p], "prev_cut": _prev_cut}
+                    secs.append(_sec)
+                    _prev_cut = _p.get("end") or _prev_cut
+            return secs
         return [{
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
@@ -2813,13 +3012,21 @@ def build_articles(facts, cache, cfg):
     # (无真领地而有家业者取其最高领主的头衔) 从**战役起点**以来的历代为纲
     # (v69: 每朝一行, 该朝历代由老到新并写明即位缘由)。头衔无从取得 (仅冒险者营地)
     # 时**整篇略去** (事实层不发 top_title_history ⇒ 无处可写, 不留给模型补白)。
+    # v73 (用户 2026-09-27 拍板): 该头衔由主角创建且历代只有主角一人 → 改《XX家历代记》
+    # (从祖上最早一位统治者写到传主); 此时取不到有头衔的父/母 (自定义角色) → 该篇不生。
     _rlm = facts.get("realm") or {}
+    _dc = _rlm.get("dynasty_chronicle") or {}
     _ttn = _rlm.get("top_title_name") or ""
-    if _rlm.get("top_title_history") and _ttn:
+    if _ttn or _dc:
+        _fam = bool(_dc.get("family"))
+        _ttl = (_dc.get("name") or _ttn) if _fam else _ttn
+        _t_fam = "家族历代" if _fam else "王朝的历代承继与改朝换代"
+        _f_fam = ("以先世的世次与所执头衔为纲，写家世累代与传主的兴起"
+                  if _fam else
+                  "以各朝代的起止与历代即位缘由为纲，写改朝换代、疆域归并与主角的升沉")
         articles.append(
-            {"key": "chaoju", "title": f"{_ttn}历代记", "subject": None,
-             "theme": f"{_ttn}王朝的历代承继与改朝换代",
-             "focus": "以各朝代的起止与历代即位缘由为纲，写改朝换代、疆域归并与主角的升沉",
+            {"key": "chaoju", "title": f"{_ttl}历代记", "subject": None,
+             "theme": _t_fam, "focus": _f_fam,
              "sections": mk_sections("chaoju")})
     # v9: 家族恩怨录 / 宝物志 — 插在中间 (家室列传之后, 朝局风云录之前)
     if facts.get("house_feuds"):
