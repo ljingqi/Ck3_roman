@@ -143,7 +143,15 @@ def backfill_folder(cfg, folder, only_pid, dry, check, keep):
                 dst.write(src.read())
             w(f"      已备份 {os.path.basename(bak)}")
         cache["title_dyn_names"] = table
-        cl.save_cache(cache, path)
+        try:
+            cl.save_cache(cache, path)
+        except OSError as e:
+            # 该缓存正被别的进程打开 (watch 主循环 / 传记线程) 时 Windows 拒绝
+            # 原子替换 → 记下并跳过, 不中断整批回填
+            w(f"      [跳过] 写盘失败 ({e.__class__.__name__}: {e}) —— "
+              f"该缓存可能正被 watch/传记进程占用, 停掉后重跑本工具即可")
+            n_skip += 1
+            continue
         n_ok += 1
     return n_ok, n_skip
 

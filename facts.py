@@ -1437,6 +1437,7 @@ class Facts:
         self._gov_cache = {}
         self._regnal_cache = {}  # v17: 世系编号 (cid, tid, date) -> 序号
         self._mem_date_cache = {}  # v34b: 头衔记忆事实日 (tid, cid, d, reason, type)
+        self._dyn_hist_cache = {}  # v66: 逐档动态名沿革 (本缓存 + 同战役其它传主)
         self._label_cache = {}   # v28b: 人物称谓 (cid, date, style) -> 文本
         # v45 (档 B): 事件句构造期的称谓出词登记 (见 log_names/index_names)
         # 登记栈**按线程**分份 —— 板块期并发调用 (`biography.py` 的 ThreadPool)
@@ -1858,6 +1859,13 @@ class Facts:
                 reason = str(v.get("value") or "")
         if tid is None:
             return d
+        if mtype == "lost_title_memory" and reason == "migration":
+            # v66: migration 失衔记忆的 `landed_title` 恒记最初那块郡 → 事件日映射不到
+            # (相差远超 31 天), 年表只能退到记忆日, 与历任行差一天。先归位再取事件日。
+            _rt = self.migration_lost_title(
+                cid, d, (mem.get("participants") or {}).get("new_holder"))
+            if _rt is not None:
+                tid = _rt
         key = (tid, cid, d, reason, mtype)
         hit = self._mem_date_cache.get(key)
         if hit is None:
@@ -2185,7 +2193,7 @@ class Facts:
             return False
         return L.government_prefix(cur) == gov_prefix
 
-    def title(self, tid, date=None):
+    def title(self, tid, date=None, site=False, site_cid=None):
         """头衔 id → 中文名 + 动态层级词合并: '复兴党流亡委员会' / '开罗伯爵领' /
         '埃及王国' / '图伦苏丹国' / '阿拔斯哈里发国' / '宋大路' / '中华天朝'(霸权级)。
         v41: date 锚点 — 层级词按该日持有者政体取 (封建期「公国」/ 行政期「军区」)。
@@ -2201,19 +2209,29 @@ class Facts:
         v8.1: 伊斯兰统治者 (最高领主) 的国名按游戏同规则显示为「家族+层级词」——
         动态国名不存于存档 (k_egypt 静态名仍为「埃及」, 游戏运行时拼出),
         按 持有者信仰→伊斯兰 + 家族名 + 层级 (k_→苏丹国, e_/h_→哈里发国/帝国
-        依是否兼任哈里发) 复现。"""
+        依是否兼任哈里发) 复现。
+        v66 (D1-a/窄口径): `site=True` 时取名口换 `_site_name` (【用地名】, 按档取
+        「主角占领它之前那一档」的动态名), 并跳过两处 `specific` 早退; 层级词与其余
+        分支逐字不变。**默认 False**, 故既有调用点行为不动 (政权名继续跟人走)。"""
         if tid is None:
             return ""
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
         tnd = t.get("title_name_data") or {}
         # v54: 动态国号优先 (title_history_names) —— 静态 custom/name 只作兜底
-        name = self._name_at_date(tid, date) \
-            or (tnd.get("custom") or "").strip() \
-            or (tnd.get("name") or "").strip() \
-            or L.loc(self.table, key) or key
+        if site:
+            name = self._site_name(tid, cid=site_cid, date=date)
+            # v66: 游戏给过显示名 (游牧/宗族命名领域) → 该名即完整显示名, 不叠层级词
+            # (与 v26 的 `specific` 早退同口径); 否则照旧走层级词链。
+            if self._dyn_named(tid):
+                return name
+        else:
+            name = self._name_at_date(tid, date) \
+                or (tnd.get("custom") or "").strip() \
+                or (tnd.get("name") or "").strip() \
+                or L.loc(self.table, key) or key
         if key.startswith("x_"):  # 无地营地/教团等特殊头衔: 只给名字
-            return self._specific_name(tid) or name
+            return name if site else (self._specific_name(tid) or name)
         # v52 (问题2): 无地冒险者营地 (`d_laamp_*`) 的层级词取游戏键
         # `<tier>_landless_adventurer_camp` (= 营地), **任何日期**都不落到通用
         # 「公国」—— 旧稿 866 年取不到政体时写出「私生子大队公国」。
@@ -2226,11 +2244,14 @@ class Facts:
             return name
         # v26: 动态头衔名 (游牧「可萨田所部」/宗族命名「马扎尔」) 即游戏显示名,
         # 优先于伊斯兰国名与层级词后缀。
-        specific = self._specific_name(tid)
-        if specific:
-            return specific
+        # v66: `site=True` 且该头衔有过动态名时, `_site_name` 已在上方直接返回 ——
+        # 末档粘滞名不再抢答; 无动态名者照旧落到下列层级词链 (用地名 + 层级词)。
+        if not site:
+            specific = self._specific_name(tid)
+            if specific:
+                return specific
         rn = self.realm_name(tid)  # v8.1: 伊斯兰统治者动态国名优先
-        if rn:
+        if rn and not site:
             return rn
         tier = ""
         for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
@@ -2400,6 +2421,204 @@ class Facts:
             return s  # 直写名 (青徐 等) 原样返回
         return base
 
+    def _site_cid_for(self, tid, default_cid):
+        """【用地名】的锚点角色 (v66): 本篇主角**持有过**该头衔时一律用主角。
+
+        为什么: 同一件事在年表里有两行 (主角迁离 / 对手迁入), 若各自按自己的取得日
+        取锚点, 同一块地会出现两个名字 (卡尔「迁离阿扎克」而乌松比凯「迁得库曼顿
+        巴斯部」—— 后者是卡尔当时的座位名)。锚到主角后, 一篇之内一块地只有一个
+        地方名, 第三人 (对手方) 的行也随主角的叫法。主角从未持有该头衔时用说话人。"""
+        pid = self.cache.get("player_id")
+        if pid is None or pid == default_cid:
+            return default_cid
+        ivs = self._hold_intervals(pid) or {}
+        if ivs.get(tid) or ivs.get(str(tid)):
+            return pid
+        return default_cid
+
+    def _dyn_hist(self, tid):
+        """该头衔的逐档沿革表 —— **本缓存 + 同战役其它传主缓存**合并后按档排序 (v66)。
+
+        为什么合并: 每份缓存只覆盖自己当玩家的那批档期 (崔佛 868–922 / 卡尔 931–954),
+        只读本缓存时, 落在覆盖范围**之后**的事件会把最早那版名字当成"当时的名" ——
+        实测崔佛篇附录里 938 年的 `c_itil` 读成 922 年的「马扎尔达维德部」、尼克篇
+        读成静态名「阿得」, 而卡尔篇是「马扎尔迈杰希部」: 同一件事在三篇里三个名字。
+        合并后同一个头衔在所有传主篇里同名 (本缓存的值优先, 它是本篇的权威档期)。
+
+        跨战役的缓存不混入 (比对 `playthrough_id`); 结果按 tid 记忆化。"""
+        hit = self._dyn_hist_cache.get(tid)
+        if hit is not None:
+            return hit
+        mine = self.cache
+        _pt = mine.get("playthrough_id")
+        merged = {}
+        for src in list((self.campaign or {}).values()) + [mine]:
+            if not isinstance(src, dict):
+                continue
+            if _pt and src.get("playthrough_id") \
+                    and str(src.get("playthrough_id")) != str(_pt):
+                continue
+            tbl = (src.get("title_dyn_names") or {}).get(str(tid))
+            if not tbl:
+                continue
+            for h in tbl:
+                if isinstance(h, dict) and h.get("from"):
+                    merged[str(h["from"])] = (h.get("name") or "").strip()
+        out = [{"from": d, "name": n}
+               for d, n in sorted(merged.items(), key=lambda kv: cl.date_key(kv[0]))]
+        self._dyn_hist_cache[tid] = out
+        return out
+
+    def _dyn_name_at(self, tid, date):
+        """该头衔在 date 那一档的**动态名** (v66) —— 查逐档变化点沿革表
+        (`_dyn_hist`: 本缓存 + 同战役其它传主缓存, 由
+        `cache_lib._latch_title_dyn_names` 闩存)。
+
+        为什么不能只读熔件: `specific_title_name` 是「只有该日期那一档才有的现值」
+        (《方案 v48》§4 B), 末档只留最后一版 —— 936 年的事件会套上 954 年才有的名字
+        (实测 936 年的 c_kherson 读成「马扎尔迈杰希部」)。详见
+        docs/方案_v66_游牧迁移用地名.md。
+
+        早于首点 / 无表 / 无记录一律返回 '' (三者都只能退到静态名, 故同处理)。"""
+        hist = self._dyn_hist(tid)
+        if not hist or not date:
+            return ""
+        dk = cl.date_key(date)
+        pick = ""
+        for h in hist:
+            d = h.get("from")
+            if not d:
+                continue
+            try:
+                if cl.date_key(d) <= dk:
+                    pick = h.get("name")
+                else:
+                    break
+            except Exception:
+                break
+        return (pick or "").strip()
+
+    def _site_ok(self, tid):
+        """该头衔是否适用【用地名】(v66) —— 只认**领地**头衔 (c_/d_/k_/b_/e_/h_…);
+        营地/毡帐/庄园等无地或家业头衔一律照旧: 它们的名字取自营地宗旨词与家业词
+        (v24/v28/v52), 与"那块地当时叫什么"无关, 且冒险者营地的动态名
+        (`specific_title_name` = 持剑骑手) 常在他取得之前就已定下, 沿革表锚点取不到。"""
+        if tid is None:
+            return False
+        if self.title_kind(tid):
+            return False
+        return not ((self._lt.get(str(tid)) or {}).get("key") or "").startswith("x_")
+
+    def _dyn_named(self, tid):
+        """该头衔是否有过**非空动态名** (v66) —— 游戏给过显示名 (游牧/宗族命名领域,
+        如「库曼顿巴斯部」) 的头衔, 其显示名就是那个名字本身, 不再叠层级词 (与 v26
+        `_specific_name` 早退同口径); 从未有过动态名的头衔照旧叠层级词。
+
+        两个来源都认: 沿革表 (逐档, 含同战役其它传主缓存) 与末档熔件 —— 后者兜住
+        「沿革表未覆盖」的旧缓存。"""
+        hist = self._dyn_hist(tid)
+        if hist and any((h.get("name") or "").strip() for h in hist):
+            return True
+        return bool(self._specific_name(tid))
+
+    def _dyn_name_before(self, tid, before):
+        """逐档沿革表里 `before` **之前**的最近一个动态名 (v66); 取不到返回 ''。
+
+        锚点用「最早一次取得日之前」, 故主角自己执政期内那些档天然落在锚点之后,
+        不会被取到 —— 重取旧地时不会把他自己上一次给的部名取回来。"""
+        hist = self._dyn_hist(tid)
+        bk = cl.date_key(before)
+        pick = ""
+        for h in hist:
+            d = h.get("from")
+            if not d:
+                continue
+            try:
+                if cl.date_key(d) >= bk:
+                    break
+            except Exception:
+                break
+            pick = (h.get("name") or "").strip()
+        return pick
+
+    def _site_name(self, tid, cid=None, date=None):
+        """【用地名】(v66) —— 一块地在本篇里的称呼, 用于迁移/驻地这类**地点**语境。
+
+        用户 2026-09-27 拍板 D1-a:「读取该头衔**被主角占领的前一年**熔化存档中的
+        动态头衔名称」。取法:
+          ① cid 持有过该头衔 → 锚到**最早一次取得日之前**那一档的动态名;
+          ② 从未持有 / 没给锚点 → 取 date (缺省 as_of) 那一档的动态名;
+          ③ ①② 皆空 → 末档动态名 (仅当沿革表完全没覆盖该头衔, 即未回填的旧缓存)
+             → title_history_names 该日更名 → custom/name 静态名 → 本地化表 → key。
+
+        同一块地全篇一名 (锚点取最早一次取得), 故「迁得 X / 迁离 X」成对同名, 模型
+        不会再把四块不同头衔读成同一块地的反复得失。与 `title()` 的分工:
+        **政权名跟人走** (person_label 仍走 `_name_at_date`), **用地名跟地走**。"""
+        t = self._lt.get(str(tid)) or {}
+        tnd = t.get("title_name_data") or {}
+        base = (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()
+        hist = self._dyn_hist(tid)
+        before = None
+        if cid is not None:
+            ivs = self._hold_intervals(cid).get(tid) or []
+            gains = [iv[0] for iv in ivs if iv and iv[0]]
+            if gains:
+                before = min(gains, key=cl.date_key)
+        nm = self._dyn_name_before(tid, before) if before \
+            else self._dyn_name_at(tid, date or self.as_of)
+        if nm:
+            return nm
+        if not hist:
+            sp = self._specific_name(tid)
+            if sp:
+                return sp
+        best = self._history_name_at(tid, date or before)
+        if best is not None:
+            v = L.loc(self.table, str(best))
+            if v:
+                return v
+            s = str(best)
+            if not re.search(r"[A-Za-z_]", s):
+                return s      # 直写名 (青徐 等) 原样返回
+        if base:
+            return base
+        return L.loc(self.table, t.get("key") or "") or (t.get("key") or "")
+
+    def migration_lost_title(self, owner_id, date, new_holder, days=3):
+        """迁移失衔记忆的头衔**归位** (v66)。
+
+        游戏给 `reason == migration` 的失衔记忆记的 `landed_title` 恒为**最初那块
+        郡** —— 实测卡尔 6 条全指 3993=`c_uman` (他 935 年就丢了的那块), 故年表不论
+        哪一次迁移都渲染成同一句, 连事件日也映射不到 (见 docs/方案_v65_游牧迁离.md §2)。
+        这里改由 title history 反查: 主角在 `date` 前后 `days` 天内、以
+        `type == 'migration'` **转出**给 `new_holder` 的那一块。
+
+        候选只在他当时的持有集里找 (便宜且必然命中); 同日多块迁出时按 `new_holder`
+        精确认领 (title history 里该日的新主), 取不到或撞车返回 None —— 调用方回退
+        记忆自带值, 行为与 v65 前一致。"""
+        if owner_id is None or not date:
+            return None
+        dk = _daynum(date)
+        pool = []
+        for tid, ivs in (self._hold_intervals(owner_id) or {}).items():
+            for iv in ivs or []:
+                if not iv or not iv[0] or not iv[1]:
+                    continue
+                if (iv[2] or "") != "migration":
+                    continue
+                if abs(_daynum(iv[1]) - dk) > days:
+                    continue
+                pool.append((tid, iv[1]))
+        if not pool:
+            return None
+        if isinstance(new_holder, int):
+            hit = [t for (t, ld) in pool if self.holder_at(t, ld) == new_holder]
+            if len(hit) == 1:
+                return hit[0]
+        if len(pool) == 1:
+            return pool[0][0]
+        return None
+
     def _history_name_at(self, tid, date):
         """title_history_names 在 date 生效的键/直写名; 无则 None。
 
@@ -2449,25 +2668,35 @@ class Facts:
         except Exception:
             return False
 
-    def _title_name_at(self, tid, date, cid=None):
+    def _title_name_at(self, tid, date, cid=None, site=False):
         """头衔在某日期的完整名 (v11): 按日期名 + 层级词 (独立王国=国)。
         cid 提供时按该角色当前独立性取词 (历任/朝局用)。
 
         v38 (问题3): 独立性按该日期**时任持有者**判定 —— 头衔是「国」还是「路」
         取决于它在那一刻是否自成一国。旧稿按区间中点取名, 又用**当前**持有者的
         独立性取词, 于是同一个 k_qingxu 在 872 年 (皇帝兼领) 显示「青徐国」、
-        878 年 (臣子受任) 显示「青徐路」, 两条并列读来像两个政权。"""
+        878 年 (臣子受任) 显示「青徐路」, 两条并列读来像两个政权。
+
+        v66: `site=True` 时取名口换 `_site_name` (【用地名】); 该头衔**有过动态名**
+        (游戏给过显示名) 时直接返回该名 (与 v26 的 `specific` 早退同口径, 不叠层级
+        词); 从未有过动态名者照旧叠层级词 —— 故封建/行政档的「阿扎克伯爵领」这类
+        行文逐字不变。默认 False。"""
         if tid is None:
             return ""
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
-        if key.startswith("x_"):  # 营地/家族等特殊头衔: 只给名字
+        if site:
+            nm = self._site_name(tid, cid=cid, date=date)
+            if self._dyn_named(tid) or key.startswith(("x_", "e_minister_")):
+                return nm
+        elif key.startswith("x_"):  # 营地/家族等特殊头衔: 只给名字
             return self._name_at_date(tid, date) or L.loc(self.table, key) or key
-        # v26: 动态头衔名本身就是游戏显示的完整名 (可萨田所部), 不叠层级词
-        specific = self._specific_name(tid)
-        if specific:
-            return specific
-        nm = self._name_at_date(tid, date)
+        else:
+            # v26: 动态头衔名本身就是游戏显示的完整名 (可萨田所部), 不叠层级词
+            specific = self._specific_name(tid)
+            if specific:
+                return specific
+            nm = self._name_at_date(tid, date)
         if not nm:
             nm = L.loc(self.table, key)
         if not nm:
@@ -2985,6 +3214,10 @@ class Facts:
                     # v52 (问题2): 无地冒险者营地真键是 `d_laamp_*` (非 x_ 前缀),
                     # 判据改走 `title_kind`; 持有者行只用营地**本名** (不含「营地」
                     # 层级词), 与领地「象州伯爵 / 象州伯爵领」的分工同构。
+                    # v66: 毡帐/营地/庄园**不走**用地名 —— 它们的名字取自营地宗旨词与
+                    # 家业词 (v24/v28/v52), 与"那块地当时叫什么"无关; 且无地冒险者营地
+                    # 的动态名 (`specific_title_name` = 持剑骑手) 常在他取得之前就定下,
+                    # 沿革表锚点取不到。逐字保持 v52 行为。
                     nm = self._name_at_date(t, d) or self.title_base_name(t)
                     if self._is_nomad_camp(t):
                         parts.append(nm)
@@ -3002,8 +3235,21 @@ class Facts:
                 else:
                     # v24: 领地阶段用「头衔地名+统治者称呼词」(游戏口径,
                     # 文化/政体感知: 撒丁尼亚王/撒丁王/贝州侯…), 不再用「X之主」。
+                    # v66: 地名改走【用地名】(按档取该头衔被主角占领之前的动态名)
+                    # —— 旧稿读末档粘滞名, 于是游牧期四块不同头衔全写成
+                    # 「库曼顿巴斯部」, 历任读来像同一块地反复得失。
+                    # 取样点**照旧**用相位中点 `mid` (v11: 一段任期内只取一个名,
+                    # 「k_viet 899.9.5 夺得、次日改称桂」这类年内更名不分裂成两名);
+                    # 用地名锚点由 cid 最早取得日给出, 与 mid 无关。
+                    # 例外: **承袭**相位照旧读当日的名 —— 继承来的政权名 (宗族命名的
+                    # 汗国/苏丹国) 正是那一行要说的东西; 用地名会把「任库曼顿巴斯部
+                    # 国王」写成「任高昌国王」(尼克 954.7.12 实测)。
                     mid = self._span_mid(d, end)
-                    nm = self._name_at_date(t, mid) or self.title_base_name(t)
+                    if self.gain_reason(cid, t, d) == "inheritance":
+                        nm = self._name_at_date(t, mid) or self.title_base_name(t)
+                    else:
+                        nm = self._site_name(t, cid=cid, date=mid) \
+                            or self.title_base_name(t)
                     w = self._ruler_word_at(cid, t, d)
                     parts.append(f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else ""))
             parts = [p for p in parts if p]
@@ -3014,7 +3260,9 @@ class Facts:
                 if t in ids or t not in lost_now:
                     continue
                 lt = loss_types.get((t, cl.date_key(d)))
-                nm = self._title_name_at(t, d, cid)
+                # v66: 失去句的名字同样走【用地名】(末档粘滞名会让四块不同头衔
+                # 写成同一个「库曼顿巴斯部」); 营地/毡帐/庄园不适用 (见 _site_ok)
+                nm = self._title_name_at(t, d, cid, site=self._site_ok(t))
                 if not nm or nm in _seen_lost:
                     continue
                 # v28: 失去缘由按 title history 事件类型出词 (卸任/调任/被褫夺/
@@ -11800,13 +12048,36 @@ def _mem_sentence_body(f, owner_id, mem):
     if mem.get("type") in TITLE_VAR_TYPES:
         # v34b: 头衔得失句用 **title history 事件日** (记忆日常晚一天)
         _td = f.mem_date(owner_id, mem) or mem.get("creation_date")
+        _reason = ""
+        for v in mem.get("vars") or []:
+            if v.get("flag") == "reason":
+                _reason = str(v.get("value") or "")
+                break
         for v in mem.get("vars") or []:
             if v.get("flag") == "landed_title" and v.get("identity"):
                 title_tid = v.get("identity")
+                # v66: migration 失衔记忆的 landed_title 恒记最初那块郡, 改由
+                # `new_holder` 反查真头衔 (见 Facts.migration_lost_title)
+                if mem.get("type") == "lost_title_memory" and _reason == "migration":
+                    _rt = f.migration_lost_title(
+                        owner_id, _td,
+                        (mem.get("participants") or {}).get("new_holder"))
+                    if _rt is not None:
+                        title_tid = _rt
                 # v53/v54: 名字与层级词一律按事件日取 —— `title()` 自 v54 起
                 # 读该日动态国号 (title_history_names) 与天朝链层级词,
                 # 故 created/appointment/conquest 共用一条取值链, 不再分叉。
-                title = f.title(title_tid, date=_td) or f.title(title_tid)
+                # v66: 名字改走 **用地名** (site=True) —— 末档粘滞名会把游牧期
+                # 「迁得/迁离」句全部写成同一个「库曼顿巴斯部」(实测 6 条全指他
+                # 935 年就丢了的那块郡); 用地名按档取「主角占领它之前」的名字,
+                # 同一块地得/失同名。**只对 migration 生效**: 受封/攻取/创建/承袭
+                # 那几档说的是政权 (阿尤布苏丹国由宗族命名), 混用地名会把
+                # 「创建阿尤布苏丹国」写成「创建也门王国」(沙蒂永 1179 实测)。
+                # 锚点角色: 主角持有过则锚主角 (对手方的行随主角的叫法)。
+                _scid = f._site_cid_for(title_tid, owner_id)
+                _site = (_reason == "migration")
+                title = f.title(title_tid, date=_td, site=_site, site_cid=_scid) \
+                    or f.title(title_tid, site=_site, site_cid=_scid)
                 break
     elif mem.get("type") == "held_a_coronation_memory":
         # v56 (问题1b): 加冕成的头衔 —— 记忆本身不带 landed_title var, 按**加冕当日**
@@ -16422,7 +16693,7 @@ def _nomad_stations(f):
                 continue
             if f.as_of and cl.date_key(g) > cl.date_key(f.as_of):
                 continue
-            nm = f._name_at_date(tid, g) or f.title_base_name(tid) or ""
+            nm = f._site_name(tid, cid=pid) or f.title_base_name(tid) or ""
             if nm:
                 items.append((cl.date_key(g), f"{f.date(g)}立{nm}"))
     hist = cache.get("player_locations") or []
@@ -16437,7 +16708,10 @@ def _nomad_stations(f):
         county = f.county_at_province(loc.get("province"))
         if county is None:
             continue
-        cname = f.title(county)
+        # v66: 驻X 的名字走【用地名】—— 他持有过的郡与其历任行**同名** (按档取
+        # 取得前的动态名), 只是路过 (未持有) 的郡取该年档的名字。旧稿用末档粘滞名,
+        # 于是 936 年的一行写成「驻马扎尔迈杰希部」(954 年才有的名字)。
+        cname = f.title(county, date=loc.get("date"), site=True, site_cid=pid)
         if not cname:
             continue
         key = (loc.get("date"), cname)
