@@ -2399,13 +2399,42 @@ class Facts:
         t = self._lt.get(str(tid)) or {}
         return ((t.get("title_name_data") or {}).get("custom") or "").strip()
 
+    def _has_reign_history(self, tid):
+        """该头衔的显示名是否由**国号更名史**给出? (v68 问题3)
+
+        游戏 `$NAME$` 取值顺序 (子代理调研 `docs\\调研_头衔动态名与霸主皇帝.md` §1.4,
+        含 `game/` 原文与全档统计) 是:
+        `custom` → `localization_key` → `title_history_names[≤date]` → `specific_title_name`
+        → 静态 `name`。故带 `dynn_title_*` 更名史 / `localization_key` 非空的头衔
+        (h_china 唐→中华→和→毕→越→元、d_ziqing 契丹→元) 的显示名取自国号;
+        其 `specific_title_name` 是引擎按**当前持有者宗族**另算的生成名, 在天朝 `h_china`
+        上已经过期且不再刷新 (975/976/978 三档逐字未变 = 「库曼顿巴斯部」, 而游戏
+        信封 (`meta_title_name`) 显示「元」)。此时生成名整个让位。
+
+        无更名史的游牧毡帐/营地/宗族命名领域 (`k_dzungaria`/`d_chah`/`c_uman`/`x_d_laamp_*`)
+        `localization_key` 为空、更名史里无 `dynn_title_*` → 返回 False, 生成名照旧参战
+        (v26/v66/v67 的口径与验收全不动)。"""
+        tnd = (self._lt.get(str(tid)) or {}).get("title_name_data") or {}
+        if (tnd.get("localization_key") or "").strip():
+            return True
+        for h in (tnd.get("title_history_names") or []):
+            if isinstance(h, dict) and \
+                    str(h.get("name") or "").startswith("dynn_title_"):
+                return True
+        return False
+
     def _specific_name(self, tid):
         """游戏算好的动态头衔名 (v26): 游牧/宗族命名领域的领域名, 如
         c_khortytsia 的「可萨田所部」、k_croatia 的「马扎尔」。静态 name
         (也勒克河/克罗地亚) 只是地名, 与游戏内显示不符。无则返回 ''。
 
         v67: 该头衔**带自定义名**时返回 '' —— 生成名在游戏里本就不显示 (见
-        `_custom_name`), 让调用方回到 custom 与其更名史 (v52「营地本名」口径)。"""
+        `_custom_name`), 让调用方回到 custom 与其更名史 (v52「营地本名」口径)。
+        v68 (问题3): 该头衔**有国号更名史**时同样返回 '' (见 `_has_reign_history`) ——
+        天朝 `h_china` 的显示名是国号 (972.10.11 起「元」), 而生成名停在 973 档落盘的
+        「库曼顿巴斯部」不再刷新, 旧稿因此把「元皇帝」写成「库曼顿巴斯部皇帝」。"""
+        if self._has_reign_history(tid):
+            return ""
         t = self._lt.get(str(tid)) or {}
         tnd = t.get("title_name_data") or {}
         if (tnd.get("custom") or "").strip():
@@ -2439,7 +2468,10 @@ class Facts:
         tnd = t.get("title_name_data") or {}
         # v67: ① 只在无自定义名时取值 (带 custom 时 `_specific_name` 亦返回 '',
         # 此处一并闸掉逐档动态名 —— 本档沿革表那一点记的正是营毁后的生成名)
-        specific = "" if (tnd.get("custom") or "").strip() \
+        # v68 (问题3): 同理闸掉**有国号更名史**的头衔 (`_has_reign_history`) ——
+        # h_china 的显示名是国号 (唐/中华/和/毕/越/元), 生成名「库曼顿巴斯部」不参战。
+        specific = "" if ((tnd.get("custom") or "").strip()
+                          or self._has_reign_history(tid)) \
             else (self._dyn_reign_name(tid, date) or self._specific_name(tid))
         if specific:
             return specific
@@ -2480,7 +2512,13 @@ class Facts:
         读成静态名「阿得」, 而卡尔篇是「马扎尔迈杰希部」: 同一件事在三篇里三个名字。
         合并后同一个头衔在所有传主篇里同名 (本缓存的值优先, 它是本篇的权威档期)。
 
-        跨战役的缓存不混入 (比对 `playthrough_id`); 结果按 tid 记忆化。"""
+        跨战役的缓存不混入 (比对 `playthrough_id`); 结果按 tid 记忆化。
+        v68 (问题3): 有国号更名史的头衔 (`_has_reign_history` —— h_china 等) 返回空表 ——
+        逐档生成名 (库曼顿巴斯部) 与 display 名 (国号) 分属两套, 该头衔归国号一系,
+        调用方 (`_dyn_reign_name`/`_dyn_named`/`_site_name`/`_dyn_name_before`) 随之落到
+        `_history_name_at` 的国号链上。"""
+        if self._has_reign_history(tid):
+            return []
         hit = self._dyn_hist_cache.get(tid)
         if hit is not None:
             return hit
