@@ -1802,7 +1802,9 @@ class Facts:
         """角色在 date 的 (最高头衔层级 rank, 该头衔的执政起始日)。
 
         v54 (问题3d): 同日囚禁集群折叠后的**取名排序**用 —— 用户规则
-        「只显示头衔最高，按执政时间排序前 5 人」。无头衔返回 (0, '')。"""
+        「只显示头衔最高，按执政时间排序前 5 人」。无头衔返回 (0, '')。
+        v68 (问题5): 层级走 `_eff_rank` —— 仅持世族庄园者按 0 级 (与营地同档),
+        家业不参与与真领地的层级比较。"""
         if cid is None or not date:
             return 0, ""
         try:
@@ -1811,8 +1813,7 @@ class Facts:
             return 0, ""
         if tid is None:
             return 0, ""
-        key = (self._lt.get(str(tid)) or {}).get("key") or ""
-        rank = self._TT_RANK.get(key[:2], 0)
+        rank = self._eff_rank(tid)
         since = ""
         for (g, _l, _lt) in (self._hold_intervals(cid, date) or {}).get(tid) or []:
             if g and (not since or cl.date_key(g) > cl.date_key(since)):
@@ -2281,6 +2282,10 @@ class Facts:
                 or L.loc(self.table, key) or key
         if key.startswith("x_"):  # 无地营地/教团等特殊头衔: 只给名字
             return name if site else (self._specific_name(tid) or name)
+        # v68 (问题5): 世族庄园 (`c_nf_`/`d_nf_`) 同判 —— 家业头衔是无地家业,
+        # 只给名字, 不叠层级词 (旧稿 `title(16851)` = 「张氏州府」, 家业被当州府)。
+        if self._is_estate_title(tid):
+            return name
         # v52 (问题2): 无地冒险者营地 (`d_laamp_*`) 的层级词取游戏键
         # `<tier>_landless_adventurer_camp` (= 营地), **任何日期**都不落到通用
         # 「公国」—— 旧稿 866 年取不到政体时写出「私生子大队公国」。
@@ -2980,6 +2985,22 @@ class Facts:
             return False
         return self._ESTATE_KEY_MARK in ((self._lt.get(str(tid)) or {}).get("key") or "")
 
+    def _eff_rank(self, tid):
+        """头衔的**有效层级** (v68 问题5): 世族庄园 (`_nf_`) 是家业而非领地 —
+        层级一律按 0 计, 与无地营地/毡帐同档。游戏侧这三类头衔都带
+        `landless = yes` / `noble_family = yes` (`common\\landed_titles\\04_china_noble_families.txt`),
+        UI 的领地栏为空; 旧稿按 key 前缀给庄园 `c_`/`d_` 的 2/3 级, 无地世族
+        遂以伯爵领身份入选首要头衔, 家业名当领地地名 ⇒「张氏刺史」(实测 973.1.12 死者)。
+
+        与项目既有口径一致: `_has_current_landed_title`(v36) 与 `_primary_group`(v28)
+        早已把庄园排除在真领地外, 本函数把其余按前缀算层级处一并收口。"""
+        if tid is None:
+            return 0
+        if self._is_estate_title(tid):
+            return 0
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        return self._TT_RANK.get(key[:2], 0)
+
     def _is_adventurer_camp(self, tid):
         """无地冒险者营地头衔? (x_d_laamp_* 等; 与游牧毡帐/家族庄园区分)"""
         if tid is None:
@@ -3075,7 +3096,7 @@ class Facts:
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
             if key.startswith("e_minister_"):
                 continue
-            items.append((tid, self._TT_RANK.get(key[:2], 0), gain))
+            items.append((tid, self._eff_rank(tid), gain))
         if not items:
             return []  # 仅持朝廷职司 (官职非领地)
         order = self._domain_order(cid) if cid is not None else {}
@@ -3271,7 +3292,7 @@ class Facts:
         """角色在 as_of 日期的首要头衔 (tier, tid): 最高层级中最早获得者;
         无头衔 (仅营地) 返回 (None, tid)。
         v36 (用户拍板5): **男爵领 (rank 1) 不入首要头衔** — 头衔材料最低取到州府 (c_),
-        男爵领只在「死于X / 生于X」这类地名处使用; 营地/庄园 (x_, rank 0) 照旧保留。
+        男爵领只在「死于X / 生于X」这类地名处使用; 营地/庄园 (rank 0, 见 `_eff_rank`) 照旧保留。
 
         v41 (问题1) 关键修正: 持有区间按 **as_of 与末档之间**的持有状态算,
         区间起点可能晚于 as_of (福尔科 1078 年的事件里, 他被 1080 年才到手的
@@ -3283,7 +3304,10 @@ class Facts:
         (loss 为空 = 仍持; 卒日当天失去也算持有)。缺省 (None) 行为与 v60 前一致;
         仅**已卒传主**需要它: 卒日当天失去全部头衔, 旧判据「末档仍在持」会判成
         「无头衔」, 使 `_my_realm_tids()` 空集、朝廷职司的政权门槛 fail-open
-        (唐六部因此混进别国传记; 实测崔佛终传)。"""
+        (唐六部因此混进别国传记; 实测崔佛终传)。
+        v68 (问题5): 层级一律走 `_eff_rank` —— 无地世族庄园 (`c_nf_`/`d_nf_`) 按 0 级,
+        仅持庄园者返回 (None, 庄园 tid), 与「仅营地」同态; 称谓由 `official_title`
+        的庄园分支出「X氏乡绅」, 家业名不再被当作领地地名 (旧稿出「张氏刺史」)。"""
         held = {}
         ao = cl.date_key(as_of) if as_of else None
         through = cl.date_key(held_through) if held_through else None
@@ -3305,14 +3329,12 @@ class Facts:
                 gain = ivs[-1][0]
                 if ao is not None and gain and cl.date_key(gain) > ao:
                     continue
-            key = (self._lt.get(str(tid)) or {}).get("key") or ""
-            if self._TT_RANK.get(key[:2], 0) == 1:
+            if self._eff_rank(tid) == 1:
                 continue
             held[tid] = gain
         if not held:
             return None, None
-        items = [(tid, self._TT_RANK.get((self._lt.get(str(tid)) or {}).get("key", "")[:2], 0), g)
-                 for tid, g in held.items()]
+        items = [(tid, self._eff_rank(tid), g) for tid, g in held.items()]
         max_tier = max(r for _t, r, _g in items)
         tops = sorted([it for it in items if it[1] == max_tier],
                       key=lambda it: (self._domain_order(cid).get(int(it[0]), 10 ** 6),
@@ -3333,8 +3355,8 @@ class Facts:
         for tid, ivs in intervals.items():
             # v36 (用户拍板5): 男爵领 (rank 1) 不进历任 — 最低取到州府 (c_);
             # 男爵领只在「死于X / 生于X」处作地名。
-            if self._TT_RANK.get(
-                    ((self._lt.get(str(tid)) or {}).get("key") or "")[:2], 0) == 1:
+            # v68 (问题5): 层级走 `_eff_rank` (庄园按 0 级, 仍进历任 —— 家业是身份)。
+            if self._eff_rank(tid) == 1:
                 continue
             for (g, l, lt) in ivs:
                 events.append((cl.date_key(g), g, tid, 1))
@@ -3383,7 +3405,7 @@ class Facts:
             parts = []
             for t in ids:
                 key = (self._lt.get(str(t)) or {}).get("key") or ""
-                if key.startswith("x_") or self.title_kind(t) == "camp":
+                if key.startswith("x_") or self.title_kind(t) in ("camp", "estate"):
                     # v24: 营地阶段用游戏口径 (营地宗旨词: 头目/领袖/队长…);
                     # 词取不到时回退旧式「X之主」防失名。
                     # v26: 游牧毡帐 (x_c_nomad_*) 不给冒险者宗旨词, 只写毡帐名。
@@ -3396,6 +3418,9 @@ class Facts:
                     # 家业词 (v24/v28/v52), 与"那块地当时叫什么"无关; 且无地冒险者营地
                     # 的动态名 (`specific_title_name` = 持剑骑手) 常在他取得之前就定下,
                     # 沿革表锚点取不到。逐字保持 v52 行为。
+                    # v68 (问题5): 判据由 `x_` 前缀改为 `title_kind` — 无地世族庄园的
+                    # 键是 `c_nf_`/`d_nf_` (非 x_ 前缀), 旧稿落进领地支写成
+                    # 「952年3月23日受任张氏女伯爵」(实测 73985)。
                     nm = self._name_at_date(t, d) or self.title_base_name(t)
                     if self._is_nomad_camp(t):
                         parts.append(nm)
@@ -3449,8 +3474,8 @@ class Facts:
                 # (`09_dlc_mpo_scripted_effects.txt` Change 4), 该头衔与该日
                 # migration 失去的郡**同名** (动态名 = 文化集合名词+宗族名+部),
                 # 故出「迁离」而非「毁弃」, 并按名去重 (毡帐/营地自身的毁弃照旧)。
-                _rank = self._TT_RANK.get(
-                    ((self._lt.get(str(t)) or {}).get("key") or "")[:2], 0)
+                # v68 (问题5): 层级走 `_eff_rank` (庄园按 0 级, 与营地同档)。
+                _rank = self._eff_rank(t)
                 if lt == "destroyed":
                     verb = "迁离" if (nomad_only and _rank >= 2) else "毁弃"
                 else:
@@ -3470,8 +3495,7 @@ class Facts:
             # 「1086年1月1日自海因里希·萨利安手中夺得神圣罗马帝国巴西琉斯」。
             # 旧稿只有「1086年任神圣罗马帝国巴西琉斯」, 模型无从知道是战争、
             # 继承还是阴谋 (修复方案_v41 问题2)。
-            top = max(ids, key=lambda t: self._TT_RANK.get(
-                ((self._lt.get(str(t)) or {}).get("key") or "")[:2], 0))
+            top = max(ids, key=lambda t: self._eff_rank(t))
             gain = self._gain_clause(cid, top, d)
             # v53: 开创/重建/创建是造衔动词, 宾语是头衔名 (秦皇朝),
             # 不是统治者词 (秦皇帝)。受任/承袭/攻取仍用人称 (江西节度使)。
@@ -5022,8 +5046,12 @@ class Facts:
                 break
 
         def _place_nm(tid):
-            """头衔的 date (默认卒日) 时点国号 (v25: 死者按卒时国号)。"""
+            """头衔的 date (默认卒日) 时点国号 (v25: 死者按卒时国号)。
+            v68 (问题5): 世族庄园 (`_nf_`) 与营地/职司同判 —— 家业名不是领地地名
+            (否则「张氏」会被拼进官职词, 出「张氏刺史」)。"""
             if tid is None:
+                return ""
+            if self._is_estate_title(tid):
                 return ""
             t = self._lt.get(str(tid)) or {}
             key = t.get("key") or ""
@@ -5036,15 +5064,14 @@ class Facts:
         # (修复: 1179 年「河西宁令嵬名仁孝」应为游戏显示的「夏宁令」)。
         if tier_want is not None:
             _pt, ptid = self._primary_title_at(cid, as_of=anchor)
-            if ptid is not None and \
-                    self._TT_RANK.get((self._lt.get(str(ptid)) or {}).get("key", "")[:2], 0) == tier_want:
+            if ptid is not None and self._eff_rank(ptid) == tier_want:
                 nm = _place_nm(ptid)
                 if nm:
                     return nm
             drec = (self.cache.get("characters") or {}).get(str(cid)) or {}
             ltid = (drec.get("death") or {}).get("liege_title")
             if ltid is not None and int(ltid) != ptid and \
-                    self._TT_RANK.get((self._lt.get(str(ltid)) or {}).get("key", "")[:2], 0) == tier_want:
+                    self._eff_rank(int(ltid)) == tier_want:
                 nm = _place_nm(int(ltid))
                 if nm:
                     return nm
@@ -5054,9 +5081,10 @@ class Facts:
         for tid, ivs in intervals.items():
             t = self._lt.get(str(tid)) or {}
             key = t.get("key") or ""
-            if not key or key.startswith(("x_", "e_minister_")):
+            if not key or key.startswith(("x_", "e_minister_")) \
+                    or self._is_estate_title(tid):
                 continue
-            rank = self._TT_RANK.get(key[:2], 0)
+            rank = self._eff_rank(tid)
             for (gain, _loss, _lt) in ivs:
                 if not gain:
                     continue
@@ -5087,9 +5115,10 @@ class Facts:
             for tid in ddom:
                 t = self._lt.get(str(tid)) or {}
                 key = t.get("key") or ""
-                if not key or key.startswith(("x_", "e_minister_")):
+                if not key or key.startswith(("x_", "e_minister_")) \
+                        or self._is_estate_title(tid):
                     continue
-                rank = self._TT_RANK.get(key[:2], 0)
+                rank = self._eff_rank(tid)
                 if tier_want is not None and rank == tier_want:
                     nm = self._name_at_date(tid, died)
                     if nm:
@@ -5099,9 +5128,10 @@ class Facts:
             for tid in ddom:
                 t = self._lt.get(str(tid)) or {}
                 key = t.get("key") or ""
-                if not key or key.startswith(("x_", "e_minister_")):
+                if not key or key.startswith(("x_", "e_minister_")) \
+                        or self._is_estate_title(tid):
                     continue
-                rank = self._TT_RANK.get(key[:2], 0)
+                rank = self._eff_rank(tid)
                 nm = self._name_at_date(tid, died)
                 if nm and rank > b_t:
                     b_t, b_nm = rank, nm
@@ -5210,9 +5240,12 @@ class Facts:
             # v13: 无地家族/庄园头衔 (x_nf_*「XX家族」) 的持有者官职词 —
             # 按文化选词 (日本: 当主; 高丽系: 户长; 其余天朝/选贤/行政: 乡绅)。
             # 修: 此前返回空, 家族领袖的官职从未传给模型。
+            # v68 (问题5): 判据由 `x_nf_` 前缀改为 `_is_estate_title` —— 中国世族的
+            # 庄园键是 `c_nf_`/`d_nf_` (伯爵领/公国级键名), 旧判据漏掉, 家业持有者
+            # 落进领地支 → 「张氏」+「刺史」=「张氏刺史」(实测 973.1.12 死者 73985);
+            # 家业一律称家族乡绅/当主/户长 (用户拍板: 统一称家族乡绅)。
             if tid is not None:
-                key = (self._lt.get(str(tid)) or {}).get("key") or ""
-                if key.startswith("x_nf_"):
+                if self._is_estate_title(tid):
                     nm = self.title_base_name(tid) or ""
                     sq = self._estate_holder_word(cid)
                     return f"{nm}{sq}" if nm else sq
