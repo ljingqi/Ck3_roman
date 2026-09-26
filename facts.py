@@ -9035,27 +9035,64 @@ class Facts:
         blob = f"{a.get('name') or ''}{desc}"
         return any(w in blob for w in self.ARTIFACT_PART_WORDS)
 
-    def _artifact_ever_own_kin(self, hist):
-        """流转史里是否**曾**归本宗族 (v60 问题2)。
+    def _artifact_ever_own_player(self, hist):
+        """流转史里是否**曾**归**主角本人** (v68 问题4; 用户拍板: 只统计主角确实持有的宝物)。
 
-        旧稿乙档按**末档 owner** 判归属 (`_is_own_kin(a.get("owner"))`) ——
-        崔佛全部 22 件遗骨在末档 (881.1.1 主角卒) 都已由 38660 传于继位者
-        15179, owner 不再是本宗族, 于是整批被丢弃 (《宝物志》全篇 0 件)。
-        遗骨是主角自铸的战利品, 正确判据是「流转史里任一条的 actor/recipient
-        为本宗族或主角本人」。十年档的**时期**归属仍由 `_held_asof` 截断。"""
+        旧稿按**宗族**判 (`_artifact_ever_own_kin`): 顿巴斯只是菲利普宗族的分支,
+        下一位传主伍尔夫克尔·拉玛松 (67155056) 同属该宗族, 于是 141 件遗骨
+        (965 档现主全是他) 整批入选; 素材又不写现主, 模型便把 13 副骨头搬进主角的帐
+        (实测成稿「王帐东壁的皮囊里…一具一具的人骨」)。判据收紧到 `player_id`:
+        崔佛 22 件遗骨 (流转史 actor=38665) 照旧入选, 尼克名下 0 件遗骨。"""
+        pid = self.cache.get("player_id")
+        if not isinstance(pid, int):
+            return False
         for e in hist:
             if not isinstance(e, dict):
                 continue
             for key in ("actor", "recipient"):
-                if self._is_own_dyn_kin(e.get(key)):
+                if e.get(key) == pid:
                     return True
         return False
+
+    def _artifact_owner_at(self, hist, as_of=None, fallback=None):
+        """宝物在 as_of 的持有者 id (v68 问题4): 「现主」行的数据源。
+
+        · as_of 为空 (终传/在世传) → 干脆用存档的 `owner` 字段, 那是**游戏自己写的**
+          当前持有者 (最准; 流转史末条未必记到最近一次易手);
+        · as_of 非空 (十年传) → 取 ≤as_of 的**最后一条带归属的流转**
+          (`ARTIFACT_HOLDER_SLOT` 定槽位, `created` 缺 recipient 时退 actor);
+          条目次序不定, 故按日期取最大者, 取不到再回落 `fallback`。"""
+        if not as_of and isinstance(fallback, int):
+            return fallback
+        best_dk, cid = None, None
+        ao = cl.date_key(as_of) if as_of else None
+        for e in hist:
+            if not isinstance(e, dict):
+                continue
+            t = e.get("type") or ""
+            slot = self.ARTIFACT_HOLDER_SLOT.get(t)
+            if not slot:
+                continue
+            d = e.get("date")
+            if ao is not None and (not d or cl.date_key(d) > ao):
+                continue
+            v = e.get(slot)
+            if not isinstance(v, int) and t == "created":
+                v = e.get("actor")
+            if not isinstance(v, int):
+                continue
+            dk = cl.date_key(d) if d else None
+            if best_dk is None or (dk is not None and dk >= best_dk):
+                best_dk, cid = dk, v
+        if cid is not None:
+            return cid
+        return fallback if isinstance(fallback, int) else None
 
     def _artifact_dyn_of(self, cid):
         """角色所属宗族 id (熔件 `dynasty_house` → `dynasty`); 查不到返回 None。
 
-        v60 (问题2): 从 `_artifact_candidates` 的内嵌函数提出来 ——
-        `_artifact_ever_own_kin` 与甲档「曾入外族之手」判定要共用同一份索引。
+        v60 (问题2): 从 `_artifact_candidates` 的内嵌函数提出来 —— 甲档「曾入外族之手」
+        判定要用这一份索引 (v68 问题4: 归属判据本身已由宗族收紧到主角本人)。
         (与既有的 `_dynasty_of_cid` 分名: 那一个走缓存并回退 `dynasty_id_of`。)"""
         if not isinstance(cid, int):
             return None
@@ -9065,17 +9102,6 @@ class Facts:
         h = c.get("dynasty_house")
         return (dh.get(str(h)) or {}).get("dynasty") if isinstance(h, int) else None
 
-    def _is_own_dyn_kin(self, cid):
-        """本宗族: 主角本人, 或与主角同宗族者 (供 `_artifact_candidates`)。"""
-        my_dyn = self.cache.get("dynasty_id")
-        my_pid = self.cache.get("player_id")
-        if not isinstance(cid, int):
-            return False
-        if cid == my_pid:
-            return True
-        d = self._artifact_dyn_of(cid)
-        return d is not None and my_dyn is not None and d == my_dyn
-
     def _artifact_candidates(self, as_of):
         """《宝物志》选材 (v43) —— 返回 [(aid, kind, a, hist)], 已按 as_of 截断。
 
@@ -9084,7 +9110,9 @@ class Facts:
           · "part"  角色部件宝物 —— 本宗族持有的遗骸/部件所制之宝, **v61 起只收
             绿色以上** (`ARTIFACT_PART_RARITY`: masterwork/famed/illustrious),
             亦不要求曾入外族之手 (头骨高脚杯是主角自铸的战利品)。
-        归属一律按 as_of 判定 (十年传记不穿越; 见 v39 注释)。"""
+        归属一律按 as_of 判定 (十年传记不穿越; 见 v39 注释)。
+        v68 (问题4, 用户拍板「只统计主角确实持有的宝物」): 两档的归属判据都由
+        **宗族**收紧到**主角本人** —— 见 `_artifact_ever_own_player` 与 `_held_asof`。"""
 
         my_dyn = self.cache.get("dynasty_id")
         my_pid = self.cache.get("player_id")
@@ -9093,13 +9121,9 @@ class Facts:
             """角色所属宗族 id; 查不到返回 None。"""
             return self._artifact_dyn_of(cid)
 
-        def _is_own_kin(cid):
-            """本宗族: 主角本人, 或与主角同宗族者 (v60: 收口到 `_is_own_dyn_kin`,
-            供 `_artifact_ever_own_kin` 共用同一份 dynasty_house 索引)。"""
-            return self._is_own_dyn_kin(cid)
-
         def _held_asof(hist, as_of):
-            """as_of 之前是否已归入本宗族 (v39)。as_of 为空 (终传) 时不做此判定。"""
+            """as_of 之前是否已归**主角本人** (v39; v68 问题4 由宗族收紧到本人)。
+            as_of 为空 (终传) 时不做此判定。"""
             if not as_of:
                 return True
             ao = cl.date_key(as_of)
@@ -9114,11 +9138,10 @@ class Facts:
                 cid = e.get(slot)
                 if not isinstance(cid, int) and t == "created":
                     cid = e.get("actor")
-                if _is_own_kin(cid):
+                if isinstance(cid, int) and cid == my_pid:
                     return True
             return False
 
-        related = _related_ids(self)
         art = (self.melt.get("artifacts") or {}).get("artifacts") or {}
         out = []
         for aid, a in art.items():
@@ -9130,9 +9153,11 @@ class Facts:
             # v39: as_of 归属判定 —— 该时期前未归入本宗族的宝物整件不收
             if not _held_asof(hist, as_of):
                 continue
+            if not (self._artifact_ever_own_player(hist)
+                    or (as_of is None and a.get("owner") == my_pid)):
+                continue
             kind = ""
-            if a.get("rarity") in self.ARTIFACT_RARITY \
-                    and a.get("owner") in related:
+            if a.get("rarity") in self.ARTIFACT_RARITY:
                 cross = False
                 for e in hist:
                     for key in ("actor", "recipient"):
@@ -9146,8 +9171,7 @@ class Facts:
                     kind = "relic"
             # v61 (问题1): 乙档先过档位门槛 (绿色以上), 再看是否部件宝物 ——
             # 门槛在前, 顺带省掉对 common 遗骨的描述清洗开销。
-            if not kind and a.get("rarity") in self.ARTIFACT_PART_RARITY \
-                    and self._artifact_ever_own_kin(hist):
+            if not kind and a.get("rarity") in self.ARTIFACT_PART_RARITY:
                 desc = self._artifact_material(a.get("description"), as_of
                                                or self.as_of)
                 if self._is_part_artifact(a, desc):
@@ -9215,6 +9239,34 @@ class Facts:
             rarity = rarity_zh.get(a.get("rarity")) or a.get("rarity") or ""
             # v29b: 稀有度改逗号同位语 (「宝物：X，名望级」), 不用括注
             lines = [f"宝物：{name}，{rarity}"]
+            # v68 (问题4): 「现主 / 现藏」两行 —— 素材此前只有名称/材质/流转三类,
+            # 模型读不出「这件现在还在不在主角手上」(成稿把 141 件现属他人宗族的
+            # 遗骨写成主角帐中之物)。程序端已能确定性给出, 故不由提示词叮嘱:
+            # 现主取 as_of 时点的持有者 (流转史末条归属), 非传主时明标;
+            # 现藏取该条流转的 location → 州府名 (缺则不发)。
+            _own = self._artifact_owner_at(hist, self.as_of, fallback=a.get("owner"))
+            _onm = self.name_or(_own, "") if isinstance(_own, int) else ""
+            if _onm:
+                lines.append(f"现主：{_onm}" if _own == self.cache.get("player_id")
+                             else f"现主：{_onm}，非传主")
+            _loc = None
+            _ldk = None
+            for e in hist:
+                if not isinstance(e, dict) or not isinstance(e.get("location"), int):
+                    continue
+                _d = e.get("date")
+                if self.as_of and (not _d or cl.date_key(_d) > cl.date_key(self.as_of)):
+                    continue
+                _dk = cl.date_key(_d) if _d else None
+                if _ldk is None or (_dk is not None and _dk >= _ldk):
+                    _ldk, _loc = _dk, e.get("location")
+            _lname = ""
+            if _loc is not None:
+                _ctid = self.county_at_province(_loc)
+                if _ctid is not None:
+                    _lname = self.title(_ctid, self.as_of) or ""
+            if _lname:
+                lines.append(f"现藏：{_lname}")
             if kind == "part":
                 mat = self._artifact_material(a.get("description"), self.as_of)
                 if mat:
