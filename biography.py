@@ -2111,6 +2111,10 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
     subject_note = _subject_note(article, facts)
     events_block = _key_events_block(facts, key, section,
                                      subject=_article_subject(facts, cache, key))
+    # v73: 《XX历代记》的纪事各节是**按朝代分段**的, 与开篇（王朝总说）本不必承接
+    # 大段文字 —— 实测摘要给足时模型会把开篇的总说整段重写一遍 (各节自述一遍王朝
+    # 更迭)。故本篇摘要收紧到「一句引子 + 一句结尾」。
+    _dg_limit, _dg_tail = (120, 90) if key == "chaoju" else (260, 180)
     user_msg = style.PROMPTS["mid_user"].format(
         shared=_shared_facts_block(facts, subject=article.get("subject"), key=key),
         theme=_decade_theme_note(facts),
@@ -2119,7 +2123,8 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
         title=title, focus=article.get("focus") or article.get("theme") or "",
         sec_title=section["title"], sec_req=section["req"],
         lead_title=article["sections"][0]["title"],
-        lead_digest=_lead_digest(lead_text, facts_text=facts_txt))
+        lead_digest=_lead_digest(lead_text, limit=_dg_limit, tail=_dg_tail,
+                                 facts_text=facts_txt))
     return [{"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg}]
 
