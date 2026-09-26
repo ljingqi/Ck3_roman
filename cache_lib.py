@@ -579,18 +579,22 @@ def open_melt_text(path):
     return open(path, encoding="utf-8")
 
 
+def _melt_binary(path):
+    """熔件/边车的**二进制**句柄 (`.json` / `.json.gz` / `.json.xz` 都认)。
+    v66: 从 `_read_melt_bytes` 里抽出来, 供流式截段 (`load_melt_section`) 复用。"""
+    low = str(path).lower()
+    if low.endswith(".xz"):
+        return lzma.open(path, "rb")
+    if low.endswith(".gz"):
+        return gzip.open(path, "rb")
+    return open(path, "rb")
+
+
 def _read_melt_bytes(path):
     """二进制整读熔件/边车 (`.json` / `.json.gz` / `.json.xz` 都认)。v49 (O2):
     `json.loads(bytes)` 由 C 解析器自己解 UTF-8, 比文本模式少一层增量解码器
     (实测省 ≈0.5 s/244 MiB 档)。"""
-    low = str(path).lower()
-    if low.endswith(".xz"):
-        with lzma.open(path, "rb") as fp:
-            return fp.read()
-    if low.endswith(".gz"):
-        with gzip.open(path, "rb") as fp:
-            return fp.read()
-    with open(path, "rb") as fp:
+    with _melt_binary(path) as fp:
         return fp.read()
 
 
@@ -602,6 +606,86 @@ def melt_file_exists(path):
         if os.path.isfile(cand):
             return cand
     return None
+
+
+def load_melt_section(path, key):
+    """只取熔件顶层 `key` 段的 JSON 对象 (流式截段; v66)。
+
+    为什么: 熔件顶层 `landed_titles` 段起于解压流 3.4 MB 处 (全量 206 MB), 只取
+    这一段比 `load_melt` (实测 1–3 min/档) 快两个数量级 (0.3 s/档)。逐档回填
+    `cache["title_dyn_names"]` 只用到这一段 (见 `_latch_title_dyn_names`), 故单独
+    开一个读取口, 而不为 84 档跑 84 次全量载入。
+
+    取法: 先流式找到 `"<key>":`, 再按 JSON 的字符串/转义规则做花括号配对, 截到该
+    对象闭合即止; 段落字节仍交 `json.loads` 解析, 且**与 `load_melt` 同一个
+    `object_pairs_hook=_merge_dup_pairs`** (Clausewitz 会把同一键渲染多遍, 默认的
+    last-wins 会丢数据) —— 故结果与 `load_melt(path)[key]` **逐键相同** (调用方可用
+    load_melt 复核, 见 tools/backfill_title_dyn_names.py 的 `--check`)。取不到该段
+    返回 None。"""
+    pat = ('"%s":' % key).encode("utf-8")
+    buf = b""
+    off = -1
+    with _melt_binary(path) as fp:
+        while off < 0:
+            chunk = fp.read(1 << 20)
+            if not chunk:
+                return None
+            buf += chunk
+            i = buf.find(pat)
+            if i >= 0:
+                off = i + len(pat)
+        i, start, depth = off, -1, 0
+        while True:
+            while i >= len(buf):
+                chunk = fp.read(1 << 20)
+                if not chunk:
+                    return None
+                buf += chunk
+            c = buf[i:i + 1]
+            if start < 0:
+                if c in (b" ", b"\r", b"\n", b"\t"):
+                    i += 1
+                    continue
+                if c != b"{":
+                    return None
+                start, depth = i, 1
+                i += 1
+                continue
+            if c == b'"':
+                i += 1
+                while True:
+                    while i >= len(buf):
+                        chunk = fp.read(1 << 20)
+                        if not chunk:
+                            return None
+                        buf += chunk
+                    ch = buf[i:i + 1]
+                    if ch == b"\\":
+                        i += 2
+                        continue
+                    if ch == b'"':
+                        i += 1
+                        break
+                    i += 1
+                continue
+            if c == b"{":
+                depth += 1
+            elif c == b"}":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    break
+            i += 1
+    return json.loads(buf[start:i], object_pairs_hook=_merge_dup_pairs)
+
+
+def load_melt_landed_titles(path):
+    """熔件 → `landed_titles.landed_titles` 段 (v66 便捷口, 与 `_db(melt)` 口径的
+    头衔字典同构)。段缺失返回 {}。"""
+    sect = load_melt_section(path, "landed_titles")
+    if not isinstance(sect, dict):
+        return {}
+    return sect.get("landed_titles") or {}
 
 
 def melt_stem(path):
