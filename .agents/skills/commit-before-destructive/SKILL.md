@@ -1,6 +1,12 @@
 ---
 name: commit-before-destructive
-description: Use whenever a change to this CK3 biography project (<项目根>) touches production code or regenerable-but-expensive artifacts — editing facts.py / biography.py / cache_lib.py / pipeline.py / localization.py / style.py / llm.py / htmlview.py, rebuilding data/*.json or output/**/data/*.json, running rebuild-cache / migrate / rebuild, or deleting or overwriting existing files. The rule is: commit the current working tree as a checkpoint first, so every later step can be rolled back cleanly.
+description: >-
+  Use whenever a change to this CK3 biography project (<项目根>) touches production code or
+  regenerable-but-expensive artifacts — editing facts.py / biography.py / cache_lib.py /
+  pipeline.py / localization.py / style.py / llm.py / htmlview.py, rebuilding data/*.json or
+  output/**/data/*.json, running rebuild-cache / migrate / rebuild, or deleting or overwriting
+  existing files. The rule is: commit the current working tree as a checkpoint first, so every
+  later step can be rolled back cleanly.
 ---
 
 # 破坏性改动前先 commit（commit-before-destructive）

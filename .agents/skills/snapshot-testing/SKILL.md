@@ -1,6 +1,12 @@
 ---
 name: snapshot-testing
-description: Use whenever this CK3 biography project (<项目根>) needs to read save data, inspect facts, check a playthrough's output, reproduce a prompt, or run any verification during development — before running pipeline.py rebuild-cache / migrate / scan, before deleting output/<家族>/data/melt_*.json, or before loading a melt. The rule is: look for an existing melt and an existing facts snapshot first, reuse them, and load a 100–125MB melt at most once per session; never re-melt a save to "get a clean slate".
+description: >-
+  Use whenever this CK3 biography project (<项目根>) needs to read save data, inspect facts, check
+  a playthrough's output, reproduce a prompt, or run any verification during development — before
+  running pipeline.py rebuild-cache / migrate / scan, before deleting
+  output/<家族>/data/melt_*.json, or before loading a melt. The rule is: look for an existing melt
+  and an existing facts snapshot first, reuse them, and load a 100–125MB melt at most once per
+  session; never re-melt a save to "get a clean slate".
 ---
 
 # 测试走快照，不重熔存档（snapshot-testing）

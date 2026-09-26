@@ -1,6 +1,11 @@
 ---
 name: ck3-game-source
-description: Use whenever this CK3 biography project (<项目根>) needs to look up a game mechanic, an opinion/memory/hook key, a localization string, or any "why does the save say X" question — before grepping the game install or the wiki. The rule is: AUH (All Under Heaven / TGP 天命) is BASE-GAME content shipped under game/, not a mod, so read game/ directly; and check the existing docs/调研_*.md first so the same research is not redone.
+description: >-
+  Use whenever this CK3 biography project (<项目根>) needs to look up a game mechanic, an
+  opinion/memory/hook key, a localization string, or any "why does the save say X" question —
+  before grepping the game install or the wiki. The rule is: AUH (All Under Heaven / TGP 天命) is
+  BASE-GAME content shipped under game/, not a mod, so read game/ directly; and check the existing
+  docs/调研_*.md first so the same research is not redone.
 ---
 
 # 读游戏机制先看这里（ck3-game-source）
