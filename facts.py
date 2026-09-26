@@ -2386,12 +2386,30 @@ class Facts:
         return self._title_tier_word(tier, cid, tid, government, date,
                                      independent=independent)
 
+    def _custom_name(self, tid):
+        """玩家自定义头衔名 (v67): `title_name_data.custom`, 无则 ''。
+
+        游戏口径: 自定义头衔窗口的「名称」栏 (`TITLE_NAME_FIELD` = 名称,
+        `game/localization/simp_chinese/gui/title_view_l_simp_chinese.yml:154`)
+        落在 `custom`, 它就是该头衔的显示名 —— 游戏自己拿它当称名比对
+        (`has_custom_title_name` / `custom_title_name`, 见
+        `game/common/scripted_triggers/10_tgp_triggers.txt:69-81`), 存档信封的
+        `meta_data.meta_title_name` 也认它 (卡尔 932/934 档 = 「葛洛夫帮」)。
+        故 `specific_title_name` / `name` 只是**没被自定义时**的生成名。"""
+        t = self._lt.get(str(tid)) or {}
+        return ((t.get("title_name_data") or {}).get("custom") or "").strip()
+
     def _specific_name(self, tid):
         """游戏算好的动态头衔名 (v26): 游牧/宗族命名领域的领域名, 如
         c_khortytsia 的「可萨田所部」、k_croatia 的「马扎尔」。静态 name
-        (也勒克河/克罗地亚) 只是地名, 与游戏内显示不符。无则返回 ''。"""
+        (也勒克河/克罗地亚) 只是地名, 与游戏内显示不符。无则返回 ''。
+
+        v67: 该头衔**带自定义名**时返回 '' —— 生成名在游戏里本就不显示 (见
+        `_custom_name`), 让调用方回到 custom 与其更名史 (v52「营地本名」口径)。"""
         t = self._lt.get(str(tid)) or {}
         tnd = t.get("title_name_data") or {}
+        if (tnd.get("custom") or "").strip():
+            return ""
         return (tnd.get("specific_title_name") or "").strip()
 
     def _name_at_date(self, tid, date):
@@ -2408,10 +2426,21 @@ class Facts:
         (`_dyn_reign_name`: 本缓存 + 同战役其它传主缓存, 且**任期感知**), 命中即用;
         早于首档 / 未覆盖 (未回填的旧缓存) 才退末档 `specific_title_name`。旧稿直接
         读末档现值、与入参 `date` 无关, 于是 936 年的事件套上 954 年才有的名字
-        (实测 936 年的 c_kherson 读成「马扎尔迈杰希部」)。`date` 为空时逐字同旧稿。"""
+        (实测 936 年的 c_kherson 读成「马扎尔迈杰希部」)。`date` 为空时逐字同旧稿。
+
+        v67 (用户 2026-09-27 拍板 D1-a): 该头衔带**自定义名**时 ① 整个让位 ——
+        生成名 (逐档动态名 + 末档 specific) 不参战, 落到 ② 自定义名的更名史 /
+        ③ custom。为什么: 卡尔营地 `x_d_laamp_4193` 的 `specific_title_name`
+        (「持剑骑手」) **在营地活着的 931–934 档里根本不存在**, 首见于 934.4.26
+        营毁之后的 935 档; 逐档沿革表又只闩非空值 (`cache_lib._latch_title_dyn_names`),
+        于是 931–934 的每个日期都退回末档 sticky 值, 把玩家自定义名「葛洛夫帮」
+        (931.5.11 更名, 存档信封同认) 顶替掉。详见 docs/方案_v67_营地自定义名.md。"""
         t = self._lt.get(str(tid)) or {}
         tnd = t.get("title_name_data") or {}
-        specific = self._dyn_reign_name(tid, date) or self._specific_name(tid)
+        # v67: ① 只在无自定义名时取值 (带 custom 时 `_specific_name` 亦返回 '',
+        # 此处一并闸掉逐档动态名 —— 本档沿革表那一点记的正是营毁后的生成名)
+        specific = "" if (tnd.get("custom") or "").strip() \
+            else (self._dyn_reign_name(tid, date) or self._specific_name(tid))
         if specific:
             return specific
         base = (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()

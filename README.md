@@ -1858,6 +1858,39 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 | 第三轮改后不回归 | `snap_v63_final` vs `snap_v63_veto2` 逐字符串全等；462 名在押者判级 `unknown 320 / not_battle 108 / raid 25 / battle 7 / batch 2`，`battle` 档 7/7 `house_arrest` |
 | 既有 FAIL 基线 | 上述 3 条在 v62 快照（`snap_devour_d3.json` 与工作树 stash 对照）**同样 FAIL**，属 v56/v40 遗留，本轮不动 |
 
+## v67 修正（营地自定义名：玩家设定的「葛洛夫帮」被生成名「持剑骑手」顶替）
+
+方案与取证见 docs/方案_v67_营地自定义名.md（含 §9 实施记录）。用户 2026-09-27 报：
+卡尔在**冒险者营地期间自定义的头衔名「葛洛夫帮」**在传记里被**开局随机生成的营地名
+「持剑骑手」**顶替，通篇一次未现；2026-09-27 拍板 D1-a（自定义名压过生成名，营地全期同名）。
+
+| # | 用户所见 | 根因（改前） | 修法（落点） |
+| --- | --- | --- | --- |
+| 1 | 卡尔三篇里营地恒称「持剑骑手」：历任「930年11月7日**创建持剑骑手**；934年4月26日…并**毁弃持剑骑手**」、【冒险者行踪】「任无地冒险者营地之**持剑骑手**头目」（随 22 个请求下发，故正文「持剑骑手之号」满篇） | `_name_at_date` 的 ①「动态名」一命中即返回（`facts.py:2414`），② 更名史与 ③ `custom` 永无机会；而 `_specific_name` 读的是**末档**熔件 —— 该营地 `specific_title_name`（持剑骑手）**在它活着的 931–934 档里根本不存在**，首见于 934.4.26 营毁之后的 935 档（逐档实测：930–934 档 `name=持剑骑手 / custom=葛洛夫帮`，无 specific；932/934 档**存档信封 `meta_title_name` = 葛洛夫帮**）。v66 的逐档沿革表救不了：它只闩非空值（`cache_lib.py:1941`），首点落在 935.1.1，早于首点的日期正好由末档 sticky 值兜上。同源次序另在三处（`title():2234`、`title_base_name:4034`、`title():2250`/`_title_name_at:2758`），同一头衔因此有两个名字 | 游戏口径：自定义窗口「名称」栏 = `title_name_data.custom`，它就是显示名（`title_view_l_simp_chinese.yml:152-160`；游戏拿 `has_custom_title_name` / `custom_title_name` 当称名比对，`10_tgp_triggers.txt:69-81`）。故新增 `Facts._custom_name`，并在两处加闸：**`_specific_name` 带 custom 返回 `''`**、**`_name_at_date` 的 ① 带 custom 整个让位**（逐档动态名与末档 specific 一口不参战）⇒ 落到 ② 自定义名的更名史（931.5.11 → 葛洛夫帮）→ ③ `custom`。其余出口（`title()` x_ 分支、`title_base_name`、`_title_name_at`）自动归位；无 custom 的头衔取值逐字不变 |
+
+**取证与回归脚本（本轮新增，均为只读/幂等）**
+
+`
+tools/tmp_probe_custom_dist.py     带 custom 的头衔普查（11 家族末档；流式截段，秒级）
+tools/tmp_probe_cache_dyn.py       缓存逐档沿革表 title_dyn_names 与主头衔名史
+tools/tmp_probe_cache_pth.py       缓存 player_title_history（逐档口径，本已含两个名字）
+tools/tmp_probe_v67_camp_name.py   现口径 × 拟修口径逐日对照（10 日期 × 6 头衔）
+tools/tmp_probe_v67_facts_diff.py  全事实面差异（内存打补丁跑 build_facts，不碰生产代码）
+tools/verify_v67_unit.py           本轮 32 条断言（纯函数 13 + 实地 9 + 非回归 10）
+tools/check_v67_norm.py            归一核对：把新快照的「葛洛夫帮」换回「持剑骑手」后应零残差
+`
+
+**回归与验收状态**
+
+| 项 | 结果 |
+| --- | --- |
+| `tools/verify_v67_unit.py` | **32/32 PASS**（纯函数：custom 闸 / 更名史按日 / 无 custom 逐字不变；实地 60836：941.1.1 与 final 两档历任两串与营地行全期 = 葛洛夫帮；非回归：诺兰 19750/18118、菲利普 18114、罗加兰 2844 十个日期逐字不变） |
+| 快照对照（`snapdiff` + `check_v67_norm`，60836 `941.1.1`/`final`） | 变化块 19/23，**归一后残差 0** —— 即整棵事实面的唯一改动就是营地名（37 处），无任何其它位移 |
+| 快照对照（38665，另一位传主） | 变化块 1/23（承继行引用卡尔的历任），**归一后残差 0** |
+| `tools/verify_fast.py` | FAIL 集合与改前**逐条相同**（6 条既有 FAIL，非本轮引入） |
+| 影响面普查 | 11 个战役里带 custom 的头衔共 9 个，**同时**带非空 `specific_title_name` 的只有本档营地 1 个 ⇒ 其余家族天然零改动 |
+| 成稿重生成 | **待办**：本轮只改事实层与提示词素材（快照已证），三篇成稿需按常规流程重生成后「葛洛夫帮」才会进正文 |
+
 ## v66 修正（游牧迁移「不停迁离库曼顿巴斯部」：动态头衔名日期化 / 用地名）
 
 方案与取证见 docs/方案_v66_游牧迁移用地名.md（含 §9 实施记录）。测试集
