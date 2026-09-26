@@ -2880,24 +2880,45 @@ def _chrono_split(periods, cap=None):
 
 
 def _mid_req_for_group(base_req, idx, total, group):
-    """《家室列传》纪事**分组请求**的板块要求 (v63 问题2)。
+    """《家室列传》纪事**分组请求**的板块要求 (v63 问题2; v74 问题1 分两档)。
 
-    `base_req` = 原「纪事·门庭恩怨」的整段要求 (含篇幅与主旨); 这里只在前面
-    接一句**本组范围**的正向说明 —— 本请求只写这一房 (配偶 + 其所出子女),
-    素材块也只给这一房的档案。用户拍板的口径是「按照主角的配偶一…然后配偶二…」,
-    故要求句照此写: 本组是哪一房、第几房 (共几房)、这几个人是谁。
+    `base_req` = 该类板块的整段要求 (含篇幅与主旨); 这里只在前面接一句**本组范围**
+    的正向说明:
+      · 妻妾节 (`kind == "spouse"`) —— 本请求只写这一房 (配偶 + 其所出的婴幼儿);
+      · 子女节 (`kind == "child"`)  —— 本请求只写这一名/这一组子女的成年行迹。
     人数与关系全部由程序给出, 不留空位让模型猜。"""
     label = (group or {}).get("label") or ""
     kids = list((group or {}).get("children") or [])
-    head = f"本请求只写这一房：{label}"
-    if total > 1:
-        head += f"（第{idx + 1}房，共{total}房）"
-    head += "。"
-    if kids:
-        head += f"这一房所出的子女共{len(kids)}人，已随本组档案一并给出；" \
-                "本板块写这一房的夫妻、子女与其家门之事。"
+    kind = (group or {}).get("kind") or "spouse"
+    mates = list((group or {}).get("mates") or [])
+    names = [str(x) for x in ((group or {}).get("names") or []) if x]
+    who = "、".join(names) if names else label
+    head = ""
+    if kind == "child":
+        head = f"本请求只写这一组子女：{who}"
+        if total > 1:
+            head += f"（第{idx + 1}节，共{total}节）"
+        head += "。"
+        if len(kids) > 1:
+            head += (f"本组子女共{len(kids)}人，已随本组档案一并给出；"
+                     "本板块逐人写其受任、婚配、子嗣与家门之事。")
+        else:
+            head += ("本板块写这一名子女的成年行迹：受任何职、与何人成婚、"
+                     "已育子女，以及其与父母的往来。")
     else:
-        head += "这一房名下未载子女；本板块写这一房夫妻与其家门之事。"
+        head = f"本请求只写这一房：{label}"
+        if total > 1:
+            head += f"（第{idx + 1}节，共{total}节）"
+        head += "。"
+        head += f"本房为{who}。"
+        if len(mates) > 1:
+            head += (f"本房含{len(mates)}位妻妾，已随本组档案一并给出；"
+                     "本板块逐人写其结缡、情事与家门之事。")
+        if kids:
+            head += (f"这一房所出的未成年子女共{len(kids)}人，"
+                     "已随本组档案一并给出；本板块写这一房的夫妻、子女与其家门之事。")
+        elif len(mates) <= 1:
+            head += "本板块写这一房夫妻与其家门之事。"
     return head + "\n\n" + (base_req or "")
 
 
@@ -2932,14 +2953,20 @@ def build_articles(facts, cache, cfg):
             titles["lead"] = _var["lead_title"]
             titles["mid"] = _var["mid_title"]
         defaults = {"lead": "开篇", "mid": "纪事"}
-        # v63 (问题2, 用户拍板): 《家室列传》纪事**按门庭分组**逐组成篇 ——
-        # 「配偶一 + 其所出子女 → 配偶二 + 其所出子女 …」, 上限 5 个请求
-        # (`facts.JIASHI_GROUP_MAX`)。无分组 (无配偶无子女) 时回落单块。
+        # v63 (问题2, 用户拍板): 《家室列传》纪事**按门庭分组**逐组成篇。
+        # v74 (问题1, 用户 2026-09-27 拍板): 分组改为两段式 ——
+        # 「妻妾节 (门庭恩怨·<配偶>)」与「子女节 (诸子行迹·<子名>)」共
+        # `facts.JIASHI_MID_MAX` = 5 节 (连开篇共 6 篇), 名额按素材权重在两池间分配。
+        # 无分组 (无配偶无子女) 时回落单块。
         if key == "jiashi":
             groups = facts.get("household_groups") or []
             mid_title = titles.get("mid") or defaults["mid"]
+            kid_title = "诸子行迹"
             mid_req = _section_req((_var or {}).get("mid")
                                    or style.SECTION_REQ.get(key, {}).get("mid")
+                                   or "按传记笔法写作。", facts)
+            kid_req = _section_req((_var or {}).get("kid")
+                                   or style.SECTION_REQ.get(key, {}).get("kid")
                                    or "按传记笔法写作。", facts)
             secs = [{"key": "lead",
                      "title": titles.get("lead") or defaults["lead"],
@@ -2949,11 +2976,15 @@ def build_articles(facts, cache, cfg):
                          or "按传记笔法写作。", facts)}]
             if groups:
                 for i, g in enumerate(groups):
+                    _kind = g.get("kind") or "spouse"
+                    _is_kid = _kind == "child"
                     secs.append({
-                        "key": f"mid{i + 1}",
-                        "title": f"{mid_title}·{g.get('label') or ('第%d房' % (i + 1))}",
-                        "req": _mid_req_for_group(mid_req, i, len(groups),
-                                                  g),
+                        "key": (f"kid{i + 1}" if _is_kid else f"mid{i + 1}"),
+                        "title": "%s·%s" % (
+                            (kid_title if _is_kid else mid_title),
+                            g.get("label") or ("第%d节" % (i + 1))),
+                        "req": _mid_req_for_group(
+                            kid_req if _is_kid else mid_req, i, len(groups), g),
                         "members": list(g.get("ids") or []),
                         "block_title": f"家室档案·{g.get('label') or ''}",
                     })

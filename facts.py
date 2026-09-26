@@ -18853,25 +18853,98 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
 # ---------------------------------------------------------------------------
 # 用户口径 (2026-09-24): 「按照主角的配偶一，怎么怎么样，有儿子谁谁谁，做了什么；
 # 然后配偶二又怎么怎么样这么来分」——即纪事不再是一篇大散文, 而是逐配偶成篇,
-# 每位配偶带出她/他所生的子女。上限 5 组 (`JIASHI_GROUP_MAX`), 超出的尾组并入
-# 末组 (末组标题另作「其余门庭」)。
+# 每位配偶带出她/他所生的子女。
 #
+# v74 (问题1, 用户 2026-09-27 拍板): 同上再改两处 ——
+#   ① 纪事板块总数恒为 `JIASHI_MID_MAX` = 5 (连开篇共 6 篇), 但**在「妻妾池」与
+#      「子女池」之间按素材权重分配**: 后代内容多则子女节多, 妻妾内容多则妻妾节多;
+#   ② **有事迹的子女各自成节** (《诸子行迹》), 无事迹的婴幼儿随其生母入妻妾节。
+#      旧稿把 19 名子女一律挂在生母名下, 于是「长子受任加贺国司 / 次子受任胆泽国司 /
+#      三子尚了天皇」全被埋进妻妾的奔丧流水 (田所档实测: 《家室列传》12,389 字里
+#      11 名子女合占 2,358 字)。
 # 为什么这么做 (实测): 旧稿把 26 名家人 (12 配偶 + 14 子女同胞) 的整档一次性下发,
 # `jiashi_mid` 的家室档案实测 **11,895 字符**, 而正文只要求 1200–1800 字 ——
 # 平均每人 60–90 字, 模型只能平铺报名字。分组后每组 2–5 人, 素材与篇幅匹配。
-JIASHI_GROUP_MAX = 5
+JIASHI_MID_MAX = 5
+JIASHI_GROUP_MAX = JIASHI_MID_MAX      # v74: 旧名保留 (文档/脚本引用)
+
+
+def _jiashi_member_weight(facts, cid):
+    """门庭成员的**素材权重** (v74 问题1): 事件条数 + 事迹加权。
+
+    事迹 = 头衔/历任(3) + 婚配(2) + 子嗣(2) + 承位句(3)。用于在妻妾池与子女池之间
+    分配纪事板块名额 (「后代内容多则给成年子女权重高」)。纯函数, 只读 facts。"""
+    p = (facts.get("characters") or {}).get(str(cid)) or {}
+    n = len(p.get("events") or [])
+    if p.get("titles_held"):
+        n += 3
+    if p.get("spouses"):
+        n += 2
+    if p.get("children"):
+        n += 2
+    if p.get("seat_note"):
+        n += 3
+    return n
+
+
+def _jiashi_notable(facts, cid):
+    """该子女是否**有事迹** (头衔/婚配/子嗣/承位) — 有事迹者各自成节。"""
+    p = (facts.get("characters") or {}).get(str(cid)) or {}
+    return bool(p.get("titles_held") or p.get("spouses")
+                or p.get("children") or p.get("seat_note"))
+
+
+def _balance_segments(seq, weights, k):
+    """把序列切成 k 段 (保持次序), 使**各段权重之和的最大值最小** (DP, v74)。
+
+    用于妻妾节: 「配偶一…配偶N」的次序不变, 但每节携带的素材尽量均衡
+    (田所档 6 位妻室、2 个妻妾节 → 珍子+伊子+诸子 / 平子+真子+徽子)。"""
+    seq, weights = list(seq), list(weights)
+    n = len(seq)
+    if k <= 1 or n <= k:
+        return [[x] for x in seq][:n] if n <= k else [seq]
+    # pref[i] = 前 i 项权重和
+    pref = [0]
+    for w in weights:
+        pref.append(pref[-1] + w)
+    INF = float("inf")
+    # dp[i][j] = 前 i 项切 j 段的最小「最大段和」
+    dp = [[INF] * (k + 1) for _ in range(n + 1)]
+    cut = [[0] * (k + 1) for _ in range(n + 1)]
+    dp[0][0] = 0
+    for j in range(1, k + 1):
+        for i in range(1, n + 1):
+            for p in range(j - 1, i):
+                if dp[p][j - 1] == INF:
+                    continue
+                seg = pref[i] - pref[p]
+                v = max(dp[p][j - 1], seg)
+                if v < dp[i][j]:
+                    dp[i][j] = v
+                    cut[i][j] = p
+    segs, i, j = [], n, k
+    while j > 0:
+        p = cut[i][j]
+        segs.append(seq[p:i])
+        i, j = p, j - 1
+    segs.reverse()
+    return [s for s in segs if s]
 
 
 def household_groups(f, facts):
-    """门庭分组 (v63 问题2) → [{"label":…, "ids":[…], "children":[…],
-    "kind": "spouse"|"other"}, …]。
+    """门庭分组 (v63 问题2 起; v74 问题1 改造) → [{"label", "ids", "children",
+    "kind": "spouse"|"child"|"sib", "mates": […], "n_mates": n}, …]。
 
     规则 (全部程序判定):
-      · 主角的配偶/妾按 **as_of 前的首见次序** 排 (primary_spouse 优先, 其余按
-        缓存 family 键的先后与 id 稳定排序) —— 与《家室列传》开篇的「结缡」次序一致;
-      · 每个子女归入其**生母**所在组 (`family.mother` ∩ 配偶集); 生母不在配偶集
-        (情妇/前妾已出册) 的子女归入末组「其余子女」;
-      · 主角的同胞 (`siblings`) 单列一组 (他们与配偶无涉);
+      · 纪事板块总数 = `JIASHI_MID_MAX` (5), 按**素材权重**在妻妾池/子女池之间分配:
+        妻妾池 S = Σ 配偶权重, 子女池 K = Σ 子女权重, n_kid = round(5·K/(K+S)),
+        两池各保底 1 节 (池空则该池 0 节), n_kid 上限 4;
+      · **有事迹**的子女 (头衔/婚配/子嗣/承位句) 按权重降序**各自成节**
+        (《诸子行迹·<子名>》), 名额用尽后其余子女并入末个子女节 (「其余子女」);
+      · 无事迹的子女随其**生母**入妻妾节; 妻妾按 as_of 前首见次序切 n_wife 段
+        (素材均衡, 次序不变 —— 与开篇「结缡」次序一致);
+      · 生母不在配偶集 (情妇已出册) 且非有事迹者 → 并入末个子女节;
+      · 主角的同胞 (`siblings`) 单列一节 (无妻妾则并入子女末节);
       · 每位成员的 id 只出现一次; 空组不产出。"""
     cache = f.cache
     pid = cache.get("player_id")
@@ -18907,38 +18980,95 @@ def household_groups(f, facts):
              if isinstance(x, int) or str(x).isdigit()]
         kid_mother[c] = m[0] if m else None
 
-    used = set()
-    out = []
-    for s in spouses:
-        members = [s] + [c for c in kids if kid_mother.get(c) == s]
-        members = [m for m in members if m not in used]
-        if not members:
-            continue
-        used.update(members)
-        prof = facts["characters"].get(str(s)) or {}
-        out.append({"label": prof.get("name") or f"配偶{s}",
-                    "ids": members, "children": [m for m in members if m != s],
-                    "kind": "spouse"})
-    rest_kids = [c for c in kids if c not in used]
-    if rest_kids:
-        used.update(rest_kids)
-        out.append({"label": "其余子女", "ids": rest_kids,
-                    "children": rest_kids, "kind": "other"})
-    rest_sibs = [s for s in sibs if s not in used]
+    wt = lambda c: _jiashi_member_weight(facts, c)          # noqa: E731
+    notable = sorted((c for c in kids if _jiashi_notable(facts, c)),
+                     key=lambda c: (-wt(c), str(c)))
+    # v74: 名额分配 —— 妻妾池 vs 子女池
+    slots = JIASHI_MID_MAX
+    S = sum(wt(s) for s in spouses)
+    K = sum(wt(c) for c in kids)
+    if not kids:
+        n_kid = 0
+    elif not spouses:
+        n_kid = slots
+    else:
+        share = (float(K) / (K + S)) if (K + S) else 0.0
+        n_kid = max(1, min(int(round(slots * share)), slots - 1))
+    n_wife = slots - n_kid if spouses else 0
+    rest_sibs = [s for s in sibs if str(s) in chars and s not in kids]
+    if rest_sibs and n_wife > 0:
+        n_wife -= 1                     # 给「同胞手足」留一节
+        n_kid = slots - n_wife
+
+    used, out = set(), []
+    # ① 妻妾节 (n_wife 段, 素材均衡, 次序不变) —— 各带本段妻妾的**无事迹**子女
+    plain = [c for c in kids if c not in set(notable)]
+    if n_wife > 0 and spouses:
+        segs = _balance_segments(spouses, [wt(s) for s in spouses], n_wife)
+        for si, seg in enumerate(segs):
+            mem = [m for m in seg if m not in used]
+            if not mem:
+                continue
+            kids_here = [c for c in plain
+                         if kid_mother.get(c) in mem and c not in used]
+            members = mem + kids_here
+            used.update(members)
+            names = [((facts["characters"].get(str(m)) or {}).get("name")
+                      or f"配偶{m}") for m in mem]
+            if len(names) == 1:
+                label = names[0]
+            elif si == len(segs) - 1 and len(segs) > 1:
+                label = "其余妻室"
+            else:
+                label = f"{names[0]}等{len(names)}房"
+            out.append({"label": label, "ids": members,
+                        "names": names + [((facts["characters"].get(str(c)) or {})
+                                           .get("name") or str(c))
+                                          for c in kids_here],
+                        "children": kids_here, "mates": mem,
+                        "n_mates": len(mem), "kind": "spouse"})
+    # ② 子女节 (《诸子行迹》): 有事迹者按权重降序各自成节, 名额用尽后并入末节
+    kid_pool = [c for c in (notable + sorted(plain, key=lambda c: (-wt(c), str(c))))
+                if c not in used]
+    if n_kid > 0 and kid_pool:
+        if n_kid == 1:
+            chunks = [kid_pool]
+        else:
+            head = kid_pool[: n_kid - 1]
+            tail = kid_pool[n_kid - 1:]
+            chunks = [[c] for c in head] + ([tail] if tail else [])
+        for chunk in chunks:
+            mem = [c for c in chunk if c not in used]
+            if not mem:
+                continue
+            used.update(mem)
+            prof = facts["characters"].get(str(mem[0])) or {}
+            if len(mem) == 1:
+                label = prof.get("name") or f"子女{mem[0]}"
+            else:
+                label = "其余子女"
+            out.append({"label": label, "ids": mem, "children": mem,
+                        "names": [((facts["characters"].get(str(c)) or {})
+                                   .get("name") or str(c)) for c in mem],
+                        "mates": [], "n_mates": 0, "kind": "child"})
+    # ③ 同胞手足
+    rest_sibs = [s for s in rest_sibs if s not in used]
     if rest_sibs:
-        used.update(rest_sibs)
-        out.append({"label": "同胞手足", "ids": rest_sibs,
-                    "children": [], "kind": "other"})
-    # 上限: 超出的尾组并入末组 (末组另标「其余门庭」)
-    if len(out) > JIASHI_GROUP_MAX:
-        head = out[: JIASHI_GROUP_MAX - 1]
-        tail = out[JIASHI_GROUP_MAX - 1:]
-        merged = {"label": "其余门庭",
-                  "ids": [i for g in tail for i in g["ids"]],
-                  "children": [i for g in tail for i in g["children"]],
-                  "kind": "other"}
-        head.append(merged)
-        out = head
+        if len(out) >= slots:           # 名额已满 → 并入末节
+            out[-1]["ids"] = list(out[-1]["ids"]) + rest_sibs
+            out[-1]["label"] = out[-1]["label"] + "与同胞"
+        else:
+            used.update(rest_sibs)
+            out.append({"label": "同胞手足", "ids": rest_sibs, "children": [],
+                        "mates": [], "n_mates": 0, "kind": "sib"})
+    # 兜底: 仍有未落位者 (极端数据) → 并入末节
+    left = [c for c in (kids + rest_sibs) if c not in used]
+    if left:
+        if out:
+            out[-1]["ids"] = list(out[-1]["ids"]) + left
+        else:
+            out.append({"label": "其余门庭", "ids": left, "children": left,
+                        "mates": [], "n_mates": 0, "kind": "child"})
     return out
 
 
