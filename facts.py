@@ -11110,7 +11110,12 @@ class Facts:
             if word and nm:
                 # v29b: 官职与大臣名直连 (「长史延寿」), 不再用「长史（延寿）」
                 # 这类括注同位语 — 现代汉语以「职+名」连写为正 (「宰相吴全略」)。
-                parts.append(f"{word}{nm}")
+                # v70 (用户 2026-09-27 拍板: 「姐姐姐姐一类的重复一起改掉」):
+                # 大臣称谓本身已带同一官职时只写一次 —— brief 称谓形如「御史大夫
+                # 欺诈者崔克勤」, 与席位词相连会成「御史大夫御史大夫欺诈者崔克勤」
+                # (模型照抄进正文)。
+                nm2 = nm[len(word):] if nm.startswith(word) else nm
+                parts.append(f"{word}{nm2}")
             elif word:
                 parts.append(f"{word}虚悬")
             elif nm:
@@ -12416,12 +12421,8 @@ def _mem_sentence_body(f, owner_id, mem):
                 return f"{owner}{verb}{title}。"
     s = tpl.format(name=owner, other=other, title=title, rel=rel,
                    fname=extra_fname)
-    # 参与者/头衔缺失时清理悬空占位
-    s = s.replace("与。", "。").replace("与，", "，").replace("与、", "、")
-    s = s.replace("让出。", "让出领地。")
-    s = s.replace("得。", "登位。")
-    # v56 (问题1b): 加冕句取不到头衔时不留下悬空的「加冕为。」
-    s = s.replace("加冕为。", "加冕。")
+    # 参与者/头衔缺失时清理悬空占位 (v70: 整段收口到可单测的纯函数)
+    s = _fixup_mem_placeholders(s, extra_fname=extra_fname)
     # 未补出父亲时不留空分句 (v55: 补注已由括注改为「，生父X」)
     if not extra_fname:
         s = s.replace("，生父。", "。").replace("，生父", "")
@@ -12433,6 +12434,27 @@ def _mem_sentence_body(f, owner_id, mem):
                                          wedding=mem.get("creation_date"))
         if note:
             s = s.rstrip("。") + note + "。"
+    return s
+
+
+def _fixup_mem_placeholders(s, extra_fname=""):
+    """记忆句的悬空占位收口 (从 `_mem_sentence` 抽出, v70: 便于单测)。
+
+    规则:
+      · 参与者缺失 → 「与。」「与，」「与、」的悬空连接词去掉;
+      · 头衔缺失的让土句 → 「让出领地。」;
+      · 头衔缺失的登位句 → 「{名}登位。」(v70 修: 模板是
+        `MEMORY_TEMPLATES['ascended_throne_memory']` = 「{name}登位，得{title}。」,
+        旧稿把「得。」整段替换成「登位。」, 于是成「斯韦克·克文登位，登位。」
+        —— 实测 13 处, 模型照抄);
+      · 加冕句缺头衔 → 「加冕。」; 缺生父 → 去掉「，生父」。"""
+    s = s.replace("与。", "。").replace("与，", "，").replace("与、", "、")
+    s = s.replace("让出。", "让出领地。")
+    s = s.replace("登位，得。", "登位。")
+    s = s.replace("得。", "登位。")
+    s = s.replace("加冕为。", "加冕。")
+    if not extra_fname:
+        s = s.replace("，生父。", "。").replace("，生父", "")
     return s
 
 

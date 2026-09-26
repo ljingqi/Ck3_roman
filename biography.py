@@ -1169,6 +1169,7 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
             for x in sorted(common):
                 bits.append(f"{label}{_with_year(x, _kin_or(facts, cache, x))}")
         for e in [k] + grp:
+            _seen_sp = set()      # v70: 同一配偶只挂一个关系词 (见下单体分支注释)
             for key, kind in (("primary_spouse", "spouse"), ("spouse", "spouse"),
                               ("former_spouses", "former"),
                               ("concubine", "concubine")):
@@ -1177,6 +1178,9 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
                         x = int(x)
                     except (TypeError, ValueError):
                         continue
+                    if x in _seen_sp:
+                        continue
+                    _seen_sp.add(x)
                     b = f"{e.get('name')}之{_gword(e.get('id'), x, kind)}" \
                         f"{_kin_or(facts, cache, x)}"
                     if b not in seen_bits:
@@ -1191,6 +1195,12 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
                 except (TypeError, ValueError):
                     continue
                 bits.append(f"{label}{_with_year(x, _kin_or(facts, cache, x))}")
+        _seen_sp = set()
+        # v70 (用户 2026-09-27 拍板: 「姐姐姐姐一类的重复一起改掉」): 同一人只挂
+        # 一个配偶关系词 —— 存档 `family_data.former_spouses` 会把现配偶一并列出
+        # (实测 温映娘: 「夫瓯王愚者韩元佶、夫韦鲁、前夫韦鲁、前夫瓯王愚者韩元佶」
+        # 前后两份互为倒序), 旧稿按整串去重 (b 串带关系词、不相等) 故两份都留下。
+        # 取词优先序即循环序: 正妻/正夫 → 现配偶 → 前配偶 → 妾。
         for key, kind in (("primary_spouse", "spouse"), ("spouse", "spouse"),
                           ("former_spouses", "former"),
                           ("concubine", "concubine")):
@@ -1199,6 +1209,9 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
                     x = int(x)
                 except (TypeError, ValueError):
                     continue
+                if x in _seen_sp:
+                    continue
+                _seen_sp.add(x)
                 lbl = _gword(k.get("id"), x, kind)
                 b = f"{lbl}{_kin_or(facts, cache, x)}"
                 if b not in seen_bits:
@@ -2316,6 +2329,35 @@ def _strip_meta_notes(text):
     return out
 
 
+# v70 (用户 2026-09-27 拍板「姐姐姐姐一类的重复一起改掉」): 成稿侧相邻重复词闸。
+# 只收**亲属称谓 / 爵职国号 / 出身词**三类 —— 这些词紧邻重复两次在任何语境下都是
+# 笔误 (实测模型输出: 「家中姐姐姐姐众多」「有妹妹妹妹七人」「她的妻子妻子还剩…」
+# 「神圣罗马帝国帝国公主」)。汉语合法叠词 (人人/一一/常常/渐渐)、数字叠字
+# (一一一一年)、以及人名与「X、X」式并列 (「芙蕾雅、芙蕾雅」是军中两名同名者,
+# 模型还专门作了解释) 一律不入表, 故闸门只对下表内的词、且只对**直连**形态生效。
+_DEDUP_WORDS = (
+    # 亲属称谓
+    "姐姐", "妹妹", "哥哥", "弟弟", "兄长", "兄弟", "姊妹", "妻子", "丈夫",
+    "母亲", "父亲", "儿子", "女儿", "祖父", "祖母", "伯父", "叔父", "姑母",
+    "姨母", "舅父", "舅舅", "外甥女", "外甥", "侄女", "侄子",
+    # 爵职与国号
+    "帝国", "王国", "公国", "侯国", "伯国", "皇朝", "天朝", "王朝", "汗国",
+    "苏丹国", "哈里发国", "皇帝", "皇后", "国王", "公爵", "伯爵", "侯爵",
+    "男爵", "可汗", "大汗", "酋长", "节度使", "刺史", "宰相", "尚书",
+    # 出身词 (游戏特质)
+    "庶出", "私生子",
+)
+_DEDUP_RE = re.compile("(" + "|".join(sorted(_DEDUP_WORDS, key=len, reverse=True))
+                       + r")\1")
+
+
+def _dedup_adjacent_words(text):
+    """同一词紧邻出现两次 → 只留一次 (v70)。见 `_DEDUP_WORDS` 的范围说明。"""
+    if not text:
+        return text
+    return _DEDUP_RE.sub(r"\1", text)
+
+
 def _normalize_section(text, sec_title, article_title=""):
     """板块正文规范化: 标题统一为 ###, 表格转自然语言, 无标题补 ### 板块名。
     v11: 剥离板块内的「太史公曰/史家按」评点段 (只留总纲的评点, 板块均为客观叙事)。
@@ -2369,6 +2411,8 @@ def _normalize_section(text, sec_title, article_title=""):
     body = llm.normalize_zh_punct(body)
     # 评点剥离后可能残留孤立空行, 压缩
     body = re.sub(r"\n{3,}", "\n\n", body)
+    # v70 (用户 2026-09-27 拍板: 「姐姐姐姐一类的重复一起改掉」): 成稿侧相邻重复词闸
+    body = _dedup_adjacent_words(body)
     if not saw:
         body = f"### {sec_title}\n\n{body}"
     return body

@@ -1631,7 +1631,12 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
                     if memo is not None:
                         memo[mkey] = dn
         # 宗族名缺失 (解析失败/无宗族) 回退家族名 (旧行为)
+        # v70 (用户 2026-09-27 拍板「姐姐姐姐一类的重复一起改掉」): 姓与名同为
+        # 一个词时只写一次 —— 游戏生成的家族名偶尔与该人本名同源 (存美 存美 /
+        # 朮里者 朮里者), 旧稿拼成「存美存美」, 模型照抄进正文。
         surname = dn or h
+        if surname == nm:
+            return nm
         return surname + nm if surname else nm
     # v58 (问题4): 西方名序拼上前缀 (迪·/德·/冯·) —— 游戏显示「罗伯托·迪·卡诺萨」。
     # 家族名若已自带前缀 (存档 localized_name 如「冯·大马士革」) 则不重复加。
@@ -1640,6 +1645,10 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
         pfx = ""
 
     def _west_surname(surname):
+        # v70: 姓与该人本名同词时只写一次 (「朮里者·朮里者」→「朮里者」;
+        # 见上 `EASTERN_NAME_ORDERS` 分支同源注释)
+        if surname and surname.strip("·") == nm:
+            return nm
         return f"{nm}·{pfx}{surname}" if (surname and pfx) else \
             (f"{nm}·{surname}" if surname else nm)
 
