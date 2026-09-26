@@ -15211,12 +15211,24 @@ def _protagonist(f):
     # v43: 成婚日晚于本篇截止日者不列 (末档配偶状态穿越)
     spouse_ids = f._spouses_asof(pid, spouse_ids)
     p["spouses"] = _annotate(spouse_ids, lineality=True)
-    _former_sp = _asof_ids(f, fam.get("former_spouses") or [])
+    # v70 (用户 2026-09-27 拍板: 「姐姐姐姐一类的重复一起改掉」): 同一人只进一个
+    # 婚配档 —— 存档 `family_data` 的 `former_spouses`/`former_concubines` 会把
+    # **现配偶一并列出** (实测 伍尔夫克尔: 妻室善江·敬直斯多蒂尔, 前妻又列她一人;
+    # 温映娘: 「夫瓯王愚者韩元佶、夫韦鲁、前夫韦鲁、前夫瓯王愚者韩元佶」两份互为
+    # 倒序), 旧稿四档各自成形, 于是档案行出「妻室X、前妻X」。优先序 = 打印序:
+    # 妻室 > 前妻 > 妾 > 前妾。
+    _sp_set = set(spouse_ids)
+    _former_sp = [x for x in _asof_ids(f, fam.get("former_spouses") or [])
+                  if x not in _sp_set]
     p["former_spouses"] = _annotate(_former_sp)
     # v8: 妾 (正向 concubine + 反向 concubinist, 已在缓存合并去重)
-    _conc = _asof_ids(f, fam.get("concubine") or [])
+    _seen_mar = _sp_set | set(_former_sp)
+    _conc = [x for x in _asof_ids(f, fam.get("concubine") or [])
+             if x not in _seen_mar]
     p["concubines"] = _annotate(_conc)
-    _fconc = _asof_ids(f, fam.get("former_concubines") or [])
+    _seen_mar |= set(_conc)
+    _fconc = [x for x in _asof_ids(f, fam.get("former_concubines") or [])
+              if x not in _seen_mar]
     p["former_concubines"] = _annotate(_fconc)
     child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
     # v34 (问题8, 用户拍板): 家门清单列**主角是法理父亲的**全部子女
@@ -17527,11 +17539,17 @@ def _genealogy(f):
              ("former_concubines", "前妾" if not fem else "前男宠"),
              ("child", "子女"), ("siblings", "兄弟姊妹"),
              ("former_spouses", "前夫" if fem else "前妻")]
+    # v70 (用户拍板: 「姐姐姐姐一类的重复一起改掉」): 同一人只进一行 —— 存档的
+    # former_spouses 会把现配偶一并列出 (与 `_protagonist_facts` 同源, 见该处注释)
+    _used_mar = set(spouses) | set(side)
     for key, label in rows:
         if key == "primary_spouse_key":
             ids = spouses
         elif key == "side_spouse_key":
             ids = side
+        elif key in ("concubine", "former_concubines", "former_spouses"):
+            ids = [x for x in (fam.get(key) or []) if x not in _used_mar]
+            _used_mar.update(ids)
         else:
             ids = fam.get(key) or []
         if not ids:

@@ -1597,10 +1597,10 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
     if not nm:
         return rec.get("name_full") or ""
     memo = memo if memo is not None else {}
-    # 1) 父名制文化 → 名·父名
+    # 1) 父名制文化 → 名·父名 (v70: 与本名同词时只写一次, 同东方/西方姓两条路径)
     ptn = _patronym_of(cache, cid, melt, names_path, chars=chars, memo=memo)
     if ptn:
-        return f"{nm}·{ptn}"
+        return nm if ptn == nm else f"{nm}·{ptn}"
     # 2) 名序: 自身文化 → 亲属推断 → 文化模板反查 (v13)
     # v44 (问题4): date 传本篇截止日时按**族属沿革**取该日文化 —— 名序随文化翻档
     cul = _culture_id_at_rec(rec, date)
