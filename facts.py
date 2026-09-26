@@ -2065,8 +2065,10 @@ class Facts:
         末一段只对**已死、且完全没有逐档政体史**的角色生效 (日期不晚于卒日):
         游戏把卒时政体烘在 `dead_data.government` 里, 人死后不再更换政体,
         故它是可据的史料; 比「政体不可知」退成通用词更贴近游戏口径。
-        它**不**参与 `_dead_flavor_consistent` 的自洽判定 —— 那条路径仍只认
-        逐档史 (v41 的「不拿末档政体冒充封建期」不变)。"""
+        v68 (问题2): `_dead_flavor_consistent` 现在也在**卒时窗口**内认这一对值
+        (卒日 ± 1 天), 并在**霸权级 (`h_`) 头衔**上认头衔侧政体 (见该函数);
+        窗口之外、霸权级之外的日期, 两处口径一致 —— 都只认逐档史
+        (v41 的「不拿末档政体冒充封建期」不变)。"""
         gov = self._title_government(tid, date) if tid is not None else ""
         if gov:
             return gov
@@ -2173,7 +2175,15 @@ class Facts:
         键形如 `<层级前缀>_<政体前缀>_<性别>[_文化]` (duke_administrative_male_byzantine_group);
         取键里第一段与第三段之间的政体前缀, 与该日 `_character_government(cid, date)`
         的政体前缀比对。日期缺失或该日政体不可知时**不采信** (返回 False) ——
-        该键是角色死亡时按末档政体烘死的, 用在早年就是错词。"""
+        该键是角色死亡时按末档政体烘死的, 用在早年就是错词。
+
+        v68 (问题2): 逐档政体史取空时补两条**同源**证据, 二者都只在此人政体史沉默时生效:
+        ① **卒时窗口** (anchor 与卒日相差 ≤1 天; `_anchor_date` 把 ≥卒日的日期折到卒前一日)
+           → 用同一时刻烘死的 `dead_data.government`;
+        ② **头衔侧政体** (仅 `h_` 霸权级, 且该日此人正是该头衔的持有者)
+           → 用头衔自己记录的政体 (`_title_government_hist` 或 `history_government`)。
+        死亡窗口与霸权级之外一律仍按逐档政体史, v41 的诺兰反例 (1082 事件 ≪ 卒 1101,
+        其逐档史在 1073 起就有封建政体) 不受影响。"""
         if not fkey or date is None:
             return False
         parts = str(fkey).split("_")
@@ -2189,6 +2199,45 @@ class Facts:
         cur = self._character_government(cid, date)
         # 该日政体不可知 (早于逐档政体史起点) 时不采信烘死的键 ——
         # 它是末档政体算的, 用在早期只会把封建期的公爵写成将军。
+        if not cur:
+            # v68 (问题2) ①: **卒时窗口**内改用同源的 `dead_data.government` 自证 ——
+            # 它与 `dead_data.flavor` 是游戏在卒时一起烘死的一对值, anchor 恰为卒时
+            # (或卒前一日) 时用这一对值才是忠实的。奄美珉卒 951.1.14, 本战役缓存的
+            # 逐档政体史自 955.1.1 起 (`char_government_history["66463"]` 为空),
+            # 逐档史取空 ⇒ 旧稿弃用正确的 `hegemon_celestial_male_chinese`(皇帝),
+            # `_office_word` 落到无条件兜底 `hegemon`(45)=霸主; 同期的奄美靖卒 963
+            # 落在窗口内, 本来就走 flavor 出「和皇帝」—— 同一头衔只因卒年而异词。
+            dd = (self._chars.get(str(cid)) or {}).get("dead_data") or {}
+            ddate = dd.get("date")
+            if ddate and abs(_date_ord(date) - _date_ord(ddate)) <= 1:
+                cur = dd.get("government") or ""
+        if not cur:
+            # v68 (问题2) ②: **头衔侧政体**自证 —— **仅霸权级 (h_)** 且该日此人确实
+            # 持有那枚霸权头衔时, 用头衔自己记录的政体 (h_china 全程
+            # `history_government = celestial_government`) 认下烘死的键。
+            # 为什么需要它: ① 只覆盖「卒时」, 而生前的事迹行 (奄美靖 954.5.3 任命
+            # 夔州观察使、格尔木噶玛 963.2.22 任命刑部宣抚使) 按事件日取值,
+            # 逐档史同样取空 ⇒ 一律退成「女霸主」, 与游戏显示的「女皇帝」不符。
+            # 为什么只认 h_: 层级词还有专属条目 (封建公爵=公爵/行政公爵=将军) 的分叉,
+            # 那类必须逐档史说了算 (v41 诺兰反例); 霸权级的无条件兜底条目就是霸主,
+            # 故只在 h_ 上补这一层, `title()` 的层级词不受影响 (唐 不会变唐皇朝)。
+            want = None
+            for pfx, rk in (("hegemon_", 6), ("emperor_", 5), ("king_", 4),
+                            ("duke_", 3), ("count_", 2), ("baron_", 1)):
+                if str(fkey).startswith(pfx):
+                    want = rk
+                    break
+            if want is not None:
+                ptid = None
+                try:
+                    _pt, ptid = self._primary_title_at(cid, as_of=date)
+                except Exception:
+                    ptid = None
+                if ptid is not None and self._eff_rank(ptid) == want:
+                    tt = self._lt.get(str(ptid)) or {}
+                    if (tt.get("key") or "").startswith("h_"):
+                        cur = self._title_government_hist(ptid, date) \
+                            or tt.get("history_government") or ""
         if not cur:
             return False
         return L.government_prefix(cur) == gov_prefix
