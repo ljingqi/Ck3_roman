@@ -2037,10 +2037,18 @@ def build_lead_messages(article, facts, cache, intro, cfg):
         custom_note = style.PROMPTS["custom_start_note"]
     events_block = _key_events_block(facts, key, sec,
                                      subject=_article_subject(facts, cache, key))
+    # v70 (用户 2026-09-27 拍板「移除朝局动态」): 《XX历代记》不注入【总纲】全文 ——
+    # 总纲的【人物档案】带朝局明细 (「…直辖5地…封臣226人，御前会议九席…」), 而
+    # 各篇开篇请求都会带上总纲全文; 尼克终传实测该篇正文照抄成「…治所定于长安县，
+    # 封臣二百二十六人，御前会议九席分掌诸曹」—— 板块与档案两处裁剪都被它绕过。
+    # 本篇素材自足 (王朝历代 + 本朝疆域 + 任期), 不依赖总纲的叙述框架。
+    # 其余篇目逐字不变 (intro_block 与旧模板拼出的串完全相同)。
+    intro_block = "" if key == "chaoju" else f"【总纲】\n{intro}\n\n"
     user_msg = style.PROMPTS["lead_user"].format(
         shared=_shared_facts_block(facts, subject=article.get("subject"), key=key),
         theme=_decade_theme_note(facts),
-        intro=intro, custom_note=custom_note, subject_note=subject_note,
+        intro=intro, intro_block=intro_block,
+        custom_note=custom_note, subject_note=subject_note,
         facts=facts_txt,
         events=(f"{events_block}\n\n" if events_block else ""),
         title=title, focus=article.get("focus") or article.get("theme") or "",
@@ -2254,7 +2262,9 @@ def _fix_kin_roles(text, facts, cache):
                     i = out.find(nm, at + len(true_word) + len(nm))
                 else:
                     i = out.find(nm, i + 1)
-    return out
+    # v70: 纠词自身不得造出相邻重复 —— 窗口里已有同词时, 换上去会成「妹妹妹妹」
+    # (尼克终传实测「妹妹妹妹之间，卡尔松同西格…」)。收口与成稿闸同一函数。
+    return _dedup_adjacent_words(out)
 
 
 def _strip_meta_notes(text):
@@ -2949,6 +2959,9 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     # v51: 成品再收一道 (幂等) —— 兜住终传附录等程序直出段; 只过正文 md,
     # 下面的机器可读头注释 (人物: / 篇目: / 十年:) 保持半角冒号不动。
     md = llm.normalize_zh_punct(md)
+    # v70: 同一道成品收口里再压一次相邻重复词 (板块内已过一遍, 此处兜住
+    # 组装缝隙与程序直出段; 白名单与判据见 `_dedup_adjacent_words`)。
+    md = _dedup_adjacent_words(md)
     # v29: 本地化未命中审计 — 启用 Mod 后哪些键还没读进来, 一次生成后即可查
     try:
         n = F.L.write_miss_report(cfg)

@@ -312,7 +312,7 @@ PROMPTS = {
         "从其事业之始依次写来；配偶与子女在婚配、家室诸事处出场。\n\n"
     ),
     "lead_user": (
-        "{shared}\n\n{theme}【总纲】\n{intro}\n\n"
+        "{shared}\n\n{theme}{intro_block}"
         "{custom_note}{subject_note}相关事实：\n{facts}\n\n{events}"
         "本篇文章标题已定为《{title}》，本篇主题：{focus}。\n\n"
         "这是文章的开篇板块《{sec_title}》。要求：{sec_req}\n\n"
