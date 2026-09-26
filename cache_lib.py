@@ -886,6 +886,10 @@ EMPTY_CACHE = {
     "output_folder": None,    # 会话输出文件夹名 (watch/continue 绑定, 见 pipeline)
     "player_title_history": [],  # [{date, name}] 玩家主头衔名变化 (复兴党流亡委员会等)
     "realm_history": [],         # [{date, holders:{title_id: holder_id}}] 关键头衔持有者逐年
+    # v66: 头衔动态名沿革 {tid: [{from, name}]} —— `specific_title_name` 是"只有该
+    # 日期那一档才有的现值" (v48 §4B 同类), 逐档只记变化点 (实测 84 档 ≈ 215 KB)。
+    # 供 facts._dyn_name_at / _site_name 按日期取「用地名」用 (游牧迁移改名)。
+    "title_dyn_names": {},
     "court_positions": [],       # [{date, positions:[{type, employee, hire_date, task}]}] 玩家营/廷内僚属任职逐年 (v7; employer==玩家, 非玩家自身官职)
     "court_office_history": [],  # v36 (问题2): [{date, offices:[{type, employer, hire_date}]}] 主角**获授**的朝廷职位逐年 (employee==玩家, employer==他人)
     "house_motto": None,         # 玩家家族家训 (dynasty_house.motto, 字符串或模板 dict) (v7)
@@ -1815,6 +1819,51 @@ def player_domicile(melt, domain, cid):
     return None
 
 
+def _latch_title_dyn_names(cache, lt, date_label):
+    """v66: 头衔**动态名**逐档闩存 (只记变化点) —— `cache["title_dyn_names"]`。
+
+    `title_name_data.specific_title_name` 是**该日期那一档才有的现值** (属《方案 v48》
+    §4 B 那一类; 同类的家族/政体/朝职/领地早已闩存)。它是游牧/宗族命名领域的游戏
+    显示名「文化集合词+宗族名+部」(如「库曼顿巴斯部」「可萨希西家部」), 随持有者
+    逐档变; 而末档熔件只留最后一版 —— 于是同一块地被后来的持有者改名后, 历任/年表/
+    驻地会把**后来的名字**用在早年事件上。实测 (卡尔 60836, 84 档): 936 年的
+    `c_kherson` 被读成 954 年才有的「马扎尔迈杰希部」; `c_uman` / `d_barsuki` /
+    `d_chah` / `k_dzungaria` 四块**不同**头衔全被读成「库曼顿巴斯部」, 模型据此写出
+    「四度得库曼顿巴斯部而四度迁离」这类伪史。详见 docs/方案_v66_游牧迁移用地名.md。
+
+    形状随项目既有沿革 (`[{from, name}]`, 同 `culture_history`): 只在**值变化**时
+    追加一点, 故体量极小 (实测 84 档 ≈ 215 KB / 6158 点)。名字**消失**也记一次空值,
+    否则旧名会一直生效 (取值口要区分「当时无名」与「本档未收」)。
+
+    只记非空动态名 —— 静态地名 (`title_name_data.name`) 不逐档变, 由熔件末档免费提供。"""
+    dn = cache.setdefault("title_dyn_names", {})
+    dk = date_key(date_label)
+
+    def _push(key, name):
+        h = dn.setdefault(key, [])
+        if h:
+            if date_key(h[-1]["from"]) > dk:
+                return          # 乱序并档 (他传主熔件回并): 保沿革表单调
+            if h[-1].get("name") == name:
+                return
+        h.append({"from": date_label, "name": name})
+
+    named = set()
+    for tid, t in lt.items():
+        if not isinstance(t, dict):
+            continue
+        sp = (((t.get("title_name_data") or {}).get("specific_title_name"))
+              or "").strip()
+        if not sp:
+            continue
+        key = str(tid)
+        named.add(key)
+        _push(key, sp)
+    for key in list(dn):
+        if key not in named:
+            _push(key, "")
+
+
 def _record_vassal_and_cycle(cache, melt, date_label):
     """记下本档封臣合同变化点与天命阶段 (v53)。
 
@@ -2053,6 +2102,10 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
     if realm_holders:
         cache.setdefault("realm_history", []).append(
             {"date": date_label, "holders": realm_holders})
+
+    # v66: 头衔动态名逐档闩存 (与 realm_history 同位 —— 同属"只有该日期那一档才有
+    # 的现值"; 见 _latch_title_dyn_names docstring)
+    _latch_title_dyn_names(cache, lt, date_label)
 
     # 玩家营/廷内僚属任职 (v7): court_positions.database 中 employer == 玩家,
     # 逐年记录 (含营地军官与宫廷职位 — 这些岗位由玩家麾下僚属担任, **不是玩家
