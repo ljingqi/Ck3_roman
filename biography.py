@@ -2415,6 +2415,12 @@ def _normalize_section(text, sec_title, article_title=""):
     seen_titles = set()
     # 板块标题的短版 (去掉 开篇·/纪事·/评曰· 前缀), 模型常误输出短版重复
     short = re.sub(r"^(开篇|纪事|评曰)[··]?", "", sec_title).strip()
+    # v74: 标题本身**无该前缀**时 (《诸子行迹·<子名>》即此类) 不存在「短版」——
+    # 旧稿此处 short == sec_title, 于是模型照抄标题 `### 诸子行迹·X` 时被判成
+    # 「短版重复」整行剔掉, 而 `saw` 又已置真 (不再补标题) ⇒ 该板块正文失去标题、
+    # 与前一个板块的正文连读 (实测 田所 898: 久保/德川/其余子女三节标题全被吃掉)。
+    if short == sec_title:
+        short = ""
     art_plain = re.sub(r"^《|》$", "", article_title or "")
     for raw in (text or "").split("\n"):
         s = raw.strip()
