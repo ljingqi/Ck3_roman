@@ -2402,10 +2402,16 @@ class Facts:
         ③ 基础名 (custom → name)。
         更名史留在 ②: h_china 唐→秦、k_guannei → 秦 这类动态国号只存在于
         title_history_names (实测无 specific_title_name), 死者按卒日国号取名的
-        v25 口径仍由 ② 承担。"""
+        v25 口径仍由 ② 承担。
+
+        v66 (D2-b, 用户 2026-09-27 拍板): ① 改为**按档取** —— 先查逐档沿革表
+        (`_dyn_reign_name`: 本缓存 + 同战役其它传主缓存, 且**任期感知**), 命中即用;
+        早于首档 / 未覆盖 (未回填的旧缓存) 才退末档 `specific_title_name`。旧稿直接
+        读末档现值、与入参 `date` 无关, 于是 936 年的事件套上 954 年才有的名字
+        (实测 936 年的 c_kherson 读成「马扎尔迈杰希部」)。`date` 为空时逐字同旧稿。"""
         t = self._lt.get(str(tid)) or {}
         tnd = t.get("title_name_data") or {}
-        specific = self._specific_name(tid)
+        specific = self._dyn_reign_name(tid, date) or self._specific_name(tid)
         if specific:
             return specific
         base = (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()
@@ -2468,6 +2474,62 @@ class Facts:
                for d, n in sorted(merged.items(), key=lambda kv: cl.date_key(kv[0]))]
         self._dyn_hist_cache[tid] = out
         return out
+
+    def _dyn_reign_name(self, tid, date):
+        """按档取动态名 —— **任期感知** (v66 D2-b; `_name_at_date` 的 ①)。
+
+        年档粒度看不出年中改名: 936.6.23 夺得 `c_azov` 时游戏已把它改成新主的汗国名,
+        下一档却要到 937.1.1 才看得到 —— 照实取「≤date 的最近一点」会把 936 全年写成
+        上一手的「阿扎克」(历任/称谓跟着错)。故: 该点若**早于该日持有者的任期起点**,
+        改用任期起点之后的**第一个非空点** (那次移交的结果); 无持有者 / 无后续点 /
+        该点本就在任期内, 一律照实返回。
+
+        与 `_site_name` 的分工: 这里要的是「当时游戏显示什么」(政权名跟人走), 那里要
+        的是「他占领它之前它叫什么」(用地名跟地走) —— 后者不适用本修正。"""
+        hist = self._dyn_hist(tid)
+        if not hist or not date:
+            return ""
+        dk = cl.date_key(date)
+        pick, pick_d = "", ""
+        for h in hist:
+            d = h.get("from")
+            if not d:
+                continue
+            try:
+                if cl.date_key(d) <= dk:
+                    pick, pick_d = h.get("name"), d
+                else:
+                    break
+            except Exception:
+                break
+        if not pick_d:
+            return pick
+        hid = self.holder_at(tid, date)
+        if hid is None:
+            return pick
+        ivs = self._hold_intervals(hid) or {}
+        gain = None
+        for iv in (ivs.get(tid) or ivs.get(str(tid)) or []):
+            if not iv or not iv[0]:
+                continue
+            if cl.date_key(iv[0]) <= dk and (not iv[1] or dk <= cl.date_key(iv[1])):
+                gain = iv[0]
+        if not gain or cl.date_key(pick_d) >= cl.date_key(gain):
+            return pick
+        gk = cl.date_key(gain)
+        for h in hist:                      # 任期起点之后的第一处非空改名
+            d = h.get("from")
+            if not d:
+                continue
+            try:
+                if cl.date_key(d) <= gk:
+                    continue
+            except Exception:
+                continue
+            nm = (h.get("name") or "").strip()
+            if nm:
+                return nm
+        return pick
 
     def _dyn_name_at(self, tid, date):
         """该头衔在 date 那一档的**动态名** (v66) —— 查逐档变化点沿革表
