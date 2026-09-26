@@ -2109,8 +2109,15 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
         rule_block=_rule_block(style_name, key in style.SECRET_BOARDS))
     facts_txt = "\n\n".join(_render_block(k, v.split("\n")) for k, v in blocks.items())
     subject_note = _subject_note(article, facts)
-    events_block = _key_events_block(facts, key, section,
-                                     subject=_article_subject(facts, cache, key))
+    # v73: 《XX历代记》纪事各节**不发【本板块大事】** —— 年表是主角一生行迹 (先世各朝
+    # 的事件本就不在里面), 而它是一张「须写出这些事」的卡片: 与「一人一行」的先世素材
+    # 并列时, 模型会为这张卡片现编事件填满 (实测虚构「会稽豪强张氏举兵」「汪吉河畔损兵
+    # 三千」)。本篇的取材锚点就是历代行的日期与战事行。
+    if key == "chaoju" and _sec_key(section) not in ("lead", None):
+        events_block = ""
+    else:
+        events_block = _key_events_block(facts, key, section,
+                                         subject=_article_subject(facts, cache, key))
     # v73: 《XX历代记》的纪事各节是**按朝代分段**的, 与开篇（王朝总说）本不必承接
     # 大段文字 —— 实测摘要给足时模型会把开篇的总说整段重写一遍 (各节自述一遍王朝
     # 更迭)。故本篇摘要收紧到「一句引子 + 一句结尾」。
@@ -2409,6 +2416,16 @@ def _normalize_section(text, sec_title, article_title=""):
                 continue
             s = re.sub(r"^(#{1,6})\s+", "### ", s)
             head = s.lstrip("# ").strip()
+            # v73: 模型把**素材行**当成标题输出 (《历代记》各节的素材里有「元皇朝（972年
+            # 至今）」这类朝代行, 实测被抬成 `### 元皇朝（972年至今）` 而与真的分节标题
+            # 并列) —— 凡标题与板块标题、文章标题同名, 或形如「某朝（年代区间）」的, 剥成
+            # 正文首句不作为标题。
+            if re.match(
+                    r"^.+（\d{3,4}年(?:\d{1,2}月\d{0,2}日?)?\s*"
+                    r"(?:[至—－-]\s*\d{3,4}年(?:\d{1,2}月\d{0,2}日?)?|至今)）$",
+                    head):
+                out.append("")
+                continue
             # v14: 重复标题剔除 (短版/文章标题/重复出现)
             if head == short or (art_plain and head == art_plain) \
                     or head in seen_titles:
@@ -2438,7 +2455,7 @@ def _normalize_section(text, sec_title, article_title=""):
     body = re.sub(r"\n{3,}", "\n\n", body)
     # v70 (用户 2026-09-27 拍板: 「姐姐姐姐一类的重复一起改掉」): 成稿侧相邻重复词闸
     body = _dedup_adjacent_words(body)
-    if not saw:
+    if not saw and body.strip():
         body = f"### {sec_title}\n\n{body}"
     return body
 
