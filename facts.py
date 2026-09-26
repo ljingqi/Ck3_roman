@@ -4589,11 +4589,16 @@ class Facts:
         # v30: 游戏 flavorization 优先 (修复方案_菲利普4.md 问题2) — 文化专属层级词
         # 压过政体通用词: 诺斯公国 = 雅尔 (count_feudal_male_norse, tier=duchy,
         # priority 30) 而非 duke_tribal_male 大酋长 (26)。未命中才走既有链。
-        fw = self._flavor_word("character", tier, cid, tid=tid,
-                               gender=("female" if female else "male"), gov=gov,
-                               date=date)
-        if fw:
-            return fw
+        # v74 (问题2, 用户拍板): 政体不可知 (`gov == ''`) 时, `duke`/`count` 这类
+        # **无任何条件**的兜底条目视为未命中 —— 否则它以其 priority 压过后面的
+        # 文化/政体链 (且性别词也取不到: 女性公爵会得男性词「公爵」而非「女公爵」)。
+        fw_key = self._flavor_key("character", tier, cid, tid=tid,
+                                  gender=("female" if female else "male"),
+                                  gov=gov, date=date)
+        if fw_key and not (not gov and FZ.is_unconditional(fw_key)):
+            v = L.loc(self.table, fw_key)
+            if v and not v.startswith("$") and not v.startswith("["):
+                return v
         if gov in ("japan_administrative_government", "japan_feudal_government"):
             tkey = (self._lt.get(str(tid)) or {}).get("key") or ""
             # v62: 日本最高头衔 (e_japan / 天皇座) 先查 (头衔, 政体) 直表 ——
@@ -5279,7 +5284,14 @@ class Facts:
         name = self._name_at_date(tid, anchor) or self.title_base_name(tid)
         # v41 (问题1): 政体按 anchor 日取 (逐档政体史) —— 旧稿读缓存里**末档**的
         # 政体, 封建期的神罗封臣因此被写成行政制的督军/将军/分区长。
-        gov = self._character_government(cid, anchor)
+        # v74 (问题2, 用户拍板): 改走 `_gov_for_word` —— 它比 `_character_government`
+        # 多两层**可据的**来源: ① 头衔侧政体 (沿 de_facto_liege 上溯到领主,
+        # `_title_government`); ② 死者 `dead_data.government`。旧稿只取持有者逐档
+        # 政体史, 而缓存 `char_government_history` 只为**入目标集**的角色逐档记录,
+        # 于是一批受害者政体取不到 (`gov=''`) → flavorization 只剩**无任何条件**的
+        # `duke` 兜底条目 → 同一顶 `d_hitakami`(日高见国) 写出「日高见公爵」,
+        # 而政体取得到的持有者写「日高见国司」。见 docs/方案_v74_田所三问题.md 问题2。
+        gov = self._gov_for_word(cid, tid, anchor)
         if not gov:
             rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
             gov = (rec.get("landed") or {}).get("government") or ""

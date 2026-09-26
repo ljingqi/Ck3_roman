@@ -369,6 +369,23 @@ def ruler_child_exists(tier, gender, *, government="", name_list="", heritage=""
     return best_key
 
 
+def is_unconditional(key, cfg=None):
+    """该条目是否**无任何条件** (只有 type/tier/gender/priority) — 即通用兜底层级词。
+
+    v74 (问题2): `duke`/`count`/`king`/`emperor`/`baron`/`hegemon` 六条实测
+    `governments/name_lists/heritages/faiths/religions/titles/obligation_flags/rules`
+    **全空**, 是任何政体取值失败者的共同出口。`facts._office_word` 在**政体不可知**
+    (`gov == ''`) 时把这类命中视为未命中, 以免通用层级词压过文化/政体词
+    (实测: 律令制日本 `d_hitakami` 的持有者政体取不到时写出「日高见公爵」,
+    政体取得到时是「日高见国司」)。"""
+    e = (table(cfg).get("entries") or {}).get(key) or {}
+    if not e:
+        return False
+    return not any(e.get(k) for k in (
+        "governments", "name_lists", "heritages", "faiths", "religions",
+        "titles", "obligation_flags", "rules"))
+
+
 def coverage(cfg=None):
     """自检用: 按 (type, tier) 统计条目数, 并列出覆盖到的 culture 名系/heritage。"""
     fl = table(cfg)
