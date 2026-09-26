@@ -2983,6 +2983,192 @@ class Facts:
         self._hold_cache[cache_key] = out
         return out
 
+    # ------------------------------------------------------------------
+    # v74 (问题1, 用户拍板「腾位置只针对《家室列传》」): 头衔承位链
+    # ------------------------------------------------------------------
+    # 存档 `landed_titles[tid].history` 里**同日多人相继时该日的值是列表**
+    # (Clausewitz 重复键由 `_merge_dup_pairs` 合并), `_title_seqs` 已按日期排好;
+    # 这里把它展开成「谁在何时接谁的位」的序列, 供两条判据使用:
+    #   · `seat_note(cid)`       该角色**现任头衔**的前任们若死于主角之手 → 一句承位句
+    #                            (只进《家室列传》的子女档案);
+    #   · `seat_succession(cid)` 死者之位的后续持有者链 → 顶层事实键 (校验与旁证用)。
+    # 实测 (田所档): 加贺国 891.9.17–12.13 之间经 惟条/惟恒/惟彦/行有/源当时/源当元
+    # 六人, 皆被主角所杀, 其位终归主角之子 田所久保; 日高见国 894.4.19–8.26 同理。
+    # 见 docs/方案_v74_田所三问题.md §1.5/§1.6.1。
+
+    def _title_holder_seq(self, tid):
+        """头衔的持有者序列 [(date, holder_id, type), …] (同日列表按序展开)。"""
+        if tid is None:
+            return []
+        out = []
+        for d, ev in (self._title_seqs.get(int(tid)) or []):
+            for e in (ev if isinstance(ev, list) else [ev]):
+                if not isinstance(e, dict):
+                    continue
+                h = e.get("holder")
+                if isinstance(h, int):
+                    out.append((str(d), int(h), str(e.get("type") or "")))
+        return out
+
+    def _is_landed_tid(self, tid):
+        """有地头衔 (排除营地/毡帐/世族庄园/朝廷职司)。"""
+        key = ((self._lt.get(str(tid)) or {}).get("key") or "")
+        return bool(key) and not key.startswith(("x_", "e_minister_")) \
+            and not self._is_estate_title(tid)
+
+    def _seat_killed_ids(self):
+        """主角击杀集 (v74): 与 `_killed_by_player` 同源, 但只取 id 集 (轻量、可缓存)。"""
+        if getattr(self, "_seat_killed_cache", None) is not None:
+            return self._seat_killed_cache
+        pid = self.cache.get("player_id")
+        out = set()
+        if pid is not None:
+            prec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+            for k in prec.get("kills") or []:
+                if isinstance(k, int):
+                    out.add(k)
+            for k in (self.cache.get("player_death") or {}).get("kills") or []:
+                if isinstance(k, int):
+                    out.add(k)
+            for mem in prec.get("memories") or []:
+                if str(mem.get("type") or "") == "successful_murder":
+                    v = (mem.get("participants") or {}).get("victim")
+                    if isinstance(v, int):
+                        out.add(v)
+            for cid, rec in (self.cache.get("characters") or {}).items():
+                if str(cid).isdigit() and (rec.get("death") or {}).get("killer") == pid:
+                    out.add(int(cid))
+            for cid, c in self._chars.items():
+                if not str(cid).isdigit() or int(cid) == pid:
+                    continue
+                d = (c or {}).get("dead_data") or {}
+                if isinstance(d.get("killer"), int) and d["killer"] == pid:
+                    out.add(int(cid))
+        self._seat_killed_cache = out
+        return out
+
+    def _seat_prior_killed(self, cid, tid, gain):
+        """该头衔上**紧邻此人之前、且死于主角之手**的前任链 [(date, id), …]。
+
+        往前走到第一位既不与本人同日、又非主角所杀者即止 (那人是该位的「上一手
+        来处」)。**同日的前任视为过手** (田所档 胆泽国 894.8.26 父子同日受官:
+        主角先受该位、随即转给其子 田所德川 —— 那位当日过手者不该截断承位链)。
+        返回按时间正序。"""
+        seq = self._title_holder_seq(tid)
+        if not seq:
+            return []
+        killed = self._seat_killed_ids()
+        pid = self.cache.get("player_id")
+        idx = None
+        for i, (d, h, _t) in enumerate(seq):
+            if h == cid and cl.date_key(d) >= cl.date_key(gain):
+                idx = i
+                break
+        if idx is None:
+            return []
+        prev, j = [], idx - 1
+        while j >= 0:
+            d, h, _t = seq[j]
+            if h == cid:
+                j -= 1
+                continue
+            if cl.date_key(d) >= cl.date_key(gain):
+                j -= 1                      # 同日过手 (含主角本人) — 越过
+                continue
+            if h in killed:
+                prev.append((d, h))
+                j -= 1
+                continue
+            break
+        prev.reverse()
+        return prev
+
+    def _death_info(self, cid):
+        """(卒日, 死因, 凶手) — 缓存优先, 熔件 `dead_data` 兜底 (v74)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        d = rec.get("death") or {}
+        dd = (self._chars.get(str(cid)) or {}).get("dead_data") or {}
+        k = d.get("killer")
+        if k is None:
+            k = dd.get("killer")
+        return (d.get("date") or dd.get("date"), d.get("reason") or dd.get("reason"), k)
+
+    def seat_note(self, cid):
+        """承位句 (v74 问题1, 只给《家室列传》的子女档案):
+        「承位：加贺国司之任：源能有891年9月17日被田所浩二使人以丝绳缢杀；
+          惟条、惟恒、惟彦、行有、源当时、源当元相继居之，皆死于田所浩二之手；
+          891年12月13日归田所久保。」
+
+        判据 (全程序直算): 该角色现任有地头衔的**前任**里, 连续一串死于主角之手的
+        那一段 —— 这正是用户说的「刀下亡魂是为了给我的孩子腾位置」。无此链返回 ''。"""
+        pid = self.cache.get("player_id")
+        if pid is None or cid is None:
+            return ""
+        bits = []
+        for tid, ivs in (self._hold_intervals(cid) or {}).items():
+            if not self._is_landed_tid(tid):
+                continue
+            spans = [iv for iv in (ivs or []) if iv and iv[0]]
+            if not spans:
+                continue
+            gain = max(iv[0] for iv in spans)
+            prev = self._seat_prior_killed(cid, tid, gain)
+            if not prev:
+                continue
+            tname = self.title_office_text(cid, tid, gain) \
+                or self._name_at_date(tid, gain) or self.title_base_name(tid)
+            if not tname:
+                continue
+            d0, h0 = prev[0]
+            d_death, reason, killer = self._death_info(h0)
+            clause = self.death_clause(h0, date=d_death or d0, reason=reason,
+                                       killer=killer if killer is not None else pid)
+            l0 = self.kin_label(h0) or self.name_or(h0)
+            head = (f"{l0}{self.date(d_death or d0)}{clause}" if clause
+                    else f"{l0}{self.date(d_death or d0)}死于{self.name_or(pid)}之手")
+            rest = [self.name_or(h) for _d, h in prev[1:]]
+            mid = ("、".join(rest) + f"相继居之，皆死于{self.name_or(pid)}之手"
+                   if rest else "")
+            bits.append(f"承位：{tname}之任：{head}" + (f"；{mid}" if mid else "")
+                        + f"；{self.date(gain)}归{self.name_or(cid)}。")
+        return "；".join(bits)
+
+    def seat_succession(self, cid):
+        """死者之位的后续持有者链 (v74): [{"title", "chain": [...], "settled": {...}}]。
+
+        链从「此人失位/卒后」的下一位算起, 走到**第一位不是主角所杀**的持有者为止;
+        与该持有者**同日**相继者一并收入 (田所档 胆泽国 894.8.26 即父子同日受官,
+        其位的最终归处是主角之子 田所德川)。全程序直算, 与《家室列传》的承位句
+        (`Facts.seat_note`) 共用同一份头衔序列。"""
+        out = []
+        if cid is None:
+            return out
+        killed = self._seat_killed_ids()
+        pid = self.cache.get("player_id")
+        for tid, ivs in (self._hold_intervals(cid) or {}).items():
+            if not self._is_landed_tid(tid):
+                continue
+            ends = [iv[1] for iv in (ivs or []) if iv and iv[0] and iv[1]]
+            if not ends:
+                continue
+            end = max(ends)
+            tname = self._name_at_date(tid, end) or self.title_base_name(tid)
+            chain, settle, stop = [], None, None
+            for d, h, _t in self._title_holder_seq(tid):
+                if cl.date_key(d) < cl.date_key(end) or h == cid:
+                    continue
+                if stop is not None and cl.date_key(d) > cl.date_key(stop):
+                    break
+                chain.append({"date": d, "holder_id": h,
+                              "holder_label": self.kin_label(h) or self.name_or(h),
+                              "kin": kin_key(self.cache, pid, h) or ""})
+                if h not in killed and settle is None:
+                    settle, stop = {"date": d, "holder_id": h}, d
+            if chain:
+                out.append({"title": tname, "date": end, "chain": chain,
+                            "settled": settle})
+        return out
+
     def _is_nomad_camp(self, tid):
         """游牧毡帐头衔 (x_c_nomad_*) — 驻地而非领地 (v26)。"""
         return ((self._lt.get(str(tid)) or {}).get("key") or "") \
@@ -15679,6 +15865,13 @@ def _character_profiles(f):
         ht = f.held_titles(cid)
         if ht:
             prof["titles_held"] = "；".join(ht)
+        # v74 (问题1, 用户拍板「腾位置只针对《家室列传》」): 主角子女的**承位句** ——
+        # 其现任头衔的前任里, 连续一串死于主角之手的那些人 (「刀下亡魂是为了给
+        # 我的孩子腾位置」)。只随子女档案下发 (家室档案/阴私录), 不进《刺客列传》。
+        if _is_pchild:
+            _sn = f.seat_note(cid)
+            if _sn:
+                prof["seat_note"] = _sn
         mems = []
         # v26: 取缓存记忆 (此前写 prof.get("memories"), 而 prof 无该键 →
         # 「传主行迹」对所有人恒为「（无行迹记录）」)
@@ -18522,6 +18715,18 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     _pdn, _phn = f._house_names_at(_pid0, as_of) if _pid0 is not None else ("", "")
     # v73: 《历代记》的治所行与《传主档案》同一出口 (免得两处治所不一致)
     f._protagonist_cache = _protagonist(f)
+    # v74 (问题1): 刀下之魂的**所在之位承继链** —— 顶层键, 供校验与《家室列传》
+    # 承位句 (`Facts.seat_note`) 互证; 不单独渲染进任何板块 (用户拍板:
+    # 「腾位置只针对《家室列传》」)。
+    _killed_list = _killed_by_player(f)
+    _seat_succ = []
+    for _k in _killed_list:
+        try:
+            _kid = int(_k.get("id"))
+        except (TypeError, ValueError):
+            continue
+        for _row in f.seat_succession(_kid):
+            _seat_succ.append(dict(_row, victim=_kid))
     facts = {
         # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充)
         "house": _dynasty_display(_pdn or cache.get("dynasty_name"),
@@ -18550,7 +18755,10 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "decade": decade,
         # v5 新增
         "bio_style": f.bio_style(),
-        "killed": _killed_by_player(f),
+        "killed": _killed_list,
+        # v74 (问题1): 每位刀下之魂所在之位的后续持有者链 (走到第一位不是主角所杀者
+        # 为止; 同日多人相继一并收入)。见 `Facts.seat_succession`。
+        "seat_succession": _seat_succ,
         # v53 (问题4): 诛灭世族族级摘要 (刺客列传开篇/纪事共用)
         "family_purges": f.family_purge_summaries(cache.get("player_id")),
         "wandering": _wandering_trail(f),

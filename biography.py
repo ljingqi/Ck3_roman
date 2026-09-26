@@ -941,6 +941,11 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # ---- 任历句 (v28b: 加冒号断句 — 原「历任867年任X」年月与「历任」粘连) ----
     if p.get("titles_held"):
         lines.append(f"历任：{p['titles_held']}。")
+    # ---- v74 (问题1, 用户拍板「腾位置只针对《家室列传》」): 承位句 ----
+    # 该角色现任头衔的前任里连续一串死于主角之手者 (「刀下亡魂是为了给我的孩子
+    # 腾位置」)。只在**内宅档**下发, 不进《刺客列传》《本纪》等其他篇目。
+    if with_real_parentage and p.get("seat_note"):
+        lines.append(p["seat_note"])
     # ---- v53 (问题3): 天命局势一行 ----
     if p.get("dynastic_cycle"):
         lines.append(p["dynastic_cycle"] + "。")
