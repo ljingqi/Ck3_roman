@@ -1910,7 +1910,22 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 | `tools/verify_fast.py`（七份新快照） | FAIL 集合与 v68 基线**逐条相同**（全为本轮前既有），**无新增**；括注断言 PASS |
 | `tools/verify_v68_estate_court.py` | PASS（仅持庄园 → 通称 中华 + 群雄争霸行 + 失去天命行；纯营地 → `("", [])`） |
 | v68 五问脚本重跑 | `verify_v68_title_name/dead_office/estate/artifacts` 产出正常（普查行数与 v68 留档一致：4960 tids / 13154 死者 / 730 家业持有者） |
-| 事实面变化面 | 对照**同一缓存**的 v68 码基线（`tools/at_head.py --ref=c2a3551 tools\\snap.py …` → `snap_b69_*`），`tools/snapdiff.py --facts-only` 仅 chaoju 篇所在块变化 |
+| 事实面变化面 | 对照**同一缓存**的 v68 码基线（`tools/at_head.py --ref=c2a3551 tools\\snap.py …` → `snap_b69_*`），`tools/snapdiff.py --facts-only` 七份快照**各只变 1 块 = `chaoju_lead`**；另加「死者卒时职称词」收口（下条）后另出 `assassins_*` 等块的变化面，`logs/verify_v69_snapdiff_b69_final.txt` |
+
+**附带修：v68 问题 2 的残余「和霸主」（提交 `f547b14`）**
+
+重生成尼克终传时，《刺客列传》亲缘行仍作「夫**和霸主**青蛙珉·奄美」（同一行里奄美靖/奄美樽
+都是「和皇帝」）。根因：`_gov_history` 对**本缓存没有**的角色是「借第一份有记录的传主缓存」
+（只借不合并）——奄美珉的政体史借到 38665 缓存 **919.1.1** 的 `feudal_government`（他 950.6.1
+已建天命改行天朝制），卒时烘死的 `hegemon_celestial_male_chinese`(皇帝) 因此被判不自洽，
+`_office_word` 落回无条件兜底 `hegemon`(45) = 霸主。修法：`_dead_flavor_consistent` 在
+**卒时窗口（±1 天）**内，与**同一时刻烘死**的 `dead_data.government` 前缀相符即认下（单向放行）。
+
+| 项 | 改前 → 改后 |
+| --- | --- |
+| `tools/verify_v69_flavor_stale.py`（13154 名带 flavor 死者，带 campaign 的真实构造） | 陈旧逐档观测 64 例，其中卒时闸放行 **6 → 44**；**零 True→False**；卒前 30 年一档 1812 放行、逐字不变 |
+| 38 人卒时官衔取回游戏原词（全部改进） | 和霸主→**和皇帝**、`''`→德维得主教、瓜沙总督→瓜沙节度使、居延女大酋长→居延节度使、阿朗松酋长→阿朗松伯爵、东撒克逊女公爵→贝丹福德雅尔、`''`→莱斯特郡市议长、白山伯爵→白山刺史、高州伯爵→高州政务官…（`logs/probe_v69_stale_{before,after}.txt`） |
+| 成稿验证 | 重生成后《刺客列传》亲缘/婚恋行 = 和皇帝青蛙珉·奄美（`logs/v69_bio_diff.txt`） |
 
 **本轮已知偏差 / 遗留**
 
@@ -1921,6 +1936,16 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 - 无国号更名史的单段头衔（巴尔苏基 22 位帐汗 / 库曼顿巴斯部 6 位）只有一行历代 —— 按
   「每朝一行 + 统治者一行」的样例形态；若按人数折行另议。
 - 空位段只有说明行（天命虚悬，割据者不入天命序列）；要列五代十国实际割据者需另立数据源。
+- **`_gov_history` 只借不合并（根因未动）**：本轮只收口「卒时窗口」这一档。非本缓存角色的
+  逐档政体史仍是「借第一份有记录的传主缓存」，借到早年那份时，卒时**之外**的日期（生前事迹行、
+  层级词）同样会用陈旧政体。彻底修法是把同战役各缓存的观测点**按日期合并**（各份都是同一局
+  游戏某一档的真实观测），但那会动到 `title()` 层级词与全部官衔词的取值面，须另立普查
+  （`tools/verify_v69_flavor_stale.py` 的框架可复用）。
+- **性别紧跟层级的 flavor 键形**：`count_female_feudal_chinese` / `count_male_feudal_chinese`
+  这类 `<层级>_<性别>_<政体>[_文化]` 键，前缀算式 `"_".join(parts[1:i])` 得空串 ⇒ 一律判 False
+  （落兜底词）。普查该键形 109 例，其中 **20 例**按修正解析本可放行（`16613 公爵`、`41621 女伯爵`…）；
+  复合政体段（`king_administrative_independent_male` → `administrative_independent`）同属一类。
+  属 v41 起的既有口径，本轮未动。
 - v68 §「遗留」里「h_china 中华段只有首末两位持有者」一条由本轮改口（该段现写作「群雄争霸」）。
 
 ## v68 修正（菲利普2 五问题：《朝局风云录》改《XX历代记》/ 前朝「霸主」/「库曼顿巴斯部皇帝」/ 人骨宝物 / 「张氏刺史」）
