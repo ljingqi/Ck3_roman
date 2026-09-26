@@ -2198,6 +2198,23 @@ class Facts:
                 gov_prefix = "_".join(parts[1:i])
                 break
         cur = self._character_government(cid, date)
+        dd = (self._chars.get(str(cid)) or {}).get("dead_data") or {}
+        ddate = dd.get("date")
+        # v69: 卒时窗口内,**烘死的 flavor 与同一时刻烘死的 `dead_data.government`
+        # 自洽即可认下** (不必等逐档史取空)。为什么: 逐档政体史对非本缓存角色是
+        # 「借用同战役其它传主缓存」的**单份**观测 (`_gov_history`), 若借到的那份
+        # 只覆盖早年, 就会把几十年前的旧值当成卒时政体 —— 奄美珉 (66463) 实测:
+        # 借用的是 38665 缓存里 919.1.1 的 `feudal_government`, 而他 950.6.1 已建
+        # 天命改行天朝制, 卒时键 `hegemon_celestial_male_chinese`(皇帝) 于是被判
+        # 不自洽, `_office_word` 落回无条件兜底 `hegemon`(45) = 霸主 —— 《刺客列传》
+        # 亲缘行写成「夫和霸主青蛙珉·奄美」。本判据只做**单向**放行 (与 flavor 前缀
+        # 相符才 True), 故不会把原本 True 的判成 False; 卒时窗口之外仍只认逐档史。
+        if ddate and abs(_date_ord(date) - _date_ord(ddate)) <= 1 \
+                and (dd.get("government") or ""):
+            if L.government_prefix(dd["government"]) == gov_prefix:
+                return True
+            if not cur:
+                cur = dd["government"]
         # 该日政体不可知 (早于逐档政体史起点) 时不采信烘死的键 ——
         # 它是末档政体算的, 用在早期只会把封建期的公爵写成将军。
         if not cur:
@@ -2208,8 +2225,6 @@ class Facts:
             # 逐档史取空 ⇒ 旧稿弃用正确的 `hegemon_celestial_male_chinese`(皇帝),
             # `_office_word` 落到无条件兜底 `hegemon`(45)=霸主; 同期的奄美靖卒 963
             # 落在窗口内, 本来就走 flavor 出「和皇帝」—— 同一头衔只因卒年而异词。
-            dd = (self._chars.get(str(cid)) or {}).get("dead_data") or {}
-            ddate = dd.get("date")
             if ddate and abs(_date_ord(date) - _date_ord(ddate)) <= 1:
                 cur = dd.get("government") or ""
         if not cur:
@@ -15663,14 +15678,18 @@ def _estate_court_tid(f, pid):
 
 def _top_title_history(f, group_lines=None):
     """本朝历代 (v68 问题1; 用户拍板 §7-1「篇名《XX历代记》」/§7-2「有庄园写最高领主的
-    头衔历史, 冒险者营地略去」) —— 主角当前最高头衔**从战役起点以来**的国号沿革与
-    历代持有者。返回 (篇名用朝代通称, [行...]); 无可写对象返回 ("", [])。
+    头衔历史, 冒险者营地略去」; v69 用户追改行形) —— 主角当前最高头衔**从战役起点
+    以来**的历代。返回 (篇名用朝代通称, [行...]); 无可写对象返回 ("", [])。
 
-    块的行序:
-      本朝：{该日头衔显示名}            (仅家业者写「（主角所附之朝）」; 另有主角在位段)
-      国号沿革：唐（…）→ 中华（887年1月2日）→ … → 元（972年10月11日至今）
-      历代：{国号}：{持有者}（{起}–{止}）、…  （按国号分段, 只收与战役窗口相交的任期）
-      本朝疆域：{同属一廷的封臣头衔}
+    块的行序 (v69 用户样例: 每朝一行, 次行由老到新列该朝历代并写明即位缘由):
+      本朝：{该日头衔显示名}            (仅家业者写「所附之朝：」; 末行另有主角在位段)
+      {国号}{层级词}（{起}至{止}）      例: 唐皇朝（868年至887年）/ 元皇朝（972年至今）
+      {名}（{即位日}{缘由}…）、…       例: 奄美靖（953年6月6日被派系拥立）
+      群雄争霸（{毁弃日}至{重建日}）    天命毁弃而国号未改的空位期 (用户指定此名)
+      {毁弃日}天命中绝，天下无主
+      本朝疆域：{同属一廷的封臣头衔} / 主角本朝任期：{起}–{止}
+    即位缘由取存档 `history.<date>.type` (见 `_SUCC_WORD`; 无 type = 常规继承),
+    失天命/失头衔取 `destroyed` 事件; 全体取证见 `docs/方案_v69_菲利普2历代记.md`。
     为什么要有它: 旧《朝局风云录》的「天下大势」用 `holder_changes` 的「相关高位头衔」
     口径, 同一家族名下被同一套游牧动态名统一命名的四枚头衔并列 (四行同名), 国号
     (唐→中华→和→毕→越→元) 一行不可见 —— 模型于是把草原汗位更替当成中国王朝更替来写。"""
