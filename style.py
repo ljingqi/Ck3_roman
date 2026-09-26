@@ -111,8 +111,10 @@ RULES = {
 # v34: narrative / intertext 随所有板块下发 (问题5 的分篇与写法口径)
 _RULE_ORDER = ("nonfiction", "world_frame", "narrative", "intertext",
                "narrative_focus", "plain_word", "title_consistency")
-# 携带隐事事实的板块 (secrets 篇与朝局篇的要员隐事)
-SECRET_BOARDS = ("secrets", "chaoju")
+# 携带隐事事实的板块 (secrets 篇的隐事与把柄)
+# v70 (用户 2026-09-27 拍板): 原为 ("secrets", "chaoju") —— 朝局篇的「要员隐事」
+# 块随「纪事·本朝纪事」板块一并删除, 该篇已无隐事素材, 笔法规则随之停发。
+SECRET_BOARDS = ("secrets",)
 
 
 def rule_block(style=DEFAULT_STYLE, secret=False):
@@ -132,7 +134,10 @@ SECTION_TITLES = {
     "friend":  {"lead": "开篇·家世与交游", "mid": "纪事·一生际遇", "tail": None},
     "enemy":   {"lead": "开篇·仇家身世",   "mid": "纪事·一生行迹", "tail": None},
     "jiashi":  {"lead": "开篇·结缡与离异", "mid": "纪事·门庭恩怨", "tail": None},
-    "chaoju":  {"lead": "开篇·王朝历代",   "mid": "纪事·本朝纪事", "tail": None},
+    # v70 (用户 2026-09-27 拍板): 「纪事·本朝纪事」板块整块删除 —— 该篇只留
+    # 「王朝历代」一个板块 (`biography.mk_sections` 对 chaoju 只发 lead),
+    # 单板块不再用「开篇·」前缀 (它意味着后面还有纪事)。
+    "chaoju":  {"lead": "王朝历代",   "tail": None},
     "assassins": {"lead": "开篇·刀下之魂",
                   "mid": "纪事·诸魂行迹",
                   "mid1": "纪事·诸魂行迹·上",
@@ -218,8 +223,10 @@ SECTION_REQ = {
         # 旧要求「依朝局动态与要员名录…囚狱、结仇、战争」把本纪的职责写进本篇,
         # 素材支撑不了, 终传因此整段虚构 (葛元方与石士良争权云云)。
         # v69: 素材改「每朝一行 + 该朝历代与即位缘由」(空位期作「群雄争霸」), 要求同步。
+        # v70 (用户 2026-09-27 拍板): 纪事板块整块删除 —— 只留本板块。旧
+        # 「mid」要求「依朝廷职司、主角受任与廷中僚属任免…」正是朝局动态的复现路径,
+        # 与「王朝历代」无关, 连同该板块的四块素材一并停发。
         "lead": "写王朝历代：逐朝写出起止与历代承继，即位缘由按素材所记写来 (受任命继位、被派系拥立、自立建国等)，并写出本朝疆域所及与主角在本朝的任期。",
-        "mid": "写本朝纪事：依朝廷职司、主角受任与廷中僚属任免，写本朝人事格局与主角在其中的升沉。",
         "tail": None,
     },
     "assassins": {

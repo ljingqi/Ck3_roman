@@ -681,7 +681,8 @@ def _num1(v, nd=1):
 
 
 def _profile_lines(facts, cid=None, with_real_parentage=False,
-                   with_private_chains=False, scope=None, with_death=True):
+                   with_private_chains=False, scope=None, with_death=True,
+                   with_court=True):
     """主角或某角色的档案 → 自然语言行列表 (v15: 字段表格改散文, 程序直出不改写)。
     首行为名号句: 官职+姓名 + 家族分家/族属/信仰/出生/家训;
     后续每类事实一句, 缺失字段整句省略。cid=None 时用主角。
@@ -698,7 +699,12 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
 
     v45 (档 A): `scope` = 本板块的亲缘定语登记表 (基准人 = 该篇传主)。给了 scope 时
     名号句改走 `kin_attrib_label` —— 该人若与传主有可判亲缘且是**本板块首见**,
-    称谓前加定语 (「父亲冯·亚琛氏赫尔曼」)。scope 为 None 时逐字不变。"""
+    称谓前加定语 (「父亲冯·亚琛氏赫尔曼」)。scope 为 None 时逐字不变。
+
+    v70 (用户 2026-09-27 拍板): `with_court=False` 时不出朝局明细 —— 封臣人数、
+    御前会议席位、廷中僚属任职三样整句省略 (《XX历代记》篇专用: 该篇只写王朝历代,
+    朝局数字是模型把「封臣226人，御前会议九席」写进正文的直接来源)。直辖地与治所
+    保留 (它们是王朝疆域, 与「本朝疆域」行同源)。"""
     if cid is None:
         p = facts["protagonist"]
     else:
@@ -815,14 +821,14 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         if p.get("domain"):
             cap = f"，治所{p['capital']}" if p.get("capital") else ""
             gov = (gov + "，" if gov else "") + f"直辖{p.get('domain_count', '')}地：{p['domain']}{cap}"
-        if p.get("vassal_count") is not None:
+        if p.get("vassal_count") is not None and with_court:
             gov = (gov + "，" if gov else "") + f"封臣{p['vassal_count']}人"
         # v26: 游牧牧群 (与金钱同口径: 当前值, 一位小数); 口粮非 0 时并写
         # v28: facts 侧已按 domicile 类型门控并去掉 0 值, 此处只做渲染
         # v29: 牧群数值不再下发; 口粮改档位词 (facts.provisions_band)
         if p.get("provisions_word"):
             gov = (gov + "，" if gov else "") + p["provisions_word"]
-        if p.get("council"):
+        if p.get("council") and with_court:
             gov = (gov + "，" if gov else "") + p["council"]
         if gov:
             lines.append(gov + "。")
@@ -850,7 +856,7 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # 任职者已在 facts 层按人聚合: 「仲宣任丑角（自…任），又任盗贼大师…」),
     # 标题按营/廷区分 — 弃用「宫廷官职」, 防止被读成主角自身官职履历
     # (郭氏 bug: 花名册被模型当主角 CV, 脑补出「历任之职/众人争相延揽」)。
-    if p.get("court_positions"):
+    if p.get("court_positions") and with_court:
         if cid is None and p.get("landless"):
             lines.append(f"营中僚属任职：{p['court_positions']}。")
         elif cid is None:
@@ -861,7 +867,7 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         lines.append(f"在主角处任{p['court_position']}。")
     # v36 (问题2, 用户拍板3): 主角**自己获授**的朝廷职位 (太师等) — 只出现在传主档案
     # (cid is None 即主角本人), 主语是主角, 与上面的「僚属花名册」方向相反。
-    if cid is None and p.get("court_office"):
+    if cid is None and p.get("court_office") and with_court:
         lines.append(f"朝廷职位：{p['court_office']}。")
     # ---- 家庭句 ----
     # v28: 配偶标签按**档案主体的性别**取 — 女性角色的丈夫此前被写成「妻室」
@@ -1473,7 +1479,10 @@ def _article_facts(facts, cache, key, section=None):
                    "\n".join(_protagonist_archive_lines(
                        facts, private=key in private_boards, scope=scope,
                        # v57 (问题2a): 《刺客列传》篇不下发主角卒年 (死亡句/后任句)
-                       with_death=(key != "assassins"))))
+                       with_death=(key != "assassins"),
+                       # v70 (用户 2026-09-27 拍板): 《XX历代记》篇不下发朝局明细
+                       # (封臣人数/御前会议席位/廷中僚属任职)
+                       with_court=(key != "chaoju"))))
     if key == "benji":
         # v27: 开篇与纪事按模块切片, 两块料不相交
         # v34 (问题5): 不再附【主角大事摘要】(与下面的【大事年表】逐字重复,
@@ -1620,91 +1629,24 @@ def _article_facts(facts, cache, key, section=None):
         if tl:
             blocks["相关年表"] = "\n".join(tl)
     elif key == "chaoju":
-        sk = _sec_key(section)
+        # v68 (问题1): 开篇改「王朝历代」(用户拍板) —— 事实层 top_title_history =
+        # 主角当前最高头衔从**战役起点**以来的国号沿革与历代持有者 (旧稿用
+        # holder_changes 的「相关高位头衔」口径, 同一家族名下四枚被同一套游牧
+        # 动态名命名的头衔并列, 国号一行不可见, 模型遂把草原汗位更替写成中国
+        # 王朝更替, 并凭空补出「葛元方与石士良争权」这类朝堂戏)。
+        # v70 (用户 2026-09-27 拍板): 本分支只剩开篇 —— 纪事板块连同它的四块素材
+        # (朝廷职司 / 主角受任 / 廷中僚属任免 / 朝中要员 / 要员隐事) 整块删除。
+        # 用户原话: 「上一次要求中写了『同时改篇名《XX历代记》并移除朝局动态』,
+        # 怎么朝局动态又冒出来了?」并附正文「封臣二百二十六人，御前会议九席自此而设」。
         realm = facts.get("realm") or {}
-        if sk == "lead":
-            # v68 (问题1): 开篇改「王朝历代」(用户拍板) —— 事实层 top_title_history =
-            # 主角当前最高头衔从**战役起点**以来的国号沿革与历代持有者 (旧稿用
-            # holder_changes 的「相关高位头衔」口径, 同一家族名下四枚被同一套游牧
-            # 动态名命名的头衔并列, 国号一行不可见, 模型遂把草原汗位更替写成中国
-            # 王朝更替, 并凭空补出「葛元方与石士良争权」这类朝堂戏)。
-            dashi = []
-            if realm.get("liege_chain"):
-                dashi.append(f"主角所处疆域：{realm['liege_chain']}")
-            # v69 (用户拍板): 事实层改「每朝一行 + 该朝历代(含即位缘由)」的行形
-            # (朝代行/历代行不再带「国号沿革：」「历代：」前缀), 故整块按原序发出。
-            for ln in (realm.get("top_title_history") or []):
-                dashi.append(ln)
-            _set_block(blocks, "王朝历代", "\n".join(dashi))
-        else:
-            # 纪事: 本朝人事 (朝廷职司 / 主角受任 / 廷中僚属任免 / 朝中要员 / 要员隐事)
-            dashi = []
-            if realm.get("ministers"):
-                dashi.append("朝廷职司：" + "、".join(realm["ministers"]))
-            # v36 (问题2, 用户拍板3): 主角获授的朝廷职位与任免 (朝局升沉段)
-            if realm.get("protagonist_offices"):
-                dashi.append("主角朝廷职位：" + "；".join(realm["protagonist_offices"]))
-            if realm.get("protagonist_office_changes"):
-                dashi.append("主角朝廷职位任免：" + "；".join(realm["protagonist_office_changes"]))
-            _set_block(blocks, "本朝纪事", "\n".join(dashi))
-            # v68: 「朝局动态」块**移除** —— 它的内容是主角本人的年表切片 (家眷死亡/
-            # 开战胜负/囚禁), 已在《本纪》《家族恩怨录》详写, 与「朝代沿革」无关;
-            # 而板块要求却写「写出帝位每次更替」, 素材支撑不了要求 ⇒ 终传整段虚构。
-            link = _murder_link_line(facts, key, sk)
-            if link:
-                blocks["说明"] = link
-            # v7/v23: 玩家营/廷内僚属任免 (逐年数据驱动, 主语=任职者);
-            # 块首标注归属, 防止被读成主角在别家朝堂的任免升沉
-            cp_ch = list(facts.get("court_position_changes") or [])
-            cp_seg = _split_span(cp_ch, 0)
-            if cp_seg:
-                pr = facts.get("protagonist") or {}
-                tag = "营中" if pr.get("landless") else "廷中"
-                # v29b: 归属说明改主语句 (「主角廷中僚属任免如下：」), 不用整句括注
-                blocks["官职任免"] = (f"主角{tag}僚属任免如下：\n"
-                                      + "\n".join(cp_seg))
-        # 要员名录: 主角相关角色 (家人/好友/仇人/宫廷任官) 中有政治类记忆或历任高位头衔者
-        # (剔除路人; 截断 60 名防提示词膨胀; v68: 随「本朝纪事」发在纪事板块)
-        names = []
-        related = set()
-        for _fid in (_pick_friend(cache)[0], _select_primary_enemy(cache)):
-            if _fid is not None:
-                related.add(_fid)
-        for h in cache.get("court_positions") or []:
-            for p in h.get("positions") or []:
-                if isinstance(p.get("employee"), int):
-                    related.add(p["employee"])
-        if sk != "lead":
-            # v45 (档 B, 阅读顺序): 年表/隐事行的行内人名先标, 再标要员名录
-            _tag_blocks(facts, scope, blocks)
-            _fi = facts.get("_facts")
-            for cid, rec in (cache.get("characters") or {}).items():
-                if len(names) >= 60:
-                    break
-                if int(cid) == pid or int(cid) not in related:
-                    continue
-                prof = facts["characters"].get(cid) or {}
-                if not prof.get("name"):
-                    continue
-                if any(m["type"] in POLITICAL_TYPES for m in rec.get("memories") or []) \
-                        or prof.get("titles_held"):
-                    # v13: prof["name"] 已是统一显示名 (名·姓/姓+名/父名), 不再拼家族前缀
-                    # v45: 改经统一称谓出口并接亲缘定语 (「女婿X」「姻亲兄弟Y」);
-                    # 无称谓 (占位名) 时回落裸显示名
-                    full = prof["name"]
-                    if _fi is not None and scope is not None:
-                        full = _fi.kin_attrib_label(
-                            int(cid), date=facts.get("as_of"), style="brief",
-                            scope=scope) or full
-                    if full not in names:
-                        names.append(full)
-        if names:
-            blocks["朝中要员"] = "、".join(names)
-        # v28: 要员隐事 — 最高领主链与朝廷职司时任者的隐事 (用户决策:
-        # 《朝局风云录》收录最高统治者的秘密); v68: 随「本朝纪事」发在纪事板块
-        rs = list(realm.get("secrets") or [])
-        if rs and sk != "lead":
-            _set_block(blocks, "要员隐事", "\n".join(rs))
+        dashi = []
+        if realm.get("liege_chain"):
+            dashi.append(f"主角所处疆域：{realm['liege_chain']}")
+        # v69 (用户拍板): 事实层改「每朝一行 + 该朝历代(含即位缘由)」的行形
+        # (朝代行/历代行不再带「国号沿革：」「历代：」前缀), 故整块按原序发出。
+        for ln in (realm.get("top_title_history") or []):
+            dashi.append(ln)
+        _set_block(blocks, "王朝历代", "\n".join(dashi))
     # ---- v5 新增文章 ----
     elif key == "assassins":
         # v27: 主角档案已在共享前缀, 不再重复
@@ -1951,16 +1893,19 @@ def _jiashi_variant(facts, cache):
     return "none"
 
 
-def _protagonist_archive_lines(facts, private=False, scope=None, with_death=True):
+def _protagonist_archive_lines(facts, private=False, scope=None, with_death=True,
+                               with_court=True):
     """主角档案块 (v34, 问题5): 从共享前缀移出, 按篇下发。
     private=True 放行揭底链 (托卵承嗣/血脉登基) 与「实父」行 —
     只给《家室列传》《阴私录》这类讲门庭内情的篇目。
     v45: scope = 本板块的亲缘定语登记表 (基准人 = 该篇传主)。
     v57 (问题2a): with_death=False 时不出死亡句与「后任」句 (《刺客列传》篇专用,
-    该篇人名录恒为死于主角之手者; 主角卒年数据留在篇内会被模型续成名录末条)。"""
+    该篇人名录恒为死于主角之手者; 主角卒年数据留在篇内会被模型续成名录末条)。
+    v70: with_court=False 时不出封臣人数/御前会议席位/廷中僚属任职
+    (《XX历代记》篇专用, 见 `_profile_lines` 同源注释)。"""
     return _profile_lines(facts, None, with_real_parentage=private,
                           with_private_chains=private, scope=scope,
-                          with_death=with_death)
+                          with_death=with_death, with_court=with_court)
 
 
 def _shared_facts_block(facts, subject=None, key=None):
@@ -2770,6 +2715,19 @@ def build_articles(facts, cache, cfg):
                 secs.append({"key": "mid",
                              "title": mid_title, "req": mid_req})
             return secs
+        if key == "chaoju":
+            # v70 (用户 2026-09-27 拍板): 《XX历代记》只留「开篇·王朝历代」一个板块。
+            # v68 只删了名叫「朝局动态」的块, 而纪事板块的四样素材 (朝廷职司 /
+            # 廷中僚属任免 / 朝中要员 / 要员隐事) 整块就是朝局 —— 用户 2026-09-27
+            # 报「朝局动态又冒出来了」并附正文「封臣二百二十六人，御前会议九席自此
+            # 而设」。板块要求同步停发, 本板块的四块素材随之不再下发
+            # (它们在 `_article_facts` 里都以 `sk != "lead"` 为条件)。
+            return [{"key": "lead",
+                     "title": titles.get("lead") or defaults["lead"],
+                     "req": _section_req(
+                         (_var or {}).get("lead")
+                         or style.SECTION_REQ.get(key, {}).get("lead")
+                         or "按传记笔法写作。", facts)}]
         return [{
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
