@@ -15625,6 +15625,15 @@ _SUCC_WORD = {
     "independency": "自立",
     "returned": "收回",
     "swear_fealty": "宣誓效忠",
+    # v73: 记忆档 (`ascended_throne_memory.vars.reason`) 里有、头衔 history 不落的
+    # 五种取法 —— 措辞照游戏原文 (`game/localization/simp_chinese/memories_l_simp_chinese.yml`
+    # 的 `ascended_throne_memory_desc_intro_*`): `:633` 我继承了 / `:638` 我被选举来统治 /
+    # `:640` 我购买了 / `:637` 我夺取了…的牧场 / 议和得位 (negotiated)。
+    "inheritance": "继承",
+    "purchased": "买得头衔",
+    "seized_pastureland": "夺取牧场",
+    "negotiated": "议得头衔",
+    "created": "创建",
 }
 # 这些缘由写「从某某处…」(前任是同一枚头衔的上一任, 继承链可读)
 _SUCC_FROM_PREV = (None, "appointment_succession", "abdication")
@@ -15714,6 +15723,482 @@ def _estate_court_tid(f, pid):
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# v73: 《XX历代记》扩写素材 (用户 2026-09-27 拍板「内容太短 → 扩充 + 分篇并发」)
+# ---------------------------------------------------------------------------
+# 设计口径 (取证见 `docs/方案_v73_历代记扩写与并发分篇.md`):
+#   · 短在素材不在提示词 —— 旧稿只下发「国号 + 年代 + 名 + 缘由」四样 (7 份快照
+#     实测 64–560 字符), 而缓存里本有每人的生卒/年龄/享国/失位缘由/本朝战事;
+#   · 一人一行 (旧稿把整朝历代压成一行, 卡尔 941 的 22 位帐汗挤在一行);
+#   · 全部由程序成句, 提示词只交代「写哪一段、写什么」(prompt-last 铁律)。
+
+_CHRONICLE_ANCESTOR_MAX = 12     # 家族历代记的上溯位数上限
+_CHRONICLE_WAR_MAX = 40          # 单篇战事行上限 (每段再对半切)
+CHRONICLE_MID_MAX = 4            # 分篇上限 (与《家室列传》JIASHI_GROUP_MAX 同式)
+# 天朝 (`h_`) 创建天命时的缘由词 (用户 2026-09-27 拍板):
+#   前一段是空位期 (群雄争霸) → 建立天命; 直接顶替在位者 → 取代 (王莽代汉之例)。
+# 其余头衔的 `created` 仍走 `created_verb_kind` 三档 (创建/重建/开创)。
+_CELLESTIAL_CREATE_VERB = {"vacant": "建立天命", "takeover": "取代"}
+# `created` 三档的中文词 (与 style.TITLE_GAIN_CREATED_VERBS 同表; 此处就地重复,
+# 免得 facts → style 反向依赖)。
+_TITLE_GAIN_CREATED_VERBS_ZH = {"first": "创建", "restored": "重建", "founded": "开创"}
+
+
+def _war_word(f, reason):
+    """战争缘由词 (记忆 `war_cb` 的本地化名)。取不到返回空串, 由调用方省略该分句。"""
+    if not reason:
+        return ""
+    try:
+        v = L.loc(f.table, str(reason)) or ""
+    except Exception:
+        v = ""
+    return v if v and not re.search(r"[A-Za-z_]", v) else ""
+
+
+def _chrono_rec(f, cid):
+    """角色记录 (v73: 同战役各传主缓存里取**最完整**的一份)。
+
+    各缓存是同一局游戏不同档期的真实观测: 尼克档记下奄美靖 51 条记忆与卒日,
+    崔佛档同期对该人是 0 条 —— 故按记忆条数取最全, 只读不合并写回。"""
+    key = str(cid)
+    best, best_n = None, -1
+    for src in ([f.cache] + list((f.campaign or {}).values())):
+        rec = ((src or {}).get("characters") or {}).get(key)
+        if not isinstance(rec, dict):
+            continue
+        n = len(rec.get("memories") or [])
+        if n > best_n:
+            best, best_n = rec, n
+    return best or {}
+
+
+def _chrono_year_age(birth, date):
+    """生日与事件日 → 整年岁 (缺任一返回 None)。"""
+    if not birth or not date:
+        return None
+    try:
+        by, bm, bd = (int(x) for x in str(birth).split(".")[:3])
+        dy, dm, dd = (int(x) for x in str(date).split(".")[:3])
+    except Exception:
+        return None
+    age = dy - by - (1 if (dm, dd) < (bm, bd) else 0)
+    return age if age >= 0 else None
+
+
+def _chrono_span(gain, loss):
+    """在位跨度文本: 「在位10年」/「在位未满一年」; 缺失位日返回空串。"""
+    if not gain or not loss:
+        return ""
+    try:
+        gy = int(str(gain).split(".")[0])
+        ly = int(str(loss).split(".")[0])
+    except Exception:
+        return ""
+    n = ly - gy
+    return "在位未满一年" if n <= 0 else "在位%d年" % n
+
+
+def _chrono_seqs(f):
+    """{(cid, tid): [(date, reason, type)]} —— 登位/失位**记忆**索引 (一次扫描缓存)。
+
+    `ascended_throne_memory.vars.reason` 是游戏自己记的取法 (尼克档 9,875 条
+    **全部**带 reason), `lost_title_memory` 同式; `landed_title` 即该记忆对应的头衔。"""
+    if getattr(f, "_chrono_idx", None) is not None:
+        return f._chrono_idx
+    idx = {}
+    for _cid, _rec in (f.cache.get("characters") or {}).items():
+        try:
+            cid = int(_cid)
+        except (TypeError, ValueError):
+            continue
+        for m in (_rec.get("memories") or []):
+            ty = m.get("type")
+            if ty not in ("ascended_throne_memory", "lost_title_memory"):
+                continue
+            reason, lt = "", None
+            for v in (m.get("vars") or []):
+                if v.get("flag") == "reason" and not reason:
+                    reason = str(v.get("value") or "")
+                elif v.get("flag") == "landed_title" and v.get("identity") is not None:
+                    try:
+                        lt = int(v.get("identity"))
+                    except (TypeError, ValueError):
+                        lt = None
+            if lt is None:
+                continue
+            idx.setdefault((cid, lt), []).append(
+                (str(m.get("creation_date") or ""), reason, ty))
+    for k in idx:
+        idx[k].sort(key=lambda x: cl.date_key(x[0]))
+    f._chrono_idx = idx
+    return idx
+
+
+def _chrono_accession_reason(f, cid, tid, hist_type, date):
+    """该日即位的**缘由** —— 记忆档优先, 头衔 history 兜底。
+
+    天朝 (`h_`) 的 `created` 由调用方按用户判据改写 (空位期后 = 建立天命 / 顶替在位者
+    = 取代), 故此处返回空串; 其余一律先取记忆档 (词表更全: 补 inheritance / election /
+    purchased / seized_pastureland / negotiated 五档), 记忆缺该头衔时退回头衔 history
+    的 `type`。两处都没有返回 "" (该分句整段省略)。"""
+    if hist_type == "created":
+        return ""
+    for (d, reason, _ty) in reversed(_chrono_seqs(f).get((int(cid), int(tid)), [])):
+        if not reason:
+            continue
+        if not date or cl.date_key(d) <= cl.date_key(date):
+            return _SUCC_WORD.get(reason, "")
+    return _SUCC_WORD.get(hist_type or "", "")
+
+
+def _chrono_rel_word(f, cid, other):
+    """二者亲属关系词 (子/女/父/母/兄/姊/配偶); 无关系返回 ''。"""
+    if cid is None or other is None:
+        return ""
+    fam = (_chrono_rec(f, cid).get("family") or {})
+    if other in (fam.get("father") or []):
+        return "父"
+    if other in (fam.get("mother") or []):
+        return "母"
+    if other in ((fam.get("spouse") or []) + (fam.get("primary_spouse") or [])
+                 + (fam.get("concubine") or []) + (fam.get("former_spouses") or [])):
+        return "配偶"
+    if other in (fam.get("siblings") or []):
+        return "姊" if bool((_chrono_rec(f, other) or {}).get("female")) else "兄"
+    ofam = (_chrono_rec(f, other).get("family") or {})
+    if cid in (ofam.get("child") or []):
+        return "女" if bool((_chrono_rec(f, cid) or {}).get("female")) else "子"
+    return ""
+
+
+def _chrono_acc_text(f, cid, date, word, prev, from_prev=False):
+    """即位分句: 「953年6月6日从珉·奄美处被派系拥立」/「874年7月7日自立建国」。
+
+    `from_prev` 只对**继承类**缘由置真 (与 v69 的 `_SUCC_FROM_PREV` 同口径):
+    「从X处建立天命」「从X处被派系拥立」都不是通顺句。"""
+    d = f.date(date) if date else ""
+    if not word:
+        return d
+    if from_prev and prev is not None and isinstance(prev, int):
+        pn = _chrono_rec(f, prev).get("name_full") or f.name_or(prev, "") or ""
+        if pn:
+            rel = _chrono_rel_word(f, cid, prev)
+            return "%s从%s%s处%s" % (d, rel, pn, word) if rel                 else "%s从%s处%s" % (d, pn, word)
+    return d + word
+
+
+def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
+                       vacant=False, is_h=False, family=False):
+    """一位统治者一行 (v73 用户拍板「一人一行」):
+
+    `奄美靖｜生933年12月27日，卒963年1月9日｜953年6月6日被派系拥立，时年19岁｜在位10年`
+      (生卒/时年/享国/卒于位皆缺则整段省略)。
+    `prev`(前任) 与 `vacant`(前一段是空位期) 支撑天朝「建立天命 / 取代」的用户判据。"""
+    nm = f.name_with_regnal(cid, date) or f.name_or(cid, "") or ""
+    if not nm:
+        return ""
+    rec = _chrono_rec(f, cid)
+    if family:
+        word = _SUCC_WORD.get(hist_type or "", "") or ""
+        acq = _chrono_acc_text(f, cid, date, word, None)
+        tname = f.title(tid, date=date) if tid is not None else ""
+        bits = [x for x in (acq, tname) if x]
+        return nm + ("｜" + "｜".join(bits) if bits else "")
+    birth = rec.get("birth") or ""
+    death = (rec.get("death") or {}).get("date") or ""
+    life = []
+    if birth:
+        life.append("生" + f.date(birth))
+    if death:
+        life.append("卒" + f.date(death))
+    word = _chrono_accession_reason(f, cid, tid, hist_type, date)
+    if hist_type == "created":
+        if is_h:
+            word = _CELLESTIAL_CREATE_VERB["takeover" if not vacant else "vacant"]
+        else:
+            word = _TITLE_GAIN_CREATED_VERBS_ZH.get(
+                f.created_verb_kind(tid, cid, date)) or "创建"
+    acq = _chrono_acc_text(f, cid, date, word, prev,
+                           from_prev=(hist_type in (None, "", "appointment_succession",
+                                                    "abdication", "inheritance")))
+    age = _chrono_year_age(birth, date)
+    if age is not None:
+        acq += "，时年%d岁" % age
+    span = _chrono_span(date, loss_date)
+    tail = ""
+    if loss_date:
+        tail = "，随后于" + f.date(loss_date) + ("失去天命" if is_h else "失去头衔")
+        if death and cl.date_key(death) == cl.date_key(loss_date):
+            tail = "，卒于位"
+    elif death:
+        tail = "，卒于位"
+    bits = [x for x in (acq, span) if x]
+    if not bits:
+        return nm
+    return nm + "｜" + "｜".join(life + ["；".join(bits) + tail])
+
+
+def _chrono_group(items, max_n):
+    """把 items 尽量等分成 ≤max_n 段 (空段不返回)。"""
+    items = list(items or [])
+    if not items:
+        return []
+    n = max(1, min(int(max_n), len(items)))
+    base, extra = divmod(len(items), n)
+    out, i = [], 0
+    for k in range(n):
+        m = base + (1 if k < extra else 0)
+        if m:
+            out.append(items[i:i + m])
+        i += m
+    return out
+
+
+def _chrono_label(f, cid, date=None):
+    """战事行里的人名 (只出名字; 战事行已由本方称谓领起)。"""
+    return f.name_with_regnal(cid, date) or f.name_or(cid, "") or ""
+
+
+def _chrono_war_lines(f, tid):
+    """本头衔的战事行 (v73): 兴兵之年 + 对手 + 决胜之年与胜负, 一行成句。
+
+    源: 缓存记忆 `offensive_war` / `defensive_war` 的 `war_title` = 本头衔
+    (`war_attacker` = 兴兵方), 胜负取同对手的 `war_won` / `war_lost`。"""
+    tid = int(tid)
+    wars, wins = [], []
+    for _cid, _rec in (f.cache.get("characters") or {}).items():
+        try:
+            cid = int(_cid)
+        except (TypeError, ValueError):
+            continue
+        for m in (_rec.get("memories") or []):
+            ty = m.get("type")
+            if ty not in ("offensive_war", "defensive_war", "war_won", "war_lost"):
+                continue
+            wt, atk = None, None
+            for v in (m.get("vars") or []):
+                if v.get("flag") == "war_title" and v.get("identity") is not None:
+                    try:
+                        wt = int(v.get("identity"))
+                    except (TypeError, ValueError):
+                        wt = None
+                elif v.get("flag") == "war_attacker" and v.get("identity") is not None:
+                    try:
+                        atk = int(v.get("identity"))
+                    except (TypeError, ValueError):
+                        atk = None
+            if wt != tid:
+                continue
+            d = str(m.get("creation_date") or "")
+            parts = m.get("participants") or {}
+            if ty in ("offensive_war", "defensive_war"):
+                opp = parts.get("other_party")
+                if not isinstance(opp, int):
+                    opp = atk
+                wars.append((d, cid, opp if isinstance(opp, int) else None, ty))
+            else:
+                opp = parts.get("loser") if ty == "war_won" else parts.get("winner")
+                wins.append((d, cid, opp if isinstance(opp, int) else None, ty))
+    out, seen = [], set()
+    for (d, cid, opp, ty) in sorted(wars, key=lambda x: cl.date_key(x[0])):
+        me = f.date(d) + _chrono_label(f, cid)             + ("兴兵" if ty == "offensive_war" else "应战")
+        if isinstance(opp, int):
+            me += ("讨" if ty == "offensive_war" else "拒")                 + (_chrono_label(f, opp) or "来犯之敌")
+        for (wd, wcid, wopp, wty) in wins:
+            if wcid != cid or cl.date_key(wd) < cl.date_key(d):
+                continue
+            if isinstance(opp, int) and isinstance(wopp, int) and opp != wopp:
+                continue
+            me += "；" + f.date(wd) + ("战胜" if wty == "war_won" else "败于")                 + (_chrono_label(f, wopp) if isinstance(wopp, int) else "对手")
+            break
+        else:
+            me += "；胜负未见记载"
+        me += "。"
+        if me in seen:
+            continue
+        seen.add(me)
+        out.append(me)
+        if len(out) >= _CHRONICLE_WAR_MAX:
+            break
+    return out
+
+
+def _chrono_base_name(f, tid, date=None):
+    """头衔**底名** (不含层级词) —— k_qingxu → 「青徐」。
+    与 `_realm_facts` 内 `_base_name` 同式 (该处是闭包, 模块级另立一份)。"""
+    t = f._lt.get(str(tid)) or {}
+    key = t.get("key") or ""
+    if not key:
+        return ""
+    d = date or f.as_of or f.cache.get("last_date")
+    nm = f._name_at_date(tid, d) or L.loc(f.table, key) or key
+    nm = str(nm).strip()
+    return nm if not re.search(r"[A-Za-z_]", nm) else ""
+
+
+def _chrono_sub_lines(f, tid, pid=None):
+    """本朝治所/所辖行 (v73): 治所取传主档案里已算好的 `protagonist.capital`
+    (「长安县」—— 与《传主档案》同一出口, 免得两处治所不一致); 所辖列挂在本头衔名下的
+    封臣头衔。取不到即整行省略。"""
+    out = []
+    capname = ""
+    if pid is not None:
+        capname = (getattr(f, "_protagonist_cache", None) or {}).get("capital") or ""
+    if capname:
+        out.append("治所：" + str(capname))
+    holders = {}
+    for h in (f.cache.get("realm_history") or []):
+        for k, v in (h.get("holders") or {}).items():
+            if v is not None:
+                holders[str(k)] = v
+    subs = []
+    for k in holders:
+        t = f._lt.get(str(k)) or {}
+        if (t.get("de_facto_liege") or t.get("liege")) == tid:
+            nm = _chrono_base_name(f, int(k))
+            if nm and nm not in subs:
+                subs.append(nm)
+    if subs:
+        out.append("本朝所辖：" + "、".join(subs[:12]))
+    return out
+
+
+def _chrono_accs(f, tid, as_of):
+    """本头衔的取得序列 [(date, holder, type, reign_end, vacant)]。
+    头衔 history 为空 (游牧毡帐等) 时退逐档快照, 缘由为空。"""
+    evs = _title_hist_events(f, tid, end=as_of)
+    if not evs:
+        evs = [(d, h, None) for d, h in _realm_holder_seq(f, tid, end=as_of)]
+    out, prev, vacant = [], None, False
+    for i, (d, h, ty) in enumerate(evs):
+        if h is None:
+            continue
+        if ty == "destroyed":
+            prev, vacant = None, True
+            continue
+        if prev is None or h != prev:
+            out.append((d, h, ty, evs[i + 1][0] if i + 1 < len(evs) else None, vacant))
+        prev, vacant = h, False
+    return out
+
+
+def _chrono_prev_for(accs, idx):
+    """取得序列里该事件的前一任持有者 (继承链可读); 无则 None。"""
+    for j in range(idx - 1, -1, -1):
+        h = accs[j][1]
+        if isinstance(h, int):
+            return h
+    return None
+
+
+def _chrono_build(f, tid, pid, is_h, own, periods, tname):
+    """《历代记》分篇素材 (v73 用户拍板): 一人一行 + 分篇 + 战事/支系.
+
+    · 该头衔由传主创建且历代只有传主一人 → **家族历代记** (祖上最早一位统治者写到传主);
+      此时取不到有头衔的父/母 (自定义角色) → 返回 None, 该篇不生 (用户 2026-09-27 拍板)。
+    · 否则按国号段组织历代 (段界 = 各段首位即位日), 每段一人一行。"""
+    accs = _chrono_accs(f, tid, f.as_of or f.cache.get("last_date"))
+    if len(accs) == 1 and accs[0][1] == pid and (accs[0][2] or "") == "created":
+        return _family_chronicle(f, pid, tid, is_h=is_h)
+    if not periods:
+        return None
+    for k, p in enumerate(periods):
+        p["end"] = periods[k + 1]["start"] if k + 1 < len(periods) else None
+    claimed = set()
+    for p in periods:
+        for gi, (d, h, ty, end, vac) in enumerate(accs):
+            if h not in p["ids"] or gi in claimed:
+                continue
+            # 归属判据 = **即位日落在本段之前** (该段的即位者可能在战役窗口之前就即位,
+            # 如李漼 859 年即位而唐皇朝段自 868 年战役起点起算), 且下一段开始前仍在位。
+            claimed.add(gi)
+            p["rows"].append(_chrono_ruler_line(
+                f, tid, d, h, ty, _chrono_prev_for(accs, gi), end,
+                vacant=vac, is_h=is_h))
+    if not any(p["rows"] for p in periods):
+        return None
+    cur = next((p for p in reversed(periods) if p.get("ids")), None)
+    return {
+        "name": tname,
+        "family": False,
+        "tid": int(tid),
+        "is_h": bool(is_h),
+        "current": cur,
+        "periods": periods,
+        "wars": _chrono_war_lines(f, tid) if is_h else [],
+        "subs": _chrono_sub_lines(f, tid, pid),
+    }
+
+
+def _family_chronicle(f, pid, tid, is_h=False):
+    """家族历代记 (v73 用户拍板): 该头衔由传主创建、且历代只有传主一人 → 从**祖上最早的
+    一位统治者**写到传主。无有头衔的父/母 (自定义角色, 如诺兰冒险者) → 返回 None, 该篇不生。
+
+    条目 = 同宗族 (`dynasty_id` 一致) 的历代祖先 (父/母链上溯), 各取其**最早**一次持衔;
+    按即位日由老到新, 末条 = 传主本人。上限 `_CHRONICLE_ANCESTOR_MAX` 人。"""
+    p_dyn = f._dynasty_of_cid(pid)
+    seen, queue = set(), []
+    fam0 = (_chrono_rec(f, pid).get("family") or {})
+    for key in ("father", "mother"):
+        for pcid in (fam0.get(key) or []):
+            if isinstance(pcid, int) and pcid != pid and pcid not in seen:
+                seen.add(pcid)
+                queue.append(pcid)
+    picked = []
+    while queue:
+        cid = queue.pop(0)
+        if f._dynasty_of_cid(cid) == p_dyn:
+            hold = f._holder_intervals.get(cid) or {}
+            if hold:
+                best = None
+                for t, ivs in hold.items():
+                    for iv in ivs:
+                        if iv and iv[0] and (best is None
+                                             or cl.date_key(iv[0]) < cl.date_key(best[0])):
+                            best = (iv[0], int(t), iv[1] if len(iv) > 1 else None,
+                                    iv[2] if len(iv) > 2 else "")
+                if best:
+                    picked.append((best[0], cid, best[1], best[2], best[3]))
+        fam = (_chrono_rec(f, cid).get("family") or {})
+        for key in ("father", "mother"):
+            for pcid in (fam.get(key) or []):
+                if isinstance(pcid, int) and pcid != cid and pcid not in seen:
+                    seen.add(pcid)
+                    queue.append(pcid)
+    if not picked:
+        return None
+    picked.sort(key=lambda x: cl.date_key(x[0]))
+    picked = picked[-_CHRONICLE_ANCESTOR_MAX:]
+    rows = []
+    for (d, cid, atid, loss, _lt2) in picked:
+        line = _chrono_ruler_line(f, atid, d, cid, f._gain_reason.get((cid, atid, d), ""),
+                                  f._gain_prev.get((cid, atid, d)), loss,
+                                  is_h=is_h, family=True)
+        if line:
+            rows.append(line)
+    ivs = (f._hold_intervals(pid) or {}).get(tid) or []
+    own_g = ivs[-1][0] if ivs else None
+    own_l = ivs[-1][1] if ivs else None
+    own_line = _chrono_ruler_line(f, tid, own_g, pid, "created", None, own_l,
+                                  is_h=is_h, family=True)
+    if own_line:
+        rows.append(own_line)
+    if not rows:
+        return None
+    name = (f.name(pid) or f.cache.get("player_name") or "") + "家"
+    return {
+        "name": name,
+        "family": True,
+        "tid": int(tid),
+        "is_h": bool(is_h),
+        "current": {"dynasty": "", "span": "", "ids": [pid]},
+        "periods": [{"dynasty": "家族", "span": "", "ids": [p[1] for p in picked] + [pid],
+                     "rows": rows}],
+        "wars": _chrono_war_lines(f, tid) if is_h else [],
+        "subs": _chrono_sub_lines(f, tid, pid),
+    }
 
 
 def _top_title_history(f, group_lines=None):
@@ -15815,24 +16300,28 @@ def _top_title_history(f, group_lines=None):
             continue
         if _prev is None or _h != _prev:
             accs.append((_d, _h, _ty,
-                         _evs[_i + 1][0] if _i + 1 < len(_evs) else None, _vacant))
+                         _evs[_i + 1][0] if _i + 1 < len(_evs) else None, _vacant,
+                         _vacant))
         _prev, _vacant = _h, False
 
-    seg_rows = [[_nm, _s, _e, []] for _nm, _s, _e in (segs or [[_disp, None, None]])]
+    seg_rows = [[_nm, _s, _e, [], False]
+                for _nm, _s, _e in (segs or [[_disp, None, None]])]
     # 国号更名比持有者变更晚 0–3 天落账 (950.6.1 珉·奄美建天命 → 950.6.3 改号「和」;
     # 963.1.9 格尔木噶玛即位 → 963.1.11 改号「毕」), 故即位日落在某国号段起点之后
     # 7 天内的归入**新**段 —— 否则开国之君会被算进上一朝。
-    for _gi, (_d, _h, _ty, _end, _vac) in enumerate(accs):
+    for _gi, (_d, _h, _ty, _end, _vac, _was_vac) in enumerate(accs):
         if start and _end and cl.date_key(_end) <= cl.date_key(start):
             continue                # 开局前就已卸任者不入历代 (汉晋隋唐古史)
         _dk, _pick, _best = _date_ord(_d), 0, None
-        for _j, (_nm2, _s2, _e2, _hs2) in enumerate(seg_rows):
+        for _j, (_nm2, _s2, _e2, _hs2, _v2) in enumerate(seg_rows):
             if not _s2:
                 continue
             _sk = _date_ord(_s2)
             if _sk <= _dk + 7 and (_best is None or _sk > _best):
                 _best, _pick = _sk, _j
         seg_rows[_pick][3].append((_gi, _d, _h, _ty))
+        if _was_vac:
+            seg_rows[_pick][4] = True
 
     def _span(s, e):
         """朝代行的年代区间 (用户样例用年; 同一年内改朝者补月份)。"""
@@ -15852,7 +16341,8 @@ def _top_title_history(f, group_lines=None):
     _full_now = f.title(tid, as_of) or ""
     _suf = _full_now[len(_base_now):] if (_base_now and _full_now.startswith(_base_now)) else ""
 
-    for _i, (_nm, _s, _e, _hs) in enumerate(seg_rows):
+    periods = []
+    for _i, (_nm, _s, _e, _hs, _vac0) in enumerate(seg_rows):
         _st = _hs[0][1] if _hs else _s
         if _st is None:
             continue
@@ -15892,6 +16382,8 @@ def _top_title_history(f, group_lines=None):
                         + ("失去天命" if is_h else "失去头衔")
                     break
             _items.append(_txt + "）")
+        periods.append({"name": _hdr, "start": _st, "vacant": bool(_vac0),
+                        "ids": [x[2] for x in _hs], "rows": []})
         if _items:
             lines.append("、".join(_items))
         elif is_h:
@@ -15908,7 +16400,7 @@ def _top_title_history(f, group_lines=None):
         _g, _l = ivs[-1][0], ivs[-1][1]
         lines.append("主角本朝任期：" + f.date(_g)
                      + ("–" + f.date(_l) if _l else " 至今"))
-    return common, lines
+    return common, lines, _chrono_build(f, tid, pid, is_h, own, periods, tname)
 
 
 def _realm_facts(f):
@@ -16212,10 +16704,13 @@ def _realm_facts(f):
     # v68 (问题1): 本朝历代 —— 主角当前最高头衔从**战役起点**以来的国号沿革与历代
     # 持有者 (用户拍板: 篇名《XX历代记》, 移除「朝局动态」块; 有家业者写最高领主的
     # 头衔历史, 仅冒险者营地者本篇略去)。`holder_changes` 保留给其它调用点与既有断言。
-    _tt_common, _tt_lines = _top_title_history(f, group_lines=group_lines)
+    _tt_common, _tt_lines, _tt_chronicle = _top_title_history(
+        f, group_lines=group_lines)
     if _tt_lines:
         out["top_title_history"] = _tt_lines
         out["top_title_name"] = _tt_common
+    if _tt_chronicle:
+        out["dynasty_chronicle"] = _tt_chronicle
     return out
 
 
@@ -17770,6 +18265,8 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     # 共享前缀里的家族名不得停在首见值)
     _pid0 = cache.get("player_id")
     _pdn, _phn = f._house_names_at(_pid0, as_of) if _pid0 is not None else ("", "")
+    # v73: 《历代记》的治所行与《传主档案》同一出口 (免得两处治所不一致)
+    f._protagonist_cache = _protagonist(f)
     facts = {
         # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充)
         "house": _dynasty_display(_pdn or cache.get("dynasty_name"),
@@ -17780,7 +18277,7 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "player_id": cache.get("player_id"),
         "period": period,
         "sources": sources,
-        "protagonist": _protagonist(f),
+        "protagonist": f._protagonist_cache,
         "timeline": _timeline(f),
         "characters": _character_profiles(f),
         # v45 (档 B): 行文本 -> [[cid, 称谓], …] —— 事件句/隐事句的行内出词登记
