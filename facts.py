@@ -4610,7 +4610,11 @@ class Facts:
         if gov in self._CELESTIAL_LIKE_GOVS:
             if independent:
                 if tier == "hegemon":
-                    key = "hegemon_celestial_male_chinese"
+                    # v73 (用户 2026-09-27): 女性霸权级统治者称「女皇」(如「元女皇」)
+                    # —— 游戏原文的 `hegemon_celestial_female_chinese` 只是对男键的
+                    # 模板引用, 与男键同形, 旧稿在此**直写男键**, 女性一律被写成「皇帝」。
+                    key = "hegemon_celestial_female_chinese" if female \
+                        else "hegemon_celestial_male_chinese"
                 elif tier == "empire":
                     key = "emperor_celestial_male_chinese_independent"
                 elif tier == "kingdom":
@@ -15906,9 +15910,26 @@ def _chrono_acc_text(f, cid, date, word, prev, from_prev=False,
     return d + word
 
 
+def _chrono_loss_date(f, cid, tid, next_date):
+    """该次任职的**真正失位日** (v73): 两位君主先后相继 (前任卒/禅 → 后任即位) 时,
+    `history` 的下一事件日只是**继任日**, 不是前任的失位日 —— 旧稿因此把「奄美樽
+    951 即位、953 传位其子」写成「随后于 953 年失去天命」, 与 `top_title_history`
+    的「从奄美珉处受任命继位」自相矛盾。故只在存档另记失位事件 (`lost_title_memory`)
+    或下一事件本身是 `destroyed` 时, 才认这个日期为失位日; 否则返回 None
+    (行内只写任期, 不写失位)。"""
+    if not next_date:
+        return None
+    for (d, _reason, ty) in _chrono_seqs(f).get((int(cid), int(tid)), []):
+        if ty != "lost_title_memory":
+            continue
+        if cl.date_key(d) <= cl.date_key(next_date):
+            return d
+    return None
+
+
 def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
                        vacant=False, is_h=False, family=False, nm=None,
-                       prev_date=None):
+                       prev_date=None, dtor=False):
     """一位统治者一行 (v73 用户拍板「一人一行」):
 
     `奄美靖｜生933年12月27日，卒963年1月9日｜953年6月6日被派系拥立，时年19岁｜在位10年`
@@ -15942,14 +15963,27 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
                            from_prev=(hist_type in (None, "", "appointment_succession",
                                                     "abdication", "inheritance")),
                            prev_date=prev_date)
+    if not word and prev is not None and isinstance(prev, int):
+        # 两源都无线索 (头衔 history 无 type、记忆档也未载) 时, 按**前任相继**写常规
+        # 「继位」—— 与 v69 的「无 type = 常规继承」同口径; 首位统治者 (无前任) 则
+        # 只写即位日, 不替游戏猜缘由。
+        _pn = _chrono_nm(f, prev, prev_date or date)
+        if _pn:
+            _rel = _chrono_rel_word(f, cid, prev)
+            acq = ("%s从%s%s处继位" % (f.date(date), _rel, _pn) if _rel
+                   else "%s从%s处继位" % (f.date(date), _pn))
     age = _chrono_year_age(birth, date)
     if age is not None:
         acq += "，时年%d岁" % age
-    span = _chrono_span(date, loss_date)
+    _real_loss = _chrono_loss_date(f, cid, tid, loss_date)
+    if _real_loss is None and dtor:
+        _real_loss = loss_date          # 下一事件即毁弃 (holder = 失去者) 时直接认下
+    _end = _real_loss or loss_date or death
+    span = _chrono_span(date, _end)
     tail = ""
-    if loss_date:
-        tail = "，随后于" + f.date(loss_date) + ("失去天命" if is_h else "失去头衔")
-        if death and cl.date_key(death) == cl.date_key(loss_date):
+    if _real_loss:
+        tail = "，随后于" + f.date(_real_loss) + ("失去天命" if is_h else "失去头衔")
+        if death and cl.date_key(death) == cl.date_key(_real_loss):
             tail = "，卒于位"
     elif death:
         tail = "，卒于位"
@@ -16133,9 +16167,11 @@ def _chrono_build(f, tid, pid, is_h, own, periods, tname):
             # 归属判据 = **即位日落在本段之前** (该段的即位者可能在战役窗口之前就即位,
             # 如李漼 859 年即位而唐皇朝段自 868 年战役起点起算), 且下一段开始前仍在位。
             claimed.add(gi)
+            # v73: 下一事件即「毁弃」(holder = 失去者) 时, 该任的结束日就是真正的失位日
+            _dtor = bool(gi + 1 < len(accs) and accs[gi + 1][2] == "destroyed")
             p["rows"].append(_chrono_ruler_line(
                 f, tid, d, h, ty, _chrono_prev_for(accs, gi), end,
-                vacant=vac, is_h=is_h,
+                vacant=vac, is_h=is_h, dtor=_dtor,
                 prev_date=(accs[gi - 1][0] if gi > 0 else None)))
     if not any(p["rows"] for p in periods):
         return None
@@ -16229,10 +16265,45 @@ def _family_chronicle(f, pid, tid, is_h=False):
     }
 
 
+def _is_final_bio(f):
+    """本篇是否**终传** (v73 用户 2026-09-27 拍板: 《XX历代记》只在终传触发)。
+
+    判据 = 缓存有卒日 **且** 本篇截止日正是那个卒日:
+      · `pipeline._bio_as_of` 给终传传的是卒日 (与卒日同期 ⇒ 终传);
+      · 十年传记传的是十年末 (≠ 卒日, 且 decade 有值);
+      · 在世传记没有卒日。
+    世界末日档 (卒日与叙事末日同期且 decade 有值) 归十年档, 按用户要求不建本篇。"""
+    return _is_final_bio_spec({
+        "decade": f.decade,
+        "as_of": f.as_of,
+        "player_death": f.cache.get("player_death"),
+    })
+
+
+def _is_final_bio_spec(facts):
+    """`_is_final_bio` 的**事实面**版 (同一判据, 供 `biography.build_articles` 复核)。"""
+    facts = facts or {}
+    if facts.get("decade"):
+        return False
+    death = (facts.get("player_death") or {}).get("date") or ""
+    if not death:
+        return False
+    as_of = facts.get("as_of")
+    if not as_of:
+        return True
+    try:
+        _a = (tuple(cl.date_key(str(as_of))) + (1, 1))[:3]
+        _b = (tuple(cl.date_key(str(death))) + (1, 1))[:3]
+        _d = (_a[0] - _b[0]) * 366 + (_a[1] - _b[1]) * 31 + (_a[2] - _b[2])
+        return -7 <= _d <= 7
+    except Exception:
+        return str(as_of) == str(death)
+
+
 def _top_title_history(f, group_lines=None):
     """本朝历代 (v68 问题1; 用户拍板 §7-1「篇名《XX历代记》」/§7-2「有庄园写最高领主的
     头衔历史, 冒险者营地略去」; v69 用户追改行形) —— 主角当前最高头衔**从战役起点
-    以来**的历代。返回 (篇名用朝代通称, [行...]); 无可写对象返回 ("", [])。
+    以来**的历代。返回 (篇名用朝代通称, [总说行...], 分篇素材); 无可写对象返回 ("", [], {})。
 
     块的行序 (v69 用户样例: 每朝一行, 次行由老到新列该朝历代并写明即位缘由):
       本朝：{该日头衔显示名}            (仅家业者写「所附之朝：」; 末行另有主角在位段)
@@ -16251,7 +16322,7 @@ def _top_title_history(f, group_lines=None):
         return "", [], {}
     # v73 (用户 2026-09-27 拍板): 本篇**只在终传触发** —— 在世传记 (尚未卒) 与各十年
     # 传记都不再建《XX历代记》 (历代既已完篇, 不必每十年重述一遍)。
-    if f.as_of or f.decade or not f.cache.get("player_death"):
+    if not _is_final_bio(f):
         return "", [], {}
     as_of = f.as_of or f.cache.get("last_date")
     start = _campaign_start(f)

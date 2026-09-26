@@ -1475,14 +1475,20 @@ def _article_facts(facts, cache, key, section=None):
     # 好友/仇人分支), 这里不重复生成 —— 否则白算一遍, 还会把主角一家的名字记进
     # 本板块的亲缘名额 (S1 字面语义) 而挤掉真正的首见位。
     if key not in ("friend", "enemy") or subject is None:
-        _set_block(blocks, "传主档案",
-                   "\n".join(_protagonist_archive_lines(
-                       facts, private=key in private_boards, scope=scope,
-                       # v57 (问题2a): 《刺客列传》篇不下发主角卒年 (死亡句/后任句)
-                       with_death=(key != "assassins"),
-                       # v70 (用户 2026-09-27 拍板): 《XX历代记》篇不下发朝局明细
-                       # (封臣人数/御前会议席位/廷中僚属任职)
-                       with_court=(key != "chaoju"))))
+        # v73: 《XX历代记》的**纪事各节**不下发传主档案 —— 先世各朝的素材只有
+        # 「一人一行」, 而档案里有主角一家的丰富细节 (兄弟姊妹十七人、特质履历、
+        # 封臣与直辖), 模型读了两份素材就会把主角的家世搬到先世头上 (实测虚构
+        # 「格尔木噶玛之父为顿巴斯部将」). 开篇仍留档案 (写本朝要)。
+        _mid_sec = _sec_key(section) not in ("lead", None)
+        if not (key == "chaoju" and _mid_sec):
+            _set_block(blocks, "传主档案",
+                       "\n".join(_protagonist_archive_lines(
+                           facts, private=key in private_boards, scope=scope,
+                           # v57 (问题2a): 《刺客列传》篇不下发主角卒年 (死亡句/后任句)
+                           with_death=(key != "assassins"),
+                           # v70 (用户 2026-09-27 拍板): 《XX历代记》篇不下发朝局明细
+                           # (封臣人数/御前会议席位/廷中僚属任职)
+                           with_court=(key != "chaoju"))))
     if key == "benji":
         # v27: 开篇与纪事按模块切片, 两块料不相交
         # v34 (问题5): 不再附【主角大事摘要】(与下面的【大事年表】逐字重复,
@@ -2803,12 +2809,20 @@ def _same_period(a, b):
     return (a.get("name"), a.get("start")) == (b.get("name"), b.get("start"))
 
 
+def _chrono_usable(p):
+    """该朝是否够料独立成节 (v73): 「一人一行」下只有一位统治者时, 该节除
+    即位/生卒/在位之外无他事可写, 模型必以虚构填满 —— 故要求 ≥2 位统治者
+    (用户拍板: 「如果该头衔由主角创建，并且历史只有主角一个人，则同样不生成历代记，
+    否则没东西写」, 同一口径推广到先世各朝)。"""
+    return len([r for r in (p.get("rows") or []) if r]) >= 2
+
+
 def _chrono_split(periods, cap=None):
     """把各朝尽量等分成 ≤cap 节 (v73; cap 缺省取 `facts.CHRONICLE_MID_MAX`)。
 
     返回**合并后的段**: 每段的 `name` 是所含各朝名 (「唐皇朝、群雄争霸」), `start`/`end`
     取该段首尾 (与素材块的段界同源)。只有一段时不再拆。"""
-    ps = [p for p in (periods or []) if p.get("rows")]
+    ps = [p for p in (periods or []) if _chrono_usable(p)]
     if not ps:
         return []
     cap = max(1, int(cap if cap is not None
@@ -2942,7 +2956,7 @@ def build_articles(facts, cache, cfg):
             else:
                 # 各朝 (含本朝) 按「尽量等分 + 末节留本朝」分节; 只有一段时就是单节。
                 _cur = _dc.get("current") or {}
-                _all = [p for p in _periods if p.get("rows")]
+                _all = [p for p in _periods if _chrono_usable(p)]
                 if _cur.get("rows") and _cur not in _all:
                     _all.append(_cur)
                 _hist = [p for p in _all
@@ -3017,10 +3031,12 @@ def build_articles(facts, cache, cfg):
     _rlm = facts.get("realm") or {}
     _dc = _rlm.get("dynasty_chronicle") or {}
     _ttn = _rlm.get("top_title_name") or ""
-    # v73 (用户 2026-09-27 拍板): 本篇只在**终传**触发 (事实层已按 `as_of`/`decade`/
-    # `player_death` 三闸收口, 此处按篇目复核一道 —— 在世传记与十年传记都不建本篇)。
-    _final = (not facts.get("as_of")) and (not facts.get("decade")) \
-        and bool(facts.get("player_death"))
+    # v73 (用户 2026-09-27 拍板): 本篇只在**终传**触发 (事实层 `_is_final_bio` 已按
+    # 「decade 为空 + 有卒日 + 本篇截止日正是卒日」收口; 此处按篇目复核一道)。
+    try:
+        _final = bool(F._is_final_bio_spec(facts))
+    except Exception:
+        _final = False
     if _final and (_ttn or _dc):
         _fam = bool(_dc.get("family"))
         _ttl = (_dc.get("name") or _ttn) if _fam else _ttn

@@ -403,6 +403,30 @@ def save_localization_table(cfg, table, raw_templates=None, path=None,
     return path
 
 
+# ---------------------------------------------------------------------------
+# 本地化**修正表** (v73): 游戏原文对「女性同一层级」只写模板引用 ($同一键$) 的键
+# ---------------------------------------------------------------------------
+# 用户 2026-09-27 报: 「霸权级统治者的称号只有皇帝一种, 分不清男女, 女性改为女皇,
+# 如元女皇」。根因在游戏原文 —— `game/localization/simp_chinese/culture/
+# culture_titles_l_simp_chinese.yml:1228-1237` 把女性键全部写成对男性键的**引用**:
+#     hegemon_celestial_male_chinese:             "皇帝"
+#     hegemon_celestial_female_chinese:           "$hegemon_celestial_male_chinese$"
+#     hegemon_female_chinese:                     "$hegemon_celestial_male_chinese$"
+#     emperor_female_chinese_independent:         "$hegemon_celestial_male_chinese$"
+#     emperor_celestial_female_chinese_independent: "$hegemon_celestial_male_chinese$"
+# 于是解析后女键与男键同形 (`L.loc` 返回的串以 `$` 开头, 上游一律判为未解析),
+# 女性霸主的称谓只能落回「皇帝」甚至无条件兜底键 `hegemon` = 「女霸主」(见
+# `docs/研究_v47_统治者头衔动态.md` 与 v69 的霸主→皇帝收口)。
+# 本表在**载入之后**覆盖这些键, 与 v30 的 `GENERIC_OFFICE_ZH` (empire 已是
+# 「皇帝/女皇」两分) 同一口径; 键与值都照游戏词法, 不新造词。
+LOC_OVERRIDES = {
+    "hegemon_celestial_female_chinese": "女皇",
+    "hegemon_female_chinese": "女皇",
+    "emperor_female_chinese_independent": "女皇",
+    "emperor_celestial_female_chinese_independent": "女皇",
+}
+
+
 def load_localization_table(cfg, force=False):
     """载入本地化表; 缺失、强制、或**来源指纹变化**时重建。返回 {key: 中文}。
 
@@ -428,6 +452,7 @@ def load_localization_table(cfg, force=False):
         except Exception:
             fp = None
         if fp and old_fp and old_fp.get("hash") == fp.get("hash"):
+            cached.update(LOC_OVERRIDES)     # v73: 修正表对**旧表**同样生效
             return cached
         why = "旧版表无来源指纹" if not old_fp else "启用 Mod / 游戏本地化已变化"
         llm.log(f"本地化表需重建 ({why})。")
@@ -435,6 +460,7 @@ def load_localization_table(cfg, force=False):
     if not table:
         # 游戏目录不可用 (换机 / 未配置): 保留旧表, 优于空表
         llm.log("本地化重建未取到任何键 (游戏目录不可用?), 沿用既有表。")
+        cached.update(LOC_OVERRIDES)         # v73: 修正表对旧表同样生效
         return cached
     # v58 (§0.1): **退表保护** —— 只在游戏目录不可用时会重建出「只剩 Mod 键」的
     # 小表 (实测 94,734 vs 382,330)。旧稿只挡「空表」, 于是这类退化表会覆盖好的表,
@@ -452,6 +478,7 @@ def load_localization_table(cfg, force=False):
     save_localization_table(cfg, table, raw_templates, path, fingerprint=fp)
     llm.log(f"本地化表已重建: {len(table)} 键"
             + (f", 启用 Mod {len((fp or {}).get('mods') or [])} 个。" if fp else "。"))
+    table.update(LOC_OVERRIDES)              # v73: 女性层级词修正 (见 LOC_OVERRIDES)
     return table
 
 
