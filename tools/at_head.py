@@ -8,6 +8,10 @@
 
 用法:
     & tools\\py.ps1 tools\\at_head.py tools\\verify_v68_title_name.py head
+    & tools\\py.ps1 tools\\at_head.py --ref=64a6216 tools\\snap.py 菲利普2 38665 final --name=base
+
+`--ref=<git 版本>` 指定对照版本 (缺省 HEAD)。注意: 本轮改动一旦提交, HEAD 就等于
+改动后 —— 要对照「改动前」必须显式给改动前的提交 (如 checkpoint 提交)。
 """
 import os
 import shutil
@@ -25,10 +29,16 @@ def git(*args):
 
 
 def main():
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+    ref = "HEAD"
+    for a in list(args):
+        if a.startswith("--ref="):
+            ref = a.split("=", 1)[1]
+            args.remove(a)
+    if not args:
         print(__doc__)
         return 2
-    script, args = sys.argv[1], sys.argv[2:]
+    script, rest = args[0], args[1:]
     if not os.path.isfile(os.path.join(ROOT, script)):
         print("找不到探针脚本: %s" % script)
         return 2
@@ -45,15 +55,19 @@ def main():
 
     rc = 1
     try:
+        _n = 0
         for fn in _CODE:
-            r = git("show", "HEAD:%s" % fn)
+            r = git("show", "%s:%s" % (ref, fn))
             if r.returncode != 0:
+                print("  !! git show %s:%s 失败, 该文件保持工作树版本" % (ref, fn))
                 continue
             with open(os.path.join(ROOT, fn), "w", encoding="utf-8",
                       newline="") as fp:
                 fp.write(r.stdout)
-        print("已用 HEAD 版源码覆盖工作树, 开始跑 %s …" % script)
-        rc = subprocess.call([sys.executable, os.path.join(ROOT, script)] + args,
+            _n += 1
+        print("已用 %s 版源码覆盖工作树 (%d/%d 个文件), 开始跑 %s …"
+              % (ref, _n, len(_CODE), script))
+        rc = subprocess.call([sys.executable, os.path.join(ROOT, script)] + rest,
                              cwd=ROOT)
     finally:
         for fn in _CODE:

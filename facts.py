@@ -15662,13 +15662,15 @@ def _top_title_history(f, group_lines=None):
     t = f._lt.get(str(tid)) or {}
     key = t.get("key") or ""
     tnd = t.get("title_name_data") or {}
-    tname = f.title(tid, as_of) or f._name_at_date(tid, as_of) \
-        or f.title_base_name(tid) or ""
+    _disp = f._name_at_date(tid, as_of) or f.title_base_name(tid) or ""
+    tname = f.title(tid, as_of) or _disp
     if not tname:
         return "", []
-    common = tname
-    if f._has_reign_history(tid):     # 有国号更名史者用通称 (h_china → 中华)
-        common = L.loc(f.table, key) or tname
+    # 篇名通称: 有国号更名史者用它自己那一版通称 (h_china → 中华, 覆盖唐宋元…);
+    # 其余用该日显示名的底名 (k_norway → 挪威 而非「挪威王国」)。
+    common = L.loc(f.table, key) or _disp if f._has_reign_history(tid) else _disp
+    if not common:
+        common = tname
     lines = [("本朝：" if own else "所附之朝：") + tname]
 
     # ---- 国号分段 (title_history_names): [名, 起, 止] ----
