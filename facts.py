@@ -4189,6 +4189,35 @@ class Facts:
                            else f"后任：其后{body}")
         return out
 
+    def protagonist_era(self):
+        """本传主**执政起点** (v77 问题1): 存档接替链里「本人成为传主」的那一日。
+
+        返回 `(era_start, has_predecessor)`:
+          · `era_start` = `cache["played_legacy"]` 链上本人那一条的 `date`
+            (与 `succession_lines` 同一数据源: 存档 `played_character.legacy`);
+            无链 / 链上无本人 ⇒ 退回本缓存起点 `sources[0]`;
+          · `has_predecessor` = 链上本人之前**还有前代传主**。
+
+        为什么需要它 (`_timeline` 的「传主时代」闸): 继任传主的存档里带着前任
+        **整整一朝**的材料 —— 前任的记忆列表在存档中持续存在, 而前任多是本传主的
+        父/兄, 故在 `_related_ids` 内全部入表。实测田所久保 (16795838) 终传:
+        80 条大事年表里 60 条是父亲浩二 867–891 年的谋杀、姻亲之死与其子女出生,
+        模型于是把本纪写成了「关白浩二一生行事, 见诸旧记者血迹斑斑」(见
+        `docs/方案_v77_传主时代裁料.md`)。首位传主 (链上无前任) 不设闸:
+        他缓存起点之前的零星记忆本就是他开局世界的一部分 —— 既有传记零回归。"""
+        cache = self.cache
+        pid = cache.get("player_id")
+        srcs = [str(s) for s in (cache.get("sources") or []) if s]
+        start = srcs[0] if srcs else ""
+        has_prev = False
+        if pid is None:
+            return start, has_prev
+        chain = [e for e in (cache.get("played_legacy") or [])
+                 if isinstance(e, dict) and isinstance(e.get("cid"), int)]
+        idx = next((i for i, e in enumerate(chain) if e["cid"] == int(pid)), None)
+        if idx is None:
+            return start, has_prev
+        return (chain[idx].get("date") or start), idx > 0
 
     # ---- v41 (问题6): 共治者 (co-ruler) 称谓 ----
 
@@ -14697,6 +14726,24 @@ def _title_mem_skip(f, owner_id, mem, pid):
     return f.title_tenure_zero_day(pid, tid, f.mem_date(owner_id, mem))
 
 
+# v77 (问题1): 本传主的**直系亲属** (父母/妻妾/子女) —— 他们的生卒是本传主生平的一部分
+# (母卒于他三十六岁那年、女儿夭折), 故这类事件即便早于本人执政起点也留在他本篇本纪里;
+# 姻亲/远亲之死与前代传主的手笔则不然 (见 `_timeline` 的「传主时代」闸)。
+def _immediate_ids(f, pid):
+    """直系亲属 id 集 (父母/妻妾/子女; 不含本人)。"""
+    if pid is None:
+        return set()
+    rec = (f.cache.get("characters") or {}).get(str(pid)) or {}
+    fam = rec.get("family") or {}
+    out = set()
+    for key in ("father", "mother", "primary_spouse", "spouse", "concubine",
+                "former_spouses", "former_concubines", "child"):
+        for x in fam.get(key) or []:
+            if isinstance(x, int) and x != int(pid):
+                out.add(x)
+    return out
+
+
 def _timeline(f):
     """主角相关时间线: 只收 宗族/父母妻儿/孙辈儿媳婿 相关事件 (口径见 _related_ids),
     按人按事去重, 按日期排序。
@@ -14710,6 +14757,23 @@ def _timeline(f):
     cache = f.cache
     pid = cache.get("player_id")
     related = _related_ids(f)
+    # v77 (问题1): 「传主时代」闸 —— 继任传主的存档里带着前任传主整整一朝的材料
+    # (前任的记忆列表在存档中持续存在, 且前任是本传主的父/兄, 故在 `related` 内),
+    # 于是后任《本纪》的【大事年表】几乎全是前任的事迹 (田所久保 80 条里 60 条是
+    # 父亲浩二 867–891 年的谋杀与姻亲之死, 模型照料写出「关白浩二一生行事…」)。
+    # 判据: 事件**既非本传主本人**(记忆持有者不是他, 参与者里也没有他), 又落在
+    # 「本人成为传主」之前 ⇒ 那是前任传主时代的事, 已在那一任自己的传记里写过,
+    # 不进本篇。首位传主 (链上无前任) 不设闸 —— 零回归 (见
+    # `Facts.protagonist_era`)。
+    _era_start, _era_gate = f.protagonist_era()
+    _era_key = cl.date_key(_era_start) if (_era_gate and _era_start) else None
+    _close_ids = _immediate_ids(f, pid) if _era_key else set()
+
+    def _pre_era(date, own):
+        """该事件是否属「前任传主时代、且与本传主无关」⇒ 不进本篇年表。"""
+        return bool(_era_key and not own and date
+                    and cl.date_key(str(date)) < _era_key)
+
     # v54 (问题3): 诛灭世族涉及者 —— 其监禁类记忆不进年表 (整件事由族级行承担)
     purge_victims = f.family_purge_victims(pid) if pid is not None else set()
     purge_dates = f._purge_dates(pid) if pid is not None else set()
@@ -14727,13 +14791,18 @@ def _timeline(f):
         if cid in related:
             # v42 (问题5): annotated=True —— 主角所杀者并写生年/族属/信仰,
             # 与 `*_died` 分支取死亡记录时的补注同式 (两者同优先级, 谁先写都一样)
-            ds = _death_sentence(f, cid, annotated=True)
-            if ds:
-                # v58 (问题8): 按优先级写 —— 继承合句 (4) 不得被死亡记录顶掉
-                _old = deaths.get(cid)
-                if _old is None or 3 > _old[0]:
-                    deaths[cid] = (3, (rec.get("death") or {}).get("date"),
-                                   "death", ds)
+            # v77 (问题1): 前任传主时代的关系人死讯 (如浩二 891 年所杀的五位亲王与
+            # 姻亲) 全条略去 —— 那是前任的手笔, 不是本传主的事迹; 父母妻儿的死
+            # 则是本传主生平的一部分, 即便早于本人执政起点也留 (`_close_ids`)。
+            if not _pre_era((rec.get("death") or {}).get("date"),
+                            cid == pid or cid in _close_ids):
+                ds = _death_sentence(f, cid, annotated=True)
+                if ds:
+                    # v58 (问题8): 按优先级写 —— 继承合句 (4) 不得被死亡记录顶掉
+                    _old = deaths.get(cid)
+                    if _old is None or 3 > _old[0]:
+                        deaths[cid] = (3, (rec.get("death") or {}).get("date"),
+                                       "death", ds)
         for mem in rec.get("memories") or []:
             parts = mem.get("participants") or {}
             owner_rel = cid in related
@@ -14741,7 +14810,21 @@ def _timeline(f):
                            for v in parts.values())
             if not owner_rel and not part_rel:
                 continue  # 路人记忆大事: 剔除
+            # v77 (问题1): 「传主时代」闸 (见函数上方) —— 与本传主无关、且发生在他
+            # 成为传主之前者, 属前任传主时代 (本传主本人参与的事件一律保留:
+            # 出生、受业、受任、添丁、退位这些正是《本纪》要写的一生)。
             mtype = mem.get("type")
+            if mtype in _DIED_TYPES:
+                # 死讯的当事人是**死者** (记忆持有者只是当事人之一): 唯有死者就是
+                # 本传主或其直系亲属时才算「本传主的事」—— 否则前任传主所杀姻亲的
+                # 死讯仍会漏进后任本纪 (实测久保年表 80 条里 60 条如此)。
+                _keep = (parts.get("dead_relation") == pid
+                         or parts.get("dead_relation") in _close_ids)
+            else:
+                _keep = (cid == pid or pid in parts.values()
+                         or parts.get("child") == pid)
+            if _pre_era(mem.get("creation_date"), _keep):
+                continue
             # v58 (问题8): 继承合句 —— 被配对的死讯改用合句, 承袭记忆不再单独成行
             _ip = _ipairs.get(id(mem)) if _ipairs else None
             # v38 (问题1): 性事记忆族的自愿档归并 —— 强迫/半推半就单独成档
@@ -14912,6 +14995,9 @@ def _timeline(f):
             continue
         if not (_tgt in related or (isinstance(_src, int) and _src in related)):
             continue
+        # v77 (问题1): 同受「传主时代」闸 (本传主非当事人的前任时代传播行略去)
+        if _pre_era(_when, pid in (_src, _tgt)):
+            continue
         events.append((_when, "std_transmission", _text, "疾病传播"))
     # 合并 死亡记录 + 去世记忆 + 出生事件
     # v14: death 记录按死者关系标模块 (仇人死亡/丧友之恸/丧偶之痛/丧亲之恸)
@@ -14936,6 +15022,9 @@ def _timeline(f):
         for ch in (rec.get("faith_history") or [])[1:]:
             d = ch.get("from")
             if not d:
+                continue
+            # v77 (问题1): 同受「传主时代」闸 (他人的改信若在前任时代, 不进本篇)
+            if _pre_era(d, cid == pid):
                 continue
             nm = f.event_name(cid, date=d)
             fn = f._faith_name(ch.get("faith"))
