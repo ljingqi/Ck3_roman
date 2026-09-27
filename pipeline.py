@@ -701,7 +701,7 @@ def _catchup(cfg, cache, continue_mode=False):
                 processed += 1
                 llm.log(f"  补录 {i}/{total} 并入 {s['date']}: "
                         f"相关人物 {len(cache['characters'])}")
-                _cross_check_deaths(cfg, melt, player_id)
+                _cross_check_lineage(cfg, melt, player_id)
         except Exception as e:
             llm.log(f"  [跳过] {s['date']} 处理失败: {e}")
             continue
@@ -1015,7 +1015,7 @@ def _process_save(cfg, save, continue_mode=False):
         save_session_cache(cfg, cache, continue_mode)
         llm.log(f"  并入 {date}: 玩家 {cache.get('player_name')} (id={cache.get('player_id')}), "
                 f"相关人物 {len(cache['characters'])}")
-        _cross_check_deaths(cfg, melt, player_id)
+        _cross_check_lineage(cfg, melt, player_id)
         return player_id, melt_pt
     except Exception:
         try:
@@ -1192,6 +1192,142 @@ def _cross_check_deaths(cfg, melt, current_player):
             llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 死于 {dd.get('date')}, "
                     f"原因 {dd.get('reason')} — 待生成终传")
             break
+
+
+def _cross_check_lineage(cfg, melt, current_player):
+    """v76 (问题1): 传主终了**两路** —— 先查死亡 (既有 `_cross_check_deaths`),
+    再查「在位终结但未死亡」的传主更替 (让位/剃发退位/被废/转无地)。"""
+    _cross_check_deaths(cfg, melt, current_player)
+    return _cross_check_reign_ends(cfg, melt, current_player)
+
+
+# ---------------------------------------------------------------------------
+# v76 (问题1): 「在位终结但未死亡」的传主更替
+# ---------------------------------------------------------------------------
+# 触发例: 田所 922.7.7 —— 久保(16795838)用日本佛教决议「寻找净土」剃发退位,
+# `tgp_renounce_estate_effect` 把家督与头衔交给继承人并 `set_player_character`
+# (game/common/scripted_effects/10_dlc_tgp_japan_scripted_effects.txt:3915),
+# 前任**不死**, 于是既有「死亡才写 player_death」的触发链整条落空 —— 静默丢一篇终传。
+#
+# 为什么不能逐决议特判: 全游戏 26 处 `set_player_character` (天命王朝兴衰/权臣夺位/
+# 无地冒险者/游牧忽里勒台/大圣战受地/RICE 7 文件…), 且会随版本与 Mod 继续增加。
+# 故只判「形状」: **接替链上换人了, 而前任仍在世** = 在位终结但非死亡。
+_REIGN_END_WORD = {
+    "abdicated": "剃发退位/让位",
+    "landless": "去位转无地",
+    "unknown": "让位",
+}
+
+
+def _lineage_chain(melt):
+    """本档 `played_character.legacy` → [(cid, date), …] (有序; 末条 = 现任扮演者)。"""
+    out = []
+    for e in ((melt.get("played_character") or {}).get("legacy") or []):
+        if not isinstance(e, dict):
+            continue
+        cid = e.get("character")
+        if isinstance(cid, int):
+            out.append((cid, e.get("date") or ""))
+    return out
+
+
+def _char_has_trait(melt, c, name):
+    """该角色条目是否持有特质 `name` (走熔件顶层 `traits_lookup` 数组)。"""
+    tl = melt.get("traits_lookup") or []
+    for t in (c.get("traits") or []):
+        if isinstance(t, int) and 0 <= t < len(tl) and tl[t] == name:
+            return True
+    return False
+
+
+def _reign_end_kind(melt, c):
+    """让位的**性质** (只用存档字段):
+    `ep3_renounced_estate` 修正或新得 `devoted` 特质 ⇒ abdicated (剃发/退隐让位);
+    本档已无任何领地 ⇒ landless; 其余 ⇒ unknown (措辞退化为中性的「让位」)。
+    实测久保 923 档: modifier `ep3_renounced_estate`(永久) + traits 含 `devoted`(id 184) —— 见
+    `logs/tmp_probe_v76_abdA.txt`。⚠ 不能拿「无地」当让位判据 (久保让位后仍有领地,
+    见同文件), 只在 abdicated 之外当兜底性质。"""
+    if "ep3_renounced_estate" in cl._char_modifier_names(c):
+        return "abdicated"
+    if _char_has_trait(melt, c, "devoted"):
+        return "abdicated"
+    if not ((c.get("landed_data") or {}).get("domain") or []):
+        return "landless"
+    return "unknown"
+
+
+def _cross_check_reign_ends(cfg, melt, current_player):
+    """v76 (问题1): 前代传主「在位终结但未死亡」→ 写 `prev["reign_end"]` (待生成终传)。
+
+    判据 (全部来自存档已给字段, 不特判决议):
+      · 本档 `played_character.legacy` = 扮演角色接替链 (带接替日); 链上某人之后仍有后任,
+        则该后任的接替日 = 前任的在位终了日;
+      · 前任在本档**仍在 `living` 段** ⇒ 本次更替不是死亡;
+      · **死亡优先**: 前任在 `dead_unprunable` 里 ⇒ 一律交 `_cross_check_deaths` 的既有死亡路径
+        (让位后确实卒了的人仍按「卒于X」出终传 —— 既有判据与措辞零回归);
+      · 日期须晚于该缓存 `last_date`; 名字一致 (防角色 id 跨战役撞号, 与死亡路径同口径)。
+
+    ⚠ 不可用「不在 `dead_unprunable`」判在世: 死者会被剪除进 `characters.dead_prunable`
+    (`cache_lib.py:830-847`), 故「不在 dead_unprunable」推不出「在世」; 反过来, 若前任
+    既不在 `living` 也不在 `dead_unprunable`, 本函数**不写** (宁缺勿错)。
+
+    同时把本档接替链抄进前任缓存 (与死亡路径同一份代码), 前代终传才写得出「后任：…」。
+    返回本轮新写入的条数。"""
+    rows = _lineage_chain(melt)
+    if len(rows) < 2:
+        return 0
+    caches = all_caches(cfg)
+    melt_pt = melt.get("playthrough_id")
+    living = cl._living(melt)
+    dead_un = cl._dead_unprunable(melt)
+    n = 0
+    for i in range(len(rows) - 1):
+        cid = rows[i][0]
+        succ_cid, succ_date = rows[i + 1]
+        if cid == current_player or not succ_date:
+            continue
+        if str(cid) in dead_un:          # 死亡继承 → 既有路径 (零回归)
+            continue
+        c = living.get(str(cid))
+        if not isinstance(c, dict):      # 无法确认「未死亡」→ 不写
+            continue
+        hits = [v for k, v in caches.items() if k[0] == cid]
+        if not hits:
+            continue
+        hits.sort(key=lambda hv: hv[1].get("playthrough_id") != melt_pt)
+        for path, prev in hits:
+            prev_pt = prev.get("playthrough_id")
+            if melt_pt and prev_pt and str(prev_pt) != str(melt_pt):
+                continue
+            if prev.get("player_death") is not None \
+                    or prev.get("reign_end") is not None:
+                continue
+            if cl.date_key(succ_date) <= cl.date_key(prev.get("last_date") or "0.0.0"):
+                continue
+            rec = (prev.get("characters") or {}).get(str(cid)) or {}
+            cached_name = rec.get("name_zh") or rec.get("name_full") or ""
+            now_name = cl.name_zh(c)
+            if cached_name and now_name and cl.zh(cached_name) != cl.zh(now_name):
+                continue                 # id 撞号, 非同一人
+            kind = _reign_end_kind(melt, c)
+            succ_c = living.get(str(succ_cid)) or dead_un.get(str(succ_cid)) or {}
+            prev["reign_end"] = {
+                "date": succ_date,       # 后任接替日 = 前任在位终了日
+                "kind": kind,            # abdicated / landless / unknown
+                "alive": True,           # 本档仍在 living 段 (非死亡更替)
+                "successor": int(succ_cid),
+                "successor_name": cl.name_zh(succ_c) or "",
+                "evidence": "played_character.legacy",
+            }
+            # 传主链抄进前任缓存 (与死亡路径 pipeline.py:1185-1190 同一份)
+            prev["played_legacy"] = [{"cid": c_, "date": d_} for c_, d_ in rows]
+            cl.save_cache(prev, path)
+            llm.log(f"  [更替] 前代玩家 {cid} ({cached_name}) 在位终于 {succ_date}，"
+                    f"非死亡（{_REIGN_END_WORD.get(kind, '让位')}），"
+                    f"后任 {succ_cid} — 待生成终传")
+            n += 1
+            break
+    return n
 
 
 _BIO_LOCK = threading.Lock()
