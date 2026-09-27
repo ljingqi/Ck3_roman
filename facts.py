@@ -8137,6 +8137,103 @@ class Facts:
             return None
         return v
 
+    # ------------------------------------------------------------------
+    # v78 (问题1): 囚禁结局的**唯一判据出口**
+    # ------------------------------------------------------------------
+    # 起因 (用户 2026-09-27 报告): 《家族恩怨录》只记囚禁、不记释放, 且把「逐档观测到
+    # 不在押」当成「获释」。根因是**两处平行实现**各自拼判据 —— 年表侧
+    # `_pair_imprisonments` (释放记忆 → 狱史闭合日; 死亡只在两者皆无时才查) 与
+    # 恩怨录侧 `_house_prison_nodes` 同一顺序。而 `prison_history.from/to` 只是
+    # **逐档观测界** (cache_lib.py:2611-2645): 区间闭合可能是获释, 也可能是被处决/
+    # 死于狱中。实测浩二 902.8.18 那批 45 人里 43 人有死亡记录 (39 人 903.8.21
+    # 同日处决), 旧判据却把 45 人全判「获释」, 模型据此写出「尽数获释, 不妄杀一人」。
+    #
+    # 判据顺序 (用户 2026-09-27 拍板 D2「关押时段写几年/几个月后」的前提):
+    #   ① 释放/越狱记忆 (participants.imprisoner 与监禁者一致、日期 ≥ 入狱日) —— 最准;
+    #   ② 在押期内没为奴隶 (Carnalitas 奴役与释放同刻建立, 故先于释放结论);
+    #   ③ 死亡记录 (死日 ≥ 入狱日; 凶手 == 监禁者 ⇒ 刑杀; 食人硬证优先);
+    #   ④ prison_history 区间闭合日 ⇒ 已出狱 (**观测界**, 不当作获释日断言);
+    #   ⑤ 皆无 ⇒ held (收口「至{档}仍在押」+ 监禁者交接)。
+    # 与旧行为**只差两处**: ③ 现在先于 ④; 死亡早于「释放」记忆时以死亡为准。
+    def prison_exit(self, victim, jailer, entry_date):
+        """囚禁结局的统一判据 → {"kind", "date", "manner", "source", "reason"}。
+
+        kind ∈ escape / <release_manner 各档> / released / enslaved /
+               executed / died_in_prison / devoured / held
+        date = 出狱日或死日 (held 时为空); manner = 出狱缘由措辞 (无则空)。"""
+        out = {"kind": "held", "date": "", "manner": "", "source": "none",
+               "reason": ""}
+        if not isinstance(victim, int) or not entry_date:
+            return out
+        rec = (self.cache.get("characters") or {}).get(str(victim)) or {}
+        dk0 = cl.date_key(str(entry_date))
+        # ① 释放 / 越狱记忆 (取最早一条与本次监禁者一致者)
+        rel = None
+        for m in rec.get("memories") or []:
+            t = m.get("type") or ""
+            if t not in ("released_from_prison_memory",
+                         "escaped_from_prison_memory"):
+                continue
+            d = str(m.get("creation_date") or "")
+            if not d or cl.date_key(d) < dk0:
+                continue
+            j = (m.get("participants") or {}).get("imprisoner")
+            if isinstance(jailer, int) and isinstance(j, int) and j != jailer:
+                continue
+            if rel is None or cl.date_key(d) < cl.date_key(rel[0]):
+                rel = (d, t)
+        # ④' 狱史区间闭合日先算: 它同时是死亡判定的**上界** —— 闭合日早于死日时,
+        # 说明此人先出了狱、日后才死, 那一笔死亡不属本次囚禁 (否则会把「出狱多年后
+        # 病故」写成「N年后死于狱中」)。
+        hist_to = ""
+        for iv in rec.get("prison_history") or []:
+            to = str(iv.get("to") or "")
+            if to and cl.date_key(to) >= dk0 \
+                    and (not hist_to or cl.date_key(to) < cl.date_key(hist_to)):
+                hist_to = to
+        # ③ 死亡记录先算 —— 给 ① 设「不晚于死日」的闸 (矛盾数据以死亡为准)
+        dd = self.prison_death_clause(victim) or {}
+        ddate = str(dd.get("date") or "")
+        if ddate and cl.date_key(ddate) < dk0:
+            dd, ddate = {}, ""
+        if ddate and hist_to and cl.date_key(ddate) > cl.date_key(hist_to):
+            dd, ddate = {}, ""
+        _esc = bool(rel) and rel[1] == "escaped_from_prison_memory"
+        # ② 在押期内没为奴隶 (越狱者不在此列 —— 他确实脱身了)
+        if not _esc:
+            _own = _enslaved_in_span(self, victim, jailer, entry_date,
+                                     (ddate or (rel[0] if rel else "")) or None)
+            if _own is not None:
+                return {"kind": "enslaved", "date": ddate or (rel[0] if rel else ""),
+                        "manner": "", "source": "enslavement", "reason": ""}
+        if rel is not None:
+            d, t = rel
+            if not ddate or cl.date_key(d) <= cl.date_key(ddate):
+                if t == "escaped_from_prison_memory":
+                    return {"kind": "escape", "date": d, "manner": "",
+                            "source": "memory", "reason": ""}
+                mk, mw = self.release_manner(victim, jailer, d)
+                return {"kind": mk or "released", "date": d, "manner": mw,
+                        "source": "memory", "reason": ""}
+        if ddate:
+            killer = self._death_int(dd.get("killer"))
+            jail = self._death_int(jailer)
+            _exec = (dd.get("reason") in _PRISON_EXEC_REASONS
+                     or (killer is not None and jail is not None
+                         and killer == jail))
+            reason = str(dd.get("reason") or "")
+            if _exec and jail is not None and self.devoured_by(jail, victim):
+                return {"kind": "devoured", "date": ddate, "manner": "",
+                        "source": "death", "reason": reason}
+            return {"kind": "executed" if _exec else "died_in_prison",
+                    "date": ddate, "manner": "", "source": "death",
+                    "reason": reason}
+        # ④ 狱史区间闭合日 (观测界: 「哪一档起不在押」; 不当作获释日断言)
+        if hist_to:
+            return {"kind": "released", "date": hist_to, "manner": "",
+                    "source": "history", "reason": ""}
+        return out
+
     def spouse_latch_rows(self, as_of=None):
         """主角的婚配闩存记录 (v60 问题3) → [{other, kind, first_seen}], 按见载日排序。
 
@@ -14191,6 +14288,13 @@ def _pair_imprisonments(events, f, pid, pname=""):
         if any(o["victim"] == victim for o in outs):
             continue
         srec = (f.cache.get("characters") or {}).get(str(victim)) or {}
+        # v78 (问题1): 区间闭合日只是**观测界** —— `Facts.prison_exit` 已把「死于区间
+        # 之内」判为刑杀/狱中死 (死日 > 闭合日者不算, 那人是先出狱、日后才死)。
+        # 该情形**不造出狱事件**, 交给下方死亡收口句 (旧稿一律按获释出句: 浩二
+        # 902.8.18 那 45 人因此全被写成「尽数获释」, 实为 39 人同日处决)。
+        _exit = f.prison_exit(victim, r["jailer"], r["date"])
+        if _exit["kind"] in ("executed", "died_in_prison", "devoured"):
+            continue
         for iv in srec.get("prison_history") or []:
             if not iv.get("to"):
                 continue
@@ -14298,6 +14402,9 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     else W["prison_held"].format(victim=vn)
             head = body          # v54: 句首「X囚禁Y」—— 尾巴即结局, 折叠按尾巴分组
             o_kind = "other"     # v54: 结局**族** (同日折叠的一致性判据)
+            # v78 (D2): 折叠行改按「结局族 × 时长」计数, 故本行必须把时长词带出去
+            # (用户拍板: 关押时段写「几年/几个月后」, 不写终止关押日期)。
+            _final_span = ""
             # v35 (问题4): 出狱缘由先问「这一步是不是没为奴隶」——
             # Carnalitas 的 carn_enslave_effect 在奴役的同一刻 release_from_prison,
             # 所以那句「释放」记忆常是「没为奴隶」而不是「获释」。
@@ -14308,6 +14415,7 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 drop.add(out["idx"])
                 span = _prison_span(r["date"], out["date"])
                 same = span == W["prison_same_day"]
+                _final_span = span
                 # v42 (问题3): 阉割/致盲与释放同日 —— 刑名即出狱缘由, 并入本行
                 pun = (None if out.get("escape")
                        else _punishment_on(events, victim, out["date"]))
@@ -14383,6 +14491,7 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     # v42: 与释放句同式 —— 同日给「当日」, 其余给「N个月后」,
                     # 日期不可解析时退「至{date}」, 不留空槽
                     _sp = _prison_span(r["date"], d_date)
+                    _final_span = _sp
                     sp = W["prison_same_day"] if _sp == W["prison_same_day"] \
                         else (f"{_sp}后" if _sp else f"至{f.date(d_date)}")
                     # 凶手与监禁者同一人 → 刑杀 (`_death_int` 是 Facts 的方法,
@@ -14432,7 +14541,10 @@ def _pair_imprisonments(events, f, pid, pname=""):
             # `_fold_prison_clusters` 收口时逐条 pop, 不进最终 facts。
             e["_pm"] = {"v": victim, "vn": vn, "jn": jn,
                         "h": head, "t": body[len(head):], "o": o_kind,
-                        "cm": _cm}
+                        "cm": _cm, "sp": _final_span,
+                        # v78 (概览口径): 本行是否为**主角本人**把人关起来 ——
+                        # 折叠后按「每条/每簇计 1 次」重算「囚禁他人」。
+                        "jp": bool(pid is not None and r["jailer"] == pid)}
     # v54 (顺带, v42 口径收口): 未被任何囚禁行消费的释放/越狱记忆不再单独成行 ——
     # v42 定规「释放/越狱一律写在囚禁行**之内**」, 裸「X获释。」行即残留形态。
     # 实测成因 (斯卡利茨 919.8.25 内莫伊): 同一人被囚两次而引擎只留了一条入狱记忆,
@@ -14545,7 +14657,73 @@ _PRISON_FOLD_TOP = 5      # 折叠行前部列名人数, 其后写「等N人」(
 _PRISON_FOLD_KINDS = frozenset({
     "released", "converted", "hook", "claim", "ransomed", "banished",
     "recruit", "vows", "escape", "punished", "enslaved",
+    # v78 (问题1, D2, 用户 2026-09-27 拍板): 含处决 / 狱中死 / 被吃 / 在押的簇**也折** ——
+    # 收口改按「结局族 × 时长」计数 (见 `_prison_fold_tail`), 各人死亡方式与关押时段的
+    # 对应不失, 且被处决的关系人另有独立死亡记录句 (死句自带「囚禁N年后被斩首」)。
+    # 旧口径 (v55 §3「全部生还才折」) 与 D2 冲突, 已按用户拍板调整: 浩二 902.8.18
+    # 那 45 人若照旧口径会炸成 44 行 (39 人同日处决), 挤掉整篇年表。
+    "executed", "died_in_prison", "devoured", "held",
 })
+
+# v78 (D2): 折叠收口的出词次序 —— 重结局在前 (吃掉/处决/狱中亡), 其后各出狱缘由,
+# 最后「在押」(它自带「至{档}仍在押」, 排在末尾最顺)。只在人数相同时用来定序,
+# 人数不同一律多的在前 (沿用 v55 的「人数降序」)。
+_PRISON_KIND_ORDER = (
+    "devoured", "executed", "died_in_prison", "enslaved", "banished",
+    "punished", "escape", "converted", "hook", "claim", "ransomed", "recruit",
+    "vows", "released", "held", "other",
+)
+
+
+def _prison_fold_tail(rows, f):
+    """同日囚禁簇的收口小句 (含起首「，」) —— 按「结局族 × 时长」计数 (v78 D2)。
+
+    用户拍板原话: 「改为『其中多少人于一年后被处决，一人随后获释』这样，关押时段
+    不再写终止关押时间而是写几年/几个月后，因此 903 年被处决的可以合并。」
+    故:
+      · 时长一律写「N年后」(见 `_prison_span`), 终止关押日**不出现在收口里**;
+      · 同一簇内不同结局/不同时长各成一组, 组内计数;
+      · 单组写「，尽数{时长}后{词}」; 多组写「，其中A、B、余C」 (沿用 v55 的「余」字);
+      · held 组无时长 (收口自带「至{档}仍在押」), 不拼「N后」。
+    `rows` = [{"o": 结局族, "sp": 时长词}] (sp 可缺)。"""
+    if not rows:
+        return ""
+    words = getattr(f, "_PRISON_KIND_WORD", {}) or {}
+
+    def _word(kind):
+        w = words.get(kind, "获释")
+        return w.format(bound=f._prison_bound()) if "{bound}" in w else w
+
+    cnt = {}
+    for r in rows:
+        k = r.get("o") or "released"
+        sp = "" if k == "held" else str(r.get("sp") or "")
+        cnt[(k, sp)] = cnt.get((k, sp), 0) + 1
+    # 同一结局族的各组保持相邻 (按该族总人数先排), 组内保持原行序
+    tot = {}
+    for (k, _sp), n in cnt.items():
+        tot[k] = tot.get(k, 0) + n
+
+    def _rank(item):
+        (k, _sp), _n = item
+        return (-tot.get(k, 0),
+                _PRISON_KIND_ORDER.index(k) if k in _PRISON_KIND_ORDER else 99)
+
+    items = sorted(cnt.items(), key=_rank)
+
+    def _seg(n, kind, sp):
+        if sp:
+            return f"{n}人{sp}后{_word(kind)}"
+        return f"{n}人{_word(kind)}"
+
+    if len(items) == 1:
+        (k, sp), _n = items[0]
+        return "，尽数" + (f"{sp}后{_word(k)}" if sp else _word(k))
+    seg = [_seg(n, k, sp) for (k, sp), n in items[:-1]]
+    (lk, lsp), ln = items[-1]
+    seg.append("余" + _seg(ln, lk, lsp))
+    return "，其中" + "、".join(seg)
+
 
 
 def _fold_prison_clusters(events, f):
@@ -14561,7 +14739,11 @@ def _fold_prison_clusters(events, f):
     取前 `_PRISON_FOLD_TOP` 人, 其后写「等N人」; 结局按原文分布写出
     (「其中28人1个月后获释、1人当日获释」), 全一致时直接写结局原文。
 
-    处理完逐条 pop `_pm` —— 私有键不进最终 facts。"""
+    处理完逐条 pop `_pm` —— 私有键不进最终 facts。
+
+    v78: 返回三元组 `(out, saved, jp_kept)` —— `jp_kept` = **折叠后保留的**
+    「主角为监禁者」囚禁行数 (折叠簇每簇计 1), 供 `_timeline` 重算概览「囚禁他人」
+    (旧口径拿折叠前的双视角行数去扣 `saved`, 折叠面放宽后会直接扣成 0)。"""
     groups, order = {}, []
     for i, e in enumerate(events):
         pm = e.get("_pm")
@@ -14574,14 +14756,17 @@ def _fold_prison_clusters(events, f):
         groups[d].append(i)
     drop, added = set(), []
     saved = 0
+    jp_kept = 0
     for d in order:
         idxs = groups[d]
         if len(idxs) < _PRISON_CLUSTER_MIN:
             continue
         kinds = {events[i]["_pm"].get("o") for i in idxs}
         # v55 (§3): 折叠条件由「结局族完全一致」放宽为「**全部生还**」—— 同一天放出来的
-        # 人各有缘由 (获释/改信/交出牵制), 旧条件会一款不折而回到报菜名; 含处决/狱中死/
-        # 在押的簇仍逐人成行 (v42 拍板: 留住各自死法)。
+        # 人各有缘由 (获释/改信/交出牵制), 旧条件会一款不折而回到报菜名。
+        # v78 (D2, 用户 2026-09-27 拍板): 含处决/狱中死/在押的簇**一并折** (见
+        # `_PRISON_FOLD_KINDS`) —— 收口改按「结局族 × 时长」计数, 各人死亡方式与关押
+        # 时段的对应不失; 被处决的关系人另有独立死亡记录句 (自带「囚禁N年后被斩首」)。
         if not kinds or not kinds <= _PRISON_FOLD_KINDS:
             continue
         rows = []
@@ -14592,6 +14777,8 @@ def _fold_prison_clusters(events, f):
                          "cid": pm.get("v") or 0, "vn": pm.get("vn") or "",
                          "jn": pm.get("jn") or "", "tail": pm.get("t") or "",
                          "o": pm.get("o") or "released",
+                         "sp": pm.get("sp") or "",
+                         "jp": bool(pm.get("jp")),
                          "cm": pm.get("cm") or "unknown"})
         rows.sort(key=lambda r: (-r["rank"],
                                  cl.date_key(r["since"]) if r["since"] else _DATE_KEY_MAX,
@@ -14602,9 +14789,6 @@ def _fold_prison_clusters(events, f):
         shown = "、".join(r["vn"] for r in named[:_PRISON_FOLD_TOP])
         if len(named) > _PRISON_FOLD_TOP:
             shown += f"等{len(named)}人"
-        tails = {}
-        for r in named:
-            tails[r["tail"]] = tails.get(r["tail"], 0) + 1
         jn = named[0]["jn"]
         body = f"{jn}囚禁{shown}" if jn else f"{shown}被囚"
         # v63 (问题1): 簇内若有战斗硬证, 整簇改写为战阵俘获; 否则维持裸「囚禁」
@@ -14617,30 +14801,24 @@ def _fold_prison_clusters(events, f):
         elif jn and any((r.get("cm") or "") == "raid" for r in named):
             body = _style.FACT_WORDING["prison_raid_captured"].format(
                 jailer=jn, victim=shown)
-        # v55 (§3, 用户拍板「多人不带时长」): 收口按**出狱缘由族**计数, 不再按结局原文
-        # (含时长) 报菜名 —— 旧稿「其中15人1个月后获释、2人4日后获释、…」7 款并列。
-        words = getattr(f, "_PRISON_KIND_WORD", {}) or {}
-        kinds = {}
-        for r in named:
-            k = r.get("o") or "released"
-            kinds[k] = kinds.get(k, 0) + 1
-        if len(kinds) == 1:
-            body += "，尽数" + words.get(next(iter(kinds)), "获释")
-        else:
-            items = sorted(kinds.items(), key=lambda x: -x[1])
-            seg = [f"{c}人{words.get(k, '获释')}" for k, c in items[:-1]]
-            _lk, _lc = items[-1]
-            seg.append(f"余{_lc}人{words.get(_lk, '获释')}")
-            body += "，其中" + "、".join(seg)
-        del tails
+        # v78 (D2, 用户 2026-09-27 拍板): 收口改按「结局族 × 时长」计数, 时长写
+        # 「N年后」、不写终止关押日期 —— 旧稿 (v55 §3) 是「多人不带时长」的
+        # 「尽数获释」/「其中3人获释、余2人以人情获释」, 与本次拍板相反。
+        body += _prison_fold_tail(named, f)
         drop.update(idxs)
         saved += len(named) - 1
+        if any(r.get("jp") for r in named):
+            jp_kept += 1
         added.append({"date": d, "type": "imprisoned", "module": "囚禁入狱",
                       "text": f"{f.date(d)}，{body}。"})
-    for e in events:
+    for i, e in enumerate(events):
+        pm = e.get("_pm")
+        # v78: 未被折叠且「主角为监禁者」的行各自计 1 次 (概览口径)
+        if pm is not None and i not in drop and pm.get("jp"):
+            jp_kept += 1
         e.pop("_pm", None)
     if not drop:
-        return events, 0
+        return events, 0, jp_kept
     out = []
     for i, e in enumerate(events):
         if i in drop:
@@ -14648,7 +14826,7 @@ def _fold_prison_clusters(events, f):
         out.append(e)
     out.extend(added)
     out.sort(key=lambda e: cl.date_key(e.get("date") or ""))
-    return out, saved
+    return out, saved, jp_kept
 
 
 # v59 (问题2): `_std_note_for` / `_std_suffix` 已随「性事不进公开年表」删除 ——
@@ -15066,6 +15244,11 @@ def _timeline(f):
         if t == "imprisoned" and pid is not None:
             if (idents.get((_d, t, s)) or {}).get("owner") != pid:
                 continue
+        if t == "imprisoned_other":
+            # v78: 「囚禁他人」改在**双视角合一 + 同日簇折叠之后**统一计 (见下方) ——
+            # 旧口径在折叠前逐行计, 再全额扣掉 `_fold_saved`, 而折叠面放宽到含处决/
+            # 在押的簇后会把主角成批大狱直接扣成 0 (浩二 902.8.18 那 44 人)。
+            continue
         label = _DEATH_STAT_LABEL.get(mod) if t == "death" else _STATS_LABEL.get(t)
         if label:
             stats[label] = stats.get(label, 0) + 1
@@ -15103,11 +15286,12 @@ def _timeline(f):
     # v30: 入狱与获释合并 (问题5) — 双视角与进出狱各自成行的问题一并解决
     out = _pair_imprisonments(out, f, pid, pname0)
     # v54 (问题3d): 同日囚禁集群折叠 —— ≥5 人且结局族一致才折, 取名按头衔高低
-    # 与执政先后 (用户规则); 诺兰 1088.1.16 结局两族, 不受影响。
-    out, _fold_saved = _fold_prison_clusters(out, f)
-    if _fold_saved:
-        # 概览口径与折叠一致: 折掉 N 行即少 N 次 (与诛灭世族「计 1 次」同纪律)
-        stats["囚禁他人"] = max(0, stats.get("囚禁他人", 0) - _fold_saved)
+    # 与执政先后 (用户规则)。
+    # v78: 返回三元组, 第三项 = 折叠后保留的「主角为监禁者」行数 (簇每簇计 1),
+    # 概览「囚禁他人」据此重算 —— 旧式「折叠前逐行计再全额扣 `_fold_saved`」
+    # 在折叠面放宽后会归零 (见 `_fold_prison_clusters` 的说明)。
+    out, _fold_saved, _jp_kept = _fold_prison_clusters(out, f)
+    stats["囚禁他人"] = stats.get("囚禁他人", 0) + _jp_kept
     # v58 (问题7): 同场活动跨日合并 (同一场加冕礼的跨日见证记忆)
     out = _merge_activity_windows(out, f)
     # v11: 同日同型集体事件合并 (见证加冕/出席大婚/被囚/囚禁)
