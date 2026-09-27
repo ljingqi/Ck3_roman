@@ -2311,6 +2311,10 @@ class Facts:
         # 只给名字 (吏部/御史台), 不追加「帝国/行台」层级词。
         if key.startswith("e_minister_"):
             return name
+        # v75: 虚位御座只给官职词 (名 + 层级词会写出游戏机械串「高御座府」)
+        _tw = self.throne_word(tid)
+        if _tw:
+            return _tw
         # v26: 动态头衔名 (游牧「可萨田所部」/宗族命名「马扎尔」) 即游戏显示名,
         # 优先于伊斯兰国名与层级词后缀。
         # v66: `site=True` 且该头衔有过动态名时, `_site_name` 已在上方直接返回 ——
@@ -2866,6 +2870,23 @@ class Facts:
         except Exception:
             return False
 
+    def throne_word(self, tid, cid=None, date=None):
+        """虚位御座的成稿用词 (v75): 位号不作地名 —— 只给官职词 (天皇 / 国王)。
+
+        `k_chrysanthemum_throne` 是 landless + figurehead 的虚位御座, 它的名字
+        「高御座」是**位号**; 游戏自己按 `TITLE_TIERED_NAME` 机械拼出「高御座府」
+        (行文里御座成了一个「府」, 成稿不可用)。故凡成稿要写这个头衔, 一律只用
+        该头衔的官职词。判不出时返回 '' —— 调用方回退原写法 (逐字不变)。
+        cid / date 只作签名兼容 (御座词不分政体、不随年月变)。"""
+        if tid is None:
+            return ""
+        key = ((self._lt.get(str(tid)) or {}).get("key") or "")
+        loc_key = self._THRONE_OFFICE_KEYS.get(key)
+        if not loc_key:
+            return ""
+        v = L.loc(self.table, loc_key)
+        return v if v and not v.startswith(("$", "[")) else ""
+
     def _title_name_at(self, tid, date, cid=None, site=False):
         """头衔在某日期的完整名 (v11): 按日期名 + 层级词 (独立王国=国)。
         cid 提供时按该角色当前独立性取词 (历任/朝局用)。
@@ -2883,6 +2904,10 @@ class Facts:
             return ""
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
+        # v75: 虚位御座只给官职词 (名 + 层级词会写出游戏机械串「高御座府」)
+        _tw = self.throne_word(tid)
+        if _tw:
+            return _tw
         if site:
             nm = self._site_name(tid, cid=cid, date=date)
             if self._dyn_named(tid) or key.startswith(("x_", "e_minister_")):
@@ -4327,6 +4352,21 @@ class Facts:
     #     其子女在游戏里无王子/公主词可用 (全文件 prince*/princess*_japanese 仅 :634,644 两条)。
     # 日本皇族的称号只由 _tenno_prince_word 一条路出词。
     _JAPAN_TOP_TITLE_KEYS = {"k_chrysanthemum_throne", "e_japan"}
+    # v75 (高御座): **虚位御座** (游戏侧 landless = yes + figurehead = yes) 的名字是
+    # **位号**、不是地名 —— 拼层级词会写出游戏的机械串「高御座府」:
+    #   · 01_japan.txt:1573-1584 (k_chrysanthemum_throne, landless=yes/figurehead=yes)、
+    #     05_goryeo.txt:1126-1137 (k_yongson_throne 龙孙王座, 同形);
+    #   · 拼装 = titles_l_simp_chinese.yml:3 `TITLE_TIERED_NAME: "$NAME$$TIER|U$"`;
+    #   · 「府」来自 kingdom_administrative_japanese / kingdom_feudal_japanese
+    #     (10_tgp_japan_flavorization.txt:204-214 / :321-330),
+    #     简中词见 dlc_tgp_cultural_titles_l_simp_chinese.yml:22 与 :32。
+    # 故成稿侧这类头衔一律**只用官职词** (天皇 / 国王), 不出「位号 + 层级词」。
+    # 官职词直表与 `_JAPAN_TOP_OFFICE_KEYS` 同源 (御座不分政体, 同 :4310)。
+    _THRONE_TITLE_KEYS = {"k_chrysanthemum_throne", "k_yongson_throne"}
+    _THRONE_OFFICE_KEYS = {
+        "k_chrysanthemum_throne": "king_tenno_male_japanese",       # 天皇 (:591 / loc :34)
+        "k_yongson_throne": "king_yongson_throne_male_korean",      # 国王 (loc :98)
+    }
     # v62 (史实口径 B): 日本皇籍宗族 —— 天皇一家的宗族 (dynn_Yamato = 大和)。
     # 皇族与臣的分界是**臣籍降下 (赐姓源/平)**, 不是「父是否在位」:
     #   · 《大日本史》卷十七 / 维基实测: 惟喬親王 (文德天皇之子) 在父 858 年崩御后
@@ -17733,7 +17773,9 @@ def _villain_chains(f):
                                 f"被{pname}谋杀")
                 break
         sex = "女" if is_female(heir0) else "子"
-        tname = f.title(tid)
+        # v75: 虚位御座 (天皇座) 的继承句写「天皇第一继承人」, 不写游戏机械串
+        # 「高御座府第一继承人」(御座是位号, 不是地名)
+        tname = f.throne_word(tid) or f.title(tid)
         if rf == pid:
             mname = f.name_or(mother) if mother in lovers else ""
             who = (f"{pname}与{mname}之{sex}" if mname
