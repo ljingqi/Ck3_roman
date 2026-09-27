@@ -1604,6 +1604,10 @@ def _article_facts(facts, cache, key, section=None):
             pick = [c for c in members if c in fam_ids]
         else:
             spouse_ids = _family_ids_by_kind(cache, "spouse")
+            # v76 (问题2, 用户拍板④): 开篇「结缡与离异」的配偶集同样按本篇窗口裁
+            # (终传=一生 ⇒ 恒不裁)
+            if fi is not None:
+                spouse_ids = set(fi.spouses_in_window(sorted(spouse_ids)))
             pick = ([c for c in sorted(fam_ids) if c in spouse_ids]
                     if sk == "lead"
                     else [c for c in sorted(fam_ids) if c not in spouse_ids])

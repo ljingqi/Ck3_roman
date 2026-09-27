@@ -4771,6 +4771,143 @@ class Facts:
             out.append(s)
         return out
 
+    # ---- v76 (问题2): 婚配的**终了侧** —— 十年档只列窗口内仍在婚的妻妾 ----
+    #
+    # 现象: 田所第 5 个十年 (窗口 908–918) 里, 867 年娶、880 年已卒的初妻中御门伊子
+    # 独占一整节 (1500 字)。根因是三处来源都只有「起」没有「止」: 缓存 `family` 是
+    # 逐档并集 (`cache_lib.py:2659-2684`)、婚配闩存只记 `since`、裁剪只判
+    # 「成婚日 ≤ as_of」(`_spouses_asof`)。用户 2026-09-27 拍板: **十年档全部篇目的
+    # 配偶清单都按窗口裁** (子女不裁)。
+    #
+    # 终了日的唯一可靠**带日**留痕是家族关系流水里的「离婚」(日精度) —— 死亡不留
+    # 结婚/离婚流水, 但卒日本身就是终了日。四个坑 (全部实测, 见
+    # `docs/调研_v76_婚配起止与离异留痕.md`):
+    #   ① 配偶死亡时引擎**也写**「离婚」流水 (全档 251 条里 60 条发起方当日死亡),
+    #      故 date 等于任一方卒日者一律作废;
+    #   ② `family_data.former_spouses` 是「离异 ∪ 丧偶」并集、无日期、不分类型;
+    #   ③ `active_opinions` 的 `divorced_me_opinion` (50 年) 任一方死即清空, 只作正证;
+    #   ④ 全档 171,922 条记忆里 `divorc*` 为 0 —— 没有离婚记忆可用。
+
+    def _house_pair_flows(self):
+        """家族关系流水按「角色对」建索引 → `{frozenset({a,b}): [(date, raw), …]}`。
+
+        源 = `melt["house_relations"]["database"][*]["history"][*]` 的 `change_reason`
+        (游戏渲染好的整句, 例「…与…离婚」/「…与…结婚」), 两端 id 走 `_FEUD_CHAR_RE`
+        (与 `_house_raid_index` 同源同表)。惰性一次扫描; 句面含不可读
+        `MAX_RECURSIVE_DEPTH` 的条目**自动不入索引** (两端 id 抽不出), 由卒日兜底。"""
+        cached = getattr(self, "_pair_flows_idx", None)
+        if cached is not None:
+            return cached
+        idx = {}
+        db = (self.melt.get("house_relations") or {}).get("database") or {}
+        for r in db.values():
+            if not isinstance(r, dict):
+                continue
+            for e in (r.get("history") or []):
+                if not isinstance(e, dict):
+                    continue
+                raw = str(e.get("change_reason") or "")
+                if "离婚" not in raw and "结婚" not in raw:
+                    continue
+                ids = [int(x) for x in _FEUD_CHAR_RE.findall(raw)]
+                if len(ids) < 2 or ids[0] == ids[1]:
+                    continue
+                idx.setdefault(frozenset((ids[0], ids[1])), []).append(
+                    (str(e.get("date") or ""), raw))
+        self._pair_flows_idx = idx
+        return idx
+
+    def _char_death_date(self, cid):
+        """该角色的卒日 (缓存 `characters[].death`; 主角回读 `player_death`)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        d = (rec.get("death") or {}).get("date")
+        if not d and cid == self.cache.get("player_id"):
+            d = (self.cache.get("player_death") or {}).get("date")
+        return str(d or "")
+
+    def spouse_end(self, pid, other):
+        """该对 (传主 × 配偶) 的婚配终了 → `(date, kind, source, precision)` (v76 问题2)。
+
+        kind ∈ {divorce 离异, widowed 对方卒, player_end 主角卒/让位};
+        取「离异流水 / 对方卒日 / 主角卒日或让位日」的**最早者**, 同日优先离异;
+        三类都取不到 ⇒ 返回空串 (调用方按开区间保留, 宁多列不漏列)。
+        离异流水先过「卒日守卫」(见本节坑①)。"""
+        try:
+            pid, other = int(pid), int(other)
+        except (TypeError, ValueError):
+            return "", "", "", ""
+        d_other = self._char_death_date(other)
+        d_self = self._char_death_date(pid) or (self.cache.get("reign_end") or {}).get("date") or ""
+        cands = []
+        for date, raw in self._house_pair_flows().get(frozenset((pid, other)), []):
+            if not date or "离婚" not in raw:
+                continue
+            if (d_self and cl.date_key(date) == cl.date_key(d_self)) \
+                    or (d_other and cl.date_key(date) == cl.date_key(d_other)):
+                continue                       # 坑①: 引擎把丧偶也写成「离婚」
+            cands.append((cl.date_key(date), date, "divorce", "house_relations", "day"))
+        # 其他家族关系流水里「同族通婚」查不到时, 记忆 `married` 只给起日, 不给终了
+        if d_other:
+            cands.append((cl.date_key(d_other), d_other, "widowed", "death", "day"))
+        if d_self:
+            cands.append((cl.date_key(d_self), d_self, "player_end", "player_death", "day"))
+        if not cands:
+            return "", "", "", ""
+        # 同日优先离异 (divorce 排在同类日期之前); key 里用 kind 序号保证稳定
+        _ord = {"divorce": 0, "widowed": 1, "player_end": 2}
+        cands.sort(key=lambda c: (c[0], _ord.get(c[2], 9)))
+        _k, date, kind, src, prec = cands[0]
+        return date, kind, src, prec
+
+    def _bio_window_start(self):
+        """本篇叙事窗口的**起点** (v76 问题2): 十年档 = 上一个十年截止日;
+        其余 (终传/在世) = 战役起点 —— 后者使终传与在世传记的裁剪恒为空操作 (零回归)。"""
+        srcs = self.cache.get("sources") or []
+        if not self.decade:
+            return str(srcs[0]) if srcs else ""
+        try:
+            n = int(self.decade)
+        except (TypeError, ValueError):
+            return str(srcs[0]) if srcs else ""
+        if n <= 1:
+            return str(srcs[0]) if srcs else ""
+        return self._decade_cutoff(n - 1) or (str(srcs[0]) if srcs else "")
+
+    def spouse_active_in_window(self, other, win_start=None):
+        """该配偶在**本篇窗口**内是否仍为传主妻妾 (v76 问题2, 用户口径)。
+
+        窗口 = (win_start, as_of] 半开区间; 婚配区间 = [起, 止):
+          · 起日优先 `wedding_date` (精确 `married` 记忆), 次闩存 `since`;
+          · 止日取 `spouse_end` (离异/卒/主角终了), 取不到 ⇒ 开区间;
+          · 收录 ⟺ 起日 ≤ as_of 且 (无止日 或 止日 > win_start)。
+        终传/在世档 win_start = 战役起点 ⇒ 恒真 (不裁, 零回归)。"""
+        try:
+            other = int(other)
+        except (TypeError, ValueError):
+            return True
+        y0 = win_start if win_start is not None else self._bio_window_start()
+        y1 = self.as_of or self.cache.get("last_date") or ""
+        start = self.wedding_date(self.cache.get("player_id"), other)
+        if not start:
+            for r in self.spouse_latch_rows(self.as_of):
+                if r.get("other") == other:
+                    start = r.get("first_seen") or ""
+                    break
+        if start and y1 and cl.date_key(start) > cl.date_key(y1):
+            return False                       # 窗口末之后才成婚
+        end = self.spouse_end(self.cache.get("player_id"), other)[0]
+        if end and y0 and cl.date_key(end) <= cl.date_key(y0):
+            return False                       # 窗口开始前已终了
+        return True
+
+    def spouses_in_window(self, ids, win_start=None):
+        """配偶 id 列表 → 只留本篇窗口内仍在婚者 (保持原次序; v76 问题2)。"""
+        if not ids:
+            return []
+        if win_start is None:
+            win_start = self._bio_window_start()
+        return [x for x in ids if self.spouse_active_in_window(x, win_start)]
+
     def _matrilineal_pairs_live(self):
         """当前熔件 `relations.active_relations` 里的母系婚对 (惰性建索引, v43)。
 
@@ -15731,6 +15868,9 @@ def _protagonist(f):
         _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
     # v43: 成婚日晚于本篇截止日者不列 (末档配偶状态穿越)
     spouse_ids = f._spouses_asof(pid, spouse_ids)
+    # v76 (问题2, 用户拍板④「全部篇目都裁」): 再按**本篇窗口**裁掉窗口内已非妻妾者
+    # (十年档窗口 = 上一个十年截止日 → as_of; 终传/在世 = 战役起点 ⇒ 恒不裁)
+    spouse_ids = f.spouses_in_window(spouse_ids)
     p["spouses"] = _annotate(spouse_ids, lineality=True)
     # v70 (用户 2026-09-27 拍板: 「姐姐姐姐一类的重复一起改掉」): 同一人只进一个
     # 婚配档 —— 存档 `family_data` 的 `former_spouses`/`former_concubines` 会把
@@ -15741,15 +15881,18 @@ def _protagonist(f):
     _sp_set = set(spouse_ids)
     _former_sp = [x for x in _asof_ids(f, fam.get("former_spouses") or [])
                   if x not in _sp_set]
+    _former_sp = f.spouses_in_window(_former_sp)          # v76: 同窗口口径
     p["former_spouses"] = _annotate(_former_sp)
     # v8: 妾 (正向 concubine + 反向 concubinist, 已在缓存合并去重)
     _seen_mar = _sp_set | set(_former_sp)
     _conc = [x for x in _asof_ids(f, fam.get("concubine") or [])
              if x not in _seen_mar]
+    _conc = f.spouses_in_window(_conc)                    # v76: 同窗口口径
     p["concubines"] = _annotate(_conc)
     _seen_mar |= set(_conc)
     _fconc = [x for x in _asof_ids(f, fam.get("former_concubines") or [])
               if x not in _seen_mar]
+    _fconc = f.spouses_in_window(_fconc)                  # v76: 同窗口口径
     p["former_concubines"] = _annotate(_fconc)
     child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
     # v34 (问题8, 用户拍板): 家门清单列**主角是法理父亲的**全部子女
@@ -19087,6 +19230,8 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         spouse_ids = list(dict.fromkeys(
             (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])
             + (fam.get("former_spouses") or [])))
+        # v76 (问题2, 用户拍板④「全部篇目都裁」): 妻族传与情事脉络同用窗口内配偶集
+        spouse_ids = f.spouses_in_window(spouse_ids)
         facts["imperial_spouses"] = _imperial_daughters_sisters(f, spouse_ids)
         # v31 (问题4): 妻室情事脉络 (逐情人: 身份 + 私通→相恋→灵魂伴侣的关系弧)
         facts["consort_affairs"] = f.consort_affairs(pid, spouses=spouse_ids)
@@ -19201,6 +19346,9 @@ def household_groups(f, facts):
         (《诸子行迹·<子名>》), 名额用尽后其余子女并入末个子女节 (「其余子女」);
       · 无事迹的子女随其**生母**入妻妾节; 妻妾按 as_of 前首见次序切 n_wife 段
         (素材均衡, 次序不变 —— 与开篇「结缡」次序一致);
+      · v76 (问题2, 用户拍板④): 妻妾池先按**本篇窗口**裁掉窗口内已非妻妾者
+        (`f.spouses_in_window`) —— 十年档不再给早已卒/离的妇人留节;
+        生母被裁掉的无事迹子女落到末尾「其余子女」节 (子女一律不裁);
       · 生母不在配偶集 (情妇已出册) 且非有事迹者 → 并入末个子女节;
       · 主角的同胞 (`siblings`) 单列一节 (无妻妾则并入子女末节);
       · 每位成员的 id 只出现一次; 空组不产出。"""
@@ -19225,6 +19373,8 @@ def household_groups(f, facts):
                 spouses.append(x)
     # 只保留下发给模型的成员 (数据不足的略, 与 `_character_profiles` 同门)
     spouses = [x for x in spouses if str(x) in chars]
+    # v76 (问题2): 窗口裁剪 —— 只留本篇窗口内仍在婚的妻妾 (终传=一生, 恒不裁)
+    spouses = f.spouses_in_window(spouses)
 
     # 子女/同胞
     kids = [x for x in _ids("child") if str(x) in chars]
