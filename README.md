@@ -1951,6 +1951,75 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 东科巴 = 藏人西方）；`李汶娘`/`汶娘·李` 由 0/74 与 0/27 变为 **74/0 与 27/0**；`verify_fast`
 两份新快照 FAIL 条数与**集合**与 v70 逐条相同。
 
+## v76 修正（田所两问题：剃发退位无终传 / 十年档旧妻占节）
+
+用户 2026-09-27 原话：「①日本文化的主动退位决议使用后，没有生成终传，检查为什么，并研究其他机制
+是否也有类似的决议，怎么避免程序本身没覆盖；②家世列传中没有记录配偶是什么时候离婚的，导致在后面
+几篇 10 年传记中依然有玩家早期娶的配偶 `中御门伊子`……在 10 年传记中只列入在这期间还是主角妻妾的
+配偶，子女逻辑不变，有地的才单独列一篇。」同日拍板：①**让位即终了**（日后死亡只进缓存，供后续
+篇目的家庭信息用）；②篇名仍叫「终传」；③「有地才单列」指**子女**；④**十年档全部篇目的配偶清单都
+裁**；⑤每小点前 commit。排查与取证见 `docs/方案_v76_退位终传与十年档妻妾窗口.md`、
+`docs/调研_v76_传主更替机制.md`、`docs/调研_v76_婚配起止与离异留痕.md`。
+
+**一、终传的唯一触发条件是「死亡」，而游戏有 26 处「换扮演角色」的入口。** 田所第二个传主
+田所久保（16795838）922.7.7 用日本佛教决议 `tgp_japan_become_a_monk_decision`「寻找净土」
+（`game/common/decisions/dlc_decisions/tgp/tgp_japan_decisions.txt:1249-1351`，非佛教侧的同源变体是
+`renounce_noble_family_title_decision`，其 `is_shown` 明写排除佛教徒与独立领主）剃发退位 ——
+效果 `tgp_renounce_estate_effect`（`game/common/scripted_effects/10_dlc_tgp_japan_scripted_effects.txt:3821-3928`）
+把家督与头衔交给继承人并 `:3915 set_player_character` 改扮继承人，**前任不死**，于是
+`pipeline._cross_check_deaths`（只认 `dead_unprunable` 的死亡记录）→ `player_death` → `_auto_bio`
+整条链落空：久保既无十年传记（在位不足十年）也无终传，**静默丢一篇**。
+
+修法**不逐决议特判**（天命王朝兴衰/权臣夺位/无地冒险者/游牧忽里勒台/RICE 7 文件……），只判形状：
+`pipeline._cross_check_lineage` = 既有死亡检测 **+** 新增 `_cross_check_reign_ends` ——
+读存档 `played_character.legacy` 扮演角色接替链（后任接替日 = 前任在位终了日），
+要求前任**仍在 `living` 段**（⚠ 不能用「不在 `dead_unprunable`」判在世：死者会被移入
+`characters.dead_prunable`）、死亡优先（在 `dead_unprunable` 者一律走既有死亡路径），
+落 `cache["reign_end"] = {date, kind, alive, successor, successor_name, evidence}`；
+`kind` 取存档标记：`devoted` 特质 ⇒ `tonsured` 剃发退位、只有 `ep3_renounced_estate` 修正 ⇒
+`abdicated` 退隐让位、无地 ⇒ `landless`、其余 `unknown`（实测久保 923 档两者俱全；
+头衔易主落的是 `type = "granted"`，**不能**用头衔 history 的 type 判让位）。
+触发/输出层全线认这一档：`_auto_bio` 入队条件、`_auto_decade_bios` 与 worker 跳过、`_bio_as_of`、
+`output_paths`（**让位日优先于卒日**，篇名仍「终传」，让位后卒不会再生第二篇）、
+尾年死者回填、重建保留清单。事实/成稿层：`_is_final_bio_spec` 认 `reign_end` ⇒ 终传照常建
+《XX历代记》；主角档案与共享前缀出「**【传位】922年7月7日，剃发退位，传位于其子日本关白田所定治
+——此为终传**」而不出【卒年】、不出在任现状；`succession_lines` 补「于是日让位」分支，
+并放宽「新传主 = 前任继承人」的隐含假设（死亡路径有两处例外换人）。
+
+**二、配偶集三处来源都只有「起」没有「止」。** 缓存 `family` 是逐档并集
+（`cache_lib.py:2659-2684`「亲属集是曾有过的事实」）、婚配闩存只记 `since/first_seen`、
+裁剪只判「成婚日 ≤ as_of」（`facts._spouses_asof`）—— 于是 867 年娶、880 年已卒的初妻
+`中御门伊子` 在第 5 个十年（窗口 908–918）里独占一整节 1500 字（素材只有 5 行）。
+终了日的**唯一带日留痕**是 `house_relations.database[*].history` 里 `change_reason` 含「离婚」的条目
+（日精度，两端 id 走 `ONCLICK:CHARACTER`）：实测九位妻妾全部取到 —— **唯一真离异 = 藤原诸子
+875.10.7**；伊子 880.10.26 / 平子 906.10.3 / 珍子 910.7.23 / 真子 911.7.2 为卒；
+徽子/规子/洁子/春子以**主角卒日 919.2.24** 终。四个坑必须避：①**卒日会落「离婚」流水**
+（全档 251 条里 60 条发起方当日死亡，主角卒日也落了 3 条）⇒ 判据先做「date == 任一方卒日 ⇒ 判卒」
+的守卫；②`family_data.former_spouses` 是「离异 ∪ 丧偶」并集、无日期；③`divorced_me_opinion`
+（50 年）任一方死即清空，只能当正证；④全档 171,922 条记忆里 `divorc*` 为 0。
+落地：`facts._house_pair_flows`（家族关系流水按角色对建索引）+ `spouse_end`（离异/对方卒/主角终了
+取最早，同日优先离异）+ `_bio_window_start`（十年档 = 上一个十年截止日；终传/在世 = 战役起点 ⇒
+**恒不裁，零回归**）+ `spouse_active_in_window`/`spouses_in_window`；接线主角档案四档
+（`spouses/former_spouses/concubines/former_concubines`）、妻族传与妻室情事脉络、
+`household_groups` 妻妾池、《家室列传》开篇与各纪事节成员。**子女一律不裁**（用户拍板③/④）。
+
+**三、子女分节判据收紧为「有地才单列」。** `facts._jiashi_notable` 由 v74 的「有事迹
+（头衔/婚配/子嗣/承位）」改为只认 `titles_held`（持有领地/头衔，含「某家族女士，武家庄园」这类
+家族庄园头衔）；仅以婚配/子嗣见载者并入末个子女节《其余子女》。
+
+**四、验证与验收。** `experiments/verify_tadokoro_v76.py`（本地脚本，`experiments/` 不入库）
+四组断言 **31 PASS / 0 FAIL / 0 SKIP**：读熔件段做检测/判据单元（首次检测写一条 `reign_end`、
+幂等、`tonsured`、卒日守卫、窗口相交），读三份新快照（`snap_38649_918.1.1_d5_v76`、
+`snap_38649_898.1.1_d3_v76`、`snap_16795838_922.7.7_v76`、`snap_38649_919.2.24_final_v76`）
+做事实面/传输面（d5 妻妾 = 1 节 6 房、d3 = 4 房、旧妻不占节不立档案、单列子女节皆国司、
+让位终传出【传位】不出【卒年】、卒档终传照旧出【卒年】、终传仍列九人）。
+`tools/verify_fast.py` 的 FAIL **增量**全部可解释且非本轮引入：
+「《阴私录》疾病行同源于时间线」是 as_of 伪影（十年档用 923 熔件重跑 898/918）、
+「俘获行句面为『战胜X，俘之』」是 v63 起战阵俘获改词「于战阵俘获」后的**陈旧断言**、
+「亲缘自检（业师晚出生）」是该缓存数据自带（业师与受业者同年生）。
+**未做**：不重熔、不跑 `rebuild-cache`、不改死亡路径判据与措辞、不逐决议特判、
+不改 `merge_spouse_latch` 的「只补不覆盖」、不改 `_character_government` 的 v41 纪律。
+
 ## v75 修正（凶手只在《刺客列传》点名 + 虚位御座「高御座府」）
 
 用户 2026-09-27 原话：「发现一个问题，玩家杀的人应该只有刀下亡魂板块点名玩家是凶手，其他板块应当
