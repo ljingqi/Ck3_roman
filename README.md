@@ -2254,7 +2254,7 @@ FAIL 集合与基线逐条相同。
 措辞逐条对游戏本地化（`memories_l_simp_chinese.yml:630-731` 的 ascended_throne 各缘由句、
 `succession_laws_l_simp_chinese.yml:138`「任命继承制」），不新造术语。
 
-**新行形（尼克终传，`logs/verify_v69_chaoju_v69.txt`）**
+**新行形（尼克终传，`logs/archive/verify_v69_chaoju_v69.txt`）**
 
 ```
 本朝：元皇朝
@@ -2290,7 +2290,7 @@ FAIL 集合与基线逐条相同。
 | `tools/verify_fast.py`（七份新快照） | FAIL 集合与 v68 基线**逐条相同**（全为本轮前既有），**无新增**；括注断言 PASS |
 | `tools/verify_v68_estate_court.py` | PASS（仅持庄园 → 通称 中华 + 群雄争霸行 + 失去天命行；纯营地 → `("", [])`） |
 | v68 五问脚本重跑 | `verify_v68_title_name/dead_office/estate/artifacts` 产出正常（普查行数与 v68 留档一致：4960 tids / 13154 死者 / 730 家业持有者） |
-| 事实面变化面 | 对照**同一缓存**的 v68 码基线（`tools/at_head.py --ref=c2a3551 tools\\snap.py …` → `snap_b69_*`），`tools/snapdiff.py --facts-only` 七份快照**各只变 1 块 = `chaoju_lead`**；另加「死者卒时职称词」收口（下条）后另出 `assassins_*` 等块的变化面，`logs/verify_v69_snapdiff_b69_final.txt` |
+| 事实面变化面 | 对照**同一缓存**的 v68 码基线（`tools/at_head.py --ref=c2a3551 tools\\snap.py …` → `snap_b69_*`），`tools/snapdiff.py --facts-only` 七份快照**各只变 1 块 = `chaoju_lead`**；另加「死者卒时职称词」收口（下条）后另出 `assassins_*` 等块的变化面，`logs/archive/verify_v69_snapdiff_b69_final.txt` |
 
 **附带修：v68 问题 2 的残余「和霸主」（提交 `f547b14`）**
 
@@ -2305,7 +2305,7 @@ FAIL 集合与基线逐条相同。
 | --- | --- |
 | `tools/verify_v69_flavor_stale.py`（13154 名带 flavor 死者，带 campaign 的真实构造） | 陈旧逐档观测 64 例，其中卒时闸放行 **6 → 44**；**零 True→False**；卒前 30 年一档 1812 放行、逐字不变 |
 | 38 人卒时官衔取回游戏原词（全部改进） | 和霸主→**和皇帝**、`''`→德维得主教、瓜沙总督→瓜沙节度使、居延女大酋长→居延节度使、阿朗松酋长→阿朗松伯爵、东撒克逊女公爵→贝丹福德雅尔、`''`→莱斯特郡市议长、白山伯爵→白山刺史、高州伯爵→高州政务官…（`logs/probe_v69_stale_{before,after}.txt`） |
-| 成稿验证 | 重生成后《刺客列传》亲缘/婚恋行 = 和皇帝青蛙珉·奄美（`logs/v69_bio_diff.txt`） |
+| 成稿验证 | 重生成后《刺客列传》亲缘/婚恋行 = 和皇帝青蛙珉·奄美（`logs/archive/v69_bio_diff.txt`） |
 
 **本轮已知偏差 / 遗留**
 
@@ -2368,7 +2368,7 @@ tools/at_head.py                  用指定 git 版本 (缺省 HEAD, 本轮用 -
 | `tools/verify_v68_estate_court.py` | 仅持庄园 → 通称 **中华**（庄园 `de_facto_liege` 上溯 h_china）+ 国号沿革与历代齐备；纯营地 → `("", [])` ✓ |
 | `tools/verify_fast.py`（HEAD 快照 vs 新快照） | FAIL 集合**逐条相同**（4 条既有 FAIL：灭门死因 / 通用「去世」/ 俘获句面 / 强迫性交行），无新增 |
 | 事实面整体变化面（对照**改动前提交** `64a6216` 的基线快照 `snap_base68_*`） | 98095 终传 19/22 块、38665 终传 17/22、60836 941 8/22、60836 终传 10/22 变化；行级分类全部落在五问类别（命名/霸主/死者烘死职称词/家业称谓/宝物归属/历代记），未见非预期位移。**注意**：拿 v67 时代的旧快照做基线会混入缓存漂移（`player_*.json` 在 v67 快照之后被重建过，例如同批处决词的用词分布不同），故本轮专用 `tools/at_head.py --ref=64a6216` 重建基线 |
-| 差异分类脚本 | `tools/verify_v68_final_diff.py`（行级分类 + 未归类逐行导出 `logs/verify_v68_unclassified.txt`） |
+| 差异分类脚本 | `tools/verify_v68_final_diff.py`（行级分类 + 未归类逐行导出 `logs/archive/verify_v68_unclassified.txt`） |
 
 **本轮已知未做 / 遗留**
 
@@ -2412,7 +2412,7 @@ tools/tmp_probe_v67_karl_names.py  新快照里地名/营地名与事实层是�
 | 快照对照（38665，另一位传主） | 变化块 1/23（承继行引用卡尔的历任），**归一后残差 0** |
 | `tools/verify_fast.py` | FAIL 集合与改前**逐条相同**（6 条既有 FAIL，非本轮引入） |
 | 影响面普查 | 11 个战役里带 custom 的头衔共 9 个，**同时**带非空 `specific_title_name` 的只有本档营地 1 个 ⇒ 其余家族天然零改动 |
-| 成稿重生成（卡尔终传，2026-09-27） | `pipeline.py bio 60836` 重生成 `卡尔·崔佛松(894)_终传_954_07_12.md`（3 分钟，24 个请求）：**「葛洛夫帮」16 处、「持剑骑手」0 处**（旧稿 0 / 18）；历任句读作「930年11月7日创建葛洛夫帮…并毁弃葛洛夫帮」，【冒险者行踪】「任无地冒险者营地之葛洛夫帮头目」。同轮一并对齐前两轮修法：`任菲利普游牧营地` 7→0、【游牧行踪】0→2（v65）、用地名「驻马扎尔绍科伊部」入正文（v66）。旧稿留档 `.bak_v67_pre_终传.md`；对照报告 `logs/tmp_diff_karl_final.txt` |
+| 成稿重生成（卡尔终传，2026-09-27） | `pipeline.py bio 60836` 重生成 `卡尔·崔佛松(894)_终传_954_07_12.md`（3 分钟，24 个请求）：**「葛洛夫帮」16 处、「持剑骑手」0 处**（旧稿 0 / 18）；历任句读作「930年11月7日创建葛洛夫帮…并毁弃葛洛夫帮」，【冒险者行踪】「任无地冒险者营地之葛洛夫帮头目」。同轮一并对齐前两轮修法：`任菲利普游牧营地` 7→0、【游牧行踪】0→2（v65）、用地名「驻马扎尔绍科伊部」入正文（v66）。旧稿留档 `.bak_v67_pre_终传.md`；对照报告 `logs/archive/tmp_diff_karl_final.txt` |
 | 成稿重生成（另两篇） | **待办**：卡尔第 1/2 个十年传记尚未重生成 |
 
 ## v66 修正（游牧迁移「不停迁离库曼顿巴斯部」：动态头衔名日期化 / 用地名）
