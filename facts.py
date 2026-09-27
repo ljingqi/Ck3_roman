@@ -9498,6 +9498,29 @@ class Facts:
         NEG = {"default_house_relation_level_feud",
                "default_house_relation_level_rivalry",
                "default_house_relation_level_quarrel"}
+        # v78-6 (用户 D6): 十年档只写**该 10 年**内的恩怨流水 (旧稿把入档前的全部
+        # 流水一并列出, 与 v77「传主时代闸」同旨); 终传/在世传 (无 decade) 窗口 = 一生。
+        # 另: 现档位已回中立、但窗口内有负面流水的族**照样入选** (旧稿只看现档位,
+        # 于是「世仇已息」的族整族消失) —— 这类行的档位词写「旧怨」。
+        _lo = None
+        if getattr(self, "decade", None) and self.as_of:
+            try:
+                _lo = _decade_lower_bound(self)
+            except Exception:
+                _lo = None
+        _lok = cl.date_key(_lo) if _lo else None
+        _hikey = cl.date_key(str(self.as_of)) if self.as_of else None
+
+        def _in_window(d):
+            if not d:
+                return False
+            k = cl.date_key(d)
+            if _lok is not None and k < _lok:
+                return False
+            if _hikey is not None and k > _hikey:
+                return False
+            return True
+
         out = []
         for _k, r in db.items():
             if not isinstance(r, dict):
@@ -9506,7 +9529,10 @@ class Facts:
             if not any(h in my_houses for h in hs):
                 continue
             lvl = r.get("level") or ""
-            if lvl not in NEG:
+            _neg_in_win = any(_in_window(str(e.get("date") or ""))
+                              and (e.get("amount") or 0) < 0
+                              for e in (r.get("history") or []))
+            if lvl not in NEG and not _neg_in_win:
                 continue
             other = [h for h in hs if h not in my_houses]
             if not other:
@@ -9526,6 +9552,9 @@ class Facts:
                 d = str(e.get("date") or "")
                 # v11: as_of 截断 — 十年传记只列该时期前的恩怨事件
                 if self.as_of and d and cl.date_key(d) > cl.date_key(self.as_of):
+                    continue
+                # v78-6 (用户 D6): 十年档的**下界** —— 只写该 10 年内的事件
+                if _lok is not None and d and cl.date_key(d) < _lok:
                     continue
                 # v14: change_reason 两端角色按事件日期重渲染 (补国号,
                 # 修复方案_菲利普2.md 问题3: 游戏原文只写「国王/王」无国号)
@@ -9622,11 +9651,15 @@ class Facts:
                 continue
             events.sort(key=lambda x: cl.date_key(x[0]))
             # v14: 关系档位本地化缺失时用自然词, 不直出 key
+            # v78-6: 现档位已回中立、但窗口内有负面流水者 ⇒ 档位词写「旧怨」
+            # (旧稿这类族整族不出现; 「两族为旧怨」与「两族为世仇」同式)
             _lvl = L.loc(self.table, lvl) or {
                 "default_house_relation_level_feud": "世仇",
                 "default_house_relation_level_rivalry": "敌对",
                 "default_house_relation_level_quarrel": "争吵",
             }.get(lvl, "")
+            if lvl not in NEG:
+                _lvl = "旧怨"
             if not _lvl:
                 continue
             out.append({
