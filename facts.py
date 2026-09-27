@@ -2120,25 +2120,29 @@ class Facts:
         return best_g
 
     def _gov_for_word(self, cid, tid, date):
-        """称谓取词用的政体 (v47): 头衔该日政体 → 本人该日政体 → **死者卒档政体**。
+        """称谓取词用的政体 (v80 点4 —— 按**游戏口径**重排, 不再上溯领主)。
 
-        头衔政体是从该日**时任持有者**身上取的 —— 一个人刚失去头衔的那一天,
-        持有者已换成后任, 于是「前X」路径上的政体变成后任的 (诺兰档实测:
-        海因里希 1056–1086 在位, 取词日 1056 早于他的政体史起点 1073, 头衔
-        政体又是夺取者当日的无地冒险者政体 —— 两头落空, 前衔退成通用
-        「前神圣罗马帝国皇帝」, 而游戏口径是 `emperor_feudal_male_german`=凯撒)。
+        游戏侧: 政体是**逐角色**的存档属性 (`landed_data.government` / 逐档
+        `char_government_history` / 卒档 `dead_data.government`); flavorization 的
+        `governments` 在**持有者本人**身上求值 (`common/flavorization/_flavourization
+        .info:210-216`), 日式 `special = holder` 条目一律 `top_liege = no`
+        (`10_tgp_japan_flavorization.txt:226-229`), 全库取词**从不**按领主政体给
+        封臣取词 (依据见 docs/调研_v80_封臣政体判定.md §1/§3)。
 
-        末一段只对**已死、且完全没有逐档政体史**的角色生效 (日期不晚于卒日):
-        游戏把卒时政体烘在 `dead_data.government` 里, 人死后不再更换政体,
-        故它是可据的史料; 比「政体不可知」退成通用词更贴近游戏口径。
-        v68 (问题2): `_dead_flavor_consistent` 现在也在**卒时窗口**内认这一对值
-        (卒日 ± 1 天), 并在**霸权级 (`h_`) 头衔**上认头衔侧政体 (见该函数);
-        窗口之外、霸权级之外的日期, 两处口径一致 —— 都只认逐档史
-        (v41 的「不拿末档政体冒充封建期」不变)。"""
-        gov = self._title_government(tid, date) if tid is not None else ""
-        if gov:
-            return gov
-        gov = self._character_government(cid, date)
+        旧稿①先取头衔侧政体, 而 `_title_government` 会沿 `de_facto_liege` 上溯到
+        领主 —— 于是「律令制关白 + 惣領制封臣」组合下, 封臣的称谓按**领主**的律令制
+        取词 (田所定治档: 六角继子 902–921 被写成「下总国司」, 游戏作「下总武士团
+        女士」; 919 与 923+ 因上溯取不到才落回本人政体, 这就是那个非单调分界)。
+
+        新顺序 (保留既有两层救援):
+          ① 本人该日逐档政体 (`_character_government`)
+          ② 本人逐档史**最早一档** (早于史起点者按已知最早称呼 —— 海因里希 1056)
+          ③ 卒档 `dead_data.government` (已死且无逐档史者, 日期不晚于卒日)
+          ④ **仅** 日本最高头衔 (`e_japan` / 高御座) 用头衔自身的政体记录
+             (`_title_government_hist` / `history_government`); 那是**头衔**的开局
+             政体标量, 不是持有者政体, 只在该头衔上作兜底
+          ⑤ 取不到 → '' (调用方退通用层级词)。"""
+        gov = self._character_government(cid, date) if cid is not None else ""
         if gov:
             return gov
         hist = self._gov_history(cid)
@@ -2150,16 +2154,24 @@ class Facts:
             first = hist[0].get("government") or ""
             if first:
                 return first
-            return ""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         dd = (rec.get("death") or {}).get("date")
         if not dd:
             dd = (self._chars.get(str(cid)) or {}).get("death") or {}
             dd = dd.get("date") if isinstance(dd, dict) else None
-        if not dd or (date and cl.date_key(date) > cl.date_key(dd)):
-            return ""
-        return ((self._chars.get(str(cid)) or {}).get("dead_data") or {}) \
-            .get("government") or ""
+        if dd and (not date or cl.date_key(date) <= cl.date_key(dd)):
+            gov = ((self._chars.get(str(cid)) or {}).get("dead_data") or {}) \
+                .get("government") or ""
+            if gov:
+                return gov
+        if tid is not None:
+            _t = self._lt.get(str(tid)) or {}
+            if (_t.get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
+                gov = self._title_government_hist(tid, date) \
+                    or _t.get("history_government") or ""
+                if gov:
+                    return gov
+        return ""
 
     def _holder_at_or_now(self, title, tid, date):
         """头衔在 date 的持有者; date 晚于末档时用熔件当前 holder。"""
@@ -2171,19 +2183,30 @@ class Facts:
         return int(h) if isinstance(h, int) else None
 
     def _gov_history(self, cid):
-        """角色的逐档政体史 (v47): 本缓存优先; 本缓存没有时借用同战役其他传主
-        缓存里的同一份观测史 (只借不合并 —— 政体史是逐档观测出来的, 每份缓存
-        只记自己经历过的那些人, 见 docs/研究_v47_统治者头衔动态.md §3)。"""
+        """角色的逐档政体史 (v47; v80 点4 改为**合并**多份缓存的观测)。
+
+        政体史是逐档观测出来的, 每份缓存只记自己经历过的那些人
+        (docs/研究_v47_统治者头衔动态.md §3)。旧稿「本缓存有就整份返回」会遮蔽
+        **更早**的观测 —— 田所定治档: `player_59838.json` 里六角继子的史起于
+        923.1.1, 而同战役 `player_38649.json` 里她的史起于 **902.1.1**; 于是
+        902–921 取不到本人政体, 退成领主的律令制词「国司」
+        (docs/调研_v80_封臣政体判定.md 额外发现①)。"""
         if cid is None:
             return []
-        hist = (self.cache.get("char_government_history") or {}).get(str(cid)) or []
-        if hist:
-            return hist
-        for _pc in (self.campaign or {}).values():
-            _h = (_pc.get("char_government_history") or {}).get(str(cid)) or []
-            if _h:
-                return _h
-        return []
+        merged = {}
+        for src in [self.cache] + list((self.campaign or {}).values()):
+            if not isinstance(src, dict):
+                continue
+            for h in ((src.get("char_government_history") or {}).get(str(cid))
+                      or []):
+                if not isinstance(h, dict):
+                    continue
+                d = h.get("date") or ""
+                g = h.get("government") or ""
+                if d and g:
+                    merged.setdefault(d, g)
+        return [{"date": d, "government": merged[d]}
+                for d in sorted(merged, key=cl.date_key)]
 
     def _character_government(self, cid, date=None):
         """角色在 date 的政体 (v41): 逐档政体史优先, 熔件现状兜底。
@@ -2235,6 +2258,28 @@ class Facts:
         return first if first in self._CELESTIAL_CHAIN_GOVS else ""
 
 
+    # v80 (点4): 政体前缀归一**只对层级前缀键**生效 ——
+    # `count_feudal_male_japanese`(总领) 这类键的政体段与 `japan_feudal_government`
+    # 相差一个 `japan_` 前缀, 归一后才能认下; 而 `spouse_administrative_female_japanese`
+    # (游戏给「关白之妻」烘的键 = 女士) 这类**非官职**键若也被归一认下,
+    # `official_title` 的 flavor 支会返回裸词「女士」(实测 大和忠子 16151 由
+    # 「越中国司」退成「女士」) —— 故这类键仍按旧口径判, 落回头衔侧取词。
+    _GOV_NORM_RANK_PREFIXES = ("count_", "duke_", "king_", "emperor_",
+                               "baron_", "hegemon_")
+
+    @staticmethod
+    def _gov_prefix_norm(p):
+        """政体前缀归一 (v80 点4)。
+
+        日式两政体的键前缀是 `japan_feudal` / `japan_administrative`, 而
+        flavorization 键里的政体段写作 `feudal` / `administrative`
+        (`count_feudal_male_japanese` / `count_administrative_male_japanese`) ——
+        不归一就会把游戏**自己烘死**的日式职称键一律判成「与政体不自洽」而拒收
+        (实测 43829 / 33589170 的 `dead_data.flavor` 全是 `count_feudal_male_japanese`
+        = 总领, 却退成律令制「国司」, 见 logs/v80_gov_probe3.txt)。"""
+        s = str(p or "")
+        return s[len("japan_"):] if s.startswith("japan_") else s
+
     def _dead_flavor_consistent(self, fkey, cid, date):
         """存档烘死的职称键 (`dead_data.flavor`) 与该日政体是否自洽 (v41, 问题1)。
 
@@ -2262,6 +2307,14 @@ class Facts:
                 i = parts.index(anchor_word)
                 gov_prefix = "_".join(parts[1:i])
                 break
+        # v80 (点4): 只对层级前缀键做日式政体前缀归一 (见 `_GOV_NORM_RANK_PREFIXES`)
+        _norm = str(fkey).startswith(self._GOV_NORM_RANK_PREFIXES)
+
+        def _eq_gov(x, y):
+            if _norm:
+                return self._gov_prefix_norm(x) == self._gov_prefix_norm(y)
+            return x == y
+
         cur = self._character_government(cid, date)
         dd = (self._chars.get(str(cid)) or {}).get("dead_data") or {}
         ddate = dd.get("date")
@@ -2276,7 +2329,7 @@ class Facts:
         # 相符才 True), 故不会把原本 True 的判成 False; 卒时窗口之外仍只认逐档史。
         if ddate and abs(_date_ord(date) - _date_ord(ddate)) <= 1 \
                 and (dd.get("government") or ""):
-            if L.government_prefix(dd["government"]) == gov_prefix:
+            if _eq_gov(L.government_prefix(dd["government"]), gov_prefix):
                 return True
             if not cur:
                 cur = dd["government"]
@@ -2321,7 +2374,7 @@ class Facts:
                             or tt.get("history_government") or ""
         if not cur:
             return False
-        return L.government_prefix(cur) == gov_prefix
+        return _eq_gov(L.government_prefix(cur), gov_prefix)
 
     def title(self, tid, date=None, site=False, site_cid=None):
         """头衔 id → 中文名 + 动态层级词合并: '复兴党流亡委员会' / '开罗伯爵领' /
@@ -2397,10 +2450,13 @@ class Facts:
                 tier = tv
                 break
         if tier:
-            gov = self._title_government(tid, date)
             # v54 (问题1b): 层级词按该日**时任持有者**取 (旧稿传末档 holder,
             # 于是 910 年的任期按 924 年的持有者判独立性/文化/最高领主)
             holder = self._holder_at_or_now(t, tid, date)
+            # v80 (点4): 政体取**持有者本人**的 (游戏的 flavorization `governments`
+            # 在 Context Character 上求值; 旧稿用头衔侧政体会沿 de_facto_liege
+            # 上溯到领主, 把惣領制封臣写成律令制词)
+            gov = self._gov_for_word(holder, tid, date)
             word = ""
             if not (key.startswith("h_") and gov != "celestial_government"):
                 word = self._title_tier_word(tier, holder, tid, gov, date)
@@ -2991,11 +3047,12 @@ class Facts:
             nm = key
         if key.startswith("e_minister_"):  # v13: 朝廷职司只给名字
             return nm
-        gov = self._title_government(tid, date)
         # v38 (问题3): 未显式给出 cid 时, 按该日期的时任持有者判独立性
         # (title history 里这一条 holder 即当时之主)
         if cid is None:
             cid = self.holder_at(tid, date)
+        # v80 (点4): 政体按**持有者本人**取 (见 `_gov_for_word`)
+        gov = self._gov_for_word(cid, tid, date)
         independent = self._is_independent(cid, date) if cid is not None else False
         if independent is None:
             independent = False
@@ -3369,7 +3426,7 @@ class Facts:
             return "武家庄园"
         if tpl in self._EAST_ASIAN_ESTATE_TPL:
             return "世族庄园"
-        gov = self._title_government(tid, date or self.as_of)
+        gov = self._gov_for_word(cid, tid, date or self.as_of)
         if gov == "celestial_government":
             return "世族庄园"
         if tpl in self._KOREAN_ESTATE_TPL:
@@ -4329,7 +4386,7 @@ class Facts:
         if tid is not None and t is not None:
             _indep = self._is_independent(liege, date)
             base = self._office_word(
-                t, self._title_government(tid, date),
+                t, self._gov_for_word(liege, tid, date),
                 independent=bool(_indep) if _indep is not None else True,
                 female=self._is_female(liege), tid=tid, cid=liege, date=date)
         if not base:
@@ -4464,12 +4521,23 @@ class Facts:
                             "steppe_admin_government", "administrative_government"}
     # v17: 日式律令制政体 (japan_administrative_government) 官职词 — 按游戏本地化键
     # (修复方案_汤利五问题.md 问题2: e_japan 日本帝国之主是关白, 非皇帝; 天皇另座)。
+    # v80 (点4): 本表**只对律令制生效** —— 惣領制另有 `_JAPAN_SORYO_KEYS`
+    # (旧稿把两种政体合流成一张律令制表, 于是 `japan_feudal_government` 的郡级持有者
+    # 在 flavorization 未命中时也落 `count_administrative_male_japanese` = 国司,
+    # 且女性也出男词; 见 logs/v80_gov_probe3/4 与 docs/调研_v80_封臣政体判定.md)。
     _JAPAN_OFFICE_KEYS = {
         "empire":  "emperor_administrative_male_japanese",   # 关白
         "kingdom": "king_administrative_male_japanese",      # 帅
         "duchy":   "duke_administrative_male_japanese",      # 国司
         "county":  "count_administrative_male_japanese",     # 国司
         "barony":  "baron_administrative_male_japanese",     # 郡司
+    }
+    # v80 (点4): 惣領制 (japan_feudal_government) 的兜底键表 —— 总领/女士/栋梁/一族
+    # (词源 dlc_tgp_cultural_titles_l_simp_chinese.yml:24-32; 「总领」是**男**键)
+    _JAPAN_SORYO_KEYS = {
+        "county":  ("count_feudal_male_japanese", "count_feudal_female_japanese"),
+        "duchy":   ("duke_feudal_male_japanese", "duke_feudal_female_japanese"),
+        "kingdom": ("king_feudal_male_japanese", "king_feudal_female_japanese"),
     }
     _TENNO_TITLE_KEYS = {"k_chrysanthemum_throne"}  # 天皇座持有人 → 天皇
     # v62 (问题: 关白/将军): 日本最高头衔的官职词**按政体出词, 不看年代**
@@ -5168,7 +5236,12 @@ class Facts:
             # 关白 (律令制) / 幕府将军 (封建期) / 天皇, 不再落通用词「皇帝」。
             key = self._JAPAN_TOP_OFFICE_KEYS.get((tkey, gov))
             if key is None:
-                key = self._JAPAN_OFFICE_KEYS.get(tier)
+                if gov == "japan_feudal_government":
+                    # v80 (点4): 惣領制走自己的键表 (总领/女士/栋梁), 且**分性别**
+                    _pair = self._JAPAN_SORYO_KEYS.get(tier)
+                    key = (_pair[1] if female else _pair[0]) if _pair else ""
+                else:
+                    key = self._JAPAN_OFFICE_KEYS.get(tier)
                 if tkey in self._TENNO_TITLE_KEYS:
                     key = "king_tenno_male_japanese"
             if key:
@@ -5444,7 +5517,9 @@ class Facts:
         if gender is None:
             gender = "female" if self._is_female(cid) else "male"
         if gov is None:
-            gov = self._title_government(tid, date) if tid is not None else ""
+            # v80 (点4): 政体按**持有者本人**取 —— flavorization 的 `governments`
+            # 在 Context Character 上求值 (见 `_gov_for_word` 的说明)
+            gov = self._gov_for_word(cid, tid, date) if tid is not None else ""
         ce = self._culture_entry(cid, date)
         ftag, rtag = self._faith_tags(cid, date)
         title_key = ""
@@ -5461,7 +5536,7 @@ class Facts:
             if lid is not None and int(lid) != int(cid):
                 lce = self._culture_entry(lid, date)
                 lft, lrt = self._faith_tags(lid, date)
-                top = {"government": (self._title_government(ltid, date)
+                top = {"government": (self._gov_for_word(lid, ltid, date)
                                       if ltid else ""),
                        "name_list": lce.get("name_list") or "",
                        "heritage": lce.get("heritage") or "",
@@ -5516,7 +5591,7 @@ class Facts:
             if lid is not None and int(lid) != int(cid):
                 lce = self._culture_entry(lid, date)
                 lft, lrt = self._faith_tags(lid, date)
-                top = {"government": (self._title_government(ltid, date)
+                top = {"government": (self._gov_for_word(lid, ltid, date)
                                       if ltid else ""),
                        "name_list": lce.get("name_list") or "",
                        "heritage": lce.get("heritage") or "",
@@ -6441,7 +6516,7 @@ class Facts:
         if not tname:
             return ""
         _indep = self._is_independent(cid, date)
-        word = self._office_word(tier, self._title_government(tid, date),
+        word = self._office_word(tier, self._gov_for_word(cid, tid, date),
                                  independent=bool(_indep) if _indep is not None else True,
                                  female=self._is_female(cid), tid=tid, cid=cid,
                                  date=date)
@@ -12688,7 +12763,7 @@ class Facts:
         if not base or not tier:
             return ""
         _indep = self._is_independent(cid, date)
-        word = self._office_word(tier, self._title_government(tid, date),
+        word = self._office_word(tier, self._gov_for_word(cid, tid, date),
                                  independent=bool(_indep) if _indep is not None else True,
                                  female=self._is_female(cid), tid=tid, cid=cid,
                                  date=date)
