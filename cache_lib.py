@@ -965,6 +965,12 @@ EMPTY_CACHE = {
     "sources": [],
     "last_date": None,
     "player_death": None,     # 首次检测到玩家 dead_data 即写入 {date, reason, killer, kills}
+    # v76 (问题1): 在位终结但**未死亡** —— 剃发退位/让位/被废/转无地等「换扮演角色」的
+    # 终了档 {date, kind, alive, successor, successor_name, successor_title, evidence}。
+    # 由 pipeline._cross_check_lineage 从 `played_character.legacy` 接替链判出
+    # (前任未入 dead_unprunable、且仍在 living 段)。终传触发条件 = player_death ∨ reign_end；
+    # 两者都有时**reign_end 优先**(用户 2026-09-27 拍板: 让位即终了, 日后死亡只进缓存)。
+    "reign_end": None,
     "bio_generated": False,   # 终传是否已生成 (每次玩家角色死亡只生成一篇)
     "bio_decades": [],        # v8: 已生成的十年传记序号 [1,2,...] (每活满10年一篇)
     "output_folder": None,    # 会话输出文件夹名 (watch/continue 绑定, 见 pipeline)
