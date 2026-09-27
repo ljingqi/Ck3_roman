@@ -2330,6 +2330,54 @@ def _strip_markdown_tables(text):
     return "\n".join(out)
 
 
+def _fix_person_names(text, facts, cache):
+    """v80 (点6, 附带B): 把「姓氏 + 亲属词」式**误写的名字**改回正确全名。
+
+    起因: 田所定治 十年1 总纲把「六角继子」写成「六角**妻子**」——「继子」形似普通
+    名词, 模型把它当成了亲属词。总纲要被逐字注入每一篇 (六次), 于是 `_fix_kin_roles`
+    改不动 (它只管亲属词改名, 不管名字被改), 一错到底。
+    判据: 以本篇事实里的**已知人名**为准 —— 取每个名字的姓部 (末二字之前的整段)
+    与其名 (末二字), 凡正文里出现「姓 + 某亲属词」且该串**不是**素材里任何人的名字、
+    而该姓氏在本篇只对应一个人时, 恢复为那个人的全名。纯函数、幂等; 不猜则不动。"""
+    if not text:
+        return text
+    chars = (facts or {}).get("characters") or {}
+    names = []
+    for rec in chars.values():
+        nm = (rec or {}).get("name") or ""
+        if len(nm) >= 3 and re.search(r"[\u3400-\u9fff]", nm):
+            names.append(nm)
+    if not names:
+        return text
+    known = set(names)
+    # 姓部 → {正确全名}; 只保留**唯一**对应者 (多义即不判)
+    by_sur = {}
+    for nm in known:
+        sur = nm[:-2]
+        if not sur:
+            continue
+        by_sur.setdefault(sur, set()).add(nm)
+    uniq = {s: next(iter(v)) for s, v in by_sur.items()
+            if len(v) == 1 and len(s) >= 2}
+    if not uniq:
+        return text
+    words = sorted(F.kin_texts(), key=len, reverse=True)
+    words = [w for w in words if len(w) >= 2]
+    out = text
+    for sur, full in uniq.items():
+        given = full[-2:]
+        for w in words:
+            bad = sur + w
+            if bad == full or bad in known:
+                continue
+            if bad not in out:
+                continue
+            # 只改「后面不接正确名字」的形态 (防把正确的「六角继子」改坏)
+            out = out.replace(bad, full)
+    # 纠名自身不得造出相邻重复 (与 _fix_kin_roles 同收口)
+    return _dedup_adjacent_words(out)
+
+
 def _fix_kin_roles(text, facts, cache):
     """v52 (问题1): 把「亲属词 + 人名」里对不上档案的亲属词改回正确词。
 
@@ -3268,6 +3316,8 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     # v52 (问题1): 总纲要逐字注入各篇开篇 —— 注入前把与人名对不上的亲属词改回
     # (「母亲X」而 X 是妻室 → 「妻子X」), 防一处口误变成全篇 6 次"事实"。
     intro = _fix_kin_roles(intro, facts, cache)
+    # v80 (点6, 附带B): 再把被模型改错的名字改回来 (「六角妻子」→「六角继子」)
+    intro = _fix_person_names(intro, facts, cache)
 
     sec_cfg = dict(cfg)
     sec_cfg["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)
@@ -3282,6 +3332,8 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
             # v52 (问题1): 成稿正文同做亲属词归正 (紧贴人名的错词才改)
             body = _fix_kin_roles(
                 _normalize_section(text, sec_title, article_title), facts, cache)
+            # v80 (点6): 同做名字归正 (错名在正文里同样要改回)
+            body = _fix_person_names(body, facts, cache)
             return body, _tail_issue(body)
 
         body, issue = _one(llm.call_deepseek(msg, sec_cfg).strip())
