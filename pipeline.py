@@ -732,16 +732,30 @@ def _bio_pname(cache):
     return name
 
 
+def _reign_end(cache):
+    """v76 (问题1): 传主的**在位终了档** —— 让位(reign_end) 优先于死亡(player_death)。
+
+    用户 2026-09-27 拍板「让位即终了, 日后死亡只进缓存」: 两档都有时以 reign_end 为准,
+    终传文件名与数据截止日都钉在让位日, 不会因日后检测到死亡而改文件名、生成第二篇。"""
+    re_ = cache.get("reign_end") or {}
+    if re_.get("date"):
+        return re_
+    return {}
+
+
 def output_paths(cfg, cache, continue_mode=False, decade=None):
     """(家族文件夹, 输出文件名) — 会话文件夹 + 传记文件名。
     decade 非空时输出十年传记独立命名, 避免与普通在世传记同日期重名
-    被 generate_bio 的 exists 检查误跳过。"""
+    被 generate_bio 的 exists 检查误跳过。
+    v76 (问题1): 在位终了 = reign_end (让位) 优先, 其次 player_death (卒)。"""
     folder = resolve_output_folder(cfg, cache, continue_mode)
     pname = _bio_pname(cache)
+    re_end = _reign_end(cache)
     death = cache.get("player_death")
-    if death:
-        kind = "终传"
-        dkey = cl.date_filekey(death.get("date") or cache.get("last_date") or "")
+    end_date = re_end.get("date") or (death or {}).get("date")
+    if end_date:
+        kind = "终传"                     # v76: 让位档篇名不变 (用户拍板②)
+        dkey = cl.date_filekey(end_date)
     else:
         kind = "传记"
         dkey = cl.date_filekey(cache.get("last_date") or "")
@@ -772,11 +786,13 @@ def _decade_cutoff(cache, decade):
 
 
 def _bio_as_of(cache, decade=None):
-    """传记数据截止日期 (v11): 十年传记 = 十年末; 终传/普通传记 = 死亡日或末档日期。
-    None 表示不截断。"""
+    """传记数据截止日期 (v11): 十年传记 = 十年末; 终传/普通传记 = 在位终了日或末档日期。
+    None 表示不截断。
+    v76 (问题1): 终传的截止日 = reign_end (让位) 优先, 其次 player_death (卒)。"""
     if not decade:
+        re_end = _reign_end(cache)
         death = cache.get("player_death") or {}
-        return death.get("date") or cache.get("last_date")
+        return re_end.get("date") or death.get("date") or cache.get("last_date")
     return _decade_cutoff(cache, decade)
 
 
@@ -867,8 +883,11 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
         return None
     as_of = _bio_as_of(cache, decade)
     # v24: 主角死亡晚于最后一次并入快照 → 先把尾年死者死亡记录回填进缓存
+    # v76 (问题1): 让位日同样可能落在一档之间 (田所 922.1.1 → 923.1.1), 一并回填
     pd = cache.get("player_death") or {}
-    if pd.get("date") and cl.date_key(pd["date"]) > \
+    _re_end = _reign_end(cache)
+    _end_date = _re_end.get("date") or pd.get("date")
+    if _end_date and cl.date_key(_end_date) > \
             cl.date_key(cache.get("last_date") or "0.0.0"):
         _backfill_tail_deaths(cfg, cache)
     # v20: 十年传记按时代取绰号 — 绰号存于各年熔件 nickname_text, 最新档只是
@@ -1368,7 +1387,8 @@ def _campaign_caches(cfg, anchor):
 
 
 def _auto_bio(cfg, caches=None):
-    """为「已死亡且未生成终传」的缓存排队生成终传 (后台线程执行, 每次死亡一篇)。
+    """为「传主之位已终了且未生成终传」的缓存排队生成终传 (后台线程执行, 每任一篇)。
+    位终了 = 死亡 (`player_death`) **或** 在位终结但未死亡 (`reign_end`, v76 问题1)。
     失败不置 bio_generated, 下轮自动重试 (带退避)。返回本轮排队数。
     v10: caches 限定检查范围 (同战役); 缺省全部 (rebuild 等一次性路径)。"""
     _ensure_bio_worker(cfg)
@@ -1383,12 +1403,14 @@ def _auto_bio(cfg, caches=None):
     now = time.monotonic()
     with _BIO_LOCK:
         for key, cache in caches.items():
+            re_end = _reign_end(cache)
             death = cache.get("player_death")
-            if not death or cache.get("bio_generated"):
+            if not (re_end or death) or cache.get("bio_generated"):
                 continue
             if not cfg.get("auto_bio_on_death", True):
-                llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={key[0]}) 死于 "
-                        f"{death.get('date')}, 但 auto_bio_on_death=false, 跳过")
+                llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={key[0]}) 位终于 "
+                        f"{re_end.get('date') or death.get('date')}, "
+                        f"但 auto_bio_on_death=false, 跳过")
                 continue
             qkey = (key, "death", None)
             if qkey in _BIO_PENDING:
@@ -1397,8 +1419,14 @@ def _auto_bio(cfg, caches=None):
                 continue
             _BIO_PENDING.add(qkey)
             queued += 1
-            llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={key[0]}) 已死于 "
-                    f"{death.get('date')} — 排队生成终传")
+            if re_end:
+                llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={key[0]}) 已于 "
+                        f"{re_end.get('date')} 在位终结（非死亡), 后任 "
+                        f"{re_end.get('successor_name') or re_end.get('successor')} "
+                        f"— 排队生成终传")
+            else:
+                llm.log(f"[触发] 玩家 {cache.get('player_name')} (id={key[0]}) 已死于 "
+                        f"{death.get('date')} — 排队生成终传")
     if queued:
         llm.log(f"待生成 {queued} 篇终传")
     return queued
@@ -1442,7 +1470,7 @@ def _generated_decades_on_disk(cfg, cache):
 def _auto_decade_bios(cfg, caches=None):
     """v8: 为「在世且已满新十年」的玩家排队生成十年传记 (后台线程执行)。
     十年传记素材取全部累计数据 (统治40年即读取40年数据);
-    死亡后的角色不再补十年传记 (终传覆盖一生)。返回本轮排队数。
+    已终了 (死亡或让位, v76) 的角色不再补十年传记 (终传覆盖一生)。返回本轮排队数。
     v10: caches 限定检查范围 (同战役); 缺省全部。"""
     _ensure_bio_worker(cfg)
     if caches is None:
@@ -1456,12 +1484,15 @@ def _auto_decade_bios(cfg, caches=None):
     with _BIO_LOCK:
         for key, cache in caches.items():
             pid = key[0]
-            if cache.get("player_death"):
+            _re_end = _reign_end(cache)
+            if cache.get("player_death") or _re_end:
                 ds = _completed_decades(cache)
                 if ds and key not in _DECADE_SKIP_LOGGED:
                     _DECADE_SKIP_LOGGED.add(key)
                     llm.log(f"  [十年] 玩家 {cache.get('player_name')} (id={pid}) "
-                            f"数据已满十年 {ds} 但已死亡, 按设计跳过 (终传覆盖一生)")
+                            f"数据已满十年 {ds} 但已终了"
+                            f"（{'让位' if _re_end else '已死亡'}), "
+                            f"按设计跳过 (终传覆盖一生)")
                 continue
             # 已生成 = 缓存标记 ∪ 磁盘文件推导 (防 bio_decades 被并发写覆盖后重复触发)
             done = (set(cache.get("bio_decades") or [])
@@ -1509,7 +1540,8 @@ def _bio_worker_loop(cfg):
             cache = cl.load_cache(path)
             if kind == "death":
                 death = cache.get("player_death")
-                if not death or cache.get("bio_generated"):
+                re_end = _reign_end(cache)
+                if not (death or re_end) or cache.get("bio_generated"):
                     continue
                 out = generate_bio(cfg, cache, continue_mode=True)  # v14: 后台线程按绑定解析
                 if out:
@@ -1519,8 +1551,8 @@ def _bio_worker_loop(cfg):
                     cl.save_cache(cur, path)
                     llm.log(f"终传已生成: {out_path}")
             elif kind == "decade":
-                if cache.get("player_death"):
-                    continue  # 已死: 跳过十年传记 (终传覆盖)
+                if cache.get("player_death") or _reign_end(cache):
+                    continue  # 已终了 (卒/让位): 跳过十年传记 (终传覆盖)
                 if (decade in (cache.get("bio_decades") or [])
                         or decade in _generated_decades_on_disk(cfg, cache)):
                     continue  # 磁盘上已有该十年文件 (或缓存标记), 不再生成
@@ -1876,6 +1908,8 @@ def step_rebuild_cache(cfg):
                 cache = cl.new_cache()
                 if prev.get("player_death"):
                     cache["player_death"] = prev["player_death"]
+                if prev.get("reign_end"):        # v76: 让位终了档不能丢
+                    cache["reign_end"] = prev["reign_end"]
                 if prev.get("bio_generated"):
                     cache["bio_generated"] = prev["bio_generated"]
                 if prev.get("bio_decades"):
@@ -1902,6 +1936,8 @@ def step_rebuild_cache(cfg):
                 cache = cl.new_cache()
                 if prev.get("player_death"):
                     cache["player_death"] = prev["player_death"]
+                if prev.get("reign_end"):        # v76: 让位终了档不能丢
+                    cache["reign_end"] = prev["reign_end"]
                 if prev.get("bio_generated"):
                     cache["bio_generated"] = prev["bio_generated"]
                 if prev.get("bio_decades"):

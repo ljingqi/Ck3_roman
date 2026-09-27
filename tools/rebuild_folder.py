@@ -92,7 +92,8 @@ def main():
                 prev = {}
         cache = cl.new_cache()
         cache["player_id"] = pid
-        for k in ("player_death", "bio_generated", "bio_decades", "playthrough_id"):
+        for k in ("player_death", "reign_end", "bio_generated", "bio_decades",
+                  "playthrough_id"):
             if prev.get(k):
                 cache[k] = prev[k]
         cache["output_folder"] = prev.get("output_folder") or folder
