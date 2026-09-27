@@ -12839,6 +12839,122 @@ _TORTURE_VICTIM_NO_OTHER = {
 }
 
 
+# ---------------------------------------------------------------------------
+# v78-4 (用户 D3): 人质闭环 —— 起始 (送出/入质/纳质) 与结局 (送还/卒于质所/仍在质)
+# ---------------------------------------------------------------------------
+# 缺口: `MODULE_TABLE` 只登记了三种 `hostage_created_*`, `hostage_returned_*` 三型与
+# `hostage_died` 在 `MEMORY_TEMPLATES` 里**无条目** ⇒ `_mem_sentence_body` 返回 None ⇒
+# 连事件都不生成(7 战役实测 ~470 条返回/死亡记忆因此从未进过任何一篇)。
+# 槽位 (实测 3 档 244 条 0 例外, owner 不在 participants 内):
+#   created/returned_hostage    owner=人质     槽 {home_court, warden}
+#   created/returned_warden     owner=监管人   槽 {home_court, hostage}
+#   created/returned_home_court owner=原属宫廷 槽 {warden, hostage}
+#   hostage_died                owner=监管人   槽 {hostage, home_court} (无 warden 槽)
+# 依据: 游戏 `common/character_memory_types/bp2_hostage_memories.txt`、
+# `common/on_action/dlc/bp2/bp2_hostage_on_actions.txt`(起始 :9-41 / 结束 :74-152)、
+# 本地化 `game/localization/simp_chinese/memories_l_simp_chinese.yml:1077-1119`;
+# 详见 `docs/调研_v78_人质闭环.md`。
+_HOSTAGE_MEMS = {
+    "hostage_created_hostage":    ("hostage", "start", ("home_court", "warden")),
+    "hostage_created_warden":     ("warden", "start", ("home_court", "hostage")),
+    "hostage_created_home_court": ("home_court", "start", ("warden", "hostage")),
+    "hostage_returned_hostage":    ("hostage", "end", ("home_court", "warden")),
+    "hostage_returned_warden":     ("warden", "end", ("home_court", "hostage")),
+    "hostage_returned_home_court": ("home_court", "end", ("warden", "hostage")),
+    "hostage_died":                ("warden", "died", ("hostage", "home_court")),
+}
+_HOSTAGE_MEM_TYPES = frozenset(_HOSTAGE_MEMS)
+# 起始句 (按记忆持有者视角)
+_HOSTAGE_START = {
+    "home_court": "{owner}送{hostage}至{warden}处为质。",
+    "hostage": "{owner}入质于{warden}。",
+    "warden": "{owner}纳{home_court}之质{hostage}。",
+}
+# 送还句 (拼在起始句之后; 起首「，」)
+_HOSTAGE_RETURN = {
+    "home_court": "，{span}后{hostage}归家。",
+    "hostage": "，{span}后归{home_court}。",
+    "warden": "，{span}后送还{hostage}。",
+}
+# 起始记忆被缓存剪除时的**独立送还句**
+_HOSTAGE_RETURN_ONLY = {
+    "home_court": "{hostage}自{warden}处还归{owner}。",
+    "hostage": "{owner}自{warden}处还归{home_court}。",
+    "warden": "{owner}送还{hostage}于{home_court}。",
+}
+_HOSTAGE_DIED = {
+    "home_court": "，{date}{hostage}卒于{warden}处。",
+    "hostage": "，{date}卒于质所。",
+    "warden": "，{date}所质{hostage}卒。",
+}
+_HOSTAGE_EXEC = {
+    "home_court": "，{date}{hostage}见杀于{warden}。",
+    "hostage": "，{date}见杀。",
+    "warden": "，{date}诛所质{hostage}。",
+}
+# 「至末档仍在质」——**只用正面硬证** (人质当前宫廷即监管人宫廷、且入宫廷日 == 起始日):
+# 作废路径 (`on_hostage_invalidated`) 一条记忆都不写却把人送回家, 故「未见送还」
+# 本身不是证据 (调研 §5.3)。
+_HOSTAGE_HELD = {
+    "home_court": "，至{bound}仍在{warden}处。",
+    "hostage": "，至{bound}质于{warden}。",
+    "warden": "，至{bound}{hostage}犹在{owner}处。",
+}
+
+
+def _hostage_slots(f, owner_id, mtype, parts, date=None):
+    """人质记忆 → (视角角色, {hostage/warden/home_court 的显示名}, {三槽 id})。"""
+    spec = _HOSTAGE_MEMS.get(mtype)
+    if not spec:
+        return None
+    role, _phase, slots = spec
+    ids = {"hostage": None, "warden": None, "home_court": None}
+    ids[role] = owner_id if isinstance(owner_id, int) else None
+    for s in slots:
+        if isinstance((parts or {}).get(s), int):
+            ids[s] = parts[s]
+    nms = {k: (f.event_name(v, date=date) or "") if isinstance(v, int) else ""
+           for k, v in ids.items()}
+    return role, nms, ids
+
+
+def _hostage_sentence(f, owner_id, mem):
+    """单条人质记忆的独立句 (多视角合并见 `_pair_hostages`)。判不出返回 None。"""
+    t = mem.get("type")
+    spec = _HOSTAGE_MEMS.get(t)
+    if not spec:
+        return None
+    role, nms, _ids = _hostage_slots(f, owner_id, t, mem.get("participants") or {},
+                                     mem.get("creation_date"))
+    if not nms.get("hostage") and not nms.get("warden"):
+        return None
+    nms = dict(nms)
+    nms["owner"] = nms.get(role) or ""
+    phase = spec[1]
+    if phase == "start":
+        tpl = _HOSTAGE_START.get(role)
+    elif phase == "end":
+        tpl = _HOSTAGE_RETURN_ONLY.get(role)
+    else:
+        tpl = _HOSTAGE_DIED.get(role)
+    if not tpl or not nms["owner"]:
+        return None
+    try:
+        return tpl.format(**nms)
+    except Exception:
+        return None
+
+
+def _hostage_court_held(f, hostage, warden, start_date):
+    """正面硬证: 人质当前宫廷即监管人宫廷、且入宫廷日 == 起始日 (调研 §5.3)。"""
+    if not isinstance(hostage, int) or not isinstance(warden, int) or not start_date:
+        return False
+    rec = (f.cache.get("characters") or {}).get(str(hostage)) or {}
+    c = rec.get("court") or {}
+    return (c.get("employer") == warden
+            and str(c.get("join_court_date") or "") == str(start_date))
+
+
 def _torture_kind(f, mem):
     """刑虐记忆的酷刑类型: 优先读缓存 vars.value (v21 起保留), 旧缓存无 value
     时回读熔件记忆库 (存档保留完整变量)。返回 'torture'/'castrated'/
@@ -13049,6 +13165,9 @@ class _NameLog:
 
 def _mem_sentence_body(f, owner_id, mem):
     mtype = mem.get("type")
+    # ---- v78-4: 人质族 (三视角各一句; 多视角合并见 `_pair_hostages`) ----
+    if mtype in _HOSTAGE_MEM_TYPES:
+        return _hostage_sentence(f, owner_id, mem)
     # ---- v38: Carnalitas 性事族 (含多数无逐键模板者) ----
     if isinstance(mtype, str) and mtype.startswith(_SEX_MEM_PREFIX):
         info = sex_mem_info(mtype)
@@ -13704,7 +13823,12 @@ MODULE_TABLE = {
     "开战兴兵":   {"offensive_war", "defensive_war", "joined_allys_war"},
     "战和胜负":   {"battle_won_memory", "battle_lost_memory", "war_won", "war_lost"},
     "战死负伤":   {"witnessed_death_battle", "became_incapable_due_to_battle_concussion"},
-    "人质质任":   {"hostage_created_hostage", "hostage_created_warden", "hostage_created_home_court"},
+    # v78-4 (用户 D3): 人质闭环 —— 旧稿只登记「抓进去」三型, 送还/卒于质所四型
+    # 连事件都不生成 (`_hostage_sentence` 现由 facts 侧专表出句)。
+    "人质质任":   {"hostage_created_hostage", "hostage_created_warden",
+                   "hostage_created_home_court", "hostage_returned_hostage",
+                   "hostage_returned_warden", "hostage_returned_home_court",
+                   "hostage_died"},
     "囚禁入狱":   {"imprisoned", "imprisoned_other"},
     "获释出狱":   {"released_from_prison_memory"},
     # v32 (马克龙问题1): 越狱单列一档 — 出狱方式二分 (被释放 / 逃脱), 语义不同
@@ -14109,7 +14233,12 @@ _IDENT_TYPES = frozenset(
        # 补对手/宣战理由/战场) 全靠 ident 里的槽位; 旧稿这三型不在 ident 内,
        # 于是盟战行永远停在「助盟友作战」、白和行连事件都不生成。
        "joined_allys_war", "war_white_peace_attacker",
-       "war_white_peace_defender"}
+       "war_white_peace_defender",
+       # v78-4: 人质族三视角要 ident 才能归并成一个事件 (`_pair_hostages`)
+       "hostage_created_hostage", "hostage_created_warden",
+       "hostage_created_home_court", "hostage_returned_hostage",
+       "hostage_returned_warden", "hostage_returned_home_court",
+       "hostage_died"}
 )
 
 _DATE_PREFIX_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
@@ -14433,6 +14562,122 @@ def _war_end_clause(f, ev, sl, d0):
     other = sl["dfd"] if owner == sl["atk"] else sl["atk"]
     onm = f.event_name(other, date=d) or ""
     return f"{me}与{onm}以无条件和平罢兵"
+
+
+# ---------------------------------------------------------------------------
+# v78-4 (用户 D3): 人质闭环的合并
+# ---------------------------------------------------------------------------
+def _pair_hostages(events, f):
+    """人质「送出 → 送还/卒于质所」并成一行; 三视角去重 (v78-4)。
+
+    依据 `docs/调研_v78_人质闭环.md`:
+      · 一次为质在同一条 on_action 里连写**三条**视角记忆 (人质/监管人/原属宫廷),
+        故必须按 (三元组, 日期) 先归并成一个事件, 否则同一件事出 1–3 行;
+      · hold 键 = `(hostage, home_court)` —— 监管人会变 (实测 5 例), 原属宫廷稳定;
+      · 重复为质支持 (线性扫描: 上一次送还之后的起始自成新 hold);
+      · `hostage_died` 是该 hold 的**结束事件** (只有监管人视角);
+      · 收口**只用正面硬证**: 「至末档仍在质」须人质当前宫廷即监管人宫廷、
+        且入宫廷日 == 起始日; 否则只写起始句 (作废路径零留痕, 见调研 §5.3)。"""
+    if not events:
+        return events
+    recs = []
+    for i, e in enumerate(events):
+        t = e.get("type")
+        if t not in _HOSTAGE_MEM_TYPES:
+            continue
+        ident = e.get("ident") or {}
+        owner = ident.get("owner")
+        parts = ident.get("parts") or {}
+        sl = _hostage_slots(f, owner, t, parts, e.get("date"))
+        if sl is None:
+            continue
+        role, nms, ids = sl
+        if not isinstance(ids.get("hostage"), int):
+            continue
+        recs.append({"i": i, "type": t, "role": role, "phase": _HOSTAGE_MEMS[t][1],
+                     "date": str(e.get("date") or ""), "ids": ids, "nms": nms,
+                     "owner": owner})
+    if not recs:
+        return events
+    pid = f.cache.get("player_id")
+    # ① 同 (三元组, 日期, 阶段) 的多视角归并: 主角视角优先, 其次原属宫廷/人质/监管人
+    _pref = {"home_court": 0, "hostage": 1, "warden": 2}
+    groups = {}
+    for r in recs:
+        key = (r["date"], r["phase"], tuple(sorted(
+            (k, v) for k, v in r["ids"].items() if isinstance(v, int))))
+        groups.setdefault(key, []).append(r)
+    kept, drop = [], set()
+    for key, rows in groups.items():
+        rows.sort(key=lambda r: (0 if (pid is not None and r["owner"] == pid) else 1,
+                                 _pref.get(r["role"], 9)))
+        kept.append(rows[0])
+        for r in rows[1:]:
+            drop.add(r["i"])
+    # ② 按人质分组做线性配对
+    kept.sort(key=lambda r: (r["ids"]["hostage"], cl.date_key(r["date"]),
+                             0 if r["phase"] == "start" else 1))
+    by_hostage = {}
+    for r in kept:
+        by_hostage.setdefault(r["ids"]["hostage"], []).append(r)
+    for _hid, rows in by_hostage.items():
+        open_holds = []
+        for r in rows:
+            if r["phase"] == "start":
+                open_holds.append(r)
+                continue
+            cand = [h for h in open_holds if h["date"] <= r["date"]
+                    and h["ids"] == r["ids"]]
+            if not cand:
+                cand = [h for h in open_holds if h["date"] <= r["date"]
+                        and h["ids"].get("home_court") == r["ids"].get("home_court")]
+            if not cand:
+                cand = [h for h in open_holds if h["date"] <= r["date"]]
+            if not cand:
+                # 起始记忆被缓存剪除 ⇒ 只写结局句 (独立成行)
+                e = events[r["i"]]
+                tail_tpl = (_HOSTAGE_RETURN_ONLY if r["phase"] == "end"
+                            else _HOSTAGE_DIED).get(r["role"])
+                nms = dict(r["nms"], owner=r["nms"].get(r["role"]) or "")
+                if tail_tpl and nms["owner"]:
+                    e["text"] = f"{f.date(r['date'])}，{tail_tpl.format(**nms)}"
+                continue
+            hold = max(cand, key=lambda h: cl.date_key(h["date"]))
+            open_holds.remove(hold)
+            a, z = events[hold["i"]], events[r["i"]]
+            nms = dict(hold["nms"], owner=hold["nms"].get(hold["role"]) or "")
+            head = (_HOSTAGE_START.get(hold["role"]) or "").format(**nms) if nms["owner"] else ""
+            if not head:
+                continue
+            span = _prison_span(hold["date"], r["date"])
+            if r["phase"] == "end":
+                tail = (_HOSTAGE_RETURN.get(hold["role"]) or "").format(
+                    span=span or f.date(r["date"]), **nms)
+            else:
+                exec_like = (str((((f.cache.get("characters") or {})
+                                   .get(str(hold["ids"]["hostage"])) or {})
+                                  .get("death") or {}).get("reason") or "")
+                             == "death_hostage_execution")
+                tpl = (_HOSTAGE_EXEC if exec_like else _HOSTAGE_DIED).get(hold["role"]) or ""
+                tail = tpl.format(date=f.date(r["date"]), **nms)
+            a["text"] = f"{f.date(hold['date'])}，{head.rstrip('。')}{tail.rstrip('。')}。"
+            drop.add(r["i"])
+        # ③ 未被配对的起始: 有宫廷硬证才收「至末档仍在…」, 否则只写起始句
+        for hold in open_holds:
+            a = events[hold["i"]]
+            nms = dict(hold["nms"], owner=hold["nms"].get(hold["role"]) or "")
+            if not nms["owner"]:
+                continue
+            head = (_HOSTAGE_START.get(hold["role"]) or "").format(**nms)
+            body = head.rstrip("。")
+            if _hostage_court_held(f, hold["ids"].get("hostage"),
+                                   hold["ids"].get("warden"), hold["date"]):
+                tpl = _HOSTAGE_HELD.get(hold["role"]) or ""
+                body += tpl.format(bound=f._prison_bound(), **nms).rstrip("。")
+            a["text"] = f"{f.date(hold['date'])}，{body}。"
+    if not drop:
+        return events
+    return [e for i, e in enumerate(events) if i not in drop]
 
 
 def _pair_war_events(events, f):
@@ -15723,6 +15968,8 @@ def _timeline(f):
     out, _fold_saved, _jp_kept = _fold_prison_clusters(out, f)
     # 概览「囚禁他人」= 诛灭族级行 (占位时已计) + 折叠后保留的逐条/每簇 1 次
     stats["囚禁他人"] = max(0, stats.get("囚禁他人", 0) - _jail_pre) + _jp_kept
+    # v78-4: 人质三视角归并 + 送出↔送还配对 (见 `_pair_hostages`)
+    out = _pair_hostages(out, f)
     # v78-3 (用户问题2): 战事兴兵 ↔ 决胜配对成一段 + 补对手/宣战理由/争战目标/夺地;
     # 战斗行补地点与对手。放在囚禁两遍处理**之后** —— 年表侧「战末俘获」判据
     # (`_war_end_with`) 要读同日那条 war_won 行, 先合并会把它的型改掉。
