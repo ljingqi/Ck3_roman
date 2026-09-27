@@ -8858,6 +8858,59 @@ class Facts:
                     out.append(txt)
         return out
 
+    def house_feud_reason_clause(self, house_a, house_b, date):
+        """两族世仇缘由式的触发条 → **因果句** (v79, 用户 2026-09-27)。
+
+        `relation_cause_lines` ④ 原样采用同日流水「昆伯被崔佛无理由囚禁」作结仇缘由,
+        而那是**结仇升级日**才写的缘由串 (`house_relation_reason_feud_head_*`,
+        `house_relations_l_simp_chinese.yml:78-95`) —— 日期不是事发日、且读起来像当天
+        又发生了一次 (崔佛终传/第4、5个十年因此写出「是日崔佛又囚昆伯」「昆伯被囚
+        将满十年」)。这里改成因果句, 并把同一条关系记录里**事件式**流水记载的
+        真实事发日一并写入; 找不到真日期时只写因果, 不写日期。
+        无此类条目返回 ''。"""
+        if house_a is None or house_b is None or not date:
+            return ""
+        db = (self.melt.get("house_relations") or {}).get("database") or {}
+        for r in db.values():
+            if not isinstance(r, dict):
+                continue
+            hs = r.get("houses") or []
+            if house_a not in hs or house_b not in hs:
+                continue
+            hist = [e for e in (r.get("history") or []) if isinstance(e, dict)]
+            for e in hist:
+                if str(e.get("date")) != str(date):
+                    continue
+                raw = str(e.get("change_reason") or "")
+                row = _feud_head_kind(raw)
+                if not row:
+                    continue
+                ids = [int(x) for x in _FEUD_CHAR_RE.findall(raw)]
+                if len(ids) < 2:
+                    continue
+                victim, actor = ids[0], ids[1]
+                vn = self._feud_role_title(victim, date) or ""
+                an = self._feud_role_title(actor, date) or ""
+                if not vn or not an:
+                    continue
+                # 真事发日 = 同记录里「事件式且受害者相同」的最早一条
+                real = ""
+                for e2 in hist:
+                    raw2 = str(e2.get("change_reason") or "")
+                    if not raw2 or row[2] not in raw2 or _feud_head_kind(raw2):
+                        continue
+                    ids2 = [int(x) for x in _FEUD_CHAR_RE.findall(raw2)]
+                    if len(ids2) < 2 or ids2[1] != victim:
+                        continue
+                    d2 = str(e2.get("date") or "")
+                    if d2 and (not real or cl.date_key(d2) < cl.date_key(real)):
+                        real = d2
+                phrase = row[3].format(j=an)
+                if real:
+                    return f"{vn}于{self.date(real)}{phrase}，两族由此决裂"
+                return f"{vn}{phrase}，两族由此决裂"
+        return ""
+
     def _prison_type_fresh(self, cid, date):
         """该角色**当次**入狱的牢房档位 → `'dungeon'` / `'house_arrest'` / None。
 
@@ -18955,16 +19008,23 @@ def relation_cause_lines(f, cid, rel_date):
     #    (故排除)。措辞与《家族恩怨录》同源 (同一 `_rerender_feud_event`)。
     #    称谓注: 该条流水的两端是**游戏烘焙的短名** (「崔佛」), 未经 v42 的
     #    `event_name` 重渲染, 故同时按全名与名 (「·」前) 两种形态比对。
+    #    v79: 触发条本身是**世仇缘由式囚禁**串时, 改用因果句 (`house_feud_reason_
+    #    clause` —— 带真实囚禁日), 不再把结仇升级日当囚禁日下发。
     try:
         _cname = f.name_or(cid)
         _pforms = {x for x in (pname, (pname or "").split("·")[0]) if x}
-        for _txt in f.house_flow_on(f._house_of_cid(pid), f._house_of_cid(cid),
-                                    rel_date):
-            if _cname and _cname in _txt:
-                continue
-            if any(x in _txt for x in _pforms):
-                out.append(f"{f.date(rel_date)}，{_txt}")
-                break
+        _clause = f.house_feud_reason_clause(f._house_of_cid(pid),
+                                             f._house_of_cid(cid), rel_date)
+        if _clause:
+            out.append(_clause)
+        else:
+            for _txt in f.house_flow_on(f._house_of_cid(pid),
+                                        f._house_of_cid(cid), rel_date):
+                if _cname and _cname in _txt:
+                    continue
+                if any(x in _txt for x in _pforms):
+                    out.append(f"{f.date(rel_date)}，{_txt}")
+                    break
     except Exception:
         pass
     return out
@@ -18976,32 +19036,52 @@ _WAR_KIND_WORDS = ("宣战", "开战", "应战", "战胜", "战败", "赢得战�
 # v34 (问题7): 囚禁类措辞 — 同日的旧「囚禁了X」由带出狱情形的节点取代
 _PRISON_KIND_WORDS = ("囚禁了", "囚禁")
 
-# v79 (用户 2026-09-27): 关系流水的「囚禁」有两种句式, **id 次序相反** ——
-#   · 事件式 `house_relation_reason_imprisonment_desc` (`house_relations_l_simp_chinese.yml:50`)
-#     「[char]囚禁了[target_char]」 → id 次序 = (施事者, 被囚者), 日期 = 囚禁日;
-#   · 世仇缘由式 `house_relation_reason_feud_head_imprisoned` (`:82`, 别名 `:83`)
-#     「[house_feud_victim]被[house_feud_attacker]无理由囚禁」 →
-#     id 次序 = (被囚者, 施事者), 日期 = **结仇升级日** (崔佛档 907.10.27 那条,
-#     真囚禁在 906.6.13)。
+# v79 (用户 2026-09-27): 《家族恩怨录》与仇人列传的数据源是 house_relations 流水原文,
+# 同一件事有**两种句式、id 次序相反**, 且缘由式的日期是**结仇升级日** ——
+#   · 事件式 (desc, `house_relations_l_simp_chinese.yml:44-51`)
+#     「[char]囚禁了[target_char]」/「[char]谋杀了[target_char]」…
+#     → id 次序 = (施事者, 受害者), 日期 = 事发日;
+#   · 世仇缘由式 (feud head, `:78-95`)
+#     「[house_feud_victim]被[house_feud_attacker]无理由囚禁」/「…被…谋杀」/
+#     「…被…残忍地折磨」… → id 次序 = (**受害者, 施事者**), 日期 = 结仇升级日。
+#     例外: 「绿帽」(`:90`) 是主动句、id 次序与 desc 相同, 故不入本表。
 # v78-2 的流水兜底按 id 次序硬读, 于是把「昆伯被崔佛囚禁」读成「昆伯囚禁崔佛」,
-# 还给主角挂上「至末档仍在押」的结局 (用户报告: 崔佛从未被囚)。
-# 实测 (`tools/tests/probe_v79_feudprison.py`, 三战役 5636 条囚禁流水): 缘由式
-# 仅 4 条 (田所 2 / 菲利普2 1 / 斯卡利茨 1), 且 **4/4** 都在同一条关系记录里有
-# 同一被囚者的**事件式专属行** —— 故缘由式整条不入事件、不造节点, 既不丢料,
-# 也不会造出方向翻转、日期错位的「假囚禁」。
-_PRISON_DESC_WORD = "囚禁了"
+# 还给主角挂上「至末档仍在押」的结局 (用户报告: 崔佛从未被囚; 昆伯 1年4个月后即获释)。
+# 实测 (`tools/tests/probe_v79_feudprison.py` + `probe_v79_feudreason.py`, 三战役):
+# 缘由式条目共 16 条 (囚禁 4 / 折磨 11 / 谋杀 1), 其中 15 条在同一条关系记录里都有
+# **同一受害者的事件式专实行** —— 故囚禁侧缘由式整条不入事件、不造节点; 仇人列传的
+# 结仇缘由一律改写成**因果句**并把真日期写进去 (`house_feud_reason_clause`)。
+_FEUD_HEAD_KINDS = (
+    # (类别, 缘由串关键词, 事件式关键词, 因果句句式)
+    ("prison", "囚禁", "囚禁了", "为{j}所囚"),
+    ("murder", "谋杀", "谋杀了", "被{j}谋杀"),
+    ("torture", "折磨", "折磨了", "为{j}所折磨"),
+    ("castrate", "阉割", "阉割了", "被{j}阉割"),
+    ("blind", "致盲", "致盲了", "被{j}致盲"),
+)
+
+
+def _feud_head_kind(raw):
+    """该条流水是否为**世仇缘由式的被动句** → 对应 `_FEUD_HEAD_KINDS` 行, 否则 None。
+
+    判据: 含缘由串关键词、**不含**事件式关键词、且含「被」。`raw` 传
+    `house_relations.database[*].history[*].change_reason` 原文 (渲染后的句面同样
+    保留「被」, 故两者皆可)。"""
+    s = str(raw or "")
+    if "被" not in s:
+        return None
+    for row in _FEUD_HEAD_KINDS:
+        if row[1] in s and row[2] not in s:
+            return row
+    return None
 
 
 def _is_feud_reason_prison(raw):
-    """该条流水的「囚禁」是否为**世仇缘由式的被动句** (id 次序 = 被囚者, 施事者)。
+    """该条流水是否为**世仇缘由式的囚禁被动句** (id 次序 = 被囚者, 施事者)。
 
-    事件式恒含「囚禁了」; 缘由式是「…被…无理由囚禁」, 两者互斥。`raw` 传
-    `house_relations.database[*].history[*].change_reason` 原文 (渲染后的句面
-    同样保留「被」, 故两者皆可)。"""
-    s = str(raw or "")
-    if "囚禁" not in s or _PRISON_DESC_WORD in s:
-        return False
-    return "被" in s
+    囚禁侧单独收口: 缘由式整条不入事件、不造节点 (该囚禁事实另有事件式专属行)。"""
+    row = _feud_head_kind(raw)
+    return bool(row) and row[0] == "prison"
 
 # v34 (问题1, 用户拍板): 这些关系链在句面上写明「谁是谁的亲生子女」,
 # 属史官不可知的内宅隐情 — 只进《家室列传》《阴私录》, 不进《本纪》等公开篇目。
