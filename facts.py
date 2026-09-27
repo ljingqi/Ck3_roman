@@ -447,6 +447,52 @@ KIN_WORDS = {
     "sister_in_law_younger": ("", "弟媳"),
     "brother_in_law_older":  ("", "姐夫"),
     "brother_in_law_younger": ("", "妹夫"),
+    # ---- v80 (点3, 用户 2026-09-27 拍板「任何有亲属关系的角色都要有一个词」) ----
+    # 规格见 docs/调研_v80_亲属称谓全覆盖.md §1.2 (41 键净增量)。
+    # 词源: 有大写关系键的优先取游戏本地化 (GRANDFATHER/…), 其余自造兜底。
+    # 组 H 上行直系: 祖辈 + 曾祖辈 (父系/母系按**第一跳**分, 见 kin_key 5b/5d)
+    "grandfather_pat":   ("GRANDFATHER", "祖父"),
+    "grandmother_pat":   ("GRANDMOTHER", "祖母"),
+    "grandfather_mat":   ("", "外祖父"),
+    "grandmother_mat":   ("", "外祖母"),
+    "grandfather":       ("relation_grandfather", "（外）祖父"),
+    "grandmother":       ("relation_grandmother", "（外）祖母"),
+    "great_grandfather_pat": ("GREATGRANDFATHER", "曾祖父"),
+    "great_grandmother_pat": ("GREATGRANDMOTHER", "曾祖母"),
+    "great_grandfather_mat": ("", "外曾祖父"),
+    "great_grandmother_mat": ("", "外曾祖母"),
+    "great_grandfather": ("relation_great_grandfather", "（外）曾祖父"),
+    "great_grandmother": ("relation_great_grandmother", "（外）曾祖母"),
+    # 组 I 祖辈同胞 (连接祖辈 = 祖父/祖母; 外祖辈同胞本轮不做, 见规格 §5.2)
+    "granduncle_pat":    ("", "伯祖父"),
+    "grandaunt_pat":     ("", "姑祖母"),
+    "granduncle_mat":    ("", "舅祖父"),
+    "grandaunt_mat":     ("", "姨祖母"),
+    "granduncle":        ("", "祖辈叔伯"),
+    "grandaunt":         ("", "祖辈姑姨"),
+    # 组 J 父母之堂表兄弟姊妹 (我的「堂叔/表姑」一辈)
+    "uncle_pat_cousin_older":   ("", "堂伯"),
+    "uncle_pat_cousin_younger": ("", "堂叔"),
+    "uncle_side_older":         ("", "表伯"),
+    "uncle_side_younger":       ("", "表叔"),
+    "uncle_mat_cousin":         ("", "表舅"),
+    "aunt_pat_cousin":          ("", "堂姑"),
+    "aunt_mat_cousin":          ("", "表姑"),
+    "aunt_mat_cousin2":         ("", "表姨"),
+    # 组 K 同胞之孙 (侄孙/外甥孙)
+    "grandnephew_brother": ("", "侄孙"),
+    "grandniece_brother":  ("", "侄孙女"),
+    "grandnephew_sister":  ("", "外甥孙"),
+    "grandniece_sister":   ("", "外甥孙女"),
+    "grandnephew":         ("", "侄甥孙"),
+    "grandniece":          ("", "侄甥孙女"),
+    # 组 L 曾孙辈 (下行三代; 中间人性别定 曾孙/外曾孙)
+    "great_grandson_son":      ("GREATGRANDSON", "曾孙"),
+    "great_granddaughter_son": ("GREATGRANDDAUGHTER", "曾孙女"),
+    "great_grandson_daughter":      ("", "外曾孙"),
+    "great_granddaughter_daughter": ("", "外曾孙女"),
+    "great_grandson":      ("relation_greatgrandson", "（外）曾孙"),
+    "great_granddaughter": ("relation_greatgranddaughter", "（外）曾孙女"),
 }
 
 _KIN_TEXT_CACHE = {}
@@ -665,6 +711,28 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             return "cousin_pat_brother_older" if older else "cousin_pat_brother_younger"
         return "cousin_mat_brother_older" if older else "cousin_mat_brother_younger"
 
+    def _sib_blood(x):
+        """x 的**血缘同胞** (v80 点3 §2.5①): `family.siblings` ∪ 共享父/母者。
+
+        缓存 `siblings` 会把子女也列进来 (CK3 数据如此), 只读它会让「同父异母的
+        伯叔」整支漏掉; 故并上「父/母的其它子女」并剔除自己。"""
+        out = set(_sibs(x))
+        for _p in _fath(x) | _moth(x):
+            out |= _kids(_p)
+        out.discard(int(x))
+        return out
+
+    def _up_excl():
+        """旁系候选的排除集 (v80 点3 §2.3②): 我 / 我的同胞 / 我的后代 /
+        这些人的后代 / 我的父与母。
+
+        不排除会出现「我的兄长被判成伯父」「我的胞弟被判成祖辈同胞」这类错判
+        (规格探针实测: 祖辈同胞候选里混进了我的同胞)。"""
+        out = {int(s)} | _sibs(s) | _kids(s) | _fath(s) | _moth(s)
+        for _y in list(out):
+            out |= _kids(_y)
+        return out
+
     # 1) 父 / 母 (含实父)
     if c in _fath(s):
         return "father"
@@ -700,6 +768,62 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             if kf:
                 return "granddaughter_daughter" if c_female else "grandson_daughter"
             return "granddaughter_son" if c_female else "grandson_son"
+    # 5b) 祖父辈 (v80 点3, 用户: 「任何有亲属关系的角色都要有一个词」):
+    #     父之父/母 → 祖父/祖母; 母之父/母 → 外祖父/外祖母。
+    #     父系/母系只看**第一跳** (父系链上第一跳之后的每一跳男女皆收) ——
+    #     若要求整条链都走 father, 「祖母之父」这一整支会漏掉: 田所档定治的
+    #     曾祖母纪静子 (11634) 正是经祖母大和珍子 (16005) 的 `mother` 边找到的。
+    for p in sorted(_fath(s)):
+        if c in _fath(p):
+            return "grandfather_pat"
+        if c in _moth(p):
+            return "grandmother_pat"
+    for m in sorted(_moth(s)):
+        if c in _fath(m):
+            return "grandfather_mat"
+        if c in _moth(m):
+            return "grandmother_mat"
+    # 5c) 祖辈同胞 (v80 点3): 连接祖辈 (祖父/祖母, 以及曾祖辈) 的**血缘同胞**。
+    #     连接祖辈为**男** → 其兄弟 = 伯祖父、其姊妹 = 姑祖母;
+    #     连接祖辈为**女** → 其兄弟 = 舅祖父、其姊妹 = 姨祖母; 性别不可判 → 回落。
+    #     v80 取舍: 规格 (§5.2) 只要求「祖父/祖母」这一层; 为使「任何亲属都有词」
+    #     成立, 这里**多走一代** (曾祖辈的同胞也收) —— 该层中文另有叫法
+    #     (曾伯祖父/舅公等) 而不在本轮词表内, 故按同一条规则近似出词, 已在
+    #     docs/调研_v80_亲属称谓全覆盖.md §3.2 用例 6 标为「未确认」。
+    _ex = _up_excl()
+
+    def _grand_sib_word(g):
+        """连接祖辈 g 的同胞 → 词 (c 为外部变量)。"""
+        _gf = _female(g)
+        if c_female is None:
+            return ""                    # 目标性别不可判 → 不标 (与子/女同口径)
+        if _gf is None:                  # 连接祖辈性别不可判 → 回落
+            return "grandaunt" if c_female else "granduncle"
+        if c_female:
+            return "grandaunt_pat" if _gf is False else "grandaunt_mat"
+        return "granduncle_pat" if _gf is False else "granduncle_mat"
+
+    for p in sorted(_fath(s)):
+        for g in sorted(_fath(p) | _moth(p)):        # 祖父 / 祖母
+            if c in (_sib_blood(g) - _ex):
+                return _grand_sib_word(g)
+    for m in sorted(_moth(s)):
+        for g in sorted(_fath(m) | _moth(m)):        # 外祖父 / 外祖母
+            if c in (_sib_blood(g) - _ex):
+                return _grand_sib_word(g)
+    # 5d) 曾祖辈 (v80 点3): 父/母 → 祖辈 → 其父/母 (上行三代), 同 5b 只看第一跳。
+    for p in sorted(_fath(s)):
+        for g in sorted(_fath(p) | _moth(p)):
+            if c in _fath(g):
+                return "great_grandfather_pat"
+            if c in _moth(g):
+                return "great_grandmother_pat"
+    for m in sorted(_moth(s)):
+        for g in sorted(_fath(m) | _moth(m)):
+            if c in _fath(g):
+                return "great_grandfather_mat"
+            if c in _moth(g):
+                return "great_grandmother_mat"
     # 6) 父母之同胞: 父系 → 伯父/叔父 (比父生年) 或 姑母; 母系 → 舅父/姨母
     for p in sorted(_fath(s)):
         if c in _sibs(p):
@@ -716,6 +840,47 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             if c_female is None:
                 return ""
             return "aunt_mat" if c_female else "uncle_mat"
+    # 6b) 父母之堂表兄弟姊妹 (v80 点3, 用户点名「堂叔」):
+    #     t = 祖辈 (祖父/祖母/外祖父/外祖母) 的**血缘同胞之子女** —— 即我父/母的
+    #     堂/表兄弟姊妹, 于我则为堂伯/堂叔/堂姑/表伯/表叔/表姑/表舅/表姨。
+    #     堂 ⟺ 连接祖辈是**祖父**且该祖辈同胞为**男** (「父系父之兄弟之子女」);
+    #     祖父之姊妹 / 祖母 / 外祖父母 各支 → 表。
+    #     长幼: 经父者与**父**比生年 (伯/叔), 经母者不比较 (表舅/表姨无长幼);
+    #     长幼不可判时按「当作年长」出词 (与 `uncle` 回落到「叔舅」同性质)。
+    _fa = sorted(_fath(s))
+    _f0 = _fa[0] if _fa else None
+    _cands = []
+    for p in _fa:                                    # 父之父母 = 祖父 / 祖母
+        for g in sorted(_fath(p)):
+            for u in sorted(_sib_blood(g)):
+                for t in sorted(_kids(u)):
+                    _cands.append((t, "tang" if _female(u) is False else "biao_f"))
+        for g in sorted(_moth(p)):
+            for u in sorted(_sib_blood(g)):
+                for t in sorted(_kids(u)):
+                    _cands.append((t, "biao_f"))
+    for m in sorted(_moth(s)):                       # 母之父母 = 外祖父 / 外祖母
+        for g in sorted(_fath(m) | _moth(m)):
+            for u in sorted(_sib_blood(g)):
+                for t in sorted(_kids(u)):
+                    _cands.append((t, "biao_m"))
+    for t, kind in sorted(_cands):
+        if t != c or t in _ex:
+            continue
+        if c_female is None:
+            return ""
+        if kind == "tang":
+            if c_female:
+                return "aunt_pat_cousin"             # 堂姑
+            older = _older(c, _f0) if _f0 is not None else None
+            return "uncle_pat_cousin_younger" if older is False \
+                else "uncle_pat_cousin_older"
+        if kind == "biao_f":
+            if c_female:
+                return "aunt_mat_cousin"             # 表姑
+            older = _older(c, _f0) if _f0 is not None else None
+            return "uncle_side_younger" if older is False else "uncle_side_older"
+        return "aunt_mat_cousin2" if c_female else "uncle_mat_cousin"
     # 7) 同胞之子女: 兄弟之子女 → 侄; 姊妹之子女 → 甥
     for sb in sorted(_sibs(s)):
         if c in _kids(sb):
@@ -727,6 +892,19 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             if sbf:
                 return "niece_sister" if c_female else "nephew_sister"
             return "niece_brother" if c_female else "nephew_brother"
+    # 7b) 同胞之孙 (v80 点3): 同胞 → 其子女 → 其孙; 同胞性别定 侄孙/外甥孙。
+    for sb in sorted(_sibs(s)):
+        for kid in sorted(_kids(sb)):
+            if c not in _kids(kid):
+                continue
+            if c_female is None:
+                return ""
+            sbf = _female(sb)
+            if sbf is None:
+                return "grandniece" if c_female else "grandnephew"
+            if sbf:
+                return "grandniece_sister" if c_female else "grandnephew_sister"
+            return "grandniece_brother" if c_female else "grandnephew_brother"
     # 8) 堂表: 父母的同胞之子女 (父之兄弟之子女 → 堂; 父之姊妹 / 母系 → 表)
     for p in sorted(_fath(s)):
         for u in sorted(_sibs(p)):
@@ -740,6 +918,21 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             if u == s or c not in _kids(u):
                 continue
             return _cousin("mat", c_female, _older(c, s))
+    # 8b) 曾孙辈 (v80 点3): 子女 → 其子女 → 其孙 (下行三代);
+    #     中间人 (子女) 性别定 曾孙/外曾孙; 不可判 → 回落「（外）曾孙」。
+    for k in sorted(_kids(s)):
+        for gk in sorted(_kids(k)):
+            if c not in _kids(gk):
+                continue
+            if c_female is None:
+                return ""
+            kf = _female(k)
+            if kf is None:
+                return "great_granddaughter" if c_female else "great_grandson"
+            if kf:
+                return "great_granddaughter_daughter" if c_female \
+                    else "great_grandson_daughter"
+            return "great_granddaughter_son" if c_female else "great_grandson_son"
     # 9) 配偶之父母 (按**配偶性别**取词: 女 → 岳父/岳母, 男 → 公公/婆婆)
     for sid in sorted(sp_s):
         sf = _fam(sid)

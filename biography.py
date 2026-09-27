@@ -2434,7 +2434,10 @@ def _fix_kin_roles(text, facts, cache):
                     if not w or w == true_word:
                         continue
                     j = win.rfind(w)
-                    if j > best_p:
+                    # v80 (点3): 同位置取**最长**词 —— 新表有 42 对互为后缀的词
+                    # (伯祖父 ⊃ 祖父、侄孙女 ⊃ 孙女、外曾孙女 ⊃ 曾孙女…), 只比位置
+                    # 会把「曾祖父X」里的「祖父」当错词, 把更精确的词换成更粗的词。
+                    if j > best_p or (j == best_p and len(w) > len(best_w)):
                         best_w, best_p = w, j
                 if best_w:
                     at = max(0, i - 12) + best_p
