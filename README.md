@@ -422,7 +422,7 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
 
 ## v32 能力（监禁者与出狱方式 / 特质子轨道 / 夭折生母）
 
-方案与证据见 `docs/方案_马克龙三问题.md`；确定性回归 `tools/verify_three.py`（27 条断言）。
+方案与证据见 `docs/方案_马克龙三问题.md`；确定性回归 `tools/tests/verify_three.py`（27 条断言）。
 
 - **被囚句点名监禁者**：被囚记忆的 `imprisoner` 槽此前未进句（模板「{name}被囚。」）——
   家室档案行只写「公主被囚」，模型只好自己猜（旧稿写成「囚禁之人，后世皆指为伯爵本人」）。
@@ -472,7 +472,7 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   （通奸者→丈夫的 `xiangyongletadeqizi_opinion`）逐条吻合。
 - v31 曾据单例（玩家 id 恰好小于乔乔）推断「`first` 即持有者」，把主角**自己**的四条
   「干了我老婆」里的三条读成了「他人握有对主角的牵制」；v33 起四条均正确读作主角握有。
-  回归：`tools/verify_three.py` [G1]＋`tools/verify_macron.py`（「干了我老婆」不得出现在
+  回归：`tools/tests/verify_three.py` [G1]＋`tools/tests/verify_macron.py`（「干了我老婆」不得出现在
   `hooks_over`）。
 
 ## v34 能力（柳特佩特七问题：披露分级 / 秘密可读 / 政权门槛 / 特质指纹 / 恩怨因果 / 囚禁区间 / 分篇写法）
@@ -512,10 +512,10 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   他人视角 + 首尾回照）与「互见法」（一料一处，各篇各题）；每篇文章带 `focus`
   下发到开篇/纪事与总纲预告。
 
-回归：`tools/verify_v34.py`（读快照断言，可 `run()` 内联）＋`tools/verify_v34_once.py`
+回归：`tools/tests/verify_v34.py`（读快照断言，可 `run()` 内联）＋`tools/tests/verify_v34_once.py`
 （**熔件只读一次**：重建单战役缓存 + 落快照 + 跑全部断言，报告写
-`logs/verify_v34_report.txt`）＋`tools/check_bio_v34.py`（成稿 md 七问自查）；
-`tools/verify_fast.py` 全部 PASS。
+`logs/verify_v34_report.txt`）＋`tools/tests/check_bio_v34.py`（成稿 md 七问自查）；
+`tools/tests/verify_fast.py` 全部 PASS。
 
 ## v34b 修正（柳特佩特：头衔创建措辞与头衔事件日期）
 
@@ -535,7 +535,7 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
   误配回退），并接到时间线/人物档案/刺客列传/恩怨失守节点四处（去重键与句面日期同源）。
 - **连带的恩怨节点同日并存**：夺地日与战胜日同日时，旧实现会把同日「战胜X」节点一并删掉
   （v34 问题6 的因果链断在最后一环）；现只在**关系流水**里做同日取代。
-- 回归：`tools/verify_v34.py` 新增 `[11]`（9 条断言）；`experiments/verify_lushi.py`
+- 回归：`tools/tests/verify_v34.py` 新增 `[11]`（9 条断言）；`experiments/verify_lushi.py`
   断言同步（并修掉自 v30 起恒 FAIL 的「先世资料未载」陈旧判据）。
 
 ## v35 能力（德圣塔七问题：考据腔清洗 / 家主牵制 / 奴役语义 / 动态病名 / 文风重构 / 快照纪律）
@@ -577,11 +577,11 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
 - **快照纪律（问题7）**：新技能 `.agents/skills/snapshot-testing/SKILL.md` —— 测试一律走
   快照，同一熔件每会话最多整载一次，`rebuild-cache` 在测试期禁用（改用
   `tools/rebuild_folder.py`），**不删熔件重熔**（本战役 21 档重新熔化实测约 50 分钟）。
-- 新增工具：`tools/snapdiff.py`（改动前后**事实面**逐字节对照）、
-  `tools/snap_at_head.py`（用 git HEAD 版源码落对照快照）、`tools/snap.py --name=`。
+- 新增工具：`tools/tests/snapdiff.py`（改动前后**事实面**逐字节对照）、
+  `tools/tests/snap_at_head.py`（用 git HEAD 版源码落对照快照）、`tools/tests/snap.py --name=`。
 
-回归：`tools/verify_v35.py`（读快照，七问断言，秒级）＋`tools/check_bio_v35.py`
-（成稿 md 自查）；`tools/verify_fast.py` 全部 PASS。
+回归：`tools/tests/verify_v35.py`（读快照，七问断言，秒级）＋`tools/tests/check_bio_v35.py`
+（成稿 md 自查）；`tools/tests/verify_fast.py` 全部 PASS。
 
 ## v41 能力（诺兰八问题：政体时效 / 夺位经过 / 好感开关 / 血脉连线 / 宗支 / 共治者 / 仇人池 / 牵制块）
 
@@ -629,9 +629,9 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
     `hook_head_held` / `hook_head_over`）：每条牵制句本已自足，标题行只会把该维度
     引成开放清单，模型据此自行铺陈「御前会议诸臣互握把柄」等无据情节。
 
-回归：`tools/verify_v41_unit.py`（离线合成数据，**29 PASS / 0 FAIL**）；
-`tools/verify_fast.py` 新增 `[V41]` 组（含「封建期档不得出现行政制专有词」断言）；
-`tools/verify_v39_unit.py` 49 PASS、`tools/verify_v40_unit.py` 32 PASS、
+回归：`tools/tests/verify_v41_unit.py`（离线合成数据，**29 PASS / 0 FAIL**）；
+`tools/tests/verify_fast.py` 新增 `[V41]` 组（含「封建期档不得出现行政制专有词」断言）；
+`tools/tests/verify_v39_unit.py` 49 PASS、`tools/tests/verify_v40_unit.py` 32 PASS、
 `experiments/verify_v38_unit.py` 21 PASS（该组显式打开 `carnal_opinions` 以验旧行为）。
 
 > 缓存需重建一次以带上 `char_government_history`：
@@ -664,7 +664,7 @@ reason 出词 / 现代白话档位 / 隐藏文档元信息），确定性验证 
    两端烘焙成同一角色，第二人**没有写进存档**。渲染层降级为族级对手方：
    「基里雅科·诺兰试图谋杀库克氏族人」。
 
-回归：`tools\snap.py` 五篇快照 + `tools\verify_fast.py`（新增 `[V43]` 组）
+回归：`tools\tests\snap.py` 五篇快照 + `tools\tests\verify_fast.py`（新增 `[V43]` 组）
 final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 `d3` 仅 `[V42][3]`（窗口内阉/盲记忆并入囚禁行）FAIL，系**窗口边界**旧疾
 （受害者自 1080 年起 house arrest，囚禁记忆在窗口外），与本轮改动无关。
@@ -708,8 +708,8 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
    **语言在外层、根在内层**（任何根的中文压过任何根的英文；同语言内仍是 Mod 覆盖本体），
    `localization.json` schema 升至 3（读到旧表即自动重建）。
 
-回归：`tools\snap.py` 重建快照（阿德尔海德 d1/d2/final + gz 探针、克里斯托弗 final/d4）
-→ `tools\verify_fast.py` 新增 `[V44]` 组；克里斯托弗两篇与 `snap_v43_final` **全 PASS**，
+回归：`tools\tests\snap.py` 重建快照（阿德尔海德 d1/d2/final + gz 探针、克里斯托弗 final/d4）
+→ `tools\tests\verify_fast.py` 新增 `[V44]` 组；克里斯托弗两篇与 `snap_v43_final` **全 PASS**，
 阿德尔海德各篇只余**改动前就存在**的旧疾（`[2] 实父为自己`、面向已故主角终传的
 `[3]/[6]/[8]` 三条对其在世档不适用）。单元回归 `experiments\verify_v44_unit.py`
 （亲子字段/家格句/传主链/族属取值/同胞长幼）与 `experiments\verify_v44_extract.py`
@@ -744,11 +744,11 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
     （不做正则猜测，同名子串误插从机制上不可能）；行内已带亲缘词（「其父X」）则不插。
   两档共用一张名额表，并按**块序（阅读顺序）**消费 —— 年表里加过的人不会再在后面的名录里抢。
 
-**实测（`melt_1148_01_01.json`，`tools/snap.py` 重建）**：克里斯托弗终传 19 板块
+**实测（`melt_1148_01_01.json`，`tools/tests/snap.py` 重建）**：克里斯托弗终传 19 板块
 点位 3 处 + 行内 24 处（+66 字，0.07%）；阿德尔海德终传 0 + 13 处（+38 字，0.08%）。
 诊断：`experiments\diag_v45_coverage.py`（逐板块计数 + 插词样本）、`diag_v45_held.py`。
 
-回归：`tools\verify_fast.py` 新增 `[V45]` 组（词表内 / 能用同目录缓存复算 / 落在本板块文本 /
+回归：`tools\tests\verify_fast.py` 新增 `[V45]` 组（词表内 / 能用同目录缓存复算 / 落在本板块文本 /
 同板块同一人至多一次 / 不标本篇传主 / 同板块算两遍逐字相同 + 15 条纯函数断言）；
 `experiments\verify_v45_unit.py`（21 条）与 `verify_v44_unit.py` 全 PASS；
 克里斯托弗 v45 快照**全部 PASS**，阿德尔海德只余改动前既有的 5 条旧疾；
@@ -784,7 +784,7 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 ② 子女反查含 `real_father` 会让**托卵**的孩子在公开篇目被写成「儿子」，与 v34 公开档只写法理谱系冲突
 （诺兰档实测：黑罗尔德·沙特努瓦）—— 收紧为只认 `father`/`mother`。
 
-回归：`tools\verify_fast.py` 新增 `[V45b]` 组（16 条纯函数断言）；`experiments\verify_v45b_unit.py`（25 条）全 PASS；
+回归：`tools\tests\verify_fast.py` 新增 `[V45b]` 组（16 条纯函数断言）；`experiments\verify_v45b_unit.py`（25 条）全 PASS；
 克里斯托弗 v45b 快照**全部 PASS**，阿德尔海德只余改动前既有 5 条旧疾。
 
 ## v46 修正（死者称谓：「前X」误判）
@@ -809,7 +809,7 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 **真前衔仍保留**（32245 补全为「前米尔切尼亚公爵，迈森伯爵奥托·魏玛」；黑罗尔德 1132 在世禅位
 的前公爵衔 19→11 仍正确）；死者 brief 式恢复官职。
 
-回归：`verify_v44/v45/v45b` 单元全 PASS；重建 4 份快照跑 `tools\verify_fast.py` ——
+回归：`verify_v44/v45/v45b` 单元全 PASS；重建 4 份快照跑 `tools\tests\verify_fast.py` ——
 克里斯托弗终传与 1107 十年篇**全 PASS**，阿德尔海德终传只余既有 5 条旧疾、
 1138 十年篇只余既有 2 条。**成稿未重跑**（用户拍板），`output/诺兰` 那三篇仍带旧「前」，
 重跑该篇即消失。
@@ -868,7 +868,7 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 （游戏缘由 `rival_mean_to_spouse`＝「虐待其配偶，后者是…的亲属」）；克里斯托弗终篇
 20 名候选筛出 5 名有因由者，首位不变。
 
-**回归**：`tools\verify_fast.py` 新增 `[V47]` 组 26 条纯函数断言（沿革取值 / 家族缺省 /
+**回归**：`tools\tests\verify_fast.py` 新增 `[V47]` 组 26 条纯函数断言（沿革取值 / 家族缺省 /
 政体史借用 / 仇人池门槛 / 第三人槽）；`verify_v44 / v45 / v45b` 单元全 PASS；
 重建快照（阿德尔海德终篇与 1138 十年篇、克里斯托弗终篇与 1107 十年篇、**1090 十年篇**）
 全组 PASS —— 1090 档正是 v41「封建期称谓不得用行政制词」的严格断面。
@@ -904,7 +904,7 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 - 残留路径：**总纲正文**（模型自撰，全篇共用）仍会提到卒年 —— A 只管到程序下发的数据，
   模型文本侧由 B 兜底。
 
-**回归**：`tools/verify_v57_unit.py`（新增）**20/20 PASS**；`verify_v56_unit` 57/57、
+**回归**：`tools/tests/verify_v57_unit.py`（新增）**20/20 PASS**；`verify_v56_unit` 57/57、
 `verify_v55_unit` 58/58、`verify_v53_unit` 49/49 不变；`verify_v34` 的 `[1b]` 组全 PASS
 （存量 11 FAIL 不变）；`verify_fast` 仅存量 1 FAIL（灭门死因）。
 
@@ -969,10 +969,10 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 | 「当日获释」行 | 13 | **0**（全改写为「战胜X，俘之」） |
 | 见证加冕句 | 「…见证加冕。」 | 「…等29人见证撒旦之种施沙米尔的加冕。」 |
 
-**回归**：`tools/verify_v56_unit.py`（新增）**39/39 PASS**；`verify_v55_unit` **58/58**；
+**回归**：`tools/tests/verify_v56_unit.py`（新增）**39/39 PASS**；`verify_v55_unit` **58/58**；
 `verify_v53_unit` **49/49**；`verify_v34` 新增 `[1b]` 组（柳特佩特 d1 快照 PASS）；
 `verify_fast` 新增 `[V56]` 组（schema≥3 才跑），该快照**全部 PASS**。
-`tools/snap.py` 快照 schema 2 → **3**（旧快照上 v56 各组整组 SKIP）。
+`tools/tests/snap.py` 快照 schema 2 → **3**（旧快照上 v56 各组整组 SKIP）。
 **成稿未重跑**。
 
 ### v56 追加（§10 关系缘由：情人「相恋」读不到缘由 / 地点槽 / 标签剥除）
@@ -1042,7 +1042,7 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 | 925.5.1 集群 | 「其中15人1个月后获释、2人4日后获释、1人9日后获释…」7 款 | 「其中**15人获释、4人改信获释、余3人交出牵制获释**」 |
 | 事实层括注 | 32 处 | **0**（白名单 5 类除外） |
 
-**回归**：`tools/verify_v55_unit.py` **39/39 PASS**；`tools/verify_fast.py` 三战役新快照
+**回归**：`tools/tests/verify_v55_unit.py` **39/39 PASS**；`tools/tests/verify_fast.py` 三战役新快照
 （斯卡利茨 934 / 诺兰 1107 d4 / 沙蒂永 1188）**全 PASS**。
 
 ## v54 修正（斯卡利茨四问题：直辖报菜名与「路」 / 岭南帝国 / 诛灭世族的囚禁侧 / 零日头衔与封拜）
@@ -1082,9 +1082,9 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 | 919.7.14 | 29 行逐人囚禁 | 1 行「…等29人，其中28人1个月后获释、1人当日获释」 |
 | 920.1.24 | 85 行逐人囚禁 | 1 行「诛灭秦氏、任氏…等 35 族，处死家主 36 人，剩余残党被流放」 |
 
-- `tools/verify_v54_unit.py` **46/46 PASS**（直辖折叠 / 天朝层级词链与行政制不受影响 / 动态国号 /
+- `tools/tests/verify_v54_unit.py` **46/46 PASS**（直辖折叠 / 天朝层级词链与行政制不受影响 / 动态国号 /
   标题记忆三道闸 / 族级行与集群折叠取名 / 结构与口径守卫）。
-- `tools/verify_fast.py` 马丁终传：仅剩既有的 1 条 FAIL（见下）。
+- `tools/tests/verify_fast.py` 马丁终传：仅剩既有的 1 条 FAIL（见下）。
 - `experiments/verify_v54_pairs.py`：**四份同熔件同码对照（马克龙 878 d1 / 柳特佩特 878 d1 /
   诺兰 1107 d4 / 斯卡利茨马丁终传）新增 FAIL 0、消失 FAIL 0** —— 本轮改动对既有断言零扰动。
   另五份 `ref=` 旧代快照的差分属跨版本漂移（v52/v53 改动面），逐条已对账。
@@ -1122,8 +1122,8 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 
 **改后实测**
 
-- `tools/verify_v53_unit.py` **47/47 PASS**（封臣史日期感知 / 义务档解码 / 摘要净化 / 开创分档与秦国号 / 部院零日 / 天命行 / 连坐处死 / 续传让路）。
-- `tools/verify_fast.py` 历任取得方式白名单加「开创/重建」；`[V53]` 组 5/5 PASS（周氏默认快照缺失是既有缺口，与本轮无关）。
+- `tools/tests/verify_v53_unit.py` **47/47 PASS**（封臣史日期感知 / 义务档解码 / 摘要净化 / 开创分档与秦国号 / 部院零日 / 天命行 / 连坐处死 / 续传让路）。
+- `tools/tests/verify_fast.py` 历任取得方式白名单加「开创/重建」；`[V53]` 组 5/5 PASS（周氏默认快照缺失是既有缺口，与本轮无关）。
 - `rebuild_folder.py 斯卡利茨` 已重建三份 player 缓存（熔件不重熔）。马丁 `titles_held`：
   `910年4月18日受任江西节度使`；`918年9月14日受任江西观察使`；`919年8月2日开创秦皇朝`。
   戏剧块不再出现部院零日；档案天命行「新朝征服（危世），自919年8月2日」；
@@ -1163,9 +1163,9 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 
 **改后实测**
 
-- `tools/verify_v52_unit.py` **37/37 PASS**（无谱系 flag 集 / 营地取词 / 称号取词 /
+- `tools/tests/verify_v52_unit.py` **37/37 PASS**（无谱系 flag 集 / 营地取词 / 称号取词 /
   门槛与小结 / 结仇句形态与大事过滤 / 档位术语 / 亲属词归正）。
-- `tools/verify_three.py` 两条相关断言同步改到新口径后 PASS（该脚本另有 1 条
+- `tools/tests/verify_three.py` 两条相关断言同步改到新口径后 PASS（该脚本另有 1 条
   `trait_names schema 3` 属既有 FAIL，与本次无关）。
 - `snap.py --assert` 重建的 4 档（斯卡利茨 879/889/899/909）＋诺兰 `62045_1107` d4：
   **全 PASS**，仅斯卡利茨 d3 保留该档既有 FAIL（`入狱与获释已合并`，改动前同条，
@@ -1220,8 +1220,8 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 `normalize_zh_punct` 后《阴私录》80 处半角 → **0**，全篇无残留（成稿本身按用户
 口径不回修）。
 
-**回归**：`tools/verify_v51_unit.py` **31 PASS**（归正边界／幂等／出稿口／常量静态扫描／
-`clean_prompt_messages`）；`tools/verify_fast.py` 周氏 889 d2 与诺兰 v43_final **全 PASS**
+**回归**：`tools/tests/verify_v51_unit.py` **31 PASS**（归正边界／幂等／出稿口／常量静态扫描／
+`clean_prompt_messages`）；`tools/tests/verify_fast.py` 周氏 889 d2 与诺兰 v43_final **全 PASS**
 （新增 `[V51]` 组；`[V43]` 入赘断言接受新短式与 v51 前长式并加「现行补注为（入赘婚）」的桩检查）。
 **A/B（13 份快照 · v51 前代码 vs v51 后代码，逐条比对 FAIL 集）：无新增、无消失** ——
 诺兰 1148.1.1 档 **4 条**（`肺痨`括注／`实父为自己`／阉盲窗口／灭门死因，同 v50 记录）、
@@ -1253,9 +1253,9 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 「**赖因霍尔德·菲尔内堡指责冯阿德尔海德是他们家族的耻辱。**」，`_enemy_has_cause` 由
 `False → True`，d3 仇人篇传主由黑罗尔德回到赖因霍尔德 —— 缘由句是游戏原文，不再靠模型自造。
 
-**回归**：既有缓存无闩存数据 → **改动前后 A/B 逐字节一致**（`tools/snapdiff.py`：
+**回归**：既有缓存无闩存数据 → **改动前后 A/B 逐字节一致**（`tools/tests/snapdiff.py`：
 1148.1.1 档事实面 **0/15** 块、679 961 字节；终传档事实面 **0/15** ＋ 提示词面 **0/14**、
-742 431 字节）；`tools/verify_fast.py` / `experiments/verify_v44_unit.py` 全 PASS；
+742 431 字节）；`tools/tests/verify_fast.py` / `experiments/verify_v44_unit.py` 全 PASS；
 `experiments/verify_v50_unit.py` **27 PASS**；`snap.py --assert` 的 FAIL 集改动前后逐条相同
 （1148.1.1 档 4 条，终传档 5 条 —— 多出的 `[8] 终传主角档案有职衔` 亦为既有）。
 **不改提示词**。按用户口径**不重建/不回填旧缓存**（可选后手：对旧战役跑 `rebuild-cache`
@@ -1326,9 +1326,9 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 
 - `load_melt` 新实现与旧实现在 1148（明文）/1147（gz）上**全量 `==` 一致**，残留 `'none'` 0；
 - **事实面零变化**：用改动前源码（rev `a5561d9`）对同一 cache/melt 落快照，
-  `tools/snapdiff.py --facts-only` → **0/15 块变化（逐字节一致）**；
-- `tools/verify_fast.py` / `experiments/verify_v44_unit.py` 全 PASS；
-- `tools/snap.py ... --assert` 的 4 条 FAIL 经比对为**改动前既有**（与 v49 无关，待另立一轮）：
+  `tools/tests/snapdiff.py --facts-only` → **0/15 块变化（逐字节一致）**；
+- `tools/tests/verify_fast.py` / `experiments/verify_v44_unit.py` 全 PASS；
+- `tools/tests/snap.py ... --assert` 的 4 条 FAIL 经比对为**改动前既有**（与 v49 无关，待另立一轮）：
   括注同位语、`实父为自己`、阉/盲记忆窗口、灭门死因年表。
 
 
@@ -1367,10 +1367,10 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
   （只剩 Mod 本地化）覆盖 382,330 键的退化，中文人名/家族前缀会整片失效。
 - 宗族定义解析放宽到**数字键**（游戏本体按宗族 id 定义：`101556 = { prefix="dynnp_di"
   name="dynn_Lucca" }`）→ 「卡诺萨为**吉贝尔蒂**宗族的分支」改回游戏口径「卡诺萨为**卢卡**宗族的分支」。
-- `tools/verify_fast.py` 的两处**既有误报**一并修正：性病传播行判据允许「YYYY年M月D日」与行首缩进；
+- `tools/tests/verify_fast.py` 的两处**既有误报**一并修正：性病传播行判据允许「YYYY年M月D日」与行首缩进；
   v45 亲缘定语的「已写明关系」判据移到 `word_for` 之前（不再登记没插进去的词）。
 
-**实测（`tools/snapdiff.py` 事实面 · 旧快照 `snap_v58_full.json` → 新快照 `snap_v58_after4.json`）**
+**实测（`tools/tests/snapdiff.py` 事实面 · 旧快照 `snap_v58_full.json` → 新快照 `snap_v58_after4.json`）**
 
 ```
 - 布拉班特公爵驼背戈特弗里德·维格里希 …   → + 下洛塔林吉亚公爵驼背戈特弗里德·维格里希 …
@@ -1385,10 +1385,10 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 + 1076年1月26日，下洛塔林吉亚公爵驼背戈特弗里德·维格里希去世，墨索里尼·迪·卡诺萨从其手中承袭下洛塔林吉亚公国，加里波利·迪·卡诺萨从其手中承袭布拉班特公国。
 ```
 
-回归：`tools/verify_v58_unit.py`（八问 53 条断言，秒级）＋
-`tools/verify_fast.py output/吉贝尔蒂/data/snap_v58_after4.json` → **全部 PASS**。
-新增只读探针：`tools/diag_v58_gib.py`、`tools/diag_v58_gib2.py`、`tools/diag_v58_inherit.py`、
-`tools/diag_gib_v58.py`、`tools/probe_v58_melt.py`。
+回归：`tools/tests/verify_v58_unit.py`（八问 53 条断言，秒级）＋
+`tools/tests/verify_fast.py output/吉贝尔蒂/data/snap_v58_after4.json` → **全部 PASS**。
+新增只读探针：`tools/tests/diag_v58_gib.py`、`tools/tests/diag_v58_gib2.py`、`tools/tests/diag_v58_inherit.py`、
+`tools/tests/diag_gib_v58.py`、`tools/tests/probe_v58_melt.py`。
 
 ## v59 修正（吉贝尔蒂两问题：性事措辞「半强迫」→「半推半就」 / 性事只进好友·仇人列传）
 
@@ -1449,18 +1449,18 @@ final/d2/d4/d5 全 PASS；单测 v39 49 / v40 32 / v41 41 全 PASS。
 | 项 | 状态 |
 | --- | --- |
 | 语法检查 `ast.parse`（facts/style/biography/两个单测/verify_fast） | **PASS** |
-| `tools/verify_v39_unit.py` | **53 PASS / 0 FAIL**（改口径后的完整一轮） |
-| `tools/verify_v40_unit.py` | 改口径后那一轮 **35 PASS / 2 FAIL**；两条 FAIL 均已处置：`4c` 是我把断言写反（已修）；`3c2` 起因是「性病传播块是否随性事一起退出《阴私录》」这一处**我无法复跑确认**的改动 —— 该改动已**撤回**（性病传播块照旧留在《阴私录》，它是疾病线而非性事行），对应断言随之改为只坐实「强迫之事块撤下」与「传播线照旧」。**该两行修正未经复跑**（本会话 `pwsh` 一律报 `SetNamedSecurityInfoW failed: grantWrite(<项目根>)`） |
+| `tools/tests/verify_v39_unit.py` | **53 PASS / 0 FAIL**（改口径后的完整一轮） |
+| `tools/tests/verify_v40_unit.py` | 改口径后那一轮 **35 PASS / 2 FAIL**；两条 FAIL 均已处置：`4c` 是我把断言写反（已修）；`3c2` 起因是「性病传播块是否随性事一起退出《阴私录》」这一处**我无法复跑确认**的改动 —— 该改动已**撤回**（性病传播块照旧留在《阴私录》，它是疾病线而非性事行），对应断言随之改为只坐实「强迫之事块撤下」与「传播线照旧」。**该两行修正未经复跑**（本会话 `pwsh` 一律报 `SetNamedSecurityInfoW failed: grantWrite(<项目根>)`） |
 | 快照对照 / `verify_fast` / 提示词重出 | **未跑**（同上） |
 | `git commit` | **未执行**（同上，命令无法运行；改动全部留在工作区） |
 
 ```powershell
-& tools\py.ps1 tools\verify_v39_unit.py     # ← 本轮已 PASS (53/0)
-& tools\py.ps1 tools\verify_v40_unit.py     # ← 改口径后请复跑确认 (4c/3c2 两行已修)
-& tools\py.ps1 tools\snap.py 吉贝尔蒂 36664 1077.1.1 1 --name=snap_v59_before
-& tools\py.ps1 tools\snap.py 吉贝尔蒂 36664 1077.1.1 1 --name=snap_v59_after
-& tools\py.ps1 tools\snapdiff.py snap_v58_after5.json snap_v59_after.json --facts-only
-& tools\py.ps1 tools\verify_fast.py output/吉贝尔蒂/data/snap_v59_after.json
+& tools\py.ps1 tools\tests\verify_v39_unit.py     # ← 本轮已 PASS (53/0)
+& tools\py.ps1 tools\tests\verify_v40_unit.py     # ← 改口径后请复跑确认 (4c/3c2 两行已修)
+& tools\py.ps1 tools\tests\snap.py 吉贝尔蒂 36664 1077.1.1 1 --name=snap_v59_before
+& tools\py.ps1 tools\tests\snap.py 吉贝尔蒂 36664 1077.1.1 1 --name=snap_v59_after
+& tools\py.ps1 tools\tests\snapdiff.py snap_v58_after5.json snap_v59_after.json --facts-only
+& tools\py.ps1 tools\tests\verify_fast.py output/吉贝尔蒂/data/snap_v59_after.json
 ```
 
 **预期**（未经快照核验，属推断）：`1075年5月31日…半强迫地…` 整行从《阴私录》事实面消失；
@@ -1497,18 +1497,18 @@ fix(v60-3/4)  style 家室分档 + 在押措辞定界 + 遗骨句式
 fix(v60-3)    biography 篇目按素材改口
 test(v60)     verify_v53/v54 假存档补政体史与正证门 + 食人硬证反例
 fix(v60 顺带) 两处既有陈旧断言归正 (v53 天命行 / v54 折叠行)
-test(v60)     verify_fast 新增 V60 断言组 + tools/diag_v60.py
+test(v60)     verify_fast 新增 V60 断言组 + tools/tests/diag_v60.py
 ```
 
 **回归与验收状态**
 
 | 项 | 状态 |
 | --- | --- |
-| `tools/verify_v53_unit.py` / `v54_unit` / `v55_unit` / `v56_unit` | **54/54 · 46/46 · 58/58 · 57/57 PASS**（v53/v54 各有两条既有陈旧断言本轮归正，见上表末第二条） |
-| `tools/verify_fast.py output/崔佛/data/snap_38660_final.json` | **仅余 1 条既有 FAIL**：`[4] 血统类隐事点名实父`（方案 §8.6.2 已查明非本轮引入 —— 同一战役续玩档里的中国朝堂要员隐事，属 v41 隐事面遗留，本轮不动） |
-| `tools/verify_fast.py .../snap_38660_878.1.1_d1.json` | **全部 PASS** |
-| `tools/diag_v60.py 崔佛 38660` | `_purge_dates = {}`（政体 `tribal_government`，15 个处决日全数落空）；死法 24 人 = 吃掉 22 ＋ 谋杀 1 ＋ 烧死 1；宝物选材甲乙两档 `0 / 22`，出志 22 件 |
-| `tools/diag_v60.py 斯卡利茨 15403 16801023 33572063` | 诛灭日 `3 / 6 / 2` 个，**每一日都有庄园正证或催化剂正证**（见下「斯卡利茨影响面」） |
+| `tools/tests/verify_v53_unit.py` / `v54_unit` / `v55_unit` / `v56_unit` | **54/54 · 46/46 · 58/58 · 57/57 PASS**（v53/v54 各有两条既有陈旧断言本轮归正，见上表末第二条） |
+| `tools/tests/verify_fast.py output/崔佛/data/snap_38660_final.json` | **仅余 1 条既有 FAIL**：`[4] 血统类隐事点名实父`（方案 §8.6.2 已查明非本轮引入 —— 同一战役续玩档里的中国朝堂要员隐事，属 v41 隐事面遗留，本轮不动） |
+| `tools/tests/verify_fast.py .../snap_38660_878.1.1_d1.json` | **全部 PASS** |
+| `tools/tests/diag_v60.py 崔佛 38660` | `_purge_dates = {}`（政体 `tribal_government`，15 个处决日全数落空）；死法 24 人 = 吃掉 22 ＋ 谋杀 1 ＋ 烧死 1；宝物选材甲乙两档 `0 / 22`，出志 22 件 |
+| `tools/tests/diag_v60.py 斯卡利茨 15403 16801023 33572063` | 诛灭日 `3 / 6 / 2` 个，**每一日都有庄园正证或催化剂正证**（见下「斯卡利茨影响面」） |
 | `output/崔佛/*.md` 成稿（已重出并逐条核对） | 终传 **0 处「诛灭」**、《家室列传》标题为「开篇·纳妾与门庭」（无「结缡／妻室」字样）、《宝物志》载 **22 件遗骨**、囚禁行 **6 处「仍在押」＋7 处「转归」**；十年档 0 处「诛灭」、标题同档、遗骨 11 件、无末档在押交接（见下） |
 
 **崔佛成稿重出（验收 §7 第 1 项，2026-09-23 夜间实跑）**
@@ -1516,7 +1516,7 @@ test(v60)     verify_fast 新增 V60 断言组 + tools/diag_v60.py
 ```powershell
 & tools\py.ps1 pipeline.py bio 38660                    # 终传
 & tools\py.ps1 pipeline.py bio 38660 --decade 1          # 第 1 个十年
-& tools\py.ps1 tools\verify_fast.py output/崔佛/data/snap_38660_final.json
+& tools\py.ps1 tools\tests\verify_fast.py output/崔佛/data/snap_38660_final.json
 ```
 
 实跑结果（重出前后对照，v60 前成稿已备份为 `output/崔佛/.bak_*_pre_v60.md`）：
@@ -1553,7 +1553,7 @@ test(v60)     verify_fast 新增 V60 断言组 + tools/diag_v60.py
 ```powershell
 & tools\py.ps1 pipeline.py bio 38660                    # 终传（as_of=末档）
 & tools\py.ps1 pipeline.py bio 38660 --decade 1          # 第 1 个十年
-& tools\py.ps1 tools\verify_fast.py output/崔佛/data/snap_38660_final.json
+& tools\py.ps1 tools\tests\verify_fast.py output/崔佛/data/snap_38660_final.json
 ```
 
 预期：全篇 0 处「诛灭」；《刺客列传》22 处「被X吃掉」；《宝物志》22 件遗骨
@@ -1591,9 +1591,9 @@ f137164 fix(v61-2)  朝廷职司 fail-closed + 卒后首要头衔 held_through �
 | 崔佛第 1 个十年（as_of 878.1.1） | **朝局块逐块不变**；只有 `artifacts_*` 1217→0（11 件全 common） |
 | 菲利普2 第 2 个十年（888.1.1） | 仅 `artifacts_lead/mid` 2647→0 ⇒ 26 件全 common，《宝物志》篇目按 `biography.py:2585` 不生成 |
 | 斯卡利茨终传（中国档防回归：`snap.py 斯卡利茨 33572063 final --melt=melt_924_01_01.json.xz`） | `realm.ministers` **7 条与改前逐字相同**（弗兹纳塔·切尔宁…张庭玉），fail-closed 未误删 |
-| `tools/verify_fast.py` 崔佛终传 / 十年篇 | **全部 PASS** |
-| `tools/verify_v39_unit.py` | **55/55 PASS**（新增 4g「common 部件宝物不得入志」/ 4h「masterwork 入志」） |
-| `tools/verify_fast.py` 菲利普2 快照 | 仅剩 1 条**既有 FAIL**：`[1] 把柄行仍点名主角` —— 改前基线快照同样 FAIL，非本轮引入 |
+| `tools/tests/verify_fast.py` 崔佛终传 / 十年篇 | **全部 PASS** |
+| `tools/tests/verify_v39_unit.py` | **55/55 PASS**（新增 4g「common 部件宝物不得入志」/ 4h「masterwork 入志」） |
+| `tools/tests/verify_fast.py` 菲利普2 快照 | 仅剩 1 条**既有 FAIL**：`[1] 把柄行仍点名主角` —— 改前基线快照同样 FAIL，非本轮引入 |
 | 食人硬证链 | 未受影响：`_devour_bones()`（`facts.py:8002-8038`）直读熔件、不看 rarity；崔佛终传快照仍过「死者名录里被吃者写『吃掉』」 |
 
 > 成稿重出（`pipeline.py bio 38660` / `--decade 1`）**未做**：会消耗 LLM 调用，待用户拍板。
@@ -1648,10 +1648,10 @@ d17b69a fix(v62)   范围C + 范围B + e_japan 关白/幕府将军；verify_v62_
 
 | 项 | 结果 |
 | --- | --- |
-| `tools/verify_v62_unit.py`（假存档，秒级） | **17/17 PASS**（3 组：头衔不作前缀 / 皇籍与臣籍 / e_japan 关白与将军） |
+| `tools/tests/verify_v62_unit.py`（假存档，秒级） | **17/17 PASS**（3 组：头衔不作前缀 / 皇籍与臣籍 / e_japan 关白与将军） |
 | `experiments/verify_v62_clean.py`（真缓存 16 例） | 臣籍 8 例全裸名；皇籍子女 4 例出亲王/内亲王；两代关白皆「日本关白」；在位天皇本人仍「高御座天皇大和惟仁」 |
-| `tools/snap.py 菲利普2 38665 888.1.1 2 --name=snap_v62_p2` + `snapdiff` | 事实面**只有 `assassins_lead`/`assassins_mid` 两块、6 行**变化：`日本公主藤原儇子`→`藤原儇子`、`日本公主源夕`→`源夕`、`父日本皇帝藤原良房`→`父日本关白藤原良房`、`父高御座王子源澄`→`父源澄`、`妻日本王子源升`→`妻源升`（含婚恋行）；全篇「日本皇帝」0 次 |
-| `tools/verify_fast.py <新快照>` | `[V62]` 3/3 PASS；全套仅余**改动前既存**的 1 条 FAIL（`[V56] [1] 把柄行仍点名主角`，基线 `v61_after_p2.json` 同样 FAIL） |
+| `tools/tests/snap.py 菲利普2 38665 888.1.1 2 --name=snap_v62_p2` + `snapdiff` | 事实面**只有 `assassins_lead`/`assassins_mid` 两块、6 行**变化：`日本公主藤原儇子`→`藤原儇子`、`日本公主源夕`→`源夕`、`父日本皇帝藤原良房`→`父日本关白藤原良房`、`父高御座王子源澄`→`父源澄`、`妻日本王子源升`→`妻源升`（含婚恋行）；全篇「日本皇帝」0 次 |
+| `tools/tests/verify_fast.py <新快照>` | `[V62]` 3/3 PASS；全套仅余**改动前既存**的 1 条 FAIL（`[V56] [1] 把柄行仍点名主角`，基线 `v61_after_p2.json` 同样 FAIL） |
 | 既有单测回归 | v39 55/55、v41 41/41、v53 54/54、v54 46/46、v55 58/58、v56 57/57、v62 17/17；`verify_v52_unit` 的 2 条 FAIL 在动工前检查点（`1df4662`，`git worktree` 复跑）**同样存在**，与本轮无关 |
 | 端到端 | `pipeline.py bio 38665 --decade 2` 重生成第 2 个十年（改前留档 `output/菲利普2/.bak_d2_pre_v62.md`） |
 
@@ -1710,7 +1710,7 @@ d17b69a fix(v62)   范围C + 范围B + e_japan 关白/幕府将军；verify_v62_
 | **假阳性源（真 bug）** | `_battle_by_date` 把 `war_won` / `war_lost`（**战争结束**记忆）与 `battle_*_memory`（**一仗**）混在一档 ⇒ 旧 `battle` 档在「战争结束那天入狱」的日子也敢说「战阵俘获」。实测：24 条被这么判的在押者里 **9 条只匹配到 war_\***，而这 9 条的 `prison_data.type` **全是 dungeon** —— 战阵俘获路径恒写 `house_arrest`（`combat_events.txt:1295-1298`），故这正是「战争结束 ≠ 沙场被擒」的存档铁证。改后 `battle` 档只收 `battle_` 前缀，那类日子退回裸「囚禁」 |
 | **硬判据 A（否证律）** | 待判那次 `prison_data.type == dungeon` 且 `date == imprison_type_date` ⇒ **排除战阵俘获**（只否证、不正面定档；`raid` 档不受限 —— 劫掠走裸 `imprison`，本就是 dungeon）。日期三不全等（`change_prison_type` 覆盖过，本档 3 例）一律不用 —— 宁可不用，不猜 |
 | **硬判据 C（POI 补严）** | `battle_poi_enemy_commander_imprisoned` 只在**败方主指挥官**被俘时写（`combat_events.txt:2326-2333`），故命中还须 `loser == 被囚者`；不比对身份会把同省同日的别场仗算进来 |
-| 实测（`tools/probe_v63_powveto.py`，462 名在押者） | 否证律开 ＝ 否证律关（改判 **0** 行 —— war_* 闸已吸收全部矛盾）；`battle` 档 **7** 条且**全部** `house_arrest`（7/7 与代码预言一致）；全档 `prison_data` 312 `house_arrest` / 147 `dungeon`（+3 换过牢房） |
+| 实测（`tools/tests/probe_v63_powveto.py`，462 名在押者） | 否证律开 ＝ 否证律关（改判 **0** 行 —— war_* 闸已吸收全部矛盾）；`battle` 档 **7** 条且**全部** `house_arrest`（7/7 与代码预言一致）；全档 `prison_data` 312 `house_arrest` / 147 `dungeon`（+3 换过牢房） |
 | 成稿事实面 | `snap_v63_final.json` vs `snap_v63_veto2.json` **逐字符串全等（0 差异）**；4 条战阵俘获各有硬证（871.2.7 / 906.10.14 / 906.11.1 同日 `battle_won_memory`；891.1.24 省份 241 `battle_poi`） |
 
 ### v63 问题3 追修：性事的**唯一出口**（仇敌的强奸记忆为什么没出现）
@@ -1761,7 +1761,7 @@ d17b69a fix(v62)   范围C + 范围B + e_japan 关白/幕府将军；verify_v62_
 
 #### ① 劫掠留痕：记忆库零 raid 类记忆，按日留痕全在**家族关系流水**
 
-`tools/probe_v63_raidmem.py`（全库普查，只读）：
+`tools/tests/probe_v63_raidmem.py`（全库普查，只读）：
 
 | 层 | 实测 |
 | --- | --- |
@@ -1798,7 +1798,7 @@ d17b69a fix(v62)   范围C + 范围B + e_japan 关白/幕府将军；verify_v62_
 922 熔件的 `opinions.active_opinions` 里主角已死、涉他的条目**全清**（`_player_opinion_index` 0 条），
 v50 的闩存兜底正是为这类情形设的。
 
-| 实测（`tools/probe_v63_enemy_cause.py`，44335 埃德伯） | 改前 | 改后 |
+| 实测（`tools/tests/probe_v63_enemy_cause.py`，44335 埃德伯） | 改前 | 改后 |
 | --- | --- | --- |
 | 游戏缘由句 | 「家族和家族爆发世仇后，埃德伯·…和崔佛·…成为了仇敌。」 | 「**威塞克斯家族和菲利普家族**爆发世仇后，…」 |
 | 程序直算因由 | 其父 / 其兄 906.2.3 被主角谋杀（2 条） | 同前 ＋ **同日决裂触发条**「907年10月27日，昆伯被崔佛无理由囚禁」（《家族恩怨录》流水同源） |
@@ -1848,8 +1848,8 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 
 | 项 | 结果 |
 | --- | --- |
-| `tools/verify_v63_unit.py`（假数据，秒级，不载熔件） | **85/85 PASS**（10 组：宝物名去逗号 / 亲缘自检与性别化取词 / 性事出口（并集·视角归一·自愿档剔除·as_of）/ 门庭分组与板块拆分 / 囚禁方式档位含 raid、not_battle、牢房档位否证、war_* 不认战斗 / 括注与三档口径 / 性事唯一出口 / **家族流水劫掠档**（own·house·非同日·第三方·非劫掠措辞·单端条目·庄园劫掠）/ **关系缘由家族名槽** / **姻亲只由正妻产生**） |
-| `tools/verify_fast.py output/菲利普2/data/snap_38665_final.json` | `[V63b]` 组 **7/7 PASS**（宝物名无逗号、女性死者无「妻」、亲缘自检 0 命中、性事只出现在好友/仇人列传、仇人列传含强迫性交行、**无妹夫/姻亲**、**`kin_word_for(主角, 埃德伯)` 为空**）；`[V63]` 36 处插入 0 违规；全套**仅余 3 条改动前既存 FAIL**（《阴私录》疾病行同源、`[6]` 灭门死因、`[V56][1]` 把柄行点名 — 三者与 v63 无关，见下「既有 FAIL 基线」） |
+| `tools/tests/verify_v63_unit.py`（假数据，秒级，不载熔件） | **85/85 PASS**（10 组：宝物名去逗号 / 亲缘自检与性别化取词 / 性事出口（并集·视角归一·自愿档剔除·as_of）/ 门庭分组与板块拆分 / 囚禁方式档位含 raid、not_battle、牢房档位否证、war_* 不认战斗 / 括注与三档口径 / 性事唯一出口 / **家族流水劫掠档**（own·house·非同日·第三方·非劫掠措辞·单端条目·庄园劫掠）/ **关系缘由家族名槽** / **姻亲只由正妻产生**） |
+| `tools/tests/verify_fast.py output/菲利普2/data/snap_38665_final.json` | `[V63b]` 组 **7/7 PASS**（宝物名无逗号、女性死者无「妻」、亲缘自检 0 命中、性事只出现在好友/仇人列传、仇人列传含强迫性交行、**无妹夫/姻亲**、**`kin_word_for(主角, 埃德伯)` 为空**）；`[V63]` 36 处插入 0 违规；全套**仅余 3 条改动前既存 FAIL**（《阴私录》疾病行同源、`[6]` 灭门死因、`[V56][1]` 把柄行点名 — 三者与 v63 无关，见下「既有 FAIL 基线」） |
 | 终传重出实测（`pipeline.py bio 38665`，22 请求） | 问题1 战阵俘获 **4** / 拘押 / **劫掠中掳走 8**；问题2 家室 5 组标题（于尔莎 / 英吉耶德 / 绍加 / 西芙 / 其余门庭）；问题3 仇敌篇出现强迫行（上一稿 0）；问题4 无「，唐文举」 |
 | 事实面实测（`snap.py 菲利普2 38665 922.1.1 --name=snap_v63_final`） | 请求 **22 个**（《家室列传》由 2 段拆为 `jiashi_lead` + `mid1..mid5`）；`jiashi_mid*` 家室档案按组降为 2,564 / 1,173 / 989 / 4,918 / 9,646 字符（改前单块 11,895）；丰子亲缘行实测成「父大三轮氏国司大三轮经言，864年生、母藤原恂子，868年生、夫藤原范宗、女藤原敬子」 |
 | 囚禁行实测（第四轮，`snap_38665_final`） | `915.7.2` 埃德伯等 7 人 → **劫掠中掳走**（家族流水 `house_relation_raid/own`）；另 877.10.1 / 889.9.7 / 913.2.17×3 / 913.10.10 / 915.9.12 一并正证；`907.1.16` 7 人仍 `batch`、`895.1.14` 唐文举仍 `batch`（无劫掠硬证） |
@@ -1895,9 +1895,9 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 （萨赫勒语词内自带叠音，跨词边界巧合）；「明睿的智者、智者」＝两个不同特质
 （`trait_education_learning_3` 与 `trait_mystic_male_1`）。
 
-**验收**：`tools/verify_v70_unit.py` 23 条全 PASS；`tools/verify_v70_chaoju.py v70` 全 PASS
+**验收**：`tools/tests/verify_v70_unit.py` 23 条全 PASS；`tools/tests/verify_v70_chaoju.py v70` 全 PASS
 （七份快照请求键与块键都恰为 `{chaoju_lead}`、朝局十词各 0 次、本篇不注入【总纲】、
-《本纪》仍带封臣且仍注入【总纲】）；`tools/verify_v69_chaoju.py v70 snap_v70_` 全 PASS
+《本纪》仍带封臣且仍注入【总纲】）；`tools/tests/verify_v69_chaoju.py v70 snap_v70_` 全 PASS
 （行形未回退）；`verify_fast.py` 七份 FAIL 条数与 v69 逐份相同（5/4/5/7/6/6/4）无新增；
 `snapdiff --facts-only` 变化只落 chaoju 篇 / 名号自重复 / 婚配重复三桶
 （`chaoju_lead` 1532→1257 字符、`chaoju_mid` 1812→0）。尼克终传重跑后
@@ -1943,7 +1943,7 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
   交给流水线标「生成失败」）；板块收口加 `_tail_issue`/`_trim_dangling_tail` 闸 —— 末尾不完整则
   重生成一次，仍不完整只裁尾部残留开括号并落日志。
 
-**验收**：新增 `tools/verify_v71_unit.py` **27 条全 PASS**（含占婆公主子女陷阱 A8/A9 与假 API 的中断
+**验收**：新增 `tools/tests/verify_v71_unit.py` **27 条全 PASS**（含占婆公主子女陷阱 A8/A9 与假 API 的中断
 重试用例）；既有单测 `verify_v70_unit` 23/23、`verify_v41_unit` 41/0、`verify_v39_unit` 55/0、
 `verify_v63_unit` 85/85、`verify_v55_unit` 58/58、`verify_kin_owner_unit` 35/35 全 PASS；
 `snapdiff --facts-only`（v70→v71，同熔件 `melt_978`）变化面 38665 **4/22 块**（只李氏一系 6 人
@@ -2013,7 +2013,7 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 `snap_38649_898.1.1_d3_v76`、`snap_16795838_922.7.7_v76`、`snap_38649_919.2.24_final_v76`）
 做事实面/传输面（d5 妻妾 = 1 节 6 房、d3 = 4 房、旧妻不占节不立档案、单列子女节皆国司、
 让位终传出【传位】不出【卒年】、卒档终传照旧出【卒年】、终传仍列九人）。
-`tools/verify_fast.py` 的 FAIL **增量**全部可解释且非本轮引入：
+`tools/tests/verify_fast.py` 的 FAIL **增量**全部可解释且非本轮引入：
 「《阴私录》疾病行同源于时间线」是 as_of 伪影（十年档用 923 熔件重跑 898/918）、
 「俘获行句面为『战胜X，俘之』」是 v63 起战阵俘获改词「于战阵俘获」后的**陈旧断言**、
 「亲缘自检（业师晚出生）」是该缓存数据自带（业师与受业者同年生）。
@@ -2060,8 +2060,8 @@ killer_known` 而缓存仍写 `death_mysterious`）与 `Facts.killer_hidden(cid,
 大和惟条…源当元**相继居之，未几皆卒**；891年12月13日归田所久保」（腾位置保留、不点名）；
 大事年表「美仁亲王**于889年3月30日死于平安京，神秘死亡**」；戏剧性事件「其同母长兄大和正仁
 已于883年9月25日**神秘死亡**」；《刺客列传》逐字不变（「被其夜入寝帐扼杀」）。回归：
-`tools/verify_v75_unit.py` 26/26、`tools/verify_kin_owner_unit.py` 35/35、
-`experiments/verify_tadokoro_v75.py` 三档 **34 PASS / 0 FAIL**、`tools/verify_fast.py` 三档
+`tools/tests/verify_v75_unit.py` 26/26、`tools/tests/verify_kin_owner_unit.py` 35/35、
+`experiments/verify_tadokoro_v75.py` 三档 **34 PASS / 0 FAIL**、`tools/tests/verify_fast.py` 三档
 FAIL 集合与基线逐条相同。
 
 **四、虚位御座：游戏的机械串「高御座府」不能当行文。** `k_chrysanthemum_throne` 是
@@ -2147,7 +2147,7 @@ FAIL 集合与基线逐条相同。
 
 **验证**：`experiments/verify_tadokoro_v74.py`（跑在三份快照上，秒级，不载熔件）——
 **63 PASS / 0 FAIL / 33 SKIP**（[V74-0] 纯函数 3 条、[V74-2] 官职词 8 条、[V74-3] 非婚生 12 条、
-[V74-1] 腾位置与板块结构 7 条；SKIP 为「该时点尚无此料」）；`tools/verify_fast.py` 在 898/888/878
+[V74-1] 腾位置与板块结构 7 条；SKIP 为「该时点尚无此料」）；`tools/tests/verify_fast.py` 在 898/888/878
 三档快照上的 FAIL **集合**与改动前基线逐条相同（阴私录疾病行 as_of 伪影、菲利普2 专有条目两类，
 均非本轮）。
 
@@ -2221,9 +2221,9 @@ FAIL 集合与基线逐条相同。
 篇名改《XX家历代记》、板块名改「开篇·家族先世 / 纪事·家族历代」；取不到有头衔的父/母
 （自定义角色）即整篇不生（崔佛档实测只余开篇）。
 
-**验收**：`tools/verify_v73_unit.py` 单测（含真实快照面 8 组）、`tools/verify_v73_chaoju.py` 分篇
-专项（终传判据 / 段界 / 明细行 / 战事不跨节重复 / 朝局词 0 命中）、`tools/verify_v70_chaoju.py v73`
-（朝局词面扩到**全部** chaoju 块）、`tools/verify_v69_chaoju.py v73 snap_v73_`（行形回归，非终传
+**验收**：`tools/tests/verify_v73_unit.py` 单测（含真实快照面 8 组）、`tools/tests/verify_v73_chaoju.py` 分篇
+专项（终传判据 / 段界 / 明细行 / 战事不跨节重复 / 朝局词 0 命中）、`tools/tests/verify_v70_chaoju.py v73`
+（朝局词面扩到**全部** chaoju 块）、`tools/tests/verify_v69_chaoju.py v73 snap_v73_`（行形回归，非终传
 档按 v73 拍板 SKIP）、`verify_fast` 七对快照（v71 基线 vs v73 新面，同熔件 `melt_978`）。
 **结果**：以上全部 PASS；`verify_fast` 七对的 FAIL 条数与**集合逐条相同**（无新增无消失）。
 
@@ -2249,7 +2249,7 @@ FAIL 集合与基线逐条相同。
 `appointment_succession` 7337（受任命继位）/ `migration` 6186（率部迁徙入主）/
 `created` 4532（建天命）/ `granted` 3814 / `destroyed` 3209 / `faction_demand` 182
 （**被派系拥立**）/ `abdication` 671（受禅）/ …；**无 `type` 的裸 `holder`（32298 条）= 常规继承**。
-按「该条 holder 是否等于同头衔上一条 holder」分档（`tools/tmp_probe_v69_succ4.py`）：
+按「该条 holder 是否等于同头衔上一条 holder」分档（`tools/tests/tmp_probe_v69_succ4.py`）：
 **除 `destroyed`（holder = 失去者）外，全部 type 都是取得事件（holder = 取得者）**。
 措辞逐条对游戏本地化（`memories_l_simp_chinese.yml:630-731` 的 ascended_throne 各缘由句、
 `succession_laws_l_simp_chinese.yml:138`「任命继承制」），不新造术语。
@@ -2286,11 +2286,11 @@ FAIL 集合与基线逐条相同。
 
 | 项 | 结果 |
 | --- | --- |
-| `tools/verify_v69_chaoju.py`（新，七例：尼克终传/尼克第1个十年/崔佛/富兰克林/卡尔941/卡尔终传/伍尔夫克尔） | **全部 PASS**：结构（朝代行×历代行成对、缘由形态合法、日期单调、无旧行、无「中华皇朝」）、尼克终传**逐字六朝断言**、篇名 = 《{通称}历代记》、仅营地者（诺兰）无本篇 |
-| `tools/verify_fast.py`（七份新快照） | FAIL 集合与 v68 基线**逐条相同**（全为本轮前既有），**无新增**；括注断言 PASS |
-| `tools/verify_v68_estate_court.py` | PASS（仅持庄园 → 通称 中华 + 群雄争霸行 + 失去天命行；纯营地 → `("", [])`） |
+| `tools/tests/verify_v69_chaoju.py`（新，七例：尼克终传/尼克第1个十年/崔佛/富兰克林/卡尔941/卡尔终传/伍尔夫克尔） | **全部 PASS**：结构（朝代行×历代行成对、缘由形态合法、日期单调、无旧行、无「中华皇朝」）、尼克终传**逐字六朝断言**、篇名 = 《{通称}历代记》、仅营地者（诺兰）无本篇 |
+| `tools/tests/verify_fast.py`（七份新快照） | FAIL 集合与 v68 基线**逐条相同**（全为本轮前既有），**无新增**；括注断言 PASS |
+| `tools/tests/verify_v68_estate_court.py` | PASS（仅持庄园 → 通称 中华 + 群雄争霸行 + 失去天命行；纯营地 → `("", [])`） |
 | v68 五问脚本重跑 | `verify_v68_title_name/dead_office/estate/artifacts` 产出正常（普查行数与 v68 留档一致：4960 tids / 13154 死者 / 730 家业持有者） |
-| 事实面变化面 | 对照**同一缓存**的 v68 码基线（`tools/at_head.py --ref=c2a3551 tools\\snap.py …` → `snap_b69_*`），`tools/snapdiff.py --facts-only` 七份快照**各只变 1 块 = `chaoju_lead`**；另加「死者卒时职称词」收口（下条）后另出 `assassins_*` 等块的变化面，`logs/archive/verify_v69_snapdiff_b69_final.txt` |
+| 事实面变化面 | 对照**同一缓存**的 v68 码基线（`tools/tests/at_head.py --ref=c2a3551 tools\\snap.py …` → `snap_b69_*`），`tools/tests/snapdiff.py --facts-only` 七份快照**各只变 1 块 = `chaoju_lead`**；另加「死者卒时职称词」收口（下条）后另出 `assassins_*` 等块的变化面，`logs/archive/verify_v69_snapdiff_b69_final.txt` |
 
 **附带修：v68 问题 2 的残余「和霸主」（提交 `f547b14`）**
 
@@ -2303,7 +2303,7 @@ FAIL 集合与基线逐条相同。
 
 | 项 | 改前 → 改后 |
 | --- | --- |
-| `tools/verify_v69_flavor_stale.py`（13154 名带 flavor 死者，带 campaign 的真实构造） | 陈旧逐档观测 64 例，其中卒时闸放行 **6 → 44**；**零 True→False**；卒前 30 年一档 1812 放行、逐字不变 |
+| `tools/tests/verify_v69_flavor_stale.py`（13154 名带 flavor 死者，带 campaign 的真实构造） | 陈旧逐档观测 64 例，其中卒时闸放行 **6 → 44**；**零 True→False**；卒前 30 年一档 1812 放行、逐字不变 |
 | 38 人卒时官衔取回游戏原词（全部改进） | 和霸主→**和皇帝**、`''`→德维得主教、瓜沙总督→瓜沙节度使、居延女大酋长→居延节度使、阿朗松酋长→阿朗松伯爵、东撒克逊女公爵→贝丹福德雅尔、`''`→莱斯特郡市议长、白山伯爵→白山刺史、高州伯爵→高州政务官…（`logs/probe_v69_stale_{before,after}.txt`） |
 | 成稿验证 | 重生成后《刺客列传》亲缘/婚恋行 = 和皇帝青蛙珉·奄美（`logs/archive/v69_bio_diff.txt`） |
 
@@ -2320,7 +2320,7 @@ FAIL 集合与基线逐条相同。
   逐档政体史仍是「借第一份有记录的传主缓存」，借到早年那份时，卒时**之外**的日期（生前事迹行、
   层级词）同样会用陈旧政体。彻底修法是把同战役各缓存的观测点**按日期合并**（各份都是同一局
   游戏某一档的真实观测），但那会动到 `title()` 层级词与全部官衔词的取值面，须另立普查
-  （`tools/verify_v69_flavor_stale.py` 的框架可复用）。
+  （`tools/tests/verify_v69_flavor_stale.py` 的框架可复用）。
 - **性别紧跟层级的 flavor 键形**：`count_female_feudal_chinese` / `count_male_feudal_chinese`
   这类 `<层级>_<性别>_<政体>[_文化]` 键，前缀算式 `"_".join(parts[1:i])` 得空串 ⇒ 一律判 False
   （落兜底词）。普查该键形 109 例，其中 **20 例**按修正解析本可放行（`16613 公爵`、`41621 女伯爵`…）；
@@ -2345,14 +2345,14 @@ FAIL 集合与基线逐条相同。
 **验收脚本（本轮新增，均为只读/幂等）**
 
 ```
-tools/verify_v68_title_name.py    问题3：h_china 各日期国号 + 全体「带更名史/动态名」头衔取名普查
-tools/verify_v68_dead_office.py   问题2：两位和皇帝 + 13154 名带 dead_data.flavor 死者的卒时/卒前30年对照
-tools/verify_v68_estate.py        问题5：730 名 _nf_ 持有者前后普查 + 真州府对照
-tools/verify_v68_estate_court.py  问题1 决策②：仅持庄园 → 取最高领主头衔历史（synthetic）；纯营地 → 略去
-tools/verify_v68_artifacts.py     问题4：五个快照的《宝物志》件数/遗骨数/现主行对照
-tools/verify_v68_chaoju.py        问题1：六份快照的篇名、块构成、国号与更替日期命中
-tools/verify_v68_final_diff.py    末态事实面**行级**差异分类 (对照改动前基线快照)
-tools/at_head.py                  用指定 git 版本 (缺省 HEAD, 本轮用 --ref=64a6216) 的源码
+tools/tests/verify_v68_title_name.py    问题3：h_china 各日期国号 + 全体「带更名史/动态名」头衔取名普查
+tools/tests/verify_v68_dead_office.py   问题2：两位和皇帝 + 13154 名带 dead_data.flavor 死者的卒时/卒前30年对照
+tools/tests/verify_v68_estate.py        问题5：730 名 _nf_ 持有者前后普查 + 真州府对照
+tools/tests/verify_v68_estate_court.py  问题1 决策②：仅持庄园 → 取最高领主头衔历史（synthetic）；纯营地 → 略去
+tools/tests/verify_v68_artifacts.py     问题4：五个快照的《宝物志》件数/遗骨数/现主行对照
+tools/tests/verify_v68_chaoju.py        问题1：六份快照的篇名、块构成、国号与更替日期命中
+tools/tests/verify_v68_final_diff.py    末态事实面**行级**差异分类 (对照改动前基线快照)
+tools/tests/at_head.py                  用指定 git 版本 (缺省 HEAD, 本轮用 --ref=64a6216) 的源码
                                   跑任意只读探针 (对照用, 自动恢复工作树)
 ```
 
@@ -2360,19 +2360,19 @@ tools/at_head.py                  用指定 git 版本 (缺省 HEAD, 本轮用 -
 
 | 项 | 结果 |
 | --- | --- |
-| `tools/verify_v68_title_name.py` | 尼克 975/终传 = **元皇帝**；直辖「库曼顿巴斯部」→「元皇朝」；同源副作用（按日期正确）：岭西王唐文举（893–895 在位）→ **桂王**、河南王释义存（884–900 在位）→ **周王**（该头衔 887.1.4 更名）；游牧头衔逐字不变 |
-| `tools/verify_v68_dead_office.py`（13154 名死者对照） | 奄美珉 = **和皇帝**、奄美靖 = 和皇帝；卒时窗口 `False→True` **2696 条**（全部是「取回游戏自己烘死的词」：邵州伯爵→邵州刺史、福建国王→福建观察使、汴宋公爵→汴宋节度使、塔本伯爵→塔本酋长、库什穆伦公爵→库什穆伦颉利发、空→巫山县令）；**零条 `True→False`**；非卒时日期逐字不变 ⇒ v41 诺兰反例不回归 |
-| `tools/verify_v68_estate.py` | 张懿德 = **张氏夫人**（女性，游戏键 `celestial_estate_holder_female`），held_titles = 「952年3月23日受任张氏夫人，世族庄园」，`title(16851)` 由「张氏州府」→「张氏」；真州府对照 68787 逐字不变；改动面 **190/578** 行，全部是庄园持有者 |
-| `tools/verify_v68_artifacts.py` | 尼克终传 17 件(13 骨) → **4 件(0 骨)**（草药与植物/琉球珠宝匣/奖品戒指/头骨高脚杯）；尼克首个十年 1 件(奖品戒指, 现主=尼克) 不变；卡尔 941 13 件(13 骨) → **1 件(0 骨)**、终传 14 件(13 骨) → **1 件(0 骨)**；崔佛终传 14 件(13 骨) → 14 件(13 骨)，**自铸遗骨零回归**；每件必带「现主：」行 |
-| `tools/verify_v68_chaoju.py` | 尼克终传 **《中华历代记》**：6 国号 + 4 次改朝换代（950.6.3/963.1.11/963.12.22/972.10.11）+ 历代同名段 0；首个十年 **《库曼顿巴斯部历代记》**：历代 870/880/898/922/934/957 六段；崔佛《挪威历代记》、卡尔《巴尔苏基历代记》、陆氏《商州历代记》；**诺兰冒险者（16852591）chaoju 篇目 0 个** |
-| `tools/verify_v68_estate_court.py` | 仅持庄园 → 通称 **中华**（庄园 `de_facto_liege` 上溯 h_china）+ 国号沿革与历代齐备；纯营地 → `("", [])` ✓ |
-| `tools/verify_fast.py`（HEAD 快照 vs 新快照） | FAIL 集合**逐条相同**（4 条既有 FAIL：灭门死因 / 通用「去世」/ 俘获句面 / 强迫性交行），无新增 |
-| 事实面整体变化面（对照**改动前提交** `64a6216` 的基线快照 `snap_base68_*`） | 98095 终传 19/22 块、38665 终传 17/22、60836 941 8/22、60836 终传 10/22 变化；行级分类全部落在五问类别（命名/霸主/死者烘死职称词/家业称谓/宝物归属/历代记），未见非预期位移。**注意**：拿 v67 时代的旧快照做基线会混入缓存漂移（`player_*.json` 在 v67 快照之后被重建过，例如同批处决词的用词分布不同），故本轮专用 `tools/at_head.py --ref=64a6216` 重建基线 |
-| 差异分类脚本 | `tools/verify_v68_final_diff.py`（行级分类 + 未归类逐行导出 `logs/archive/verify_v68_unclassified.txt`） |
+| `tools/tests/verify_v68_title_name.py` | 尼克 975/终传 = **元皇帝**；直辖「库曼顿巴斯部」→「元皇朝」；同源副作用（按日期正确）：岭西王唐文举（893–895 在位）→ **桂王**、河南王释义存（884–900 在位）→ **周王**（该头衔 887.1.4 更名）；游牧头衔逐字不变 |
+| `tools/tests/verify_v68_dead_office.py`（13154 名死者对照） | 奄美珉 = **和皇帝**、奄美靖 = 和皇帝；卒时窗口 `False→True` **2696 条**（全部是「取回游戏自己烘死的词」：邵州伯爵→邵州刺史、福建国王→福建观察使、汴宋公爵→汴宋节度使、塔本伯爵→塔本酋长、库什穆伦公爵→库什穆伦颉利发、空→巫山县令）；**零条 `True→False`**；非卒时日期逐字不变 ⇒ v41 诺兰反例不回归 |
+| `tools/tests/verify_v68_estate.py` | 张懿德 = **张氏夫人**（女性，游戏键 `celestial_estate_holder_female`），held_titles = 「952年3月23日受任张氏夫人，世族庄园」，`title(16851)` 由「张氏州府」→「张氏」；真州府对照 68787 逐字不变；改动面 **190/578** 行，全部是庄园持有者 |
+| `tools/tests/verify_v68_artifacts.py` | 尼克终传 17 件(13 骨) → **4 件(0 骨)**（草药与植物/琉球珠宝匣/奖品戒指/头骨高脚杯）；尼克首个十年 1 件(奖品戒指, 现主=尼克) 不变；卡尔 941 13 件(13 骨) → **1 件(0 骨)**、终传 14 件(13 骨) → **1 件(0 骨)**；崔佛终传 14 件(13 骨) → 14 件(13 骨)，**自铸遗骨零回归**；每件必带「现主：」行 |
+| `tools/tests/verify_v68_chaoju.py` | 尼克终传 **《中华历代记》**：6 国号 + 4 次改朝换代（950.6.3/963.1.11/963.12.22/972.10.11）+ 历代同名段 0；首个十年 **《库曼顿巴斯部历代记》**：历代 870/880/898/922/934/957 六段；崔佛《挪威历代记》、卡尔《巴尔苏基历代记》、陆氏《商州历代记》；**诺兰冒险者（16852591）chaoju 篇目 0 个** |
+| `tools/tests/verify_v68_estate_court.py` | 仅持庄园 → 通称 **中华**（庄园 `de_facto_liege` 上溯 h_china）+ 国号沿革与历代齐备；纯营地 → `("", [])` ✓ |
+| `tools/tests/verify_fast.py`（HEAD 快照 vs 新快照） | FAIL 集合**逐条相同**（4 条既有 FAIL：灭门死因 / 通用「去世」/ 俘获句面 / 强迫性交行），无新增 |
+| 事实面整体变化面（对照**改动前提交** `64a6216` 的基线快照 `snap_base68_*`） | 98095 终传 19/22 块、38665 终传 17/22、60836 941 8/22、60836 终传 10/22 变化；行级分类全部落在五问类别（命名/霸主/死者烘死职称词/家业称谓/宝物归属/历代记），未见非预期位移。**注意**：拿 v67 时代的旧快照做基线会混入缓存漂移（`player_*.json` 在 v67 快照之后被重建过，例如同批处决词的用词分布不同），故本轮专用 `tools/tests/at_head.py --ref=64a6216` 重建基线 |
+| 差异分类脚本 | `tools/tests/verify_v68_final_diff.py`（行级分类 + 未归类逐行导出 `logs/archive/verify_v68_unclassified.txt`） |
 
 **本轮已知未做 / 遗留**
 
-- `tools/check_bio_v34.py` 仍按旧篇名《朝局风云录》截取成稿文本（历史存档专用检查脚本，未随篇名改口）。
+- `tools/tests/check_bio_v34.py` 仍按旧篇名《朝局风云录》截取成稿文本（历史存档专用检查脚本，未随篇名改口）。
 - `facts.MODULE_SLICE[("chaoju", …)]` 已成死配置（chaoju 不再切年表），保留未删以免动 `verify_v39_unit.py` 的断言面。
 - 缓存侧 `player_title_history` 仍记 `custom or specific_title_name`（方案 §3.4 附带项；当前无消费者）。
 - h_china 的「中华」段（887.1.2–950.6.1）在历代里只有首末两位持有者 —— 各传主缓存对该头衔只覆盖 868–887 与 951–978，中间无观测数据。
@@ -2392,25 +2392,25 @@ tools/at_head.py                  用指定 git 版本 (缺省 HEAD, 本轮用 -
 **取证与回归脚本（本轮新增，均为只读/幂等）**
 
 `
-tools/tmp_probe_custom_dist.py     带 custom 的头衔普查（11 家族末档；流式截段，秒级）
-tools/tmp_probe_cache_dyn.py       缓存逐档沿革表 title_dyn_names 与主头衔名史
-tools/tmp_probe_cache_pth.py       缓存 player_title_history（逐档口径，本已含两个名字）
-tools/tmp_probe_v67_camp_name.py   现口径 × 拟修口径逐日对照（10 日期 × 6 头衔）
-tools/tmp_probe_v67_facts_diff.py  全事实面差异（内存打补丁跑 build_facts，不碰生产代码）
-tools/verify_v67_unit.py           本轮 32 条断言（纯函数 13 + 实地 9 + 非回归 10）
-tools/check_v67_norm.py            归一核对：把新快照的「葛洛夫帮」换回「持剑骑手」后应零残差
-tools/tmp_diff_karl_final.py       成稿重生成前后正文对照（关键名计数 + 行级差异）
-tools/tmp_probe_v67_karl_names.py  新快照里地名/营地名与事实层是否一致（逐块取证）
+tools/tests/tmp_probe_custom_dist.py     带 custom 的头衔普查（11 家族末档；流式截段，秒级）
+tools/tests/tmp_probe_cache_dyn.py       缓存逐档沿革表 title_dyn_names 与主头衔名史
+tools/tests/tmp_probe_cache_pth.py       缓存 player_title_history（逐档口径，本已含两个名字）
+tools/tests/tmp_probe_v67_camp_name.py   现口径 × 拟修口径逐日对照（10 日期 × 6 头衔）
+tools/tests/tmp_probe_v67_facts_diff.py  全事实面差异（内存打补丁跑 build_facts，不碰生产代码）
+tools/tests/verify_v67_unit.py           本轮 32 条断言（纯函数 13 + 实地 9 + 非回归 10）
+tools/tests/check_v67_norm.py            归一核对：把新快照的「葛洛夫帮」换回「持剑骑手」后应零残差
+tools/tests/tmp_diff_karl_final.py       成稿重生成前后正文对照（关键名计数 + 行级差异）
+tools/tests/tmp_probe_v67_karl_names.py  新快照里地名/营地名与事实层是否一致（逐块取证）
 `
 
 **回归与验收状态**
 
 | 项 | 结果 |
 | --- | --- |
-| `tools/verify_v67_unit.py` | **32/32 PASS**（纯函数：custom 闸 / 更名史按日 / 无 custom 逐字不变；实地 60836：941.1.1 与 final 两档历任两串与营地行全期 = 葛洛夫帮；非回归：诺兰 19750/18118、菲利普 18114、罗加兰 2844 十个日期逐字不变） |
+| `tools/tests/verify_v67_unit.py` | **32/32 PASS**（纯函数：custom 闸 / 更名史按日 / 无 custom 逐字不变；实地 60836：941.1.1 与 final 两档历任两串与营地行全期 = 葛洛夫帮；非回归：诺兰 19750/18118、菲利普 18114、罗加兰 2844 十个日期逐字不变） |
 | 快照对照（`snapdiff` + `check_v67_norm`，60836 `941.1.1`/`final`） | 变化块 19/23，**归一后残差 0** —— 即整棵事实面的唯一改动就是营地名（37 处），无任何其它位移 |
 | 快照对照（38665，另一位传主） | 变化块 1/23（承继行引用卡尔的历任），**归一后残差 0** |
-| `tools/verify_fast.py` | FAIL 集合与改前**逐条相同**（6 条既有 FAIL，非本轮引入） |
+| `tools/tests/verify_fast.py` | FAIL 集合与改前**逐条相同**（6 条既有 FAIL，非本轮引入） |
 | 影响面普查 | 11 个战役里带 custom 的头衔共 9 个，**同时**带非空 `specific_title_name` 的只有本档营地 1 个 ⇒ 其余家族天然零改动 |
 | 成稿重生成（卡尔终传，2026-09-27） | `pipeline.py bio 60836` 重生成 `卡尔·崔佛松(894)_终传_954_07_12.md`（3 分钟，24 个请求）：**「葛洛夫帮」16 处、「持剑骑手」0 处**（旧稿 0 / 18）；历任句读作「930年11月7日创建葛洛夫帮…并毁弃葛洛夫帮」，【冒险者行踪】「任无地冒险者营地之葛洛夫帮头目」。同轮一并对齐前两轮修法：`任菲利普游牧营地` 7→0、【游牧行踪】0→2（v65）、用地名「驻马扎尔绍科伊部」入正文（v66）。旧稿留档 `.bak_v67_pre_终传.md`；对照报告 `logs/archive/tmp_diff_karl_final.txt` |
 | 成稿重生成（另两篇） | **待办**：卡尔第 1/2 个十年传记尚未重生成 |
@@ -2432,11 +2432,11 @@ eason=migration 的失衔记忆 landed_title **恒记最初那块郡**（6 条�
 **取证与回归脚本（本轮新增，均为只读/幂等）**
 
 `
-tools/probe_v66_title_names.py     逐档动态名轨迹（流式截段读 landed_titles：3.4 MB 处 / 全量 206 MB）
+tools/tests/probe_v66_title_names.py     逐档动态名轨迹（流式截段读 landed_titles：3.4 MB 处 / 全量 206 MB）
 tools/backfill_title_dyn_names.py  把逐档沿革回填进既有缓存（不重熔；--dry/--check/--keep）
-tools/bench_v66_names.py           build_facts 耗时实测（D2-b 的性能评估）
-tools/check_v66_snaps.py           HEAD vs v66 跨家族快照横评（事实面逐块）
-tools/verify_v66_unit.py           本轮 45 条断言（一轮熔件加载跑完）
+tools/tests/bench_v66_names.py           build_facts 耗时实测（D2-b 的性能评估）
+tools/tests/check_v66_snaps.py           HEAD vs v66 跨家族快照横评（事实面逐块）
+tools/tests/verify_v66_unit.py           本轮 45 条断言（一轮熔件加载跑完）
 `
 
 **提交清单**
@@ -2483,15 +2483,15 @@ edff341 feat(v66-4) _name_at_date 全局日期化（D2-b）+ 任期感知修正 
 **取证与回归脚本（本轮新增，均为只读）**
 
 ```
-tools/probe_v64.py            历任区间/毡帐原文/子女称号/朝局链（一次熔件加载出三档报告）
-tools/probe_v64b.py           de jure 上溯逐环 + 相位逐日演算 + 家格三档 + 时间线 + 勋号
-tools/probe_v64_accolade.py   24 熔件的勋号归属时序（含已故传主须走 cl.all_characters 的坑）
-tools/probe_v64_exist.py      高位头衔三档「存在过」判据普查（history / holder / realm 快照）
-tools/probe_v64_prince.py     某档全部「带王子/公主称号者 + 其父母政体」（前后对比用）
-tools/diag_v64_prince.py      闸门逐条件打印（哪一条把某个子女挡掉）
-tools/check_v64_prince_dist.py  / tools/diff_snap_paths.py / tools/check_snap_delta_pure.py
-tools/check_accolade_delta.py 判定快照差异是否**只**是「勋号插入名字前」
-tools/verify_v64_unit.py      本轮 33 条断言（一轮熔件加载跑完）
+tools/tests/probe_v64.py            历任区间/毡帐原文/子女称号/朝局链（一次熔件加载出三档报告）
+tools/tests/probe_v64b.py           de jure 上溯逐环 + 相位逐日演算 + 家格三档 + 时间线 + 勋号
+tools/tests/probe_v64_accolade.py   24 熔件的勋号归属时序（含已故传主须走 cl.all_characters 的坑）
+tools/tests/probe_v64_exist.py      高位头衔三档「存在过」判据普查（history / holder / realm 快照）
+tools/tests/probe_v64_prince.py     某档全部「带王子/公主称号者 + 其父母政体」（前后对比用）
+tools/tests/diag_v64_prince.py      闸门逐条件打印（哪一条把某个子女挡掉）
+tools/tests/check_v64_prince_dist.py  / tools/tests/diff_snap_paths.py / tools/tests/check_snap_delta_pure.py
+tools/tests/check_accolade_delta.py 判定快照差异是否**只**是「勋号插入名字前」
+tools/tests/verify_v64_unit.py      本轮 33 条断言（一轮熔件加载跑完）
 ```
 
 **提交清单**
@@ -2509,14 +2509,14 @@ b48eadd fix(v64-4)  朝局法理回落只认「存在过」的高位头衔（鞑
 
 | 项 | 结果 |
 | --- | --- |
-| `tools/verify_v64_unit.py`（菲利普2 实档，一轮熔件） | **33/33 PASS**（6 组：历任无「任毡帐」/迁离失地句/无「毁弃库曼顿巴斯部」/同名不重复；游牧行踪立帐+驻X；闸门 nomad·tribal 无条目、feudal 命中、关契按文化判、汉文化天朝命中；立家事件（文本/模块/ident/进开篇切片/附录两处）；朝局不出现鞑靼·图兰·不列颠尼亚·斯堪的纳维亚·金帐 + 幽灵自检 0 命中；勋号索引非空/骑士带勋号/授予者不带/主角年表裸名） |
+| `tools/tests/verify_v64_unit.py`（菲利普2 实档，一轮熔件） | **33/33 PASS**（6 组：历任无「任毡帐」/迁离失地句/无「毁弃库曼顿巴斯部」/同名不重复；游牧行踪立帐+驻X；闸门 nomad·tribal 无条目、feudal 命中、关契按文化判、汉文化天朝命中；立家事件（文本/模块/ident/进开篇切片/附录两处）；朝局不出现鞑靼·图兰·不列颠尼亚·斯堪的纳维亚·金帐 + 幽灵自检 0 命中；勋号索引非空/骑士带勋号/授予者不带/主角年表裸名） |
 | 问题1 自比（38665 终传，前后两快照逐键对比） | 差异仅 4 处 `titles_held`（两处是他人的游牧历任，如 17056「任阿帕德游牧营地，并迁离可萨布兰部」→「迁离可萨布兰部」）＋新增键 `facts.nomad_stations`；卡尔历任修后 **15 行、无一条「任毡帐」** |
 | 问题1 成稿事实面 | 【游牧行踪】实测：934年4月26日立菲利普游牧营地 → 935年驻切尔卡瑟 → … → 954年驻阿盖里克（19 行）；【冒险者行踪】4 行照旧 |
 | 问题2 影响面（前后快照逐键对比 + `check_snap_delta_pure.py`） | 快照差异 **162** 处，消失的称号串仅「库曼顿巴斯部王子/公主」「佩切涅格王子」「威尼斯公主」；封建/氏族/天朝称号**一条未动**，前后病句模式均 0。**诺兰**（拜占庭行政制档）3 人、**斯卡利茨** 13 人前后**完全一致**（含独立行政制王国/帝国子女 —— 命中的是 `prince_king_male_administrative` 等 `only_independent` 条目） |
 | 问题3 三篇切片 | 本纪开篇切片：终传 11 条 / 第1个十年 9 条 / 第2个十年 10 条，**三篇各含立家 1 条**；终传附录世系含家格句、大事年表 934 年段含「7日 …别立顿巴斯氏，属菲利普宗族。」；十年戏剧主题不变（`家格宗支` 3 分，远低于 Top5）；崔佛（无立家沿革）快照前后 **0 差异** |
 | 问题4 影响面 | `holder_changes` 11 → 9 行（两行「X朝廷所辖，同属一廷：…」随幽灵宗主一并消失），6 行去掉行尾幽灵宗主（如英格兰/威尔士王国的「，为不列颠尼亚帝国封臣」）；幽灵宗主自检 **0** 命中（D1 已在上游拦住）；正例 `h_china` 保留 |
 | 问题5 影响面（38665 终传 + `check_accolade_delta.py`） | 差异 **252** 条，**全部**为「勋号插入名字前」（把两侧文本里的 321 个勋号名删掉后逐字相同）；实测样本：「挪威王子**葛洛夫枪手**富兰克林·崔佛松」（900 年）、33597825 在 900 年为空、915 年为「葛洛夫枪手」；授予者崔佛本人不带该勋号 |
-| `tools/verify_fast.py`（新出 38665／60836 快照） | FAIL 集合与改动前**完全一致**：38665 快照 3 条（《阴私录》疾病行同源 / `[6]` 灭门死因 / `[V56][1]` 把柄行点名），60836 快照 5 条（另加 `[4]` 俘获行句面为 v63 改前措辞、`[V63b]` 埃德伯行与 K2 亲缘自检 —— 断言按其他战役/传主写就）—— 两者都用「改前代码同档快照」对照确认，属既存基线，本轮不动 |
+| `tools/tests/verify_fast.py`（新出 38665／60836 快照） | FAIL 集合与改动前**完全一致**：38665 快照 3 条（《阴私录》疾病行同源 / `[6]` 灭门死因 / `[V56][1]` 把柄行点名），60836 快照 5 条（另加 `[4]` 俘获行句面为 v63 改前措辞、`[V63b]` 埃德伯行与 K2 亲缘自检 —— 断言按其他战役/传主写就）—— 两者都用「改前代码同档快照」对照确认，属既存基线，本轮不动 |
 
 ## 热修（v62 期间）: continue 生成十年传记崩溃 —— facts 模块级函数里的裸名
 
@@ -2539,28 +2539,28 @@ b48eadd fix(v64-4)  朝局法理回落只认「存在过」的高位头衔（鞑
   缓存与熔件。16:20 并入 898.1.1 档时缓存与熔件一起推进（日志 16:20:38「死角色记忆回溯:
   26 个角色补全记忆」，16:09–16:22 归档出 melt_889–898），同一句这才有了数据命中 ——
   实测把源码换回改前版本、用**当前**数据跑 as_of=888.1.1 同样崩（见下「对照」）。
-- 加了一个不看数据就能查这类缺陷的静态体检 `tools/find_undefined.py`：用 `symtable`
-  找「以模块级身份引用、实际不存在」的裸名（另有 `tools/verify_module_scope_unit.py`
+- 加了一个不看数据就能查这类缺陷的静态体检 `tools/tests/find_undefined.py`：用 `symtable`
+  找「以模块级身份引用、实际不存在」的裸名（另有 `tools/tests/verify_module_scope_unit.py`
   在改前/改后各跑一遍，作为回归）。改前命中 `facts.py` 2 处，改后生产模块 0 处。
 
 **提交纪律（每步一条 commit）**
 
 ```
-13d5965 checkpoint 动工前工作树（两个旧启动器删除 + tools/find_undefined.py 入库）
+13d5965 checkpoint 动工前工作树（两个旧启动器删除 + tools/tests/find_undefined.py 入库）
 e66dda0 fix(hotfix) facts 模块级函数里的裸名（_death_int / self）
-        + tools/verify_module_scope_unit.py（15 条）+ 体检工具改造
+        + tools/tests/verify_module_scope_unit.py（15 条）+ 体检工具改造
 ```
 
 **回归与验收状态**
 
 | 项 | 结果 |
 | --- | --- |
-| 改前复现（`tools/verify_module_scope_unit.py` [2] 组） | 抛 `facts.py:11943 NameError: name '_death_int' is not defined` —— 与用户日志逐字一致 |
+| 改前复现（`tools/tests/verify_module_scope_unit.py` [2] 组） | 抛 `facts.py:11943 NameError: name '_death_int' is not defined` —— 与用户日志逐字一致 |
 | 反例探针（[3] 组跑 `13d5965` 版 facts.py） | 抛 `NameError: name 'self' is not defined` —— 确认该断言不是空转 |
-| `tools/verify_module_scope_unit.py`（假存档，秒级） | **15/15 PASS**（静态体检 / 囚期以死亡收口 / 朝局底名兜底） |
-| `tools/find_undefined.py`（生产 10 模块） | 改前 `facts.py` 2 处；改后 **0 处** |
+| `tools/tests/verify_module_scope_unit.py`（假存档，秒级） | **15/15 PASS**（静态体检 / 囚期以死亡收口 / 朝局底名兜底） |
+| `tools/tests/find_undefined.py`（生产 10 模块） | 改前 `facts.py` 2 处；改后 **0 处** |
 | 既有单测 | v39 55/55、v40 36/36、v41 41/41、v51 31/31、v52 35/37（2 条**既有** FAIL）、v53 54/54、v54 46/46、v55 58/58、v56 57/57、v57 36/36、v58 53/53、v62 21/21 |
-| 端到端（就是崩掉的那一篇） | `tools/snap.py 菲利普2 38665 898.1.1 3 --name=snap_hotfix_d3` **落快照成功**（熔件 `melt_898_01_01.json`，751,634 字节，14 个请求块）；该篇 `[V60] 囚禁收句不再是无限期断言` PASS |
+| 端到端（就是崩掉的那一篇） | `tools/tests/snap.py 菲利普2 38665 898.1.1 3 --name=snap_hotfix_d3` **落快照成功**（熔件 `melt_898_01_01.json`，751,634 字节，14 个请求块）；该篇 `[V60] 囚禁收句不再是无限期断言` PASS |
 | 对照（改前源码 · 当前数据） | 把 `facts.py` 换回 `13d5965`、用当前 `melt_898_01_01.json` 跑 `snap.py 菲利普2 38665 888.1.1 2`：同样崩在 `build_facts → _timeline:12569 → _pair_imprisonments:11943`，路径与日志一致 —— 说明该缺陷在当前数据下**已挡住全部篇目**，不是只挡第 3 个十年 |
 | 事实面是否被改动 | 两处落点都在**改前必抛 NameError 的分支**上（`_death_int` 是纯函数、无副作用），故只有原本必崩的路径会变；因改前源码对同一缓存**任何 as_of 都跑不出快照**，逐字节对照快照在本档无法构造 |
 | `verify_fast`（`snap_hotfix_d3.json`） | 余 2 条 FAIL，均**与本轮无关**（见下） |
@@ -2606,7 +2606,7 @@ e66dda0 fix(hotfix) facts 模块级函数里的裸名（_death_int / self）
 | # | 证据 |
 | --- | --- |
 | 1 | **代码无调用关系**：`ARTIFACT_PART_RARITY` 只作用于 `_artifact_candidates`，其调用者仅 `family_artifacts` 与 `_artifacts_written_before`；`_devour_bones` / `devoured_by` / `execution_method` 直读**熔件遗骨对象**，一行都不经过档位门槛 |
-| 2 | **实测检测完好**（`tools/diag_v60.py 崔佛 38660`，当前代码）：死法全表 24 人 = **吃掉 22 + 砍头后吃掉 1 + 烧死 1**，而同一次运行的《宝物志》只剩 1 件（`乙档=1`）—— 门槛在起作用，食人检测没受影响 |
+| 2 | **实测检测完好**（`tools/tests/diag_v60.py 崔佛 38660`，当前代码）：死法全表 24 人 = **吃掉 22 + 砍头后吃掉 1 + 烧死 1**，而同一次运行的《宝物志》只剩 1 件（`乙档=1`）—— 门槛在起作用，食人检测没受影响 |
 | 3 | **措辞早于 v61-1**：第 1 个十年成稿（10:57，v61 **之前**）与第 2 个十年（15:02，v61 **之后**）同样写「囚禁X，N日后处决」，不是该门槛引入的回归 |
 
 **落点**
@@ -2615,7 +2615,7 @@ e66dda0 fix(hotfix) facts 模块级函数里的裸名（_death_int / self）
 | --- | --- |
 | `facts.py` | 收口在「刑杀」前提下先问 `f.devoured_by(jailer, victim)`：命中 → `prison_died_devoured` / 结局族 `devoured`；**病故不因遗骨改口**（死因与硬证须一致）；`_PRISON_KIND_WORD` 补 `devoured` = 「被吃掉」 |
 | `style.py` | `FACT_WORDING["prison_died_devoured"] = "，{sp}被其吃掉"`（与名录的 `EXECUTION_DEVOUR_BONE` 同词） |
-| `tools/verify_fast.py` | 收口词表补「被其吃掉」；新增通用断言「被吃者不在年表里写成『处决』（与名录同源）」 |
+| `tools/tests/verify_fast.py` | 收口词表补「被其吃掉」；新增通用断言「被吃者不在年表里写成『处决』（与名录同源）」 |
 
 `devoured` **不进** `_PRISON_FOLD_KINDS` —— 含死亡的簇仍逐人成行、留住各自死法（v42 拍板）。
 
@@ -2623,7 +2623,7 @@ e66dda0 fix(hotfix) facts 模块级函数里的裸名（_death_int / self）
 
 ```
 19e9b6a （回退点）上一轮热修的 docs 提交，工作树干净
-51e259c fix(hotfix) 囚期死亡收口改认食人硬证 + tools/verify_prison_devour_unit.py（20 条）
+51e259c fix(hotfix) 囚期死亡收口改认食人硬证 + tools/tests/verify_prison_devour_unit.py（20 条）
         + verify_fast 通用断言
 ```
 
@@ -2631,8 +2631,8 @@ e66dda0 fix(hotfix) facts 模块级函数里的裸名（_death_int / self）
 
 | 项 | 结果 |
 | --- | --- |
-| `tools/verify_prison_devour_unit.py`（假存档，秒级） | **20/20 PASS**；改前 **12/20**（[1] 食人硬证命中仍写「处决」、[3] 措辞键未入表） |
-| `tools/verify_fast.py` 跑改前快照 `snap_hotfix_d3.json` | 新断言命中：`[('桂王唐文举', '6个月后处决')]` |
+| `tools/tests/verify_prison_devour_unit.py`（假存档，秒级） | **20/20 PASS**；改前 **12/20**（[1] 食人硬证命中仍写「处决」、[3] 措辞键未入表） |
+| `tools/tests/verify_fast.py` 跑改前快照 `snap_hotfix_d3.json` | 新断言命中：`[('桂王唐文举', '6个月后处决')]` |
 | 端到端重落快照 `snap_devour_d3.json` | `PASS 被吃者不在年表里写成「处决」(与名录同源)`；余 2 条 FAIL 为本轮之前既有（[V40] 断言陈旧、[V56] 把柄行） |
 | `snapdiff snap_hotfix_d3 → snap_devour_d3 --facts-only` | 事实面**只有那一行**变化：`…6个月后处决。` → `…6个月后被其吃掉。`（三个板块共用同一段年表），别无改动 |
 | 既有单测 | v39 55/55、v40 36/36、v41 41/41、v51 31/31、v52 35/37（2 条既有 FAIL）、v53 54/54、v54 46/46、v55 58/58、v56 57/57、v57 36/36、v58 53/53、v62 21/21 |
@@ -2668,13 +2668,13 @@ e66dda0 fix(hotfix) facts 模块级函数里的裸名（_death_int / self）
 | --- | --- |
 | `facts.py` | 新增 `Facts.line_owner`（行文本 → **本行主语** cid）：`index_names(..., owner=)` 登记；四条出句路径都传主语 —— `_mem_sentence`（记忆持有人）、`_death_sentence`（死者）、`secret_line` / `secret_lines`（隐事持有人，含要员隐事与家人隐事）。新增 `note_line_stated` + `_REL_STATED_TYPES`（`line_stated`：成婚/同房/丧偶/生育/夭折 这些**句面已写明关系**的对手方）。`KinScope.word_for(cid, facts, subject=None)` 可覆盖算词基准（名额仍按板块共用）。两表随 `build_facts` 落进 facts 字典（与 `name_index` 同源同键，快照重跑可照原数据复算） |
 | `biography.py` | `_names_for_line` 增返命中**句本体**；`_kin_tag_line`：句中**第三方**人名 → 按本行主语算词（本行主语自己的人名仍按传主，年表旁称「姻亲姊妹X」即此档）；**本行主语即本篇传主时不标**（v45 拍板「从不标本篇传主」，换基准后须显式挡）；`line_stated` 里的人名整处不插词；`_KIN_MARKS` 补「生父」（生育句「…，生父Y。」已写明关系） |
-| `tools/verify_fast.py` | 新增 `[V63]` 组：拦 `_kin_tag_line` + `KinScope.word_for`，逐处插入用 facts 里登记的 `line_owner` **独立**推出应有基准与词（基准或词不符即 FAIL，词没落在该人名之前也 FAIL）。`_KinRecScope.word_for` 记下实际算词基准，`[V45][2]` 改按该基准复算 |
-| `tools/verify_kin_owner_unit.py` | 新增（假 facts，秒级，35 条）：登记路径、`word_for(subject=)` 语义、核心回归（于尔莎条目出「父亲」而非「岳父」）、无登记行回落旧口径、已写明关系者不插词、判据有牙（换基准/换词/词未落位都判违规）+ 生产代码接线静态检查 |
+| `tools/tests/verify_fast.py` | 新增 `[V63]` 组：拦 `_kin_tag_line` + `KinScope.word_for`，逐处插入用 facts 里登记的 `line_owner` **独立**推出应有基准与词（基准或词不符即 FAIL，词没落在该人名之前也 FAIL）。`_KinRecScope.word_for` 记下实际算词基准，`[V45][2]` 改按该基准复算 |
+| `tools/tests/verify_kin_owner_unit.py` | 新增（假 facts，秒级，35 条）：登记路径、`word_for(subject=)` 语义、核心回归（于尔莎条目出「父亲」而非「岳父」）、无登记行回落旧口径、已写明关系者不插词、判据有牙（换基准/换词/词未落位都判违规）+ 生产代码接线静态检查 |
 
 **判据为什么不是重言式**：`[V63]` 不看代码怎么算，而是拿 facts 字典里登记的 `line_owner`
 自己推「这个人该按谁算词」，再与实插的词/基准比对 —— 改前代码（一律按传主）必判违规。
 
-**端到端取证**（`tools/snapdiff.py snap_devour_d3.json → snap_kinowner_d3.json --facts-only`）
+**端到端取证**（`tools/tests/snapdiff.py snap_devour_d3.json → snap_kinowner_d3.json --facts-only`）
 
 | 板块 | 改前 | 改后 | 判定 |
 | --- | --- | --- | --- |
@@ -2704,7 +2704,7 @@ e66dda0 fix(hotfix) facts 模块级函数里的裸名（_death_int / self）
 
 ```
 f4033ff （回退点）上一轮热修的 docs 提交，工作树干净
-72f6aec fix(hotfix3) 行内亲缘定语改按句内主语算词 + tools/verify_kin_owner_unit.py（35 条）
+72f6aec fix(hotfix3) 行内亲缘定语改按句内主语算词 + tools/tests/verify_kin_owner_unit.py（35 条）
         + verify_fast [V63] 组
 ```
 
@@ -2712,11 +2712,11 @@ f4033ff （回退点）上一轮热修的 docs 提交，工作树干净
 
 | 项 | 结果 |
 | --- | --- |
-| `tools/verify_kin_owner_unit.py`（假 facts，秒级） | **35/35 PASS** |
-| `tools/verify_fast.py` 跑新快照 `snap_kinowner_d3.json` | `PASS [V63] 行内定语按句内主语算词`（INFO：实查插入 23 处，其中 7 处按句内主语算词，违规 0）；`[V45]` 全 PASS |
+| `tools/tests/verify_kin_owner_unit.py`（假 facts，秒级） | **35/35 PASS** |
+| `tools/tests/verify_fast.py` 跑新快照 `snap_kinowner_d3.json` | `PASS [V63] 行内定语按句内主语算词`（INFO：实查插入 23 处，其中 7 处按句内主语算词，违规 0）；`[V45]` 全 PASS |
 | 端到端 `snap_devour_d3 → snap_kinowner_d3` | 上表；事实面变化 3/15 块 |
 | 既有单测 | v39 55/55、v40 36/36、v41 41/41、v51 31/31、v52 35/37（2 条既有 FAIL，地点句式）、v53 54/54、v54 46/46、v55 58/58、v56 57/57、v57 36/36、v58 53/53、v62 21/21 |
-| `tools/find_undefined.py --all` | 0 处未定义裸名（10 个生产模块） |
+| `tools/tests/find_undefined.py --all` | 0 处未定义裸名（10 个生产模块） |
 | 快照里仍存的既有 FAIL | `[V40] 《阴私录》疾病行同源于时间线`、`[V56] 把柄行仍点名主角`（本轮之前既有，与本轮无关） |
 
 **未做（等用户拍板）**
@@ -2784,25 +2784,25 @@ python pipeline.py demo-death      :: 模拟主角死亡，演示「死后自动
 python pipeline.py rebuild-cache   :: 从各战役文件夹熔件重建缓存（迁移/修复）
 python pipeline.py migrate         :: v4 迁移：旧 cache/ 移入 output/<家族>/data/ + 重建
 python htmlview.py rebuild         :: 重建所有宗族文件夹的 index.html
-python tools\verify_v34_once.py 柳特佩特 38653 878.1.1
+python tools\tests\verify_v34_once.py 柳特佩特 38653 878.1.1
                                    :: v34 一次性验证: 熔件只读一次 → 重建该战役缓存
                                       + 落快照 + 跑七问断言 (报告 logs/verify_v34_report.txt)
-python tools\verify_v34.py         :: 只读已有快照重跑断言 (秒级)
-python tools\check_bio_v34.py       :: 成稿 md 七问自查
-python tools\verify_v35.py [快照] [--player=38670]
+python tools\tests\verify_v34.py         :: 只读已有快照重跑断言 (秒级)
+python tools\tests\check_bio_v34.py       :: 成稿 md 七问自查
+python tools\tests\verify_v35.py [快照] [--player=38670]
                                    :: v35 七问断言 (读快照, 秒级)
-python tools\check_bio_v35.py [家族] [md名]
+python tools\tests\check_bio_v35.py [家族] [md名]
                                    :: v35 成稿自查 (考据腔/奴役/动态病名)
 
 :: 提速基建（开发/验收用；熔件 176MB 均值/最大 245MB，`load_melt()` 单档 ≈6s（v49 后），
 :: 不要反复整载 —— 「1–3 分钟」是 v44 前的旧口径，实测见 docs/研究_v49_加载性能与优化.md）
 :: 纪律见技能 .agents/skills/snapshot-testing —— 先看有没有现成 melt/snap，有就直接用；
 :: 断言跑在快照上；rebuild-cache 测试期禁用（改用 rebuild_folder.py）；不删熔件重熔。
-& tools\py.ps1 tools\snap.py 周氏 38673 889.1.1 2   :: 落 facts 快照（含各篇 blocks 与逐请求提示词）
-& tools\py.ps1 tools\snap.py 德圣塔 38670 888.1.1 2 --name=snap_x  :: 自定义快照名
-& tools\py.ps1 tools\verify_fast.py                  :: 快速回归（无熔件，秒级）
-& tools\py.ps1 tools\snapdiff.py <旧快照> <新快照> --facts-only  :: 改动前后事实面逐字节对照
-& tools\py.ps1 tools\snap_at_head.py 德圣塔 38670 878.1.1 1      :: 用 git HEAD 版源码落对照快照
+& tools\py.ps1 tools\tests\snap.py 周氏 38673 889.1.1 2   :: 落 facts 快照（含各篇 blocks 与逐请求提示词）
+& tools\py.ps1 tools\tests\snap.py 德圣塔 38670 888.1.1 2 --name=snap_x  :: 自定义快照名
+& tools\py.ps1 tools\tests\verify_fast.py                  :: 快速回归（无熔件，秒级）
+& tools\py.ps1 tools\tests\snapdiff.py <旧快照> <新快照> --facts-only  :: 改动前后事实面逐字节对照
+& tools\py.ps1 tools\tests\snap_at_head.py 德圣塔 38670 878.1.1 1      :: 用 git HEAD 版源码落对照快照
 & tools\py.ps1 tools\rebuild_folder.py 德圣塔 38670              :: 只重建这一个战役的缓存
 ```
 
@@ -2839,7 +2839,7 @@ python tools\check_bio_v35.py [家族] [md名]
 | `output/` | 传记输出（按宗族分文件夹） |
 | `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线；`verify_lushi.py` / `verify_tadokoro2.py` / `verify_zhou.py` 为确定性回归） |
 | `tools/enc.ps1` / `tools/py.ps1` | 开发工具链：统一 UTF-8 子进程输出（免中文乱码往返），`& tools\py.ps1 <脚本>` 跑 Python |
-| `tools/snap.py` / `tools/verify_fast.py` | 提速基建（v29b）：熔件载一次落 facts 快照（几十 KB），快速回归秒级跑；端到端仍走 `experiments/verify_zhou.py` |
+| `tools/tests/snap.py` / `tools/tests/verify_fast.py` | 提速基建（v29b）：熔件载一次落 facts 快照（几十 KB），快速回归秒级跑；端到端仍走 `experiments/verify_zhou.py` |
 
 ## 已知限制
 

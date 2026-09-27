@@ -85,7 +85,7 @@ PowerShell 5.1 的 `-Encoding Default` = 系统 ANSI（zh-CN 即 cp936），所�
 
 **配套的调用纪律**（同一教训的另一半）：`output/<家族>/data/melt_*.json` 有 100–125MB，
 `cache_lib.load_melt()` 每次 1–3 分钟，迭代核对时不要反复整载 ——
-用 `tools/snap.py` 载一次落成 facts 快照，再用 `tools/verify_fast.py` 秒级断言；
+用 `tools/tests/snap.py` 载一次落成 facts 快照，再用 `tools/tests/verify_fast.py` 秒级断言；
 需要熔件的端到端断言（`experiments/verify_zhou.py`）只在里程碑跑一次。
 
 ## 对照表

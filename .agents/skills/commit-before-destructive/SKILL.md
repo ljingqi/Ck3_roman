@@ -36,7 +36,7 @@ description: >-
 3. **工作树干净 → 记下回退点**：`git rev-parse HEAD`，把该哈希写进本轮工作记录。
 4. **动手改动**，一步一个提交，提交信息写清「改了什么 + 哪条验证通过」，例如
    `fix(v34): 共享前缀剥离实父通道 — verify_v34 第 1 条通过`。
-5. **每步提交后立即验证**：跑对应断言（`tools/verify_fast.py`、`experiments/verify_v34.py`、
+5. **每步提交后立即验证**：跑对应断言（`tools/tests/verify_fast.py`、`experiments/verify_v34.py`、
    或该步的专项脚本），把结论写进提交信息或方案文档。
 6. **回退口径**：源码 `git checkout <checkpoint> -- <file>`；
    缓存与产物（`data/*.json`、`output/**/data/*.json`）可由熔件重跑，
@@ -45,8 +45,8 @@ description: >-
 ## 加速口径（本项目的实际痛点）
 
 - 熔件 `output/<家族>/data/melt_*.json` 有 100–125MB，`cache_lib.load_melt()` 每次 1–3 分钟。
-  迭代核对时先用 `tools/snap.py <家族> <玩家id> <as_of> [十年] --assert` 落一份 facts 快照
-  （几十到几百 KB），随后用 `tools/verify_fast.py` 秒级断言；
+  迭代核对时先用 `tools/tests/snap.py <家族> <玩家id> <as_of> [十年] --assert` 落一份 facts 快照
+  （几十到几百 KB），随后用 `tools/tests/verify_fast.py` 秒级断言；
   只在里程碑跑一次整载熔件的端到端断言。
 - 提交前用 `git status --short` 确认没有把大体积缓存误加进来：
   `.gitignore` 已覆盖 `output/**/data/`、`cache/`、`logs/`。

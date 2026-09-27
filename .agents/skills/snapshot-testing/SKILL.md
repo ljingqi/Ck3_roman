@@ -21,7 +21,7 @@ description: >-
   有 70–125MB。
 - `pipeline.py rebuild-cache` 会遍历 `output/` 下**全部**战役文件夹的熔件
   （实测上百份）——迭代时跑它是数小时级的浪费。
-- 而**真正的断言只需要几十 KB**：`tools/snap.py` 把「核对所需的一切」落成
+- 而**真正的断言只需要几十 KB**：`tools/tests/snap.py` 把「核对所需的一切」落成
   `snap_<pid>_<as_of>[_dN].json`（事实 + 各篇 blocks + 逐请求提示词），
   之后所有断言都是**秒级**。
 
@@ -35,19 +35,19 @@ Get-ChildItem output\<家族>\data | Select-Object Name,Length,LastWriteTime
 | --- | --- |
 | `melt_*.json` 已存在 | **直接用**，绝不重熔 |
 | `snap_<pid>_<as_of>*.json` 已存在 | 直接对它跑断言 |
-| 缺所需时点的快照 | 跑一次 `tools/snap.py`（熔件只载一次，可一条命令连落多个时点） |
+| 缺所需时点的快照 | 跑一次 `tools/tests/snap.py`（熔件只载一次，可一条命令连落多个时点） |
 | 缺熔件、但游戏里已有存档 | 只跑 `tools/rebuild_folder.py <家族> <pid>`（单战役，**不是** `rebuild-cache`） |
 
 ## 成本分级（写死命令，按需选最低一级）
 
 | 级别 | 命令 | 成本 | 何时用 |
 | --- | --- | --- | --- |
-| 秒级 | `& tools\py.ps1 tools\verify_fast.py [快照]` | <1s | 纯函数 + 传输面（裸键/括注/缺料按语…） |
-| 秒级 | `& tools\py.ps1 tools\verify_v34.py [快照]`、`tools\verify_v35.py [快照]` | <1s | 已有快照的专项断言 |
-| 秒级 | `& tools\py.ps1 tools\check_bio_v34.py`、`tools\check_bio_v35.py` | <1s | 成稿 md 自查（不碰数据） |
-| 秒级 | `& tools\py.ps1 tools\snapdiff.py <旧快照> <新快照> [--facts-only]` | <1s | 改动前后**事实面**是否逐字节一致 |
-| 分钟级 | `& tools\py.ps1 tools\snap.py <家族> <pid> <as_of> [十年] [--name=X] [--assert]` | 1–3min（熔件只载一次） | 需要新时点/新战役的快照 |
-| 分钟级 | `& tools\py.ps1 tools\snap_at_head.py <家族> <pid> <as_of> [十年]` | 1–3min | 用 git HEAD 版源码落对照快照（验证「本期改动是否动了事实面」） |
+| 秒级 | `& tools\py.ps1 tools\tests\verify_fast.py [快照]` | <1s | 纯函数 + 传输面（裸键/括注/缺料按语…） |
+| 秒级 | `& tools\py.ps1 tools\tests\verify_v34.py [快照]`、`tools\tests\verify_v35.py [快照]` | <1s | 已有快照的专项断言 |
+| 秒级 | `& tools\py.ps1 tools\tests\check_bio_v34.py`、`tools\tests\check_bio_v35.py` | <1s | 成稿 md 自查（不碰数据） |
+| 秒级 | `& tools\py.ps1 tools\tests\snapdiff.py <旧快照> <新快照> [--facts-only]` | <1s | 改动前后**事实面**是否逐字节一致 |
+| 分钟级 | `& tools\py.ps1 tools\tests\snap.py <家族> <pid> <as_of> [十年] [--name=X] [--assert]` | 1–3min（熔件只载一次） | 需要新时点/新战役的快照 |
+| 分钟级 | `& tools\py.ps1 tools\tests\snap_at_head.py <家族> <pid> <as_of> [十年]` | 1–3min | 用 git HEAD 版源码落对照快照（验证「本期改动是否动了事实面」） |
 | 分钟级 | `& tools\py.ps1 tools\rebuild_folder.py <家族> [pid]` | 5–15min（单战役熔件，不重新熔化） | 缓存 schema 新增字段后需重建该战役缓存 |
 | **禁用** | `pipeline.py rebuild-cache` / `pipeline.py migrate` | 遍历上百份熔件 | 仅迁移/修复；测试一律走 `rebuild_folder.py` |
 

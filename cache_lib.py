@@ -3726,7 +3726,7 @@ def _diff_epidemics(cache, melt, date_label):
                 "provinces": len(e.get("infections") or {}),
                 # v35 (问题5): 感染省份集 — 判「这场疫是否触及此人属地/所在郡」,
                 # 供疾病特质取该场疫的游戏动态名 (平原热/丘陵热…)。只留前 400 个,
-                # 与 tools/snap.py 的 melt_tables 同口径, 控缓存体积。
+                # 与 tools/tests/snap.py 的 melt_tables 同口径, 控缓存体积。
                 "infections": sorted(
                     (int(x) for x in (e.get("infections") or {})
                      if str(x).isdigit()))[:400],

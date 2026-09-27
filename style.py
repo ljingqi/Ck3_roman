@@ -1168,7 +1168,7 @@ def hook_type_kept(tp):
 # v56 (问题3): 出狱缘由的两路数据源 —— `cache_lib._latch_prison_manners` 按这两张表
 # 逐档闩存, `facts.Facts.release_manner` 按同一数据读回 (措辞表在 facts 侧的
 # `_PRISON_MANNER_MODS` / `_PRISON_KIND_WORD`, 其键集必须与下表一致, 见
-# tools/verify_v56_unit.py 的不变量断言)。
+# tools/tests/verify_v56_unit.py 的不变量断言)。
 # ① 出狱类好感修饰符 (存档自带 start_date, 精确到日; 10 年衰减且随持有者死亡消失);
 # ② 赎金·人情分支的牵制 —— 不在 `hook_type_kept` 白名单内 (不下发《阴私录》),
 #    只在出狱缘由这一处使用; 其到期日 = 创建日 + 10 个日历年 (实测 15/15 逐日吻合)。
