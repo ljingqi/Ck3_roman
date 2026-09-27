@@ -59,9 +59,14 @@ Get-ChildItem output\<家族>\data | Select-Object Name,Length,LastWriteTime
    （`rebuild_folder.py`）或换一个 `--name=` 的快照，50 分钟的重新熔化换不来任何东西。
 3. **改提示词/事实层前先落一份 HEAD 对照快照**（`snap_at_head.py`），改完再落一份新的，
    用 `snapdiff.py` 确认「事实面是否有非预期变化」——比人眼比对快照可靠。
-4. **报告落文件**（`logs/*.txt`，UTF-8）：`... | Out-File -Encoding UTF8 logs\x.txt`，
+4. **报告落文件**（本轮新证据 `logs/*.txt`，UTF-8）：`... | Out-File -Encoding UTF8 logs\x.txt`，
    一次写入可反复 `read`，避免控制台编码问题导致「跑一遍→乱码→再跑一遍」。
-5. **确认熔件真的是本地已有的那份**：`snap.py` 取 `data/` 里排序最后的
+   ⚠ 目录约定（v77 起）：`logs/` 根只放程序自写的三个运行时日志
+   （`journal.log`/`prompts.log`/`loc_miss.log`）；**历轮取证**在 `logs/archive/`（文档引用
+   一律写 `logs/archive/…`），本轮新证据写 `logs/vNN_*.txt`。
+5. **测试/探针/快照脚本一律放 `tools/tests/`**（v77 起，333 个脚本已归拢；`tools/` 顶层只留
+   生产与数据工具链）。命令口径：`& tools\py.ps1 tools\tests\<脚本>.py`。
+6. **确认熔件真的是本地已有的那份**：`snap.py` 取 `data/` 里排序最后的
    `melt_*.json`，不是重新熔化。
 
 ## 与其它技能/文档的关系

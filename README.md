@@ -1951,6 +1951,59 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 东科巴 = 藏人西方）；`李汶娘`/`汶娘·李` 由 0/74 与 0/27 变为 **74/0 与 27/0**；`verify_fast`
 两份新快照 FAIL 条数与**集合**与 v70 逐条相同。
 
+## v77 修正（继任传主的《本纪》写成了前任事迹 + 仓库整理）
+
+用户 2026-09-27 原话：「发现一个新问题，久保的传记里的本纪部分几乎全是他爹的事迹，例如
+『关白浩二一生行事，见诸旧记者血迹斑斑』，找出原因并修复，另外需要清理 `logs` 文件夹内的
+无关文件，测试脚本全部放进一个子文件夹里。」（同日补充：`logs` 里那几个测试脚本若难改就直接删；
+测试脚本的搬运范围拍板为**全部测试/校对/探针/快照脚本，含 `verify_fast`/`snap`/`snapdiff`**。）
+
+**一、根因：年表取料只有「与主角相关」，没有「传主时代」归属。** `facts._timeline` 收
+「记忆持有者**或**参与者 ∈ `_related_ids`」的事件，而**前任传主正是本传主的父辈**（必在 `related` 内）、
+且**前任的记忆列表在存档里持续存在**（死亡不删 `memories`，逐档转缓存时照单全收）——
+于是浩二在位 60 年（849–919）的全部记忆都成了久保年表的原料：`facts["timeline"]` 80 条里
+**60 条**是浩二 867–891 年的谋杀、其姻亲之死与其子女出生，而这正是《本纪》两个请求
+（`biography.py:1498-1510` 的【大事年表】）的原料，模型遂照料写出「关白浩二一生行事……」
+（还合流出一处假日期「浩二在 891 年 2 月 24 日既崩」）。缓存里一直有判据 ——
+`cache["played_legacy"]`（存档 `played_character.legacy` 接替链，`facts.succession_lines`
+已用它写承继/后任），但年表取料没用它，也没有任何日期区间约束。
+
+**二、修法：新增 `Facts.protagonist_era()` + `_timeline` 的「传主时代」闸。** 判据
+（仅当本人链上**有前任**时才设闸）：事件**既非本传主本人、又早于「本人成为传主」之日**
+⇒ 略去（那是前任的时代，已在那一任自己的传记里写过）。「本人」按事件性质两档判：
+死讯看**死者**是不是他或他的直系亲属（父母/妻妾/子女，`_immediate_ids`）——浩二所杀姻亲的
+死讯由此不再漏进后任本纪，而母珍子之死（910）留在他本篇里；其余看记忆持有者/参与者/出生事件
+的 `child`。闸口落在四处：记忆循环、关系人死讯预置、性病传播行、改信行。
+**首位传主（链上无前任）不设闸 ⇒ 既有传记零回归。**
+
+**三、验证。** `tools/tests/verify_v77_unit.py`（合成缓存，秒级）**13/13 PASS**；久保 922.7.7
+年表 **80 → 26 条**、含「浩二」者仅 2 条（自己出生 874.7.5、父崩 919.2.24 即传位之日，
+见 `logs/v77_久保年表对照.txt`）；重跑终传后《本纪》「浩二」提及 **3 处 / 久保 61 处**
+（此前开篇四段三段写浩二），正文改为本人受任加贺、添丁、与纯子断交结仇、囚常盘实将、
+取周防相模、919 继位、922 剃发退位；浩二 919.2.24 终传 `snapdiff --facts-only`
+**25 块 0 变化（逐字节一致）**；泛化核对：全档 **12 个继任传主缓存**（7 个战役）都受此闸，
+菲利普2/46174 A/B 显示旧行为 30 条是前任 38665 的 867 年前后事迹，新行为让位给本传主
+876–912 年的自身经历（`tools/tests/verify_v77_ab.py` → `logs/v77_ab_菲利普2.txt`）；
+`verify_fast` 久保 v76/v77 两份快照 FAIL 集合完全一致（4 条既有陈旧/数据自带断言）。
+
+**四、仓库整理。** `logs/` 612 个文件（29 MB）→ 根只留程序自写的 3 个
+（`journal.log`/`prompts.log`/`loc_miss.log`，见 `llm.py:119/120`、`localization.py:1979`）；
+88 个被文档当取证引用的现存文件移入 `logs/archive/`（文档 582 处引用同步改写，漏网 0）；
+删除 524 个无人引用的纯临时物与 3 个误落的一次性 `.py`；`logs/_sec11.md`（v63 调研第 11 章，
+属文档）→ `docs/调研_囚禁方式与存档留痕_11_破城俘虏与战败俘虏.md`。
+`tools/` 下 **333 个测试/校对/探针/快照脚本 → `tools/tests/`**，顶层只留生产与数据工具链
+9 个（`rebuild_folder`/`refresh_*`/`backfill_title_dyn_names`/`set_last_date`/`cleanup_junk`…）
++ `py.ps1`/`enc.ps1`/`fix_bat_label.*`/`rakaly.exe`；随搬修好 400+ 处路径与导入假设
+（两层 `dirname`→三层 176 个、`ROOT/tools`→`ROOT/tools/tests` 10 个、`__file__/../…` 2 个、
+用法串 186 个）与全库 703 处引用（63 个文件，含 README、`docs/`、`.agents/skills/`）。
+冒烟：`verify_v77_unit` 13/13、`verify_v53_unit` 54/54、`verify_v55_unit` 58/58
+（后者 `import verify_fast`，验脚本间导入）、`snapdiff` 事实面无变化、337 个脚本
+`py_compile` 0 失败、残留旧路径引用 0。**命令口径相应变为 `& tools\py.ps1 tools\tests\<脚本>.py`。**
+
+**未做**：不重熔、不跑 `rebuild-cache`；不改 v76 的十年档配偶窗口口径；《家族恩怨录》
+《宝物志》《日本历代记》里的前代内容按设计保留；`experiments/`（本地 1.4 GB 临时目录）
+不在本轮范围。详见 `docs/方案_v77_传主时代裁料与仓库整理.md`。
+
 ## v76 修正（田所两问题：剃发退位无终传 / 十年档旧妻占节）
 
 用户 2026-09-27 原话：「①日本文化的主动退位决议使用后，没有生成终传，检查为什么，并研究其他机制
@@ -2839,6 +2892,8 @@ python tools\tests\check_bio_v35.py [家族] [md名]
 | `output/` | 传记输出（按宗族分文件夹） |
 | `experiments/` | expck3 的旧实验脚本（历史参考，不入流水线；`verify_lushi.py` / `verify_tadokoro2.py` / `verify_zhou.py` 为确定性回归） |
 | `tools/enc.ps1` / `tools/py.ps1` | 开发工具链：统一 UTF-8 子进程输出（免中文乱码往返），`& tools\py.ps1 <脚本>` 跑 Python |
+| `tools/tests/` | **测试·校对·探针·快照脚本**（v77 起 333 个全部归拢于此，命令口径 `& tools\py.ps1 tools\tests\<脚本>.py`）。`tools/` 顶层只留生产与数据工具链：`rebuild_folder(.v38)` / `refresh_*` / `backfill_title_dyn_names` / `set_last_date` / `cleanup_junk` + `py.ps1` / `enc.ps1` / `rakaly.exe` |
+| `logs/` | 程序自写的三个运行时日志（`journal.log` / `prompts.log` / `loc_miss.log`）；**历轮取证**归档在 `logs/archive/`（文档引用写 `logs/archive/…`），本轮新证据写 `logs/vNN_*.txt` |
 | `tools/tests/snap.py` / `tools/tests/verify_fast.py` | 提速基建（v29b）：熔件载一次落 facts 快照（几十 KB），快速回归秒级跑；端到端仍走 `experiments/verify_zhou.py` |
 
 ## 已知限制
