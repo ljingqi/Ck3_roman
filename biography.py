@@ -1972,7 +1972,15 @@ def _shared_facts_block(facts, subject=None, key=None):
     name = p.get("name") or "主角"
     house = _house_text(facts)
     death = facts.get("player_death")
-    if death and key != "assassins":
+    re_end = facts.get("reign_end")            # v76 (问题1): 让位/剃发退位
+    if re_end and key != "assassins":
+        # ⚠ 不再前置日期: `reason_zh` 由 facts.reign_end_clause 渲染时**已含日期**
+        # (「922年7月7日，剃发退位，传位于其子日本关白田所定治」)。
+        rz = re_end.get("reason_zh") or "让位"
+        life_note = f"【传位】{rz}——此为终传"
+    elif re_end:
+        life_note = ""
+    elif death and key != "assassins":
         rz = death.get("reason_zh") or death.get("reason") or "去世"
         life_note = (f"【卒年】{llm.fmt_cn_date(death.get('date'))}，{rz}"
                      "——此为终传")
@@ -2027,7 +2035,10 @@ def build_intro_messages(facts, cfg, articles=None):
     style_name = facts.get("bio_style") or "east"
     birth = p.get("birth") or ""
     death = facts.get("player_death")
-    if death:
+    re_end = facts.get("reign_end")            # v76 (问题1): 让位/剃发退位
+    if re_end:
+        span_cn = f"生卒：{birth}–{llm.fmt_cn_date(re_end.get('date'))}"
+    elif death:
         span_cn = f"生卒：{birth}–{llm.fmt_cn_date(death.get('date'))}"
     else:
         span_cn = f"生于{birth}" if birth else ""
@@ -2547,8 +2558,11 @@ def _assemble(facts, intro, leads, sections, articles):
     # v14: 家族文本含分家 (藤原氏（北家）)
     house = _house_text(facts)
     death = facts.get("player_death")
+    re_end = facts.get("reign_end")            # v76 (问题1): 让位/剃发退位优先
     span = ""
-    if death:
+    if re_end:
+        span = f"{re_end.get('reason_zh') or '让位'}，此为终传"
+    elif death:
         span = f"死于{llm.fmt_cn_date(death.get('date'))}，此为终传"
     else:
         cutoff = facts.get("as_of") or facts.get("last_date")
@@ -3355,8 +3369,8 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     reign = reign_start(cache)
     if decade:
         piece = f"第{decade}个十年传记"
-    elif facts.get("player_death"):
-        piece = "终传"
+    elif facts.get("player_death") or facts.get("reign_end"):
+        piece = "终传"                    # v76: 让位档篇名不变 (用户拍板②)
     else:
         piece = "传记"
     header = (f"<!-- 人物: {person} | 人物ID: {facts.get('player_id')}"

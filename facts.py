@@ -4086,6 +4086,38 @@ class Facts:
                 nm = self.name(cid, date=None)
         return nm or ""
 
+    def reign_end_clause(self, cid, re_end):
+        """传主「在位终结但未死亡」的收句 (v76 问题1) → 「剃发退位，传位于其子关白田所定治」。
+
+        数据源 = `cache["reign_end"]` (由 `pipeline._cross_check_reign_ends` 从存档
+        `played_character.legacy` 接替链判出, 见 `pipeline.py` 该函数注释)。措辞按 `kind`:
+        剃发退位 (tonsured, 佛教「寻找净土」) / 退隐让位 (abdicated, 通用「放弃领导家族」) /
+        去位转无地 (landless) / 让位 (unknown)。后任称谓走 `_chain_person` + `_kin_word`
+        (与前代传主同一套亲属词; 后任不在本缓存时用其本人缓存兜底)。
+        返回**不含句末句号**的收句 (调用方按所在行补标点)。"""
+        re_end = re_end or {}
+        kind = str(re_end.get("kind") or "unknown")
+        W = _style.FACT_WORDING
+        word = W.get("reign_end_" + kind) or W.get("reign_end_unknown") or "让位"
+        date = self.date(re_end.get("date"))
+        succ = re_end.get("successor")
+        nm = ""
+        if isinstance(succ, int):
+            nm = self._chain_person(succ)
+            kin = self._kin_word(cid, succ)
+            if nm and kin:
+                nm = f"{kin}{nm}"
+        if date and nm:
+            line = (W.get("reign_end_line_successor")
+                    or "{date}，{word}，传位于{succ}。").format(
+                        date=date, word=word, succ=nm)
+        elif date:
+            line = (W.get("reign_end_line") or "{date}，{word}").format(
+                date=date, word=word)
+        else:
+            line = f"{word}，传位于{nm}" if nm else word
+        return line.rstrip("。")
+
     def succession_lines(self):
         """传主链事实 (v44 问题2): 前任/后任传主与继位日。
 
@@ -4112,11 +4144,19 @@ class Facts:
             kin = self._kin_word(pid, pcid)
             pv = self.campaign.get(pcid)
             death = ""
+            re_end = {}
             if isinstance(pv, dict):
                 death = ((pv.get("player_death") or {}).get("date")) or ""
+                re_end = pv.get("reign_end") or {}
             # 无括注、无同位语括注 (v29b 口径): 「其父、前代传主X崩于当日」
             lead = f"{kin}、" if kin else ""
-            if death and start and cl.date_key(death) == cl.date_key(start):
+            # v76 (问题1): 前代传主**在位终结但未死亡** (让位/剃发退位) 时不能说「崩」
+            re_date = re_end.get("date") or ""
+            if re_date and start and cl.date_key(re_date) == cl.date_key(start):
+                fate = "于是日让位"
+            elif re_date:
+                fate = f"让位于{self.date(re_date)}"
+            elif death and start and cl.date_key(death) == cl.date_key(start):
                 fate = "崩于当日"
             elif death:
                 fate = f"崩于{self.date(death)}"
@@ -6297,6 +6337,7 @@ class Facts:
         _tier, ptid = self._primary_title_at(pid)
         if ptid is None:
             cut = (self.as_of
+                   or (self.cache.get("reign_end") or {}).get("date")   # v76: 让位日
                    or (self.cache.get("player_death") or {}).get("date")
                    or self.cache.get("last_date"))
             if cut:
@@ -15588,8 +15629,8 @@ def _protagonist(f):
                 w = provisions_band(_dom.get("provisions"))
                 if w:
                     p["provisions_word"] = w
-    # 现状 (仅在世时)
-    if not cache.get("player_death"):
+    # 现状 (仅在世**且未让位**时; v76: 让位者按「位已终」写收句, 不再报在任现状)
+    if not cache.get("player_death") and not cache.get("reign_end"):
         def num(v, nd=1):
             try:
                 return f"{float(v):.{nd}f}".rstrip("0").rstrip(".")
@@ -15628,10 +15669,21 @@ def _protagonist(f):
         if bits:
             p["status"] = "，".join(bits) + "。"
     # 死亡 (终传时; v11: as_of 早于死期视为在世, 十年传记不泄漏「死于…」)
+    # v76 (问题1): 让位 (reign_end) 优先 —— 用户 2026-09-27 拍板「让位即终了,
+    # 日后死亡只进缓存给后续篇目的家庭信息用」, 故两档都有时本篇只写让位句。
+    re_end = cache.get("reign_end")
+    if re_end and f.as_of \
+            and cl.date_key(f.as_of) < cl.date_key(re_end.get("date") or "9999.9.9"):
+        re_end = None                      # 十年档早于让位日 ⇒ 该档不谈让位
     pd = cache.get("player_death")
+    if pd and re_end and cl.date_key(pd.get("date") or "0.0.0") \
+            > cl.date_key(re_end.get("date") or "9999.9.9"):
+        pd = None                          # 让位之后的死亡不进本篇
     if pd and f.as_of and cl.date_key(f.as_of) < cl.date_key(pd.get("date") or "9999.9.9"):
         pd = None
-    if pd:
+    if re_end:
+        p["reign_end"] = f"{f.reign_end_clause(pid, re_end)}。"
+    elif pd:
         p["death"] = (
             f"死于{f.date(pd.get('date'))}，"
             f"{f.death_clause(pid, date=pd.get('date'), reason=pd.get('reason'), killer=pd.get('killer'))}。"
@@ -16786,36 +16838,41 @@ def _family_chronicle(f, pid, tid, is_h=False):
 def _is_final_bio(f):
     """本篇是否**终传** (v73 用户 2026-09-27 拍板: 《XX历代记》只在终传触发)。
 
-    判据 = 缓存有卒日 **且** 本篇截止日正是那个卒日:
-      · `pipeline._bio_as_of` 给终传传的是卒日 (与卒日同期 ⇒ 终传);
-      · 十年传记传的是十年末 (≠ 卒日, 且 decade 有值);
-      · 在世传记没有卒日。
-    世界末日档 (卒日与叙事末日同期且 decade 有值) 归十年档, 按用户要求不建本篇。"""
+    判据 = 传主之位已终了 **且** 本篇截止日正是那个终了日:
+      · `pipeline._bio_as_of` 给终传传的是终了日 (与终了日同期 ⇒ 终传);
+      · 十年传记传的是十年末 (≠ 终了日, 且 decade 有值);
+      · 在世传记没有终了日。
+    终了 = 死亡 (`player_death`) **或** 在位终结但未死亡 (`reign_end`, v76 问题1:
+    剃发退位/让位等换扮演角色; 两档都有时让位日优先, 见 `pipeline._reign_end`)。
+    世界末日档 (终了日与叙事末日同期且 decade 有值) 归十年档, 按用户要求不建本篇。"""
     return _is_final_bio_spec({
         "decade": f.decade,
         "as_of": f.as_of,
         "player_death": f.cache.get("player_death"),
+        "reign_end": f.cache.get("reign_end"),
     })
 
 
 def _is_final_bio_spec(facts):
-    """`_is_final_bio` 的**事实面**版 (同一判据, 供 `biography.build_articles` 复核)。"""
+    """`_is_final_bio` 的**事实面**版 (同一判据, 供 `biography.build_articles` 复核)。
+    v76: 终了日 = reign_end (让位) 优先, 其次 player_death (卒)。"""
     facts = facts or {}
     if facts.get("decade"):
         return False
-    death = (facts.get("player_death") or {}).get("date") or ""
-    if not death:
+    end = ((facts.get("reign_end") or {}).get("date")
+           or (facts.get("player_death") or {}).get("date") or "")
+    if not end:
         return False
     as_of = facts.get("as_of")
     if not as_of:
         return True
     try:
         _a = (tuple(cl.date_key(str(as_of))) + (1, 1))[:3]
-        _b = (tuple(cl.date_key(str(death))) + (1, 1))[:3]
+        _b = (tuple(cl.date_key(str(end))) + (1, 1))[:3]
         _d = (_a[0] - _b[0]) * 366 + (_a[1] - _b[1]) * 31 + (_a[2] - _b[2])
         return -7 <= _d <= 7
     except Exception:
-        return str(as_of) == str(death)
+        return str(as_of) == str(end)
 
 
 def _top_title_history(f, group_lines=None):
@@ -16849,11 +16906,12 @@ def _top_title_history(f, group_lines=None):
     if _tid is not None and _t is not None:      # 有真领地 → 主角自己的最高头衔
         tid, own = _tid, True
     else:
-        cut = f.as_of or (f.cache.get("player_death") or {}).get("date") \
+        cut = f.as_of or (f.cache.get("reign_end") or {}).get("date") \
+            or (f.cache.get("player_death") or {}).get("date") \
             or f.cache.get("last_date")
         if cut:
             _t2, _tid2 = f._primary_title_at(pid, held_through=cut)
-            if _tid2 is not None and _t2 is not None:   # 已卒传主: 按卒日仍在持算
+            if _tid2 is not None and _t2 is not None:   # 已卒/已让位传主: 按终了日仍在持算
                 tid, own = _tid2, True
         if tid is None:                              # 仅家业 → 最高领主之朝
             if any(f._is_estate_title(t) for t in (f._hold_intervals(pid) or {})):
@@ -18886,7 +18944,16 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     col, coch = f.court_office_lines()
     # v8: 死因中文化 (总纲【卒年】不再泄漏英文 key, 干净事实铁律)
     # v11: as_of 早于死期 (十年传记) 时视为在世, 不泄漏死亡信息
+    # v76 (问题1): 让位 (reign_end) 优先, 且让位之后的死亡不进本篇
+    # (用户 2026-09-27 拍板「让位即终了, 日后死亡只进缓存」)。
+    re_end = cache.get("reign_end")
+    if re_end and as_of \
+            and cl.date_key(as_of) < cl.date_key(re_end.get("date") or "9999.9.9"):
+        re_end = None
     pd = cache.get("player_death")
+    if pd and re_end and cl.date_key(pd.get("date") or "0.0.0") \
+            > cl.date_key(re_end.get("date") or "9999.9.9"):
+        pd = None
     if pd and as_of and cl.date_key(as_of) < cl.date_key(pd.get("date") or "9999.9.9"):
         pd = None
     if pd:
@@ -18894,6 +18961,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         pd["reason_zh"] = f.death_clause(
             cache.get("player_id"), date=pd.get("date"),
             reason=pd.get("reason"), killer=pd.get("killer"))
+    if re_end:
+        re_end = dict(re_end)
+        re_end["reason_zh"] = f.reign_end_clause(cache.get("player_id"), re_end)
     # v44 (问题1): 【家族】行同样按本篇截止日取家族沿革 (传主别立家族/改名后,
     # 共享前缀里的家族名不得停在首见值)
     _pid0 = cache.get("player_id")
@@ -18935,6 +19005,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "line_stated": f.line_stated,
         "realm": _realm_facts(f),
         "player_death": pd,
+        # v76 (问题1): 在位终结但未死亡 (剃发退位/让位/去位) —— 与 player_death 同式,
+        # 含渲染好的 `reason_zh`; 供养 `_is_final_bio_spec` 与共享前缀【传位】行。
+        "reign_end": re_end,
         "last_date": cache.get("last_date"),
         "as_of": as_of,
         "decade": decade,

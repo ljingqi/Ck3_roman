@@ -580,6 +580,16 @@ FACT_WORDING = {
     "office_lost_late": "；至晚自{year}起已卸任",
     "office_change_gain": "{date}：受{employer}之{gverb}为{word}",
     "office_change_lose": "{date}：已卸任{word}",
+    # v76 (问题1): 传主「在位终结但未死亡」的收句 (让位/剃发退位/去位) ——
+    # 由 pipeline._cross_check_reign_ends 从 played_character.legacy 接替链判出;
+    # 收在终传主角档案与共享前缀的【传位】行, 与「卒」句互斥 (同一人只出其一)。
+    "reign_end_line": "{date}，{word}",
+    "reign_end_line_successor": "{date}，{word}，传位于{succ}。",
+    "reign_end_tonsured": "剃发退位",
+    "reign_end_abdicated": "退隐让位",
+    "reign_end_landless": "去位，转徙无领地",
+    "reign_end_unknown": "让位",
+    "reign_end_note": "【传位】",
 }
 
 

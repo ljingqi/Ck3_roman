@@ -1232,7 +1232,8 @@ def _cross_check_lineage(cfg, melt, current_player):
 # 无地冒险者/游牧忽里勒台/大圣战受地/RICE 7 文件…), 且会随版本与 Mod 继续增加。
 # 故只判「形状」: **接替链上换人了, 而前任仍在世** = 在位终结但非死亡。
 _REIGN_END_WORD = {
-    "abdicated": "剃发退位/让位",
+    "tonsured": "剃发退位",      # 佛教「寻找净土」: add_trait = devoted + 交产
+    "abdicated": "退隐让位",     # 通用「放弃领导家族」: 只加 ep3_renounced_estate
     "landless": "去位转无地",
     "unknown": "让位",
 }
@@ -1261,14 +1262,16 @@ def _char_has_trait(melt, c, name):
 
 def _reign_end_kind(melt, c):
     """让位的**性质** (只用存档字段):
-    `ep3_renounced_estate` 修正或新得 `devoted` 特质 ⇒ abdicated (剃发/退隐让位);
-    本档已无任何领地 ⇒ landless; 其余 ⇒ unknown (措辞退化为中性的「让位」)。
+      · `devoted` 特质 ⇒ `tonsured` 剃发退位 (日本佛教决议「寻找净土」: add_trait = devoted);
+      · 只有 `ep3_renounced_estate` 修正 ⇒ `abdicated` 退隐让位 (通用「放弃领导家族」;
+        简中修正名「宁静的冬天」);
+      · 本档已无任何领地 ⇒ `landless`; 其余 ⇒ `unknown` (措辞退化为中性的「让位」)。
     实测久保 923 档: modifier `ep3_renounced_estate`(永久) + traits 含 `devoted`(id 184) —— 见
-    `logs/tmp_probe_v76_abdA.txt`。⚠ 不能拿「无地」当让位判据 (久保让位后仍有领地,
-    见同文件), 只在 abdicated 之外当兜底性质。"""
-    if "ep3_renounced_estate" in cl._char_modifier_names(c):
-        return "abdicated"
+    `logs/tmp_probe_v76_abdA.txt`。⚠ 不能拿「无地」当让位判据 (久保让位后仍留有领地,
+    见同文件), 只在上面两支之外当兜底性质。"""
     if _char_has_trait(melt, c, "devoted"):
+        return "tonsured"
+    if "ep3_renounced_estate" in cl._char_modifier_names(c):
         return "abdicated"
     if not ((c.get("landed_data") or {}).get("domain") or []):
         return "landless"
@@ -1332,7 +1335,7 @@ def _cross_check_reign_ends(cfg, melt, current_player):
             succ_c = living.get(str(succ_cid)) or dead_un.get(str(succ_cid)) or {}
             prev["reign_end"] = {
                 "date": succ_date,       # 后任接替日 = 前任在位终了日
-                "kind": kind,            # abdicated / landless / unknown
+                "kind": kind,            # tonsured / abdicated / landless / unknown
                 "alive": True,           # 本档仍在 living 段 (非死亡更替)
                 "successor": int(succ_cid),
                 "successor_name": cl.name_zh(succ_c) or "",
