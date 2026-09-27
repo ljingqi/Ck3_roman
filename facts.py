@@ -3146,12 +3146,17 @@ class Facts:
 
     def seat_note(self, cid):
         """承位句 (v74 问题1, 只给《家室列传》的子女档案):
-        「承位：加贺国司之任：源能有891年9月17日被田所浩二使人以丝绳缢杀；
-          惟条、惟恒、惟彦、行有、源当时、源当元相继居之，皆死于田所浩二之手；
+        「承位：加贺国司之任：源能有891年9月17日神秘死亡；
+          大和惟条、大和惟恒、大和惟彦、大和行有、源当时、源当元相继居之，未几皆卒；
           891年12月13日归田所久保。」
 
         判据 (全程序直算): 该角色现任有地头衔的**前任**里, 连续一串死于主角之手的
-        那一段 —— 这正是用户说的「刀下亡魂是为了给我的孩子腾位置」。无此链返回 ''。"""
+        那一段 —— 这正是用户说的「刀下亡魂是为了给我的孩子腾位置」。
+
+        v75 (凶手点名, 用户 2026-09-27): 公开档不点名 —— 首位前任的结局走
+        `death_clause` 的公开文案 (神秘死亡/失踪而亡…), 其余一串只写「未几皆卒」;
+        整串**都**已公开 (killer_known ∨ 死因自带公开性) 时才照旧写「皆死于X之手」
+        (用户拍板 D1: 已公开者保留点名)。无此链返回 ''。"""
         pid = self.cache.get("player_id")
         if pid is None or cid is None:
             return ""
@@ -3175,11 +3180,18 @@ class Facts:
             clause = self.death_clause(h0, date=d_death or d0, reason=reason,
                                        killer=killer if killer is not None else pid)
             l0 = self.kin_label(h0) or self.name_or(h0)
+            _all_public = all(self.killer_is_public(h) for _d, h in prev)
             head = (f"{l0}{self.date(d_death or d0)}{clause}" if clause
-                    else f"{l0}{self.date(d_death or d0)}死于{self.name_or(pid)}之手")
+                    else (f"{l0}{self.date(d_death or d0)}死于{self.name_or(pid)}之手"
+                          if _all_public
+                          else f"{l0}{self.date(d_death or d0)}卒"))
             rest = [self.name_or(h) for _d, h in prev[1:]]
-            mid = ("、".join(rest) + f"相继居之，皆死于{self.name_or(pid)}之手"
-                   if rest else "")
+            if rest:
+                mid = ("、".join(rest)
+                       + (f"相继居之，皆死于{self.name_or(pid)}之手" if _all_public
+                          else "相继居之，未几皆卒"))
+            else:
+                mid = ""
             bits.append(f"承位：{tname}之任：{head}" + (f"；{mid}" if mid else "")
                         + f"；{self.date(gain)}归{self.name_or(cid)}。")
         return "；".join(bits)
@@ -17543,7 +17555,8 @@ def relation_cause_lines(f, cid, rel_date):
                 label = "其女" if f._is_female(rid) else "其子"
             elif key in ("primary_spouse", "spouse"):
                 label = "其夫" if c_female else "其妻"
-            out.append(f"{label}{rname}已于{f.date(md)}被{pname}谋杀")
+            out.append(f"{label}{rname}已于{f.date(md)}"
+                       + f.death_clause(rid, date=md))
             break
     # ② 其配偶与主角私通 (私情/相恋早于结怨)
     lovers = set()
@@ -17723,11 +17736,14 @@ def _villain_chains(f):
                 kname = f.person_label(kid, date=f.as_of, style="brief") or f.name_or(kid)
                 if kname:
                     ksex = "女" if is_female(kid) else "子"
-                    kin_note = (f"；其{ksex}{kname}"
-                                + f"已于{f.date(kd)}被{pname}谋杀")
+                    # v75 (凶手点名): 公开档写世人说法 (未公开者不点名)
+                    kin_note = (f"；其{ksex}{kname}已于{f.date(kd)}"
+                                + f.death_clause(kid, date=kd))
                 break
+            # v75 (凶手点名): 受害者本人的结局同理走公开档
+            _vcl = f.death_clause(victim, date=vdate)
             chains.append(("奸夫谋夫",
-                f"{f.date(vdate)}，{disp}被{pname}谋杀——"
+                f"{f.date(vdate)}，{disp}{_vcl}——"
                 f"{sname}{lname}正是{pname}的情人{remarry}{kin_note}。", False))
 
     # ---- 托卵承嗣 (法理父 ≠ 实父, 且涉及主角) — 按 (法理父, 实父, 性别) 合并 ----
@@ -17833,8 +17849,10 @@ def _villain_chains(f):
         if rel:
             vname = f.name_or(victim)
             if vname:
+                # v75 (凶手点名): 公开档写世人的说法 —— 未公开的凶杀
+                # `death_clause` 已不点名 (神秘死亡 / 失踪而亡 …)
                 chains.append(("血亲之刃",
-                    f"{pname}谋杀了{rel}{vname}。", False))
+                    f"{rel}{vname}{f.death_clause(victim, date=vdate)}。", False))
 
     # ---- 血脉登基 (高位头衔第一继承人是主角私生子女; 同母手足中被谋杀者点出) ----
     melt_date = (f.melt.get("date") or "")
@@ -17889,7 +17907,7 @@ def _villain_chains(f):
                     sw = "长姐" if (older and sfemale) else \
                           "长兄" if older else ("妹" if sfemale else "弟")
                     dead_sib = (f"；其同母{sw}{sname}已于{f.date(sdate)}"
-                                f"被{pname}谋杀")
+                                + f.death_clause(s, date=sdate))
                 break
         sex = "女" if is_female(heir0) else "子"
         # v75: 虚位御座 (天皇座) 的继承句写「天皇第一继承人」, 不写游戏机械串
