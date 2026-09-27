@@ -1951,6 +1951,63 @@ b291cf9 fix(v63-6)  结仇缘由的家族名槽（localization 保留 GetDynasty
 东科巴 = 藏人西方）；`李汶娘`/`汶娘·李` 由 0/74 与 0/27 变为 **74/0 与 27/0**；`verify_fast`
 两份新快照 FAIL 条数与**集合**与 v70 逐条相同。
 
+## v75 修正（凶手只在《刺客列传》点名 + 虚位御座「高御座府」）
+
+用户 2026-09-27 原话：「发现一个问题，玩家杀的人应该只有刀下亡魂板块点名玩家是凶手，其他板块应当
+写这些人神秘死亡（玩家的谋杀密谋暴露的除外），但在田所德川的列传中，还是出现了`皆死于田所浩二
+之手`，检查其他板块是否也有这样的问题。」同日拍板：①照方案开工（每小点一提交）；②公开处决与
+已暴露的突袭**保留**点名；③只重跑田所三篇；④「高御座府第一继承人」改「天皇继承人」。
+排查与取证见 `docs/方案_v75_凶手点名收口.md`、`docs/调研_v75_高御座虚位御座.md`。
+
+**一、根因：游戏本来就有「公开文案 / 内情」两套，项目一律取了内情。** 游戏的公开文案是
+`game/localization/simp_chinese/death_reasons_l_simp_chinese.yml`：`death_mysterious`＝「神秘死亡」、
+`death_murder`＝「被谋杀」、`death_disappearance`＝「消失无踪」；凶手名只在 `_killer` 变体里。
+「密谋是否暴露」有**存档旗标**：`dead_data.killer_known`（`set_killer_public` 的落盘；全本体只有
+`00_murder_effects.txt:433/532`、`00_secret_types.txt:410` 三个调用点，另加庄园突袭
+`scheme_critical_moments_events.txt:7273-7280`），另有死因自带公开性 `public_knowledge = yes`
+（`death_execution`、`death_murder_known`）。**不能用 `know_of_killer` 判**——那是「谁**私下**知道
+凶手」的名单，主角自记的 `[38649]` 只表示凶手本人知道。项目侧 `facts.death_clause` 只要 `killer`
+非空就取 `_killer` 文案（`style.FLAVOR_DEATH_ZH` 更把 `death_mysterious` 直写「被秘密谋杀」），
+于是内情被当成公开事实写进了所有板块。田所 37 件击杀实测：**已暴露的谋杀 3 件**（869 忠基 /
+871 良根 / 881 经世）、**已暴露的突袭 3 件**（894.2.12）、**公开处决 2 件**（895.1.28），其余 29 件
+全为秘密 —— 而 d3 家室列传那两句「为田所浩二使人以丝绳缢杀」「皆死于田所浩二之手」正是 v74-1a
+新加的承位句直出的。
+
+**二、修法：一个判据 + 一个闸门，穿过四层出口。** 新增 `Facts.killer_is_public(cid)`
+（`killer_known` ∨ `_PUBLIC_DEATH_REASONS`，读**熔件** `dead_data`——缓存 `death` 是一次性闩存，
+死因日后被 `on_expose` 的 `set_death_reason` 改写也不更新，实测 12880 熔件 `death_murder +
+killer_known` 而缓存仍写 `death_mysterious`）与 `Facts.killer_hidden(cid, killer)`（凶手是主角
+且未公开）。`death_clause(..., insider=False)` 在公开档把凶手置空并改用 `PUBLIC_DEATH_ZH`
+（「神秘死亡」），`insider=True` 只给《刺客列传》（`_killed_by_player` 传 `insider=True`）。
+受影响出口：`_timeline`（大事年表 / 终传附录）、`_character_profiles`（各篇档案）、
+`successful_murder` 记忆句（主角的凶杀记忆改写成死者的公开死讯）、`Facts.seat_note`、
+`_villain_chains`（血亲之刃 / 奸夫谋夫 / 血脉登基）、`relation_cause_lines` ①；快照落
+`killed[].killer_public` 与 `characters[].killer_public` 供免熔件复核。提示词侧把「其位从何而来，
+正是父亲刀下的账」改为「该位自何人手中辗转而来、几任前任如何接连卒于任上」（正面表述，不写死因）。
+
+**三、实测（田所三档快照 + 逐板块逐句扫）。** 事实层：898 档 `killer_public` 恰为 3 突袭 + 2 处决，
+其余 18 名秘密凶杀一律 False；878 档为 869/871 两件已暴露的谋杀。板块素材**非《刺客列传》
+强命中 0 句**（d3 曾 4 句、d2 1 句）。成句实测：承位句「前任源能有891年9月17日**神秘死亡**；
+大和惟条…源当元**相继居之，未几皆卒**；891年12月13日归田所久保」（腾位置保留、不点名）；
+大事年表「美仁亲王**于889年3月30日死于平安京，神秘死亡**」；戏剧性事件「其同母长兄大和正仁
+已于883年9月25日**神秘死亡**」；《刺客列传》逐字不变（「被其夜入寝帐扼杀」）。回归：
+`tools/verify_v75_unit.py` 26/26、`tools/verify_kin_owner_unit.py` 35/35、
+`experiments/verify_tadokoro_v75.py` 三档 **34 PASS / 0 FAIL**、`tools/verify_fast.py` 三档
+FAIL 集合与基线逐条相同。
+
+**四、虚位御座：游戏的机械串「高御座府」不能当行文。** `k_chrysanthemum_throne` 是
+`landless = yes + figurehead = yes` 的**虚位御座**（`landed_titles/01_japan.txt:1573-1584`），
+名字「高御座」是**位号**不是地名；游戏按 `TITLE_TIERED_NAME`（`titles_l_simp_chinese.yml:3`）
+拼上位词「府」（`kingdom_administrative_japanese` / `kingdom_feudal_japanese`，
+`10_tgp_japan_flavorization.txt:204-214 / :321-330`，词见
+`dlc_tgp_cultural_titles_l_simp_chinese.yml:22/32`），于是「高御座＋府」。修法：新增
+`Facts.throne_word`（`_THRONE_TITLE_KEYS` / `_THRONE_OFFICE_KEYS` → 天皇 / 国王），接
+`title()`、`_title_name_at()` 与血脉登基句，成稿写作「大和计子为**天皇第一继承人**」
+（「第一继承人」是游戏原生词 `game_concept_primary_heir`）。同族第二例 `k_yongson_throne`
+（龙孙王座）一并纳入。**未收**：「高御座天皇」166 处（`official_title` / `held_titles` /
+`title_office_text`）与 `docs/审计_事实文本自然度.md:89`、`docs/方案_v62_菲利普2日本三问.md:207/333`
+两条既有口径冲突，待拍板。
+
 ## v74 修正（田所三问题：《家室列传》分节 / 律令制官职词 / 非婚生随生父之氏）
 
 用户 2026-09-27 原话：「①家世列传现在的篇幅都用来写妻子了，但第3个十年的传记里，主角的孩子都
