@@ -1114,10 +1114,16 @@ def _hist_value_at(hist, date, key):
     return pick.get(key)
 
 
-def _death_reason(table, reason):
-    """死因 key → 中文: v11 先查雅化表 (游戏腔/坏文本), 再本地化, 最后兜底表。"""
+def _death_reason(table, reason, public=False):
+    """死因 key → 中文: v11 先查雅化表 (游戏腔/坏文本), 再本地化, 最后兜底表。
+    v75: public=True 取**世人的说法** —— 点破式雅化 (如 death_mysterious →
+    「被秘密谋杀」) 让位给游戏本地化原词 (`PUBLIC_DEATH_ZH`)。"""
     if not reason:
         return "去世"
+    if public:
+        v = PUBLIC_DEATH_ZH.get(reason)
+        if v:
+            return v
     v = FLAVOR_DEATH_ZH.get(reason)
     if v:
         return v
@@ -1277,13 +1283,33 @@ def _render_killer_loc(table, loc_key, kname):
     return s
 
 
-def _death_clause(table, reason_key, killer, name_of):
-    """死因 → 自然中文短句 (含施事者嵌入)。
+# v75 (凶手点名): 死因**自带公开性** —— 游戏 `common/deathreasons/*.txt` 里标了
+# `public_knowledge = yes` 的死因, 游戏本身就把「谁下的手」算作人人皆知:
+#   · death_execution      (00_event_deaths.txt:150-153)
+#   · death_murder_known    (:367-368)
+# 其余死因 (death_murder / death_mysterious / death_disappearance / death_raid_estate /
+# death_hunting_accident) 都没有这一条 —— 它们是否公开取决于存档旗标
+# `dead_data.killer_known` (见 `Facts.killer_is_public`)。逐条取证见
+# docs/方案_v75_凶手点名收口.md §2.1。
+_PUBLIC_DEATH_REASONS = frozenset({"death_execution", "death_murder_known"})
 
+# v75 (凶手点名): **公开档**专用死因文案。v16 的雅化表 (`style.FLAVOR_DEATH_ZH`)
+# 是全知视角 —— 它明写「点破为谋杀」(`style.py:640-642`: death_mysterious →
+# 「被秘密谋杀」), 只配《刺客列传》。世人在存档里看到的是游戏本地化值
+# (death_reasons_l_simp_chinese.yml: death_mysterious = 「神秘死亡」)。
+# 只列与世人说法不同的那一条; 其余死因的现有中文不含凶手信息, 原样沿用。
+PUBLIC_DEATH_ZH = {
+    "death_mysterious": "神秘死亡",
+}
+
+
+def _death_clause(table, reason_key, killer, name_of, public=False):
+    """死因 → 自然中文短句 (含施事者嵌入)。
     reason_key: 原始死因 key; killer: 凶手/行刑者/对手角色 id 或 None;
     name_of: 角色 id → 名字。返回「被XXX谋杀」「被XXX秘密谋杀」「与XXX决斗而亡」
-    「身首异处，凶手为XXX」或纯死因短句 (无施事或非动作型死因)。"""
-    reason = _death_reason(table, reason_key)
+    「身首异处，凶手为XXX」或纯死因短句 (无施事或非动作型死因)。
+    v75: public=True 取世人说法 (`PUBLIC_DEATH_ZH` 优先于点破式雅化)。"""
+    reason = _death_reason(table, reason_key, public=public)
     kname = name_of(killer) if killer is not None else ""
     if killer is not None and kname:
         verb = _DEATH_KILLER_VERB.get(reason_key)
@@ -10367,11 +10393,68 @@ class Facts:
         y, m = divmod(months, 12)
         return f"{y}年" + (f"{m}个月" if m else "")
 
-    def death_clause(self, cid, date=None, reason=None, killer=None, imprison=False):
+    def killer_is_public(self, cid):
+        """该角色的凶手是否**世人共知** (v75 凶手点名):
+
+        ① 存档旗标 `dead_data.killer_known` —— `set_killer_public` 的落盘
+           (全本体只有 3 个调用点, 全在谋杀/暴露链上: 00_murder_effects.txt:433、
+           :532, 00_secret_types.txt:410; 另有庄园突袭
+           scheme_critical_moments_events.txt:7273-7280);
+        ② 死因自带公开性 (`public_knowledge = yes`, 见 `_PUBLIC_DEATH_REASONS`)。
+
+        **不能用 `dead_data.know_of_killer` 判** —— 那是「谁**私下**知道凶手」的
+        名单 (`add_knows_of_killer`), 主角自记的 `[38649]` 只表示凶手本人知道。
+
+        数据源取**熔件**而非缓存: 缓存 `death` 是一次性闩存 (cache_lib.py:2773),
+        死因日后被 `on_expose` 改写 (00_secret_types.txt:434-467 的
+        `set_death_reason`) 也不会更新 —— 实测 12880 熔件为
+        `death_murder + killer_known=true`, 而缓存里仍写 `death_mysterious`。"""
+        if cid is None:
+            return False
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return False
+        memo = getattr(self, "_kp_cache", None)
+        if memo is None:
+            memo = self._kp_cache = {}
+        if cid in memo:
+            return memo[cid]
+        dd = ((self._chars.get(str(cid)) or {}).get("dead_data") or {})
+        if dd:
+            val = bool(dd.get("killer_known")) \
+                or str(dd.get("reason") or "") in _PUBLIC_DEATH_REASONS
+        else:                       # 熔件无此人 (早期档被剪除): 退回缓存死因
+            rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+            val = str((rec.get("death") or {}).get("reason") or "") \
+                in _PUBLIC_DEATH_REASONS
+        memo[cid] = val
+        return val
+
+    def killer_hidden(self, cid, killer):
+        """公开档是否**隐去**该凶手 (v75 凶手点名): 凶手是主角, 且该凶杀未公开。
+
+        只有这一条闸 —— 第三方凶手照旧点名 (本轮不改其口径);
+        主角已公开的凶杀 (密谋暴露 / 公开处决 / 已暴露的庄园突袭) 照旧点名
+        (用户 2026-09-27 拍板 D1)。"""
+        try:
+            killer = int(killer)
+        except (TypeError, ValueError):
+            return False
+        pid = self.cache.get("player_id")
+        if pid is None or killer != int(pid):
+            return False
+        return not self.killer_is_public(cid)
+
+    def death_clause(self, cid, date=None, reason=None, killer=None, imprison=False,
+                     insider=False):
         """角色死因句 (含施事者): 处决走处决方式池, 暗杀类走暗杀死法池, 其余通用。
         date/reason/killer 显式传入时以传入为准 (受害者不在缓存时的熔件兜底用)。
         v26: imprison=True 时, 卒时已囚满一年者前置「囚禁N年后」— 处决/狱死
-        的囚禁时长得以进入传记 (田所2: 库诺·阿恩施泰因囚禁 4 年 7 个月后处决)。"""
+        的囚禁时长得以进入传记 (田所2: 库诺·阿恩施泰因囚禁 4 年 7 个月后处决)。
+        v75 (凶手点名): insider=True 取**内情** (点名凶手、用暗杀死法池) —— 只给
+        《刺客列传》; 缺省 False = 公开档, 主角未公开的凶杀一律不点名
+        (判据见 `Facts.killer_hidden`)。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         d = rec.get("death") or {}
         if reason is None:
@@ -10380,6 +10463,13 @@ class Facts:
             killer = d.get("killer")
         if date is None:
             date = d.get("date")
+        # v75 (凶手点名): 公开档隐去主角的凶手身份 —— 死句退回游戏的公开文案
+        # (神秘死亡 / 被谋杀 / 消失无踪), 不带内情手法。insider=True 只给
+        # 《刺客列传》(该篇恒以主角为凶手位, 见 biography 侧的 killer_pronoun)。
+        _public = False
+        if killer is not None and not insider and self.killer_hidden(cid, killer):
+            killer = None
+            _public = True
         # v35 (问题5): 疫情类死因用游戏算好的当代疫名 (「染丘陵热而亡」),
         # 静态雅化词 (「染斑疹伤寒而亡」) 只在判不出疫情时使用。
         if reason in _DEATH_DISEASE_REASON and killer is None:
@@ -10389,7 +10479,8 @@ class Facts:
                 return f"染{_dyn}而亡"
         out = ""
         if killer is None:
-            out = _death_clause(self.table, reason, None, lambda k: "")
+            out = _death_clause(self.table, reason, None, lambda k: "",
+                                public=_public)
         else:
             # v28b: 施事者用统一称谓, 与全篇称谓一致
             # v42 (问题4): 出口改 `event_name` (主角只出名字) —— 刺客列传的
@@ -12544,6 +12635,15 @@ def _mem_sentence_body(f, owner_id, mem):
     tpl = MEMORY_TEMPLATES.get(mtype)
     if not tpl:
         return None
+    # v75 (凶手点名): 主角的「成功谋杀」记忆是他的**内情** —— 密谋未暴露时,
+    # 公开档改写成死者的公开死讯 (世人说法), 不点名凶手。「密谋暴露」者
+    # (killer_known ∨ 死因自带公开性) 照旧走模板点名 (用户 2026-09-27 拍板 D1)。
+    if mtype == "successful_murder":
+        _v = (mem.get("participants") or {}).get("victim")
+        if isinstance(_v, int) and f.killer_hidden(_v, owner_id):
+            _cl = f.death_clause(_v, imprison=True)
+            _vn = f.event_name(_v, date=mem.get("creation_date"))
+            return f"{_vn}{_cl}。" if (_vn and _cl) else None
     extra_fname = ""
     owner = f.event_name(owner_id, date=mem.get("creation_date"))
     parts = mem.get("participants") or {}
@@ -13068,18 +13168,20 @@ _FEUD_CHAR_RE = re.compile(r"ONCLICK:CHARACTER,(\d+)")
 _RAID_WORDS = ("劫掠", "掠夺", "洗劫")
 
 
-def _death_sentence(f, cid, killer_pronoun=False, annotated=False):
+def _death_sentence(f, cid, killer_pronoun=False, annotated=False, insider=False):
     """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
 
     v45 (档 B): 外层包一层出词登记 (同 `_mem_sentence`)。
-    v63: 同时登记本行主语 (`cid` = 死者) —— 行内第三方人名按他算词。"""
+    v63: 同时登记本行主语 (`cid` = 死者) —— 行内第三方人名按他算词。
+    v75 (凶手点名): insider=True 取内情 (点名凶手) —— 只给《刺客列传》;
+    缺省 False = 公开档 (见 `_death_sentence_body`)。"""
     with f.log_names() as lg:
         out = _death_sentence_body(f, cid, killer_pronoun=killer_pronoun,
-                                   annotated=annotated)
+                                   annotated=annotated, insider=insider)
     return f.index_names(out, lg, owner=cid)
 
 
-def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False):
+def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False, insider=False):
     """角色死亡 → 干净中文句 (死因句含凶手/行刑者/对手嵌入)。
     v22: death_execution 且行刑者已知时, 处决方式按当时可用选项稳定伪随机
     (斩首/做成神秘的肉/犬决/烧死/食人/献祭) — 存档只记「处决」, 不再千篇一律。
@@ -13092,6 +13194,9 @@ def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False):
     v42 (问题5): annotated=True 时并写受害者的**生年/族属/信仰**(凶手为主角时) ——
     年表里「仇人死亡」一条此前只走记忆句「X的仇人Y去世」, 改走死亡记录后
     若不带这些补注, 会丢掉与「谋杀Y（1073年生…）」同等的信息量。
+    v75 (凶手点名): insider=True 取内情 (点名凶手) —— 只给《刺客列传》; 缺省
+    False = 公开档, 主角未公开的凶杀写成世人的说法「X于<日>死于<地>，神秘死亡。」
+    (不点名、不带内情手法), 判据见 `Facts.killer_hidden`。
     """
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     d = rec.get("death") or {}
@@ -13100,13 +13205,25 @@ def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False):
     # v42 (问题4): 年表事实行 —— 主角只出名字 (见 Facts.event_name)
     name = f.event_name(cid, date=d.get("date"))
     killer = d.get("killer")
-    # 施事者名字缺失时用「某人」 (v28b: 统一占位词, 与 name_or 兜底同源)
-    clause = f.death_clause(cid, date=d.get("date"), imprison=True)
     pid = f.cache.get("player_id")
+    # v75: 公开档下主角未公开的凶杀 —— 只写世人看得见的那半句
+    hidden = bool(pid is not None and killer is not None and not insider
+                  and f.killer_hidden(cid, killer))
+    # 施事者名字缺失时用「某人」 (v28b: 统一占位词, 与 name_or 兜底同源)
+    clause = f.death_clause(cid, date=d.get("date"), imprison=True, insider=insider)
     if killer_pronoun and killer is not None:
         klabel = f.event_name(killer, date=f.as_of)
         if klabel and klabel in clause:
             clause = clause.replace(klabel, "其")
+    if hidden:
+        vp = f.victim_place(cid)
+        s = (f"{name}于{f.date(d.get('date'))}死于{vp}" if vp
+             else f"{name}死于{f.date(d.get('date'))}") + f"，{clause}"
+        if annotated:
+            note = _victim_marks(f, cid)
+            if note:
+                s += note
+        return s + "。"
     s = f"{name}死于{f.date(d.get('date'))}，{clause}。"
     if pid is not None and killer == pid:
         # v42: 生年/族属/信仰补注 (与 successful_murder 句同式, 见 _timeline)
@@ -15963,6 +16080,8 @@ def _character_profiles(f):
             ds = _death_sentence(f, cid)
             if ds:
                 prof["death"] = ds
+        # v75 (凶手点名): 死者档案带公开性旗标 (供板块期与快照复核)
+        prof["killer_public"] = f.killer_is_public(cid)
         out[str(cid)] = prof
     return out
 
@@ -18060,14 +18179,15 @@ def _killed_by_player(f):
         prof = (f.cache.get("characters") or {}).get(str(cid)) or {}
         # 受害者不在缓存时, 从最新熔件 dead_data 补死句
         # v30: 凶手称谓缩为「其」— 刺客列传凶手恒为主角 (问题8)
-        ds = _death_sentence(f, cid, killer_pronoun=True)
+        ds = _death_sentence(f, cid, killer_pronoun=True, insider=True)
         if not ds:
             mc = f._chars.get(str(cid)) or {}
             mdd = (mc or {}).get("dead_data") or {}
             if mdd and mdd.get("date"):
                 clause = f.death_clause(cid, date=mdd.get("date"),
                                         reason=mdd.get("reason"),
-                                        killer=mdd.get("killer"), imprison=True)
+                                        killer=mdd.get("killer"), imprison=True,
+                                        insider=True)
                 # v30: 与主路径同口径 — 凶手为主角时称谓缩为「其」(问题8)
                 # v42 (问题4): 称谓出口与 death_clause 同源 (event_name)
                 kk = mdd.get("killer")
@@ -18091,6 +18211,9 @@ def _killed_by_player(f):
             "death_date": (prof.get("death") or {}).get("date") or "9999.9.9",
             # v24: 受害者死前最近可知所在男爵领 (无则 '', 调用方省略标注)
             "victim_place": f.victim_place(cid),
+            # v75 (凶手点名): 该凶杀是否**世人共知** (killer_known 旗标 ∨ 死因
+            # 自带公开性)。快照落盘后 `verify_fast` 免熔件即可复核公开档口径。
+            "killer_public": f.killer_is_public(cid),
             # v37 (问题8): 起义领袖的起事信息 (起于X州 / 聚众N州 / 反抗X) —
             # 起义头衔带的真地点, 补上死者「无地可依」的空白
             "uprising": f.uprising_info(cid),
