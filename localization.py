@@ -1028,22 +1028,60 @@ def _heritage_groups(cfg):
     return out
 
 
-def _cond_block(items, groups, op="all"):
+def _cond_block(items, groups, op="all", religions=None, split_inline=False):
     """触发项 → 条件树: {"op": all|any|none, "children": [叶子或子树]} (保序)。
 
     空块返回 {} (调用方按「无条件 = 恒真」处理); 无法识别的叶子记 {"unknown": key},
-    求值恒不命中 → 该变体作废, 退化为职位类型键的默认名。"""
+    求值恒不命中 → 该变体作废, 退化为职位类型键的默认名。
+    `split_inline=True` 时先把「一行多个条件项」摊开 (v80 点5 的新解析器用)。"""
     children = []
+
+    def _items(body):
+        return _script_items(_split_inline_items(body) if split_inline else body)
+
     for key, kop, val in items:
         k = (key or "").lower()
+        # ---- v80 (点5): GetActualBishopTitle / 议会席位 name 链所需的条件叶子 ----
+        # 必须排在通用 block 分支之前 (religion = { … } 也是 block)
+        if key == "religion" and kop == "block":
+            # religion = { is_in_family = rf_pagan } → 宗教族
+            fam = ""
+            for k2, _o2, v2 in _script_items(val):
+                if k2 == "is_in_family":
+                    fam = str(v2)
+            children.append({"religion_family": fam} if fam else {"unknown": key})
+            continue
+        if key == "religion":
+            rk = _religion_key(val, religions)
+            children.append({"religion": rk} if rk else {"unknown": key})
+            continue
+        if key == "faith.religion":
+            rk = _faith_religion_key(val, religions)
+            children.append({"religion": rk} if rk else {"unknown": key})
+            continue
+        if key == "has_doctrine":
+            children.append({"doctrine": str(val)})
+            continue
+        if key.startswith("cp:") and kop == "?=":
+            fem = None
+            for k2, _o2, v2 in _script_items(val):
+                if k2 == "is_female":
+                    fem = str(v2).lower() in ("yes", "true")
+            children.append({"chaplain_female": fem} if fem is not None
+                            else {"unknown": key})
+            continue
         if kop == "block" and k in ("or", "any"):
-            children.append(_cond_block(_script_items(val), groups, "any"))
+            children.append(_cond_block(_items(val), groups, "any", religions,
+                                        split_inline))
         elif kop == "block" and k in ("and", "all", "culture", "root.culture"):
-            children.append(_cond_block(_script_items(val), groups, "all"))
+            children.append(_cond_block(_items(val), groups, "all", religions,
+                                        split_inline))
         elif kop == "block" and k in ("not", "nor", "none"):
-            children.append(_cond_block(_script_items(val), groups, "none"))
+            children.append(_cond_block(_items(val), groups, "none", religions,
+                                        split_inline))
         elif kop == "block":
-            children.append(_cond_block(_script_items(val), groups, "all"))
+            children.append(_cond_block(_items(val), groups, "all", religions,
+                                        split_inline))
         elif key == "exists" or kop == "?=":
             children.append({"exists": val})
         elif key.endswith("heritage_pillar_trigger"):
@@ -1063,11 +1101,35 @@ def _cond_block(items, groups, op="all"):
                 children.append({"tier_min": t + (1 if kop == ">" else 0)})
             elif kop in ("<=", "<"):
                 children.append({"tier_max": t - (1 if kop == "<" else 0)})
+            elif kop == "=":
+                children.append({"tier_min": t})
+                children.append({"tier_max": t})
             else:
                 children.append({"unknown": key})
         else:
             children.append({"unknown": key})
     return {"op": op, "children": children} if children else {}
+
+
+def _religion_key(val, religions=None):
+    """`religion = religion:buddhism_religion` → 'buddhism_religion' (取不到 '')。"""
+    s = str(val or "").strip()
+    if s.startswith("religion:"):
+        return s[len("religion:"):]
+    return ""
+
+
+def _faith_religion_key(val, religions=None):
+    """`faith.religion = faith:theravada.religion` → 该信仰所在宗教键 (取不到 '')。
+
+    信仰→宗教的对应表由 `_religion_maps` 从 `common/religion/religion_types/*.txt`
+    解析而来 (`{"faiths": {信仰键: 宗教键}}`); 表缺席时返回 ''(该叶恒不命中)。"""
+    s = str(val or "").strip()
+    tail = ".religion"
+    if s.startswith("faith:") and s.endswith(tail):
+        fk = s[len("faith:"):-len(tail)]
+        return ((religions or {}).get("faiths") or {}).get(fk) or ""
+    return ""
 
 
 def cond_match(cond, scope):
@@ -1090,9 +1152,27 @@ def cond_match(cond, scope):
     if "tier_max" in cond:
         return 0 < (scope.get("tier") or 0) <= cond["tier_max"]
     if "heritage" in cond:
+        # v80 (点5): `has_cultural_pillar` 可指任何文化桩 (heritage_/language_/ethos_/
+        # tradition_) —— scope 带 `pillars` 集合时按集合判; 不带时维持旧的单值语义。
+        _pl = scope.get("pillars")
+        if _pl:
+            return cond["heritage"] in _pl
         return scope.get("heritage") == cond["heritage"]
     if "heritage_in" in cond:
-        return scope.get("heritage") in (cond["heritage_in"] or [])
+        _want = cond["heritage_in"] or []
+        if scope.get("heritage") in _want:
+            return True
+        _pl = scope.get("pillars")
+        return bool(_pl) and any(p in _want for p in _pl)
+    # ---- v80 (点5): 主教称谓 / 议会席位 name 链的条件叶子 ----
+    if "religion" in cond:
+        return scope.get("religion") == cond["religion"]
+    if "religion_family" in cond:
+        return scope.get("religion_family") == cond["religion_family"]
+    if "doctrine" in cond:
+        return str(cond["doctrine"]) in (scope.get("doctrines") or ())
+    if "chaplain_female" in cond:
+        return bool(scope.get("chaplain_female")) == bool(cond["chaplain_female"])
     op = cond.get("op")
     ch = cond.get("children") or []
     if not ch:
@@ -1285,6 +1365,268 @@ def council_seat_word(table, tasks, task_type, government="", imperial=False):
         if v and not v.startswith("$") and not v.startswith("[") \
                 and not re.search(r"[A-Za-z]{2,}", v):
             return v
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# 主教称谓臂表 (v80 点5): common/customizable_localization 的 GetActualBishopTitle
+# ---------------------------------------------------------------------------
+# 游戏把「宫廷司祭」的教会词交给 GetActualBishopTitle
+# (`00_divinity_custom_loc.txt:659`), 那是一串**保序**的
+# `text = { trigger = … localization_key = … }` 臂, 先命中先取 —— 日本佛教臂
+# (culture 带 language_japonic + religion = buddhism_religion →
+# `councillor_court_chaplain_japanese_buddhism_religion` = 和尚, `:1126-1133`)
+# 排在通用佛教/印度系臂 (`…_buddhism_religion_empire` = 摩诃罗阇上师, `:1236-1247`)
+# 之前。旧稿 `facts.chaplain_title` 自己用键名正则复刻取词 (`_CHAPLAIN_WORD_RE`),
+# 只按「宗教组 × 层级」索引, 永远取不到**无层级后缀**的日/越/汉/藏/高丽键, 于是
+# 田所定治档输出「宫廷司祭日本摩诃罗阇上师」(游戏作「日本和尚」)。
+# 此处改为**解析游戏数据**, 与 `build_court_positions` 同法。
+
+
+def _data_roots(cfg):
+    """取表用的根目录序列 (本体在前, 启用 Mod 在后 —— 后者覆盖前者)。"""
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    return roots
+
+
+def _strip_comments(txt):
+    """删去 CK3 脚本里的**整行注释**。
+
+    块扫描器只看花括号配对, 于是被注释掉的 `text = { … }` 臂也会被当成真臂 ——
+    `GetActualBishopTitle` 里恰有一个被注释的 `ruler_title_name` 臂
+    (`00_divinity_custom_loc.txt:671-676`), 它一旦进表就以**空 trigger** 排在
+    第二位、恒命中 (实测把日本佛教档压成兜底词)。"""
+    out = []
+    for ln in (txt or "").split("\n"):
+        if ln.lstrip().startswith("#"):
+            continue
+        out.append(ln)
+    return "\n".join(out)
+
+
+# 行内「键 运算符」的起头 (用于把一行多个条件项摊成一行一项)
+_INLINE_ITEM_RE = re.compile(
+    r"(?<=\S)\s+(?=[A-Za-z_][A-Za-z0-9_.:]*(?:\s*(?:>=|<=|!=|\?=|=|>|<)))")
+
+
+def _split_inline_items(txt):
+    """把「一行多个条件项」摊成一行一项。
+
+    CK3 脚本常把两三个条件写在同一行 (如 `highest_held_title_tier >= tier_empire
+    faith.religion = faith:ashari.religion`); 项目既有的 `_script_items` 会把后半个
+    条件吞进前一项的值里, 层级条件于是变成 `unknown` 而恒不命中 (实测伊斯兰诸臂
+    全废、退到 theocrat 兜底词「主教」)。只在新解析器 (主教臂表 / 席位名链) 里启用,
+    以免改动既有法院职位表的既定行为。"""
+    return _INLINE_ITEM_RE.sub("\n", txt or "")
+
+
+def _religion_maps(cfg, roots=None):
+    """`common/religion/religion_types/*.txt`
+    → {"religions": {宗教键: 宗教族}, "faiths": {信仰键: 宗教键}}。
+
+    宗教族用于 `is_in_family = rf_pagan` 这类条件; 信仰表用于把
+    `faith.religion = faith:theravada.religion` 折成所在宗教键。"""
+    religions, faiths = {}, {}
+    for root in (roots if roots is not None else _data_roots(cfg)):
+        d = os.path.join(root, "common", "religion", "religion_types")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = _strip_comments(fp.read())
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                m = re.search(r"(?<![A-Za-z0-9_])family\s*=\s*([A-Za-z0-9_]+)",
+                              body)
+                if m:
+                    religions[key] = m.group(1)
+                for fb in _blocks_of(body, "faiths"):
+                    for fk, _fbody in _top_blocks(fb):
+                        faiths[fk] = key
+    return {"religions": religions, "faiths": faiths}
+
+
+def _bishop_titles_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "bishop_titles.json")
+
+
+def build_bishop_titles(cfg):
+    """`GetActualBishopTitle` 保序臂表 → {"arms": [{"loc_key", "when"}…],
+    "religions": {宗教键: 族}, "faiths": {信仰键: 宗教键}} (保序, Mod 同名块覆盖)。"""
+    groups = _heritage_groups(cfg)
+    roots = _data_roots(cfg)
+    rel = _religion_maps(cfg, roots)
+    arms = []
+    for root in roots:
+        d = os.path.join(root, "common", "customizable_localization")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = _strip_comments(fp.read())
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                if key != "GetActualBishopTitle":
+                    continue
+                arms = []          # Mod 同名定义整体覆盖 (与法院职位同口径)
+                for blk in _blocks_of(body, "text"):
+                    lk = re.search(r"localization_key\s*=\s*([A-Za-z0-9_]+)", blk)
+                    tr = _blocks_of(blk, "trigger")
+                    cond = _cond_block(_script_items(_split_inline_items(tr[0])),
+                                       groups, religions=rel, split_inline=True) \
+                        if tr else {}
+                    arms.append({"loc_key": lk.group(1) if lk else "",
+                                 "when": cond})
+    return {"schema": 1, "arms": arms,
+            "religions": rel.get("religions") or {},
+            "faiths": rel.get("faiths") or {}}
+
+
+def save_bishop_titles(cfg, table):
+    path = _bishop_titles_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_bishop_titles(cfg=None, force=False):
+    """载入主教称谓臂表; 缺失或强制时重建 (与本地化表同源的静态表)。"""
+    cfg = cfg or llm.load_config()
+    path = _bishop_titles_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("arms"):
+                return data
+        except Exception:
+            pass
+    data = build_bishop_titles(cfg)
+    save_bishop_titles(cfg, data)
+    return data
+
+
+def pick_bishop_title(table, scope):
+    """保序臂表首个命中臂的本地化键 (无命中返回 '')。"""
+    for a in (table or {}).get("arms") or []:
+        if cond_match(a.get("when") or {}, scope or {}):
+            return a.get("loc_key") or ""
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# 议会席位名链 (v80 点5): common/council_positions 的 `name = { first_valid = … }`
+# ---------------------------------------------------------------------------
+# 属世神权信仰 (`doctrine_theocracy_temporal`) 与异教族 (`rf_pagan`) 下, 游戏把
+# 宫廷司祭席位的**名字**整个交给 `actual_bishop_title`
+# (`00_council_positions.txt:649` 的 name 链, 命中臂 `:703-713`), 故正确串是
+# 「日本和尚忠盛」, 而不是「宫廷司祭」再叠教会词。
+
+
+def _council_names_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "council_names.json")
+
+
+def _name_arms(block, groups, religions, extra=None):
+    """`name` 链 → [{"desc": 键或 'actual_bishop_title', "when": 条件树}…] (保序)。
+
+    `desc` 既可以是本地化键, 也可以是 `desc = { first_valid = { … } }` 这样的
+    嵌套餐 (与外壳的 trigger 取 AND)。"""
+    out = []
+    for blk in _blocks_of(block, "triggered_desc"):
+        tr = _blocks_of(blk, "trigger")
+        cond = _cond_block(_script_items(_split_inline_items(tr[0])), groups,
+                           religions=religions, split_inline=True) if tr else {}
+        if extra:
+            cond = {"op": "all", "children": [extra, cond]} if cond else extra
+        m = re.search(r"desc\s*=\s*([A-Za-z0-9_]+)", blk)
+        if m:
+            out.append({"desc": m.group(1), "when": cond})
+            continue
+        db = _blocks_of(blk, "desc")
+        if db:
+            fv = _blocks_of(db[0], "first_valid")
+            src = fv[0] if fv else db[0]
+            out.extend(_name_arms(src, groups, religions, extra=cond))
+    return out
+
+
+def build_council_names(cfg):
+    """各议会席位的 `name` 链 → {"positions": {席位键: [臂…]}} (本体 + 启用 Mod)。"""
+    groups = _heritage_groups(cfg)
+    roots = _data_roots(cfg)
+    rel = _religion_maps(cfg, roots)
+    positions = {}
+    for root in roots:
+        d = os.path.join(root, "common", "council_positions")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = _strip_comments(fp.read())
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                nb = _blocks_of(body, "name")
+                if not nb:
+                    continue
+                fv = _blocks_of(nb[0], "first_valid")
+                src = fv[0] if fv else nb[0]
+                arms = _name_arms(src, groups, rel)
+                if arms:
+                    positions[key] = arms     # Mod 同名定义整体覆盖
+    return {"schema": 1, "positions": positions}
+
+
+def save_council_names(cfg, table):
+    path = _council_names_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_council_names(cfg=None, force=False):
+    cfg = cfg or llm.load_config()
+    path = _council_names_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("positions"):
+                return data
+        except Exception:
+            pass
+    data = build_council_names(cfg)
+    save_council_names(cfg, data)
+    return data
+
+
+def council_name_desc(table, position, scope):
+    """席位名链首个命中臂的 desc (无表/无命中返回 ''); `actual_bishop_title`
+    是游戏侧的**委托标记** —— 调用方据此改用 `Facts.chaplain_title`。"""
+    for a in ((table or {}).get("positions") or {}).get(position) or []:
+        if cond_match(a.get("when") or {}, scope or {}):
+            return a.get("desc") or ""
     return ""
 
 
@@ -1750,6 +2092,8 @@ _REL_TPL = None
 _LEVELS = None
 _COURT_POSITIONS = None
 _COUNCIL_TASKS = None
+_BISHOP_TITLES = None
+_COUNCIL_NAMES = None
 _TRAIT_NAMES = None
 _TRAIT_TRACKS = None
 _HOOK_TYPES = None
@@ -1777,6 +2121,22 @@ def council_tasks(cfg=None):
     if _COUNCIL_TASKS is None:
         _COUNCIL_TASKS = load_council_tasks(cfg or llm.load_config())
     return _COUNCIL_TASKS
+
+
+def bishop_titles(cfg=None):
+    """主教称谓保序臂表单例 (v80 点5): {"arms": […], "religions": …, "faiths": …}。"""
+    global _BISHOP_TITLES
+    if _BISHOP_TITLES is None:
+        _BISHOP_TITLES = load_bishop_titles(cfg or llm.load_config())
+    return _BISHOP_TITLES
+
+
+def council_names(cfg=None):
+    """议会席位名链单例 (v80 点5): {"positions": {席位键: [臂…]}}。"""
+    global _COUNCIL_NAMES
+    if _COUNCIL_NAMES is None:
+        _COUNCIL_NAMES = load_council_names(cfg or llm.load_config())
+    return _COUNCIL_NAMES
 
 
 def trait_names(cfg=None):

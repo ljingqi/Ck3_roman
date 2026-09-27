@@ -1482,6 +1482,16 @@ class Facts:
         except Exception:
             self._sacrifice_doctrines = set()
         self._council_tasks = L.council_tasks()
+        # v80 (点5): 主教称谓保序臂表 + 议会席位名链 (游戏 GetActualBishopTitle /
+        # `council_positions.name` 的解析结果) —— 宫廷司祭的教会词与席位名的权威来源。
+        try:
+            self._bishop_titles = L.bishop_titles()
+        except Exception:
+            self._bishop_titles = {"arms": []}
+        try:
+            self._council_names = L.council_names()
+        except Exception:
+            self._council_names = {"positions": {}}
         self._title_by_key = {}
         for tid, t in self._lt.items():
             if not isinstance(t, dict):  # v7: none 条目防护
@@ -12138,10 +12148,16 @@ class Facts:
             who = e.get("owner")
             nm = self.person_label(who, date=self.as_of, style="brief") if isinstance(who, int) else ""
             # v58 (问题6): 宫廷司祭席带教会称谓 (游戏显示「宫廷司祭佛罗伦萨主教卡利斯托」)
+            # v80 (点5): 属世神权信仰 / 异教族下游戏的席位名链整个委托给
+            # `actual_bishop_title` (`00_council_positions.txt:703-713`), 此时席位名
+            # **就是**教会词 —— 故顶替席位词, 出「日本和尚忠盛」而不是
+            # 「宫廷司祭日本和尚忠盛」。
             if (e.get("type") or "") in self._CHAPLAIN_SEAT_TASKS \
                     and isinstance(who, int):
                 _ct = self.chaplain_title(who, date=self.as_of)
                 if _ct:
+                    if self._chaplain_seat_is_bishop_title(e, who):
+                        word = ""
                     nm = f"{_ct}{nm}" if nm else _ct
             if word and nm:
                 # v29b: 官职与大臣名直连 (「长史延寿」), 不再用「长史（延寿）」
@@ -12165,6 +12181,26 @@ class Facts:
         gov, imperial = self._council_scope()
         return L.council_seat_word(self.table, self._council_tasks, task_type,
                                    gov, imperial)
+
+    def _chaplain_seat_is_bishop_title(self, seat, who=None):
+        """该司祭席的**名字**是否由游戏委托给 `actual_bishop_title` (v80 点5)。
+
+        判据 = 解析 `common/council_positions` 的 `name = { first_valid = … }` 臂表,
+        首个命中臂的 desc 是否等于 `actual_bishop_title`
+        (`00_council_positions.txt:649` 的 name 链 / `:703-713` 的委托臂 ——
+        条件为「属世神权信仰 `doctrine_theocracy_temporal` 或异教族 `rf_pagan`」)。"""
+        pos = ((self._council_tasks or {}).get("tasks") or {}) \
+            .get(seat.get("type") or "") or ""
+        if not pos or not self._council_names:
+            return False
+        liege = seat.get("court_owner")
+        if not isinstance(liege, int):
+            liege = self.cache.get("player_id")
+        if not isinstance(liege, int):
+            return False
+        scope = self._bishop_scope(liege, who, self.as_of)
+        return L.council_name_desc(self._council_names, pos, scope) \
+            == "actual_bishop_title"
 
     # ---- v58 (问题6): 宫廷司祭 (realm priest) 的教会称谓 ----
     #
@@ -12234,12 +12270,66 @@ class Facts:
                 return w
         return ""
 
+    def _bishop_scope(self, liege, who=None, date=None):
+        """主教称谓臂表 + 议会席位名链的求值域 (v80 点5)。
+
+        对应游戏触发条件用到的槽位: `highest_held_title_tier`(领主层级)、
+        `culture = { has_cultural_pillar = … }`(文化支柱)、`government_has_flag`、
+        `religion = religion:x` / `faith.religion = faith:y.religion`(宗教键)、
+        `religion = { is_in_family = rf_z }`(宗教族)、`has_doctrine`(教义)、
+        `NOT = { cp:councillor_court_chaplain ?= { is_female = yes } }`(司祭性别)。"""
+        d = date or self.as_of
+        scope = {"tier": self._top_rank_now(liege, d),
+                 "chaplain_female": (bool(self._is_female(who))
+                                     if who is not None else False)}
+        rec = (self.cache.get("characters") or {}).get(str(liege)) or {}
+        # v80 (点5): `culture = { has_cultural_pillar = X }` 可指 heritage_/language_/
+        # ethos_/tradition_ 任何一桩 (游戏 Japanese 臂用的是 `language_japonic`),
+        # 故把文化条目的四类桩并成 pillars 集合; heritage 仍单列 (旧调用方的语义)。
+        ce = self._culture_entry(liege, d)
+        heritage = str(ce.get("heritage") or "")
+        pillars = set()
+        for _v in (ce.get("heritage"), ce.get("language"), ce.get("ethos")):
+            if isinstance(_v, str) and _v:
+                pillars.add(_v)
+        for _t in (ce.get("traditions") or []):
+            if isinstance(_t, str) and _t:
+                pillars.add(_t)
+        scope["heritage"] = heritage
+        scope["pillars"] = pillars
+        scope["gov_flag"] = L.government_prefix(
+            (rec.get("landed") or {}).get("government") or "")
+        maps = self._bishop_titles or {}
+        faiths_map = maps.get("faiths") or {}
+        rel = self.melt.get("religion") or {}
+        fid = self._faith_id(liege, d)
+        fe = (rel.get("faiths") or {}).get(str(fid)) or {}
+        re_ = (rel.get("religions") or {}).get(str(fe.get("religion"))) or {}
+        fkey = str(fe.get("key") or fe.get("tag") or "")
+        rkey = str(re_.get("religion_type") or re_.get("tag") or "")
+        if fkey and fkey in faiths_map:
+            # 信仰键优先折成所在宗教键 (游戏 faith.religion 口径)
+            rkey = faiths_map[fkey]
+        scope["religion"] = rkey
+        scope["religion_family"] = str((maps.get("religions") or {}).get(rkey)
+                                       or re_.get("family") or "")
+        try:
+            scope["doctrines"] = list(self.faith_doctrines(liege) or [])
+        except Exception:
+            scope["doctrines"] = []
+        return scope
+
     def chaplain_title(self, cid, date=None):
-        """宫廷司祭的教会称谓 (v58 问题6) → 「托斯卡纳主教」; 无料返回 ''。
+        """宫廷司祭的教会称谓 (v58 问题6) → 「托斯卡纳主教」/「日本和尚」; 无料返回 ''。
 
         判据: cid 是某领主 (court_owner) 议会「宫廷司祭」席
         (`council_task_manager.active[*].type == task_religious_relations`) 的持有人;
-        教会词按该领主的宗教组 × 其最高头衔层级取; 地名取该领主的首要头衔名。"""
+        教会词按该领主 × 该司祭取; 地名取该领主的首要头衔名。
+        v80 (点5): 教会词改走游戏**保序臂表** `GetActualBishopTitle`
+        (`localization.bishop_titles`) —— 先命中先取, 于是日本佛教档取到
+        `councillor_court_chaplain_japanese_buddhism_religion` = 和尚 (旧稿的
+        「宗教组 × 层级」索引取不到无层级后缀的键, 落印度系 = 摩诃罗阇上师);
+        臂表未命中/缺表时退旧索引 (Mod 与缺数据情形仍出词)。"""
         if cid is None or not self.melt:
             return ""
         act = (self.melt.get("council_task_manager") or {}).get("active") or {}
@@ -12262,14 +12352,24 @@ class Facts:
             place = self._name_at_date(tid, d) or self.title_base_name(tid)
         if not place:
             return ""
-        fid = self._faith_id(liege, d)
-        rel = self.melt.get("religion") or {}
-        fe = (rel.get("faiths") or {}).get(str(fid)) or {}
-        re_ = (rel.get("religions") or {}).get(str(fe.get("religion"))) or {}
-        rel_id = re_.get("religion_type") or re_.get("tag") or ""
-        rel_tag = re_.get("tag") or ""
-        word = self._chaplain_word(rel_id, rel_tag, tier,
-                                   female=self._is_female(cid))
+        word = ""
+        # ① 游戏保序臂表 (先命中先取)
+        _k = L.pick_bishop_title(self._bishop_titles,
+                                 self._bishop_scope(liege, cid, d))
+        if _k:
+            v = L.loc(self.table, _k)
+            if v and not v.startswith("$") and not v.startswith("["):
+                word = v
+        # ② 旧兜底: 宗教组 × 层级 索引
+        if not word:
+            fid = self._faith_id(liege, d)
+            rel = self.melt.get("religion") or {}
+            fe = (rel.get("faiths") or {}).get(str(fid)) or {}
+            re_ = (rel.get("religions") or {}).get(str(fe.get("religion"))) or {}
+            rel_id = re_.get("religion_type") or re_.get("tag") or ""
+            rel_tag = re_.get("tag") or ""
+            word = self._chaplain_word(rel_id, rel_tag, tier,
+                                       female=self._is_female(cid))
         if not word:
             return ""
         return f"{place}{word}"
