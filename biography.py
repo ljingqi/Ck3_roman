@@ -2336,44 +2336,52 @@ def _fix_person_names(text, facts, cache):
     起因: 田所定治 十年1 总纲把「六角继子」写成「六角**妻子**」——「继子」形似普通
     名词, 模型把它当成了亲属词。总纲要被逐字注入每一篇 (六次), 于是 `_fix_kin_roles`
     改不动 (它只管亲属词改名, 不管名字被改), 一错到底。
-    判据: 以本篇事实里的**已知人名**为准 —— 取每个名字的姓部 (末二字之前的整段)
-    与其名 (末二字), 凡正文里出现「姓 + 某亲属词」且该串**不是**素材里任何人的名字、
-    而该姓氏在本篇只对应一个人时, 恢复为那个人的全名。纯函数、幂等; 不猜则不动。"""
+
+    判据 (v80 二稿, 首稿的「同姓唯一」过严 —— 六角一族在材料里有五人, 一处都改不成):
+      以本篇事实里的已知人名为准, 取「姓部 + 名(末二字)」。凡正文出现「姓 + 某亲属
+      词 W」且该串不是素材里任何人的名字时, 在**同姓者**中找「相对本篇传主的真实
+      亲属词 == W」的那一位 (用 `F.kin_word`, 与 `_fix_kin_roles` 同源口径):
+        · 恰好一位 → 恢复其全名 (「六角妻子」→「六角继子」, 她是传主之妻);
+        · 零位或多位 → 不动 (不猜)。纯函数、幂等。"""
     if not text:
         return text
     chars = (facts or {}).get("characters") or {}
-    names = []
-    for rec in chars.values():
+    pid = cache.get("player_id") or (facts or {}).get("player_id")
+    by_name, by_sur = {}, {}
+    for cid_s, rec in chars.items():
         nm = (rec or {}).get("name") or ""
-        if len(nm) >= 3 and re.search(r"[\u3400-\u9fff]", nm):
-            names.append(nm)
-    if not names:
-        return text
-    known = set(names)
-    # 姓部 → {正确全名}; 只保留**唯一**对应者 (多义即不判)
-    by_sur = {}
-    for nm in known:
-        sur = nm[:-2]
-        if not sur:
+        if len(nm) < 3 or not re.search(r"[\u3400-\u9fff]", nm):
             continue
-        by_sur.setdefault(sur, set()).add(nm)
-    uniq = {s: next(iter(v)) for s, v in by_sur.items()
-            if len(v) == 1 and len(s) >= 2}
-    if not uniq:
+        try:
+            cid = int(cid_s)
+        except (TypeError, ValueError):
+            continue
+        sur = nm[:-2]
+        if len(sur) < 2:
+            continue
+        by_name.setdefault(nm, cid)
+        by_sur.setdefault(sur, {})[nm] = cid
+    if not by_sur or pid is None:
         return text
-    words = sorted(F.kin_texts(), key=len, reverse=True)
-    words = [w for w in words if len(w) >= 2]
+    known = set(by_name)
+    words = [w for w in sorted(F.kin_texts(), key=len, reverse=True)
+             if len(w) >= 2]
     out = text
-    for sur, full in uniq.items():
-        given = full[-2:]
+    for sur, cands in by_sur.items():
         for w in words:
             bad = sur + w
-            if bad == full or bad in known:
+            if bad in known or bad not in out:
                 continue
-            if bad not in out:
-                continue
-            # 只改「后面不接正确名字」的形态 (防把正确的「六角继子」改坏)
-            out = out.replace(bad, full)
+            hit = ""
+            for nm in sorted(cands):
+                try:
+                    if F.kin_word(cache, pid, cands[nm]) == w:
+                        hit = nm
+                        break
+                except Exception:
+                    continue
+            if hit:
+                out = out.replace(bad, hit)
     # 纠名自身不得造出相邻重复 (与 _fix_kin_roles 同收口)
     return _dedup_adjacent_words(out)
 
@@ -2434,6 +2442,8 @@ def _fix_kin_roles(text, facts, cache):
                     if not w or w == true_word:
                         continue
                     j = win.rfind(w)
+                    if j < 0:
+                        continue        # 窗口里没有该词 (rfind 返回 -1, 不得参与比较)
                     # v80 (点3): 同位置取**最长**词 —— 新表有 42 对互为后缀的词
                     # (伯祖父 ⊃ 祖父、侄孙女 ⊃ 孙女、外曾孙女 ⊃ 曾孙女…), 只比位置
                     # 会把「曾祖父X」里的「祖父」当错词, 把更精确的词换成更粗的词。
