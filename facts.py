@@ -4882,12 +4882,61 @@ class Facts:
         return idx
 
     def _char_death_date(self, cid):
-        """该角色的卒日 (缓存 `characters[].death`; 主角回读 `player_death`)。"""
+        """该角色的卒日 (缓存 `characters[].death`; 主角回读 `player_death`;
+        再退回熔件三桶的 `dead_data.date`)。
+
+        v79: 熔件兜底 —— 判「卒日判离」(见 `is_widow_divorce`) 时, 离婚流水两端
+        常有一端不在本传主缓存里 (缓存只并入本传主在位的档), 而 `dead_unprunable`
+        一直保留亡者对象字段 (`cache_lib._extract_snapshot` 同源读取)。查不到
+        一律返回空串 (判据宁缺勿猜), 结果按 id 记忆化。"""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return ""
+        memo = getattr(self, "_death_date_memo", None)
+        if memo is None:
+            memo = self._death_date_memo = {}
+        if cid in memo:
+            return memo[cid]
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         d = (rec.get("death") or {}).get("date")
         if not d and cid == self.cache.get("player_id"):
             d = (self.cache.get("player_death") or {}).get("date")
-        return str(d or "")
+        if not d:
+            for bucket in ((self.melt.get("living") or {}),
+                           (self.melt.get("dead_unprunable") or {}),
+                           ((self.melt.get("characters") or {}).get(
+                               "dead_prunable") or {})):
+                c = bucket.get(str(cid))
+                if isinstance(c, dict):
+                    dd = c.get("dead_data") or {}
+                    if dd.get("date"):
+                        d = dd.get("date")
+                        break
+        memo[cid] = str(d or "")
+        return memo[cid]
+
+    def is_widow_divorce(self, raw, date):
+        """该条家族关系流水是否为「卒日引擎判离」(v79, 用户 2026-09-27)。
+
+        引擎在婚配一方**死亡当日**也写一条「…与…离婚」流水 (全档 251 条里
+        60 条发起方当日卒、第二端 0 条 —— `docs/调研_v76_婚配起止与离异留痕.md`
+        §A.6), 故「日期 == 任一端卒日」的离婚流水一律不是离异, 一切展示面都不得
+        采用: 传主侧的配偶清单由 `spouse_end` 的卒日守卫丢弃 (v76), 《家族恩怨录》
+        与仇人列传的近因流水由本判据在**渲染前**丢弃 (v79 —— 久保终传里出现
+        「919年2月24日浩二与大和春子、大和规子离婚」, 而 919.2.24 正是浩二卒日)。"""
+        s = str(raw or "")
+        if "离婚" not in s or not date:
+            return False
+        for _i in _FEUD_CHAR_RE.findall(s):
+            try:
+                cid = int(_i)
+            except (TypeError, ValueError):
+                continue
+            d = self._char_death_date(cid)
+            if d and cl.date_key(d) == cl.date_key(date):
+                return True
+        return False
 
     def spouse_end(self, pid, other):
         """该对 (传主 × 配偶) 的婚配终了 → `(date, kind, source, precision)` (v76 问题2)。
@@ -4906,8 +4955,7 @@ class Facts:
         for date, raw in self._house_pair_flows().get(frozenset((pid, other)), []):
             if not date or "离婚" not in raw:
                 continue
-            if (d_self and cl.date_key(date) == cl.date_key(d_self)) \
-                    or (d_other and cl.date_key(date) == cl.date_key(d_other)):
+            if self.is_widow_divorce(raw, date):
                 continue                       # 坑①: 引擎把丧偶也写成「离婚」
             cands.append((cl.date_key(date), date, "divorce", "house_relations", "day"))
         # 其他家族关系流水里「同族通婚」查不到时, 记忆 `married` 只给起日, 不给终了
@@ -8801,8 +8849,11 @@ class Facts:
             for e in (r.get("history") or []):
                 if not isinstance(e, dict) or str(e.get("date")) != str(date):
                     continue
-                txt = self._rerender_feud_event(e.get("change_reason") or "",
-                                                date, houses=hs)
+                raw = str(e.get("change_reason") or "")
+                # v79: 卒日判离 (丧偶当日引擎也写「离婚」) 不入结仇近因
+                if self.is_widow_divorce(raw, str(e.get("date") or "")):
+                    continue
+                txt = self._rerender_feud_event(raw, date, houses=hs)
                 if txt and txt not in out:
                     out.append(txt)
         return out
@@ -9304,16 +9355,21 @@ class Facts:
             ids = [i for i in (ent.get("ids") or []) if isinstance(i, int)]
             if len(ids) < 2:
                 continue
-            # v78: 关系流水模板恒为「[施事者]囚禁了[对象]」
+            # v79: 世仇缘由式囚禁流水 (「A被B无理由囚禁」, id 次序 = 被囚者, 施事者;
+            # 日期是结仇升级日) 不造节点 —— 该囚禁事实另有事件式专属行与节点。
+            _rawtxt = ent.get("raw") or ent.get("text") or ""
+            if _is_feud_reason_prison(_rawtxt):
+                continue
+            # v78: 事件式流水模板恒为「[施事者]囚禁了[对象]」
             # (house_relations_l_simp_chinese.yml:50), 故 id 出现次序即
             # (监禁者, 被囚者) —— 不能按「谁属对方家族」定角色: 反向条目
             # (他族囚我方) 的施事者才是对方族人。
             victim = jailer = None
             _a, _b = ids[0], ids[1]
             _ah, _bh = _house(_a), _house(_b)
-            if (_ah in my_houses and _bh == other_house):
+            if _ah in my_houses and _bh == other_house:
                 jailer, victim = _a, _b
-            elif (_ah == other_house and _bh in my_houses):
+            elif _ah == other_house and _bh in my_houses:
                 jailer, victim = _a, _b
             if victim is None or jailer is None:
                 continue
@@ -9531,6 +9587,10 @@ class Facts:
             lvl = r.get("level") or ""
             _neg_in_win = any(_in_window(str(e.get("date") or ""))
                               and (e.get("amount") or 0) < 0
+                              # v79: 卒日判离不是仇怨, 不据此把族拉进恩怨录
+                              and not self.is_widow_divorce(
+                                  e.get("change_reason") or "",
+                                  str(e.get("date") or ""))
                               for e in (r.get("history") or []))
             if lvl not in NEG and not _neg_in_win:
                 continue
@@ -9560,6 +9620,16 @@ class Facts:
                 # 修复方案_菲利普2.md 问题3: 游戏原文只写「国王/王」无国号)
                 # v43: 传两族 id 与对方族称 —— 自指式条目降级为「{对方家族}族人」
                 _raw = e.get("change_reason") or ""
+                # v79: 卒日判离 (见 `is_widow_divorce`) —— 引擎在一方亡故当日也写
+                # 「离婚」流水, 用户 2026-09-27 报告久保终传据此写出「919年2月24日
+                # 浩二与大和春子、大和规子离婚」。整条不入事件、不入节点兜底、
+                # 不参与 `_neg_in_win` 入选判据。
+                if self.is_widow_divorce(_raw, d):
+                    continue
+                # v79: 世仇缘由式囚禁 (被动句, id 次序反 + 日期是结仇升级日) 整条
+                # 不入事件、不入节点兜底 —— 该囚禁事实另有事件式专属行 (实测 4/4)。
+                if _is_feud_reason_prison(_raw):
+                    continue
                 txt = self._rerender_feud_event(_raw, d,
                                                 houses=hs, other_label=_hlabel)
                 if not txt:
@@ -9582,7 +9652,7 @@ class Facts:
                 _raw_ids[(d, txt)] = set(_ids)
                 if any(_k in txt for _k in _PRISON_KIND_WORDS):
                     _raw_prison.append({"date": d, "ids": list(_ids),
-                                        "text": txt})
+                                        "text": txt, "raw": _raw})
                 events.append((d, txt))
             # v34 (问题6): 补战争因果节点 — 宣战/战胜/夺其头衔/沦为无地冒险者。
             # 关系流水的「向X宣战」不带战争类型、「成为X的仇敌」只记结果,
@@ -18905,6 +18975,33 @@ _WAR_KIND_WORDS = ("宣战", "开战", "应战", "战胜", "战败", "赢得战�
 
 # v34 (问题7): 囚禁类措辞 — 同日的旧「囚禁了X」由带出狱情形的节点取代
 _PRISON_KIND_WORDS = ("囚禁了", "囚禁")
+
+# v79 (用户 2026-09-27): 关系流水的「囚禁」有两种句式, **id 次序相反** ——
+#   · 事件式 `house_relation_reason_imprisonment_desc` (`house_relations_l_simp_chinese.yml:50`)
+#     「[char]囚禁了[target_char]」 → id 次序 = (施事者, 被囚者), 日期 = 囚禁日;
+#   · 世仇缘由式 `house_relation_reason_feud_head_imprisoned` (`:82`, 别名 `:83`)
+#     「[house_feud_victim]被[house_feud_attacker]无理由囚禁」 →
+#     id 次序 = (被囚者, 施事者), 日期 = **结仇升级日** (崔佛档 907.10.27 那条,
+#     真囚禁在 906.6.13)。
+# v78-2 的流水兜底按 id 次序硬读, 于是把「昆伯被崔佛囚禁」读成「昆伯囚禁崔佛」,
+# 还给主角挂上「至末档仍在押」的结局 (用户报告: 崔佛从未被囚)。
+# 实测 (`tools/tests/probe_v79_feudprison.py`, 三战役 5636 条囚禁流水): 缘由式
+# 仅 4 条 (田所 2 / 菲利普2 1 / 斯卡利茨 1), 且 **4/4** 都在同一条关系记录里有
+# 同一被囚者的**事件式专属行** —— 故缘由式整条不入事件、不造节点, 既不丢料,
+# 也不会造出方向翻转、日期错位的「假囚禁」。
+_PRISON_DESC_WORD = "囚禁了"
+
+
+def _is_feud_reason_prison(raw):
+    """该条流水的「囚禁」是否为**世仇缘由式的被动句** (id 次序 = 被囚者, 施事者)。
+
+    事件式恒含「囚禁了」; 缘由式是「…被…无理由囚禁」, 两者互斥。`raw` 传
+    `house_relations.database[*].history[*].change_reason` 原文 (渲染后的句面
+    同样保留「被」, 故两者皆可)。"""
+    s = str(raw or "")
+    if "囚禁" not in s or _PRISON_DESC_WORD in s:
+        return False
+    return "被" in s
 
 # v34 (问题1, 用户拍板): 这些关系链在句面上写明「谁是谁的亲生子女」,
 # 属史官不可知的内宅隐情 — 只进《家室列传》《阴私录》, 不进《本纪》等公开篇目。
