@@ -14104,7 +14104,12 @@ _IDENT_TYPES = frozenset(
     | {"imprisoned", "imprisoned_other", "released_from_prison_memory",
        "escaped_from_prison_memory",
        "child_born", "first_born", "twins_born", "child_premature",
-       "child_stillborn"}
+       "child_stillborn",
+       # v78-3 (用户问题2): 盟战与白和也进 ident —— 战事重建 (兴兵↔决胜配对、
+       # 补对手/宣战理由/战场) 全靠 ident 里的槽位; 旧稿这三型不在 ident 内,
+       # 于是盟战行永远停在「助盟友作战」、白和行连事件都不生成。
+       "joined_allys_war", "war_white_peace_attacker",
+       "war_white_peace_defender"}
 )
 
 _DATE_PREFIX_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
@@ -14224,6 +14229,302 @@ def _drop_mirror_pairs(events, pid, pname=""):
                          < _mirror_rank(b, pid, pname) else j)
                 if i in drop:
                     break
+    return [e for i, e in enumerate(events) if i not in drop]
+
+
+# ---------------------------------------------------------------------------
+# v78-3 (用户问题2): 战事材料重建 —— 兴兵 ↔ 决胜配对成段, 并补齐
+# 对手 / 宣战理由 / 争战目标 / 夺取的领地; 战斗行补地点与对手。
+# ---------------------------------------------------------------------------
+# 起因: 旧稿用 `style.MEMORY_TEMPLATES` 的七个**单槽**模板 (「{name}主动开战。」
+# 「{name}被迫应战。」「{name}赢得战争。」「{name}取胜。」…) —— 记忆里明明带着
+# `other_party`/`loser`/`winner`/`war_cb`/`war_title`/`battle_location`,
+# 全被丢掉; 且同一次战争的兴兵与决胜是两行互不相认 (`_drop_mirror_pairs` 只按
+# **同一日期**配对)。实测菲利普2/崔佛终传: 大事年表 335 条里 75 条是战事行,
+# 模型被逼出「失利的对手名, 于本档」「一年之内第七次取胜」这类句子。
+# 用户 2026-09-27 拍板 D4 = A 档: **只配对与补细节, 不丢任何事实行**。
+_WAR_START_TYPES = ("offensive_war", "defensive_war", "joined_allys_war")
+_WAR_END_TYPES = ("war_won", "war_lost",
+                  "war_white_peace_attacker", "war_white_peace_defender")
+_WAR_MEM_TYPES = frozenset(_WAR_START_TYPES + _WAR_END_TYPES)
+
+
+def _war_mem_meta(mem):
+    """战事记忆的**战略槽** (v78-3): 宣战理由/目标头衔/宣称者/兴兵方/盟友/战场州府。
+
+    建 ident 时顺手摘下 (ident 只带 owner/parts, vars 不带, 配对与出句都要用)。"""
+    out = {}
+    for v in mem.get("vars") or []:
+        fl = v.get("flag")
+        ident = v.get("identity")
+        if fl == "war_cb":
+            out["cb"] = str(v.get("value") or "")
+        elif fl == "war_title" and isinstance(ident, int):
+            out["title"] = ident
+        elif fl == "war_claimant" and isinstance(ident, int):
+            out["claimant"] = ident
+        elif fl == "war_attacker" and isinstance(ident, int):
+            out["attacker"] = ident
+        elif fl == "war_ally" and isinstance(ident, int):
+            out["ally"] = ident
+        elif fl == "battle_location" and isinstance(ident, int):
+            out["loc"] = ident
+    return out
+
+
+def _war_cb_word(f, cb):
+    """`war_memory_cb_*` → 中文战名 (查本地化表); 查不到返回 '' (宁缺不直出裸键)。"""
+    cb = str(cb or "")
+    if not cb:
+        return ""
+    try:
+        w = L.loc(getattr(f, "table", None) or {}, cb)
+    except Exception:
+        w = ""
+    if not w or w == "战争":          # `war_memory_cb_fallback` 的正文就是「战争」
+        return ""
+    return w
+
+
+def _war_slots(f, ev):
+    """战事事件 → {"sides", "atk", "dfd", "cb", …} 或 None (v78-3)。
+
+    `sides` = 交战双方 id 集 (配对键的第一段), `cb` = 宣战理由 (第二段)。"""
+    ident = ev.get("ident") or {}
+    if not ident:
+        return None
+    parts = {k: v for k, v in (ident.get("parts") or {}).items()
+             if isinstance(v, int)}
+    owner = ident.get("owner")
+    meta = ident.get("war") or {}
+    t = ev.get("type")
+    cb = str(meta.get("cb") or "")
+    atk_v = meta.get("attacker")
+    if t == "offensive_war":
+        opp = parts.get("other_party")
+        if not isinstance(owner, int) or not isinstance(opp, int):
+            return None
+        return {"sides": frozenset({owner, opp}), "atk": owner, "dfd": opp,
+                "cb": cb, "title": meta.get("title"),
+                "claimant": meta.get("claimant")}
+    if t == "defensive_war":
+        opp = parts.get("other_party")
+        if not isinstance(owner, int) or not isinstance(opp, int):
+            return None
+        atk = atk_v if isinstance(atk_v, int) else opp
+        return {"sides": frozenset({owner, opp}), "atk": atk, "dfd": owner,
+                "cb": cb, "title": meta.get("title"),
+                "claimant": meta.get("claimant")}
+    if t == "joined_allys_war":
+        ally, enemy = parts.get("ally"), parts.get("enemy")
+        if not isinstance(ally, int) or not isinstance(enemy, int):
+            return None
+        atk = atk_v if isinstance(atk_v, int) else enemy
+        return {"sides": frozenset({ally, enemy}), "ally": ally, "enemy": enemy,
+                "atk": atk, "dfd": enemy if atk == ally else ally, "cb": cb,
+                "title": meta.get("title")}
+    if t in ("war_won", "war_lost"):
+        w, l = parts.get("winner"), parts.get("loser")
+        if not isinstance(w, int):
+            w = owner if t == "war_won" and isinstance(owner, int) else None
+        if not isinstance(l, int):
+            l = owner if t == "war_lost" and isinstance(owner, int) else None
+        if not isinstance(w, int) or not isinstance(l, int):
+            return None
+        return {"sides": frozenset({w, l}), "winner": w, "loser": l,
+                "atk": atk_v if isinstance(atk_v, int) else w, "dfd": l, "cb": cb,
+                "title": meta.get("title")}
+    if t in ("war_white_peace_attacker", "war_white_peace_defender"):
+        a, d = parts.get("attacker"), parts.get("defender")
+        if not isinstance(a, int):
+            a = owner if t == "war_white_peace_attacker" else None
+        if not isinstance(d, int):
+            d = owner if t == "war_white_peace_defender" else None
+        if not isinstance(a, int) or not isinstance(d, int):
+            return None
+        return {"sides": frozenset({a, d}), "atk": a, "dfd": d, "white": True,
+                "cb": cb, "title": meta.get("title")}
+    return None
+
+
+def _war_title_gain(f, winner, loser, d0, d1):
+    """胜者从败者手里**取得的头衔名** (v78-3): 败者的 `lost_title_memory`
+    的 `new_holder` == 胜者、日期落在 [d0, d1] (与恩怨录的夺地判据同源)。"""
+    if not isinstance(winner, int) or not isinstance(loser, int):
+        return []
+    rec = (f.cache.get("characters") or {}).get(str(loser)) or {}
+    out = []
+    for m in rec.get("memories") or []:
+        if (m.get("type") or "") != "lost_title_memory":
+            continue
+        if (m.get("participants") or {}).get("new_holder") != winner:
+            continue
+        d = str(m.get("creation_date") or "")
+        if d0 and d and cl.date_key(d) < cl.date_key(d0):
+            continue
+        if d1 and d and cl.date_key(d) > cl.date_key(str(d1)):
+            continue
+        tid = next((v.get("identity") for v in (m.get("vars") or [])
+                    if v.get("flag") == "landed_title" and v.get("identity")), None)
+        nm = f.title(tid) if tid else ""
+        if nm and nm not in out:
+            out.append(nm)
+    return out
+
+
+def _war_start_clause(f, ev, sl):
+    """兴兵小句 (不含日期与句号) —— 对手/战名/争战目标/宣称者按槽位写出。"""
+    t = ev.get("type")
+    d = ev.get("date")
+    owner = (ev.get("ident") or {}).get("owner")
+    cb = _war_cb_word(f, sl.get("cb"))
+    me = f.event_name(owner, date=d) or ""
+    tname = f.title(sl.get("title")) if sl.get("title") else ""
+    if t == "offensive_war":
+        opp = f.event_name(sl["dfd"], date=d) or ""
+        s = f"{me}以{cb}向{opp}开战" if cb else f"{me}向{opp}开战"
+        if tname:
+            s += f"，意在{tname}"
+        cl = sl.get("claimant")
+        if isinstance(cl, int) and cl != owner:
+            cn = f.event_name(cl, date=d) or ""
+            if cn:
+                s += f"，为{cn}索取{tname}的宣称" if tname else f"，为{cn}索取宣称"
+        return s
+    if t == "defensive_war":
+        atk = f.event_name(sl["atk"], date=d) or ""
+        s = f"{atk}以{cb}来攻，{me}应战" if cb else f"{atk}来攻，{me}应战"
+        if tname:
+            s += f"，所争为{tname}"
+        return s
+    # joined_allys_war
+    ally = f.event_name(sl.get("ally"), date=d) or ""
+    enemy = f.event_name(sl.get("enemy"), date=d) or ""
+    s = f"{me}随{ally}出战，对抗{enemy}"
+    if cb:
+        s += f"，此役为{cb}"
+    return s
+
+
+def _war_end_clause(f, ev, sl, d0):
+    """决胜小句 (不含日期与句号)。"""
+    t = ev.get("type")
+    d = ev.get("date")
+    if t in ("war_won", "war_lost"):
+        win = t == "war_won"
+        me = f.event_name(sl["winner"] if win else sl["loser"], date=d) or ""
+        foe = f.event_name(sl["loser"] if win else sl["winner"], date=d) or ""
+        s = f"{me}战胜{foe}" if win else f"{me}败于{foe}"
+        d1 = None
+        try:
+            _y, _m, _dd = (int(x) for x in str(d).split(".")[:3])
+            d1 = f"{_y + 2}.{_m}.{_dd}"
+        except Exception:
+            d1 = None
+        gains = _war_title_gain(f, sl["winner"], sl["loser"], d, d1)
+        if gains:
+            s += ("，夺取" if win else "，失") + "、".join(gains[:2])
+            if len(gains) > 2:
+                s += f"等{len(gains)}地"
+        return s
+    # 白和: 双方各自持一条记忆, 以持有者为主语
+    owner = (ev.get("ident") or {}).get("owner")
+    me = f.event_name(owner, date=d) or ""
+    other = sl["dfd"] if owner == sl["atk"] else sl["atk"]
+    onm = f.event_name(other, date=d) or ""
+    return f"{me}与{onm}以无条件和平罢兵"
+
+
+def _pair_war_events(events, f):
+    """兴兵 ↔ 决胜配对成一段 + 战斗行补地点与对手 (v78-3, A 档: 只合并与补料)。
+
+    · 配对键 = (交战双方 id 集, 宣战理由); 决胜取**不早于兴兵日的最早一条**;
+    · 合成行锚在**兴兵日**, 句式为「{兴兵日}，{兴兵句}；{决胜日}，{决胜句}。」
+      (同日则不重复日期); 决胜行整条删去 (它已并入本段);
+    · 找不到决胜的战争只写兴兵句 (照旧, **不写**「胜负未见记载」) —— 白和与
+      「尚未结束」都在此列, 但白和现在也是可配对的一种结局;
+    · 战斗行 (`battle_won_memory`/`battle_lost_memory`) 改写为
+      「{name}在{地点}之战中战胜/败于{对手}」 —— 地点取 `battle_location` 州府名。
+    """
+    starts, ends = [], []
+    for i, e in enumerate(events):
+        t = e.get("type")
+        if t in _WAR_START_TYPES:
+            sl = _war_slots(f, e)
+            if sl:
+                starts.append((i, sl))
+        elif t in _WAR_END_TYPES:
+            sl = _war_slots(f, e)
+            if sl:
+                ends.append((i, sl))
+    used, drop = set(), set()
+    for i, st in starts:
+        d0 = str(events[i].get("date") or "")
+        best = None
+        for j, en in ends:
+            if j in used or en["sides"] != st["sides"]:
+                continue
+            dj = str(events[j].get("date") or "")
+            if d0 and dj and cl.date_key(dj) < cl.date_key(d0):
+                continue
+            if st.get("cb") and en.get("cb") and st["cb"] != en["cb"]:
+                continue
+            if best is None or cl.date_key(dj) < cl.date_key(
+                    str(events[best[0]].get("date") or "")):
+                best = (j, en)
+        if best is None:
+            # 找不到决胜: 只补兴兵句 (对手/战名/目标), **不写**「胜负未见记载」
+            head = _war_start_clause(f, events[i], st)
+            if head:
+                events[i]["text"] = f"{f.date(d0)}，{head}。"
+            continue
+        j, en = best
+        used.add(j)
+        drop.add(j)
+        head = _war_start_clause(f, events[i], st)
+        tail = _war_end_clause(f, events[j], en, d0)
+        dj = str(events[j].get("date") or "")
+        if dj and dj != d0:
+            body = f"{head}；{f.date(dj)}，{tail}"
+        else:
+            body = f"{head}；{tail}"
+        events[i]["text"] = f"{f.date(d0)}，{body}。"
+    # 未被配对的决胜行 (兴兵行已定格的镜像、兴兵记忆被回收等) 同样补出对手与得失
+    for j, en in ends:
+        if j in used:
+            continue
+        tail = _war_end_clause(f, events[j], en, None)
+        dj = str(events[j].get("date") or "")
+        if tail:
+            events[j]["text"] = f"{f.date(dj)}，{tail}。"
+    # 战斗行补地点与对手
+    for e in events:
+        t = e.get("type")
+        if t not in ("battle_won_memory", "battle_lost_memory"):
+            continue
+        sl = _war_slots(f, e)
+        _ = sl
+        ident = e.get("ident") or {}
+        parts = ident.get("parts") or {}
+        meta = ident.get("war") or {}
+        owner = ident.get("owner")
+        d = e.get("date")
+        me = f.event_name(owner, date=d) or ""
+        if not me:
+            continue
+        if t == "battle_won_memory":
+            foe = f.event_name(parts.get("loser"), date=d) or ""
+            verb = "战胜"
+        else:
+            foe = f.event_name(parts.get("winner"), date=d) or ""
+            verb = "败于"
+        loc = _province_label(f, meta.get("loc")) if meta.get("loc") else ""
+        if loc and foe:
+            e["text"] = f"{f.date(d)}，{me}在{loc}之战中{verb}{foe}。"
+        elif foe:
+            e["text"] = f"{f.date(d)}，{me}{verb}{foe}。"
+        elif loc:
+            e["text"] = f"{f.date(d)}，{me}在{loc}之战中{'取胜' if verb == '战胜' else '失利'}。"
     return [e for i, e in enumerate(events) if i not in drop]
 
 
@@ -15266,6 +15567,11 @@ def _timeline(f):
                 _ident = {"owner": cid, "parts": dict(parts), "type": mtype}
                 if norm_type in ("torturer_memory", "tortured_memory"):
                     _ident["torture_kind"] = _torture_kind(f, mem) or "torture"
+                # v78-3: 战事记忆带上战略槽 (宣战理由/目标头衔/宣称者/兴兵方/战场),
+                # 供 `_pair_war_events` 配对与出句 —— ident 本身只带 owner/parts。
+                if norm_type in _WAR_MEM_TYPES or norm_type in (
+                        "battle_won_memory", "battle_lost_memory"):
+                    _ident["war"] = _war_mem_meta(mem)
                 idents[(_md, norm_type, s)] = _ident
             # v31 (问题2): 配偶之间的情事换档 — 概览记「夫妻之情」, 模块归「婚配联姻」
             # v38 (问题1): 强迫/半强迫档不换 —— 「妻子为丈夫所强迫」仍是强迫之事,
@@ -15417,6 +15723,10 @@ def _timeline(f):
     out, _fold_saved, _jp_kept = _fold_prison_clusters(out, f)
     # 概览「囚禁他人」= 诛灭族级行 (占位时已计) + 折叠后保留的逐条/每簇 1 次
     stats["囚禁他人"] = max(0, stats.get("囚禁他人", 0) - _jail_pre) + _jp_kept
+    # v78-3 (用户问题2): 战事兴兵 ↔ 决胜配对成一段 + 补对手/宣战理由/争战目标/夺地;
+    # 战斗行补地点与对手。放在囚禁两遍处理**之后** —— 年表侧「战末俘获」判据
+    # (`_war_end_with`) 要读同日那条 war_won 行, 先合并会把它的型改掉。
+    out = _pair_war_events(out, f)
     # v58 (问题7): 同场活动跨日合并 (同一场加冕礼的跨日见证记忆)
     out = _merge_activity_windows(out, f)
     # v11: 同日同型集体事件合并 (见证加冕/出席大婚/被囚/囚禁)
@@ -15786,7 +16096,13 @@ _AGG_SPEC = {
     "became_rivals":    {"pat": r"^(.+?)与(.+?)结仇。$",     "verb": "结仇",     "style": "duo"},
     "became_nemesis":   {"pat": r"^(.+?)与(.+?)结为死敌。$", "verb": "结为死敌", "style": "duo"},
     "became_friends":   {"pat": r"^(.+?)与(.+?)结为好友。$", "verb": "结为好友", "style": "duo"},
-    "joined_allys_war": {"pat": r"^(.+?)助盟友作战。$",      "verb": "助盟友作战", "style": "solo"},
+    # v78-3: 战事重建后盟战行改写成「{名}随{盟友}出战，对抗{敌手}[，此役为{战名}]」，
+    # 旧样式的 `^…助盟友作战。$` 不再命中。此处按**富句**重挂聚合: 同一月、同一盟友、
+    # 同一敌手、同一战名的一批应召 (同一次战争的各路封臣) 并成一行 —— 细节 (盟友/
+    # 敌手/战名) 一字不减, 只把「同一场战争的多次应召」收到一行 (用户 D4 只做 A 档,
+    # 但同月同对手的应召并成一行属于「合并」而非「丢料」)。
+    "joined_allys_war": {"pat": r"^(.+?)随(.+?)出战，对抗(.+?)(，此役为(.+?))?。$",
+                         "verb": "",  "style": "allies"},
 }
 
 # v15: 「私情+相恋」成对合并 (同月同对象的 had_sex 与 became_lovers)
@@ -15859,6 +16175,17 @@ def _merge_same_month_events(events, f=None):
                 if spec["style"] == "solo":
                     merged = _agg_line(ym, [s[0] for s in slots],
                                        spec["verb"], "")
+                elif spec["style"] == "allies":
+                    # v78-3: 同月同盟友同敌手同战名的盟战应召并成一行
+                    who = [s[0] for s in slots]
+                    allies = {s[1] for s in slots}
+                    foes = {s[2] for s in slots}
+                    cbs = {(s[4] or "") for s in slots}
+                    if len(allies) == 1 and len(foes) == 1:
+                        tail = f"随{next(iter(allies))}出战，对抗{next(iter(foes))}"
+                        if len(cbs) == 1 and next(iter(cbs)):
+                            tail += f"，此役为{next(iter(cbs))}"
+                        merged = _agg_line(ym, who, "", tail)
                 else:
                     s0 = [s[0] for s in slots]
                     s1 = [s[1] for s in slots]
