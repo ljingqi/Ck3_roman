@@ -5884,6 +5884,52 @@ class Facts:
             return _day_before(dd)
         return self.as_of
 
+    def _title_display_name(self, tid, date=None, cid=None):
+        """头衔的**显示名** = 名 + 层级词后缀 (v80 点4 B, 方案 §4.3)。
+
+        `title()` 那条链走的是游戏 `TITLE_TIERED_NAME = "$NAME$$TIER$"` 的口径 ——
+        日式惣領制伯爵领显示为「下总武士团」; 而 label 出口 (`official_title` /
+        `_last_title_place`) 旧稿只用 `_name_at_date` = 「下总」, 于是**同一顶头衔
+        在同一份材料里两副面孔**(「承袭下总武士团」vs「下总女士」), 成稿据此写出
+        「妻子继为下总国司」这类混串 (用户问题4)。
+
+        **窄口径** (控影响面): 只在层级词来自 `japan_feudal_government` 的
+        flavorization 条目时追加 —— 即只解决用户报告的惣領制头衔。理由:
+          · 律令制的头衔词是「国」, 而官职词是「国司」, 拼接会叠字
+            (「下总**国国**司」), 故律令制**不加** (仍是「下总国司」, 与旧稿一致);
+          · 西式/行政制头衔 (军区、雅尔国…) 的拼接影响面未评估, 本轮不动。
+        """
+        if tid is None:
+            return ""
+        name = self._name_at_date(tid, date) or self.title_base_name(tid)
+        if not name:
+            return ""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        tier = ""
+        for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
+            if key.startswith(pfx):
+                tier = tv
+                break
+        if not tier:
+            return name
+        if cid is None:
+            cid = self._holder_at_or_now(self._lt.get(str(tid)) or {}, tid, date)
+        if cid is None:
+            return name
+        gov = self._gov_for_word(cid, tid, date)
+        fk = self._flavor_key("title", tier, cid, tid=tid, gov=gov, date=date)
+        if not fk:
+            return name
+        e = (FZ.table().get("entries") or {}).get(fk) or {}
+        if "japan_feudal_government" not in (e.get("governments") or []):
+            return name
+        v = L.loc(self.table, fk)
+        if not v or v.startswith("$") or v.startswith("["):
+            return name
+        if _STATE_SUFFIX_RE.search(name):
+            return name
+        return f"{name}{v}"
+
     def _last_title_place(self, cid, fkey="", date=None):
         """角色官职的地名 (dead_data.flavor 只有官职词无地名 — v13 补全用)。
         取值顺序: ① 与官职层级精确匹配的头衔 (关白=帝国级→日本; 国司=郡级→出云);
@@ -5912,7 +5958,9 @@ class Facts:
             key = t.get("key") or ""
             if not key or key.startswith(("x_", "e_minister_")):
                 return ""
-            return self._name_at_date(tid, anchor) or self.title_base_name(tid)
+            # v80 (点4 B): 惣領制头衔的显示名带「武士团」后缀 (「下总武士团女士」)
+            return self._title_display_name(tid, anchor, cid=cid) \
+                or self._name_at_date(tid, anchor) or self.title_base_name(tid)
 
         # v21: 同级多头衔的场合, 优先取「首要头衔」与死档 liege_title (游戏口径),
         # 不再按迭代序取第一个 — 嵬名仁孝同持 k_xia(夏) 与 k_hexi(河西) 时稳定得「夏」
@@ -5946,7 +5994,9 @@ class Facts:
                 # v17: 地名取「当前」国号, 非上任日 (修复方案_汤利五问题.md 问题6
                 # — 王言 886 年上任时国号关内, 角色窗显示当时/当前国号)。
                 # v25: 「当前」锚点改为 anchor — 死者取卒日国号 (李漼卒于唐 → 唐皇帝)。
-                nm = self._name_at_date(tid, anchor) or self.title_base_name(tid)
+                # v80 (点4 B): 惣領制头衔同走显示名 (「下总武士团」)
+                nm = self._title_display_name(tid, anchor, cid=cid) \
+                    or self._name_at_date(tid, anchor) or self.title_base_name(tid)
                 if not nm:
                     continue
                 if tier_want is not None and rank == tier_want:
@@ -6112,7 +6162,10 @@ class Facts:
         rn = self.realm_name(tid)
         if rn:
             return rn
-        name = self._name_at_date(tid, anchor) or self.title_base_name(tid)
+        # v80 (点4 B): 惣領制头衔的显示名带「武士团」(「下总武士团女士」);
+        # 其余头衔与旧稿逐字相同 (窄口径见 `_title_display_name`)
+        name = self._title_display_name(tid, anchor, cid=cid) \
+            or self._name_at_date(tid, anchor) or self.title_base_name(tid)
         # v41 (问题1): 政体按 anchor 日取 (逐档政体史) —— 旧稿读缓存里**末档**的
         # 政体, 封建期的神罗封臣因此被写成行政制的督军/将军/分区长。
         # v74 (问题2, 用户拍板): 改走 `_gov_for_word` —— 它比 `_character_government`
