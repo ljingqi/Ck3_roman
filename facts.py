@@ -168,8 +168,34 @@ PARTICIPANT_SLOTS = {
     # 存档实测 witnessed 的参与者即 `{"host": <受冕者>}` (游戏文案
     # 「我见证了[host]的加冕」); held 的是 `{"coronator": <施礼者>}`。
     # 旧稿两槽都未登记 + 模板无 {other} → 句面只剩「见证加冕」, 加冕者与加冕之事全失。
+    # v78-5 (用户 D6): 加冕族其余键的参与者槽 (缺一即取不到 {other} 或取错槽)。
+    # `held_a_coronation_memory` 以前**只有模板、没有模块** —— `module == ""` 会被
+    # `slice_events` 放行到**所有**板块 (旧稿的漏点), 现随本轮一并登记。
     "witnessed_a_coronation_memory": "host",
     "held_a_coronation_memory": "coronator",
+    "crowned_by_hof_memory": "hof",
+    "coronation_highlighted_memory": "host",
+    "coronation_cultural_acceptance_memory": "host",
+    "coronation_legitimacy_memory": "host",
+    "coronation_friend_memory": "host",
+    "coronation_alliance_memory": "host",
+    "coronation_hook_memory": "host",
+    "coronation_vassal_levies_memory": "host",
+    "coronation_vassal_taxes_memory": "host",
+    "coronation_claim_memory": "host",
+    "coronation_faction_discontent_memory": "host",
+    "coronation_faction_members_memory": "host",
+    "coronation_magnificence_loss_memory": "host",
+    "coronation_coup_memory": "plotter",
+    # 双槽键必须登记: 不登记时「取第一个 int 参与者」会按字典序随机取到 baron
+    "got_the_city_drunk_memory": "coronation_host",
+    "injured_in_crowd_crush_at_coronation_memory": "coronation_host",
+    "defeated_detractor_in_drinking_contest_memory": "detractor",
+    "was_caught_cheating_in_drinking_contest_memory": "detractor",
+    # v78-5: 流放三型 (各只有一槽, 登记后 {other} 稳定)
+    "exiled_kin_memory": "exile",
+    "exiled_by_kin_memory": "banisher",
+    "defected_from_kin_memory": "kin",
 }
 
 # v32 (问题3): 生母本人持有该记忆时 particip[mother] == 持有人 → 视为无对手方,
@@ -183,6 +209,9 @@ _SELF_NO_OTHER_TYPES = {"child_stillborn", "child_premature"}
 _REL_STATED_TYPES = frozenset({
     "married", "had_sex", "spouse_died", "child_born", "first_born",
     "twins_born", "child_premature", "child_stillborn",
+    # v78-5: 流放三型句面已写明亲属关系 (「放逐其亲属X」/「为亲属X所放逐」),
+    # 不登记会出「放逐其亲属其堂弟X」这类叠字
+    "exiled_kin_memory", "exiled_by_kin_memory", "defected_from_kin_memory",
 })
 
 # v32 (问题3): 需带配偶称谓 ({rel}) 的记忆型
@@ -13360,9 +13389,12 @@ def _mem_sentence_body(f, owner_id, mem):
                 title = f.title(title_tid, date=_td, site=_site, site_cid=_scid) \
                     or f.title(title_tid, site=_site, site_cid=_scid)
                 break
-    elif mem.get("type") == "held_a_coronation_memory":
+    elif mem.get("type") in ("held_a_coronation_memory",
+                             "crowned_by_hof_memory"):
         # v56 (问题1b): 加冕成的头衔 —— 记忆本身不带 landed_title var, 按**加冕当日**
         # 的首要头衔取 (游戏文案即「正式加冕为[owner.GetPrimaryTitle]的合法[title]」)。
+        # v78-5: `crowned_by_hof_memory` (受祝圣而加冕) 同取, 否则句尾「加冕为{title}」
+        # 会留空槽。
         _td = f.mem_date(owner_id, mem) or mem.get("creation_date")
         _tier, _tid = f._primary_title_at(owner_id, as_of=_td)
         if _tid is not None:
@@ -13822,7 +13854,10 @@ MODULE_TABLE = {
     "失位让土":   {"lost_title_memory"},
     "开战兴兵":   {"offensive_war", "defensive_war", "joined_allys_war"},
     "战和胜负":   {"battle_won_memory", "battle_lost_memory", "war_won", "war_lost"},
-    "战死负伤":   {"witnessed_death_battle", "became_incapable_due_to_battle_concussion"},
+    "战死负伤":   {"witnessed_death_battle", "became_incapable_due_to_battle_concussion",
+                   # v78-5: 游戏自己的类别是 negative health injured activity
+                   # (不含 coronation) —— 它是一条伤情, 不是加冕事迹
+                   "injured_in_crowd_crush_at_coronation_memory"},
     # v78-4 (用户 D3): 人质闭环 —— 旧稿只登记「抓进去」三型, 送还/卒于质所四型
     # 连事件都不生成 (`_hostage_sentence` 现由 facts 侧专表出句)。
     "人质质任":   {"hostage_created_hostage", "hostage_created_warden",
@@ -13873,7 +13908,31 @@ MODULE_TABLE = {
     "科考功名":   {"passed_child_exam_memory", "failed_child_exam_memory",
                    "passed_provincial_exam_memory", "failed_provincial_exam_memory",
                    "passed_metropolitan_exam_memory", "passed_palace_exam_memory"},
-    "拥戴加冕":   {"became_acclaimed", "witnessed_a_coronation_memory"},
+    # v78-5 (用户 D6): 加冕族按「主线 / 索求 / 对抗」三档分工, 并把此前**只有模板
+    # 没有模块**的 `held_a_coronation_memory` 一并登记 (module=="" 会被 slice_events
+    # 放行到所有板块); `injured_in_crowd_crush_at_coronation_memory` 归「战死负伤」
+    # (游戏自己的类别是 negative health injured activity, 不含 coronation)。
+    "拥戴加冕":   {"became_acclaimed", "witnessed_a_coronation_memory",
+                   "held_a_coronation_memory", "crowned_by_hof_memory",
+                   "coronation_highlighted_memory", "conquest_oath_memory",
+                   "reconquest_oath_memory"},
+    "加冕索求":   {"coronation_claim_memory", "coronation_hook_memory",
+                   "coronation_alliance_memory", "coronation_friend_memory",
+                   "coronation_vassal_levies_memory",
+                   "coronation_vassal_taxes_memory",
+                   "coronation_cultural_acceptance_memory",
+                   "coronation_legitimacy_memory"},
+    "加冕对抗":   {"coronation_coup_memory",
+                   "coronation_faction_discontent_memory",
+                   "coronation_faction_members_memory",
+                   "coronation_magnificence_loss_memory"},
+    "宴饮失仪":   {"got_the_city_drunk_memory",
+                   "defeated_detractor_in_drinking_contest_memory",
+                   "was_caught_cheating_in_drinking_contest_memory"},
+    # v78-5: 流放/逐出宗族 (旧稿零接管; 与「囚犯遭驱逐」的 `banished` 档口径不同 ——
+    # 那一档是「以放逐为条件开释囚犯」, 本档是亲属间放逐/离族, 两者结构互斥)
+    "流放逐出":   {"exiled_kin_memory", "exiled_by_kin_memory",
+                   "defected_from_kin_memory"},
     "信仰皈依":   {"completed_hajj_memory", "picked_serenity_aspect_memory",
                    "picked_creation_aspect_memory", "faith_changed"},
     # 死亡记录 (death) 不在此表: 由 _timeline 按死者关系并入 仇人死亡/丧友之恸/
@@ -13931,6 +13990,9 @@ MODULE_SLICE = {
                        "战死负伤", "囚禁入狱", "获释出狱", "刑虐残暴",
                        "受辱含冤", "拥戴加冕", "结仇结怨", "死敌之仇",
                        "化仇解怨",
+                       # v78-5 (用户 D6): 加冕索求/对抗 (宾客在加冕礼上的所得与冲突)
+                       # 与流放逐出 (亲属间放逐/离族) 同层进本纪纪事
+                       "加冕索求", "加冕对抗", "流放逐出", "宴饮失仪",
                        # v34 (问题8): 添丁是家事也是政治 (继承人/联姻/血统),
                        # 且出生句已带「生父X」——不放进来, 本纪只见子女名单
                        # 而无出生记载, 模型就把生母的生育算成主角得子
@@ -13956,11 +14018,14 @@ MODULE_SLICE = {
     ("chaoju", "lead"): {"起家发迹", "失位让土", "拥戴加冕"},
     ("chaoju", "mid"): {"开战兴兵", "战和胜负", "战死负伤", "囚禁入狱",
                         "获释出狱", "结仇结怨", "死敌之仇", "拥戴加冕",
+                        # v78-5 (用户 D6): 同本纪纪事口径
+                        "加冕索求", "加冕对抗", "流放逐出",
                         "丧亲之恸"},
     # 群英录纪事: 同朝局纪事口径
     ("qunying", "mid"): {"起家发迹", "失位让土", "开战兴兵", "战和胜负",
                          "囚禁入狱", "获释出狱", "结仇结怨", "死敌之仇",
-                         "拥戴加冕"},
+                         "拥戴加冕",
+                         "加冕索求", "加冕对抗", "流放逐出"},
     # 强暴凌辱 (v38, 问题1): 强迫/半推半就的性事 —— 时间线里是「谁对谁做了什么、
     # 在何日」的确定性事实。
     # v59 (问题2, 用户拍板): **只在《列传·好友》《列传·仇人》里用**。故:
@@ -14210,6 +14275,9 @@ _MIRROR_KEEP = {
     "battle_won_memory": 2, "battle_lost_memory": 1,
     "torturer_memory": 2, "tortured_memory": 1,
     "ascended_throne_memory": 2, "lost_title_memory": 1,
+    # v78-5: 亲属间放逐**同日一对** (放逐者持 exiled_kin / 被放逐者持 exiled_by_kin,
+    # 实测 32 条里 20 条成 10 对) —— 不登记会同一件事出两行。
+    "exiled_kin_memory": 2, "exiled_by_kin_memory": 1,
     # v56 (§10-E): 相恋双方**各持一条**同型记忆 (participants 互指) —— 旧稿未登记,
     # 于是同一件事出两行正反句 (「郑思齐与任宗本相恋。」+「任宗本与郑思齐相恋。」)。
     "became_lovers": 2,
@@ -14221,6 +14289,8 @@ _MIRROR_TYPE_PAIRS = (
     frozenset({"torturer_memory", "tortured_memory"}),
     frozenset({"ascended_throne_memory", "lost_title_memory"}),
     frozenset({"became_lovers"}),          # v56 (§10-E): 同型镜像对
+    # v78-5: 亲属间放逐同日一对 (放逐者 / 被放逐者各持一条, 槽互指)
+    frozenset({"exiled_kin_memory", "exiled_by_kin_memory"}),
 )
 # 需要带身份槽 (owner + participants) 才能配对/合并的记忆类型
 _IDENT_TYPES = frozenset(

@@ -845,6 +845,62 @@ MEMORY_TEMPLATES = {
     "witnessed_a_coronation_memory_no_other": "{name}见证加冕。",
     "held_a_coronation_memory": "{name}受{other}加冕为{title}。",
     "held_a_coronation_memory_no_other": "{name}受加冕为{title}。",
+    # v78-5 (用户 D6): 加冕族其余 17 键 —— 旧稿只有上面四条, 故 `_mem_sentence_body`
+    # 对其余各键返回 None, 整条记忆不进事实面 (实测 25 份缓存里 22 键共 1640 条,
+    # 过 `_related_ids` 闸门后仍有个位数行能进年表)。模板一律正向史书式;
+    # 「须 `_no_other`」= 参与者槽可能缺失, 由 `_mem_sentence_body` 的 `_no_other`
+    # 回退兜住。详见 `docs/调研_v78_加冕记忆.md` §5.2。
+    "crowned_by_hof_memory": "{name}受{other}祝圣，加冕为{title}。",
+    "crowned_by_hof_memory_no_other": "{name}受祝圣而加冕为{title}。",
+    "coronation_highlighted_memory": "{name}在{other}的加冕礼上领舞。",
+    "coronation_highlighted_memory_no_other": "{name}在加冕礼上领舞。",
+    "coronation_cultural_acceptance_memory":
+        "{name}在{other}的加冕礼上为族人发声，两族由此相知。",
+    "coronation_cultural_acceptance_memory_no_other":
+        "{name}在加冕礼上为族人发声。",
+    "coronation_legitimacy_memory": "{name}出席{other}的加冕礼，获其正统之认。",
+    "coronation_legitimacy_memory_no_other": "{name}出席加冕礼，获正统之认。",
+    "coronation_friend_memory": "{name}在{other}的加冕礼上许以友谊。",
+    "coronation_friend_memory_no_other": "{name}在加冕礼上许以友谊。",
+    "coronation_alliance_memory": "{name}在{other}的加冕礼上缔结同盟。",
+    "coronation_alliance_memory_no_other": "{name}在加冕礼上缔结同盟。",
+    "coronation_hook_memory": "{name}在{other}的加冕礼上得其一诺。",
+    "coronation_hook_memory_no_other": "{name}在加冕礼上得其一诺。",
+    "coronation_vassal_levies_memory": "{name}在{other}的加冕礼上求得军役之减。",
+    "coronation_vassal_levies_memory_no_other": "{name}在加冕礼上求得军役之减。",
+    "coronation_vassal_taxes_memory": "{name}在{other}的加冕礼上求得赋税之减。",
+    "coronation_vassal_taxes_memory_no_other": "{name}在加冕礼上求得赋税之减。",
+    "coronation_claim_memory": "{name}在{other}的加冕礼上获授主张头衔之名。",
+    "coronation_claim_memory_no_other": "{name}在加冕礼上获授主张头衔之名。",
+    "coronation_faction_discontent_memory": "{name}在{other}的加冕礼上以派系相抗。",
+    "coronation_faction_discontent_memory_no_other": "{name}在加冕礼上以派系相抗。",
+    "coronation_faction_members_memory": "{name}在{other}的加冕礼上聚党相抗。",
+    "coronation_faction_members_memory_no_other": "{name}在加冕礼上聚党相抗。",
+    "coronation_magnificence_loss_memory": "{name}在{other}的加冕礼上折其威仪。",
+    "coronation_magnificence_loss_memory_no_other": "{name}在加冕礼上折其威仪。",
+    "coronation_coup_memory": "{name}的加冕礼为{other}所变。",
+    "coronation_coup_memory_no_other": "{name}的加冕礼中途生变。",
+    "conquest_oath_memory": "{name}在加冕礼上立下拓土之誓。",
+    "reconquest_oath_memory": "{name}在加冕礼上立下复土之誓。",
+    "injured_in_crowd_crush_at_coronation_memory":
+        "{name}在{other}的加冕礼上遭人群践踏而伤。",
+    "injured_in_crowd_crush_at_coronation_memory_no_other":
+        "{name}在加冕礼上遭人群践踏而伤。",
+    "got_the_city_drunk_memory": "{name}在{other}的加冕宴上使满城尽醉。",
+    "got_the_city_drunk_memory_no_other": "{name}在加冕宴上使满城尽醉。",
+    "defeated_detractor_in_drinking_contest_memory":
+        "{name}在加冕宴的斗酒中胜过{other}。",
+    "defeated_detractor_in_drinking_contest_memory_no_other":
+        "{name}在加冕宴的斗酒中取胜。",
+    "was_caught_cheating_in_drinking_contest_memory":
+        "{name}在加冕宴的斗酒中作弊，为{other}所觉。",
+    "was_caught_cheating_in_drinking_contest_memory_no_other":
+        "{name}在加冕宴的斗酒中作弊。",
+    # v78-5: 流放/逐出宗族三型 (旧稿零接管; 三型同源, 由
+    # `common/events/dlc/mpo/mpo_nomad_events_1.txt` 的事件 .1020 一次写出)
+    "exiled_kin_memory": "{name}放逐其亲属{other}，逐之出族。",
+    "exiled_by_kin_memory": "{name}为亲属{other}所放逐，去族而居。",
+    "defected_from_kin_memory": "{name}率部众离{other}自立，别为一族。",
     "grand_wedding_completed_guest": "{name}出席大婚。",
     "ignored_assault_memory": "{name}受辱未报。",
     # v15: 成功谋杀 (主角视角, 神秘死亡味由受害者死亡记录句负责)
@@ -1122,6 +1178,10 @@ STATS_LABEL = {
     "war_won": "获胜", "war_lost": "战败",
     "battle_won_memory": "取胜", "battle_lost_memory": "失利",
     "faith_changed": "改信",
+    # v78-5 (用户 D6): 加冕只计三条 —— 19k 条 `witnessed_*` 若逐条计会把概览撑爆
+    "held_a_coronation_memory": "受冕",
+    "crowned_by_hof_memory": "受冕",
+    "witnessed_a_coronation_memory": "见证加冕",
 }
 
 
