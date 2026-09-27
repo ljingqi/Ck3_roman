@@ -2041,7 +2041,10 @@ def build_intro_messages(facts, cfg, articles=None):
     death = facts.get("player_death")
     re_end = facts.get("reign_end")            # v76 (问题1): 让位/剃发退位
     if re_end:
-        span_cn = f"生卒：{birth}–{llm.fmt_cn_date(re_end.get('date'))}"
+        # v76 (问题1): 让位者**在世** —— 不写「生卒」(生卒意为生–死), 改「生平…（剃发退位）」,
+        # 与共享前缀的【传位】行同口径。
+        span_cn = (f"生平：{birth}–{llm.fmt_cn_date(re_end.get('date'))}"
+                   f"（{re_end.get('word_zh') or '让位'}）" if birth else "")
     elif death:
         span_cn = f"生卒：{birth}–{llm.fmt_cn_date(death.get('date'))}"
     else:

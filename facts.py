@@ -4086,6 +4086,12 @@ class Facts:
                 nm = self.name(cid, date=None)
         return nm or ""
 
+    def reign_end_word(self, re_end):
+        """让位性质词 (v76 问题1): 剃发退位 / 退隐让位 / 去位，转徙无领地 / 让位。"""
+        kind = str((re_end or {}).get("kind") or "unknown")
+        W = _style.FACT_WORDING
+        return W.get("reign_end_" + kind) or W.get("reign_end_unknown") or "让位"
+
     def reign_end_clause(self, cid, re_end):
         """传主「在位终结但未死亡」的收句 (v76 问题1) → 「剃发退位，传位于其子关白田所定治」。
 
@@ -4098,7 +4104,7 @@ class Facts:
         re_end = re_end or {}
         kind = str(re_end.get("kind") or "unknown")
         W = _style.FACT_WORDING
-        word = W.get("reign_end_" + kind) or W.get("reign_end_unknown") or "让位"
+        word = self.reign_end_word(re_end)
         date = self.date(re_end.get("date"))
         succ = re_end.get("successor")
         nm = ""
@@ -19107,6 +19113,7 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     if re_end:
         re_end = dict(re_end)
         re_end["reason_zh"] = f.reign_end_clause(cache.get("player_id"), re_end)
+        re_end["word_zh"] = f.reign_end_word(re_end)
     # v44 (问题1): 【家族】行同样按本篇截止日取家族沿革 (传主别立家族/改名后,
     # 共享前缀里的家族名不得停在首见值)
     _pid0 = cache.get("player_id")
