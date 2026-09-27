@@ -992,12 +992,78 @@ def _timeline_texts(facts, names=None, types=None):
     return out
 
 
+# v78-7 (用户 D5): 年表类事实块的**自然段化**。
+# 起因: 用户指出「一生大事」在战争频繁的一生里会变成流水账, 问「传输给模型的文本
+# 能否自然段化, 以更好地将重点传递给模型」。旧稿 `_render_block` 把每条事实
+# 各占一行、块内无分段 —— 80–150 条平铺时, 模型读到的是一张清单而不是若干事段。
+# 口径 (只改**下发材料**的排版, 不改附录/成稿; 附录大事年表仍由 `_appendix_text`
+# 程序渲染):
+#   · 只处理年表类块 (下列六个);
+#   · 「事件行」= 以「YYYY年」开头的行, 其余为**表头行** (家族：X氏 / 恩怨史： / 经历： …)
+#     表头行独立成行, 不并入段落;
+#   · 连续事件行按「≤4 条」且「相邻年份跨度 ≤5 年」聚成一段, 段内以「；」连缀
+#     (日期保留在每句之首), 段与段之间空行;
+#   · 逐行先过 `sanitize_fact_text` 再聚合 —— 否则一句含裸键会把整段带走。
+_PARAGRAPH_BLOCKS = ("大事年表", "相关年表", "朝局动态", "传主行迹",
+                     "本板块大事", "家族恩怨")
+_PARA_MAX_LINES = 4
+_PARA_MAX_YEAR_GAP = 5
+_PARA_EVENT_RE = re.compile(r"^\s*(\d{3,4})年")
+
+
+def _paragraphize_fact_lines(lines):
+    """年表类块的行 → 自然段 (事件行聚段, 表头行独立)。返回行列表 (段间给空串)。"""
+    out, buf, last_year, first = [], [], None, True
+    _EV = _PARA_EVENT_RE
+
+    def _flush():
+        nonlocal buf, last_year
+        if buf:
+            if not first_flag[0]:
+                out.append("")
+            seg = []
+            for ln in buf:
+                t = ln.strip()
+                seg.append(t.rstrip("。"))
+            out.append("；".join(seg) + "。")
+            first_flag[0] = False
+        buf, last_year = [], None
+
+    first_flag = [True]
+    for ln in lines:
+        m = _EV.match(ln or "")
+        if not m:
+            _flush()
+            if (ln or "").strip():
+                if not first_flag[0]:
+                    out.append("")
+                out.append((ln or "").rstrip())
+                first_flag[0] = False
+            continue
+        y = int(m.group(1))
+        if buf and (len(buf) >= _PARA_MAX_LINES
+                    or (last_year is not None and abs(y - last_year) > _PARA_MAX_YEAR_GAP)):
+            _flush()
+        buf.append(ln)
+        last_year = y
+    _flush()
+    return out
+
+
 def _render_block(title, lines):
     """事实块 → 文本 (只收非空行)。
-    v29: 出口处过一遍干净事实兜底 (丢含裸键的行并记审计)。"""
+    v29: 出口处过一遍干净事实兜底 (丢含裸键的行并记审计)。
+    v78-7: 年表类块按「事段」自然段化 (见 `_paragraphize_fact_lines`)。"""
     body = [x for x in lines if x]
     if not body:
         return ""
+    if title in _PARAGRAPH_BLOCKS:
+        safe = [F.sanitize_fact_text(x, where=title) for x in body]
+        safe = [x for x in safe if x]
+        if safe:
+            return F.sanitize_fact_text(
+                f"{title}\n" + "\n".join(_paragraphize_fact_lines(safe)),
+                where=title)
     return F.sanitize_fact_text(f"{title}\n" + "\n".join(body), where=title)
 
 
