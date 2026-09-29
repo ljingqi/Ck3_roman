@@ -796,17 +796,13 @@ def _bio_as_of(cache, decade=None):
     return _decade_cutoff(cache, decade)
 
 
-def _backfill_tail_deaths(cfg, cache):
-    """v24: 终传尾年死者死亡记录回填。
+def tail_melt_candidate(cfg, cache):
+    """终了日**之后**最近一档熔件 (路径|None) —— v82 抽出的公共口径。
 
-    主角之死若发生在最后一次并入快照 (每年 1月1日) 之后, 其间死去的角色
-    (处决/谋杀受害者等) 的死亡记录只存在于死亡后的下一份存档。若不同步回填,
-    终传的刺客列传/时间线会把这些死者渲染成「死因不详」, v22 处决方式亦无从
-    动态化 (郭氏 1200.2.21 处决 / 1200.9.29 谋杀即此例)。
-
-    取战役文件夹中日期晚于 cache.last_date 的最早熔件, 把其中 dead chars 的
-    死亡记录写入缓存 (仅限缓存已有档案、death 为空、死日晚于 last_date 者,
-    并做名字身份校验防 id 撞号)。返回回填条数。"""
+    为什么是「之后」: 卒/让位落在两次年度自动保存之间, 那一档熔件是唯一记着
+    终了日状态的档 (卒日/死因/卒地, 以及开府 `shogun_flag` 这类卒时旗标)。
+    `_backfill_tail_deaths` 与 `tools/tests/snap.py` 共用它, 使快照面与实跑面
+    钉在同一档上。"""
     folder = cache.get("output_folder") or ""
     d = os.path.join(cfg.get("output_dir", ""), folder, "data")
     pat = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json(?:\.gz|\.xz)?$")
@@ -819,13 +815,44 @@ def _backfill_tail_deaths(cfg, cache):
                 cands.append((cl.date_key(date), os.path.join(d, fn)))
     last = cl.date_key(cache.get("last_date") or "0.0.0")
     cands = sorted((k, p) for k, p in cands if k > last)
-    if not cands:
-        return 0
+    return cands[0][1] if cands else None
+
+
+def tail_state_applies(cache):
+    """本篇是否需要按「终了日之后那一档」补终了状态 (v82)。
+
+    判据 = 有终了日 (让位优先, 其次卒) 且晚于 `cache.last_date` —— 与
+    `generate_bio` 触发尾年回填的条件同源。"""
+    if not cache:
+        return False
+    end = ((cache.get("reign_end") or {}).get("date")
+           or (cache.get("player_death") or {}).get("date") or "")
+    if not end:
+        return False
+    return cl.date_key(end) > cl.date_key(cache.get("last_date") or "0.0.0")
+
+
+def _backfill_tail_deaths(cfg, cache):
+    """v24: 终传尾年死者死亡记录回填。
+
+    主角之死若发生在最后一次并入快照 (每年 1月1日) 之后, 其间死去的角色
+    (处决/谋杀受害者等) 的死亡记录只存在于死亡后的下一份存档。若不同步回填,
+    终传的刺客列传/时间线会把这些死者渲染成「死因不详」, v22 处决方式亦无从
+    动态化 (郭氏 1200.2.21 处决 / 1200.9.29 谋杀即此例)。
+
+    取战役文件夹中日期晚于 cache.last_date 的最早熔件, 把其中 dead chars 的
+    死亡记录写入缓存 (仅限缓存已有档案、death 为空、死日晚于 last_date 者,
+    并做名字身份校验防 id 撞号)。返回 (回填条数, 那一档熔件|None) ——
+    v82: 熔件一并回给 `generate_bio`, 供 `_merge_tail_title_flags` 并头衔旗标
+    (同一次载入, 不额外耗时)。"""
+    p_tail = tail_melt_candidate(cfg, cache)
+    if not p_tail:
+        return 0, None
     try:
-        melt = cl.load_melt(cands[0][1])
+        melt = cl.load_melt(p_tail)
     except Exception as e:
         llm.log(f"  [终传回填失败] 载入死亡后档失败: {e}")
-        return 0
+        return 0, None
     pid = cache.get("player_id")
     chars = cache.get("characters") or {}
     dead = list((melt.get("dead_unprunable") or {}).items())
@@ -866,7 +893,56 @@ def _backfill_tail_deaths(cfg, cache):
         if path:
             cl.save_cache(cache, path)
         llm.log(f"  [终传回填] 尾年死者死亡记录 {n} 条写入 "
-                f"{folder or cache.get('player_id')}")
+                f"{cache.get('output_folder') or cache.get('player_id')}")
+    return n, melt
+
+
+def _landed_titles_of(melt):
+    """熔件 (或 `cache_lib.load_melt_landed_titles` 的返回) → 头衔表 dict。
+
+    存档与 facts 的口径都是**两层**: `melt["landed_titles"]["landed_titles"][tid]`
+    (`Facts._lt` 同源)。这里两种入参都吃, 免得调用方各自拆一层。"""
+    if not isinstance(melt, dict):
+        return {}
+    seg = melt.get("landed_titles")
+    if isinstance(seg, dict):
+        inner = seg.get("landed_titles")
+        return inner if isinstance(inner, dict) else seg
+    return melt
+
+
+def _merge_tail_title_flags(melt, tail):
+    """把**终了日之后那一档**熔件的头衔旗标并进本次渲染用的熔件 (v82)。
+
+    为什么需要: 终传的 as_of 是**终了日** (卒/让位), 而 `load_latest_melt` 给的是
+    `cache.last_date` 那一档 —— 终了日之前最后一次自动保存。只在终了日那一刻成立的
+    状态因此缺席, 最典型的是开府: `e_japan` 上的 `shogun_flag` 首次出现在死后那一档
+    (实测 melt_1006 → melt_1007 之间), 于是 1006 终传的素材行写成「平盛秀｜太政大臣」,
+    成稿里「幕府将军」一次都不出现。`_backfill_tail_deaths` 本就要载入那一档取卒日/
+    享年/卒地, 顺手并旗标不必再载一次。
+
+    只并 `landed_titles[*].variables` (旗标的唯一来源, 消费口只有 `Facts._title_flags`),
+    持有者/直辖/封臣等**当前状态**仍按 `last_date` 那一档 —— 整份换档会把死后才易主的
+    宝物读成「现主=继位者」(实测 1007 档: 宝物现主由平盛秀变成平干有)。
+    旗标在 `_title_flags` 内已按「日期须晚于 last_date」把关, 早年档期一律照旧。"""
+    if not isinstance(melt, dict) or not isinstance(tail, dict):
+        return 0
+    lt = _landed_titles_of(melt)
+    tlt = _landed_titles_of(tail)
+    n = 0
+    for tid, t in tlt.items():
+        if not isinstance(t, dict):
+            continue
+        cur = lt.get(tid)
+        if not isinstance(cur, dict):
+            continue
+        v = t.get("variables")
+        if v is None or cur.get("variables") == v:
+            continue
+        cur["variables"] = v
+        n += 1
+    if n:
+        llm.log(f"  [终了状态] 头衔旗标 {n} 枚按死后那一档 ({tail.get('date')}) 并入")
     return n
 
 
@@ -876,7 +952,9 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     v14: continue_mode — 后台传记线程传 True, 输出文件夹一律按缓存绑定/同战役解析,
     永不新建文件夹 (修复方案_菲利普2.md 问题2: 旧逻辑 watch 运行期间死者终传
     被 resolve 到新文件夹 菲利普5, 缓存绑定被污染)。
-    v24: 终传生成前回填尾年死者死亡记录 (材料构建前落库)。"""
+    v24: 终传生成前回填尾年死者死亡记录 (材料构建前落库)。
+    v82: 同一次载入的死后那一档熔件顺带供 `_merge_tail_title_flags` 并头衔旗标 ——
+    终了日才成立的状态 (开府 → 幕府将军) 因此能进材料。"""
     melt = load_latest_melt(cfg, cache)
     if melt is None:
         llm.log(f"玩家 {cache.get('player_id')} 无可用 melt, 跳过生成")
@@ -887,9 +965,11 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     pd = cache.get("player_death") or {}
     _re_end = _reign_end(cache)
     _end_date = _re_end.get("date") or pd.get("date")
-    if _end_date and cl.date_key(_end_date) > \
-            cl.date_key(cache.get("last_date") or "0.0.0"):
-        _backfill_tail_deaths(cfg, cache)
+    if tail_state_applies(cache):
+        _n_tail, _tail_melt = _backfill_tail_deaths(cfg, cache)
+        # v82: 终了日之后那一档还带**终了日才成立**的头衔旗标 (开府 shogun_flag /
+        # 上皇 joko_flag) —— 并进来, 免得终传的称号位停在卒前那一档的旧词。
+        _merge_tail_title_flags(melt, _tail_melt)
     # v20: 十年传记按时代取绰号 — 绰号存于各年熔件 nickname_text, 最新档只是
     # 当前值; 重跑十年1 (as_of=878) 若不覆盖会被 888 档的「屠狼者」漂移。
     # v21: 时代末熔件存在即显式覆盖 (含空绰号) — 该时代无绰号时清空,

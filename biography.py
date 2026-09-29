@@ -1788,13 +1788,19 @@ def _article_facts(facts, cache, key, section=None):
         if _segs:
             rows, wars = [], []
             for _p in _segs:
-                for _r in (_p.get("rows") or []):
-                    if _r and "｜" in _r:
+                _rs = list(_p.get("rows") or [])
+                _ds = list(_p.get("rows_detail") or [])
+                for _i, _r in enumerate(_rs):
+                    if not _r:
+                        continue
+                    # v82: 行形去「｜」分栏后, 「此行三样俱全 (称号/卒项/即位句)」由事实层
+                    # 明文给出 (`rows_detail`); 该键缺失或该位为 None 时 (旧快照) 仍按旧的
+                    # 「｜」个数兜底。
+                    _d = _ds[_i] if _i < len(_ds) else None
+                    _ok = (_r.count("｜") >= 2) if _d is None else bool(_d)
+                    if _ok:
                         rows.append(_r)
                 wars.extend(_chrono_wars_in(dc, _p, prev_cut=(section or {}).get("prev_cut")))
-            # v73: 段首那位统治者的即位日在战役起点之前时, 明细行取不到生卒以外的
-            # 细目, 该行无料可写 —— 整行不下发 (时代行的缘由仍由总说块给出)。
-            rows = [r for r in rows if r.count("｜") >= 2]
             if rows:
                 _set_block(blocks, "王朝历代·纪事", "\n".join(rows))
             if wars:
@@ -2998,6 +3004,11 @@ def _chrono_split(periods, cap=None):
             "end": chunk[-1].get("end"),
             "ids": [x for p in chunk for x in (p.get("ids") or [])],
             "rows": [r for p in chunk for r in (p.get("rows") or [])],
+            # v82: 「此行三样俱全」与 rows 一一对应 (旧快照无此键时按行数补齐 None,
+            # 由 `_article_facts` 回退到旧的「｜」个数判据)。
+            "rows_detail": [d for p in chunk
+                            for d in (p.get("rows_detail")
+                                      or [None] * len(p.get("rows") or []))],
             "periods": chunk})
     return out
 
@@ -3154,7 +3165,10 @@ def build_articles(facts, cache, cfg):
                     _parts.append({
                         "name": _cur.get("name"), "start": _cur.get("start"),
                         "end": _cur.get("end"), "ids": list(_cur.get("ids") or []),
-                        "rows": list(_cur.get("rows") or []), "periods": [_cur]})
+                        "rows": list(_cur.get("rows") or []), "periods": [_cur],
+                        # v82: 与 rows 一一对应的「料之有无」判据 (见 `_chrono_split`)
+                        "rows_detail": list(_cur.get("rows_detail")
+                                            or [None] * len(_cur.get("rows") or []))})
                 else:
                     # 本朝是唯一的朝代 (单朝单君/单朝多君): 全篇只有一个纪事节,
                     # 不再分出「前方各朝」—— 免得同一朝写两遍 (富兰克林档实测)。

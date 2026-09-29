@@ -6307,7 +6307,15 @@ class Facts:
         # 的封建时期事件里也被写成「上洛塔林吉亚将军」。改为: 先按 date 自身算
         # 职称; 只有当存档 flavor 与本日政体自洽时才采信它 (它仍是最准的
         # 游戏原词), 否则回落到按政体取词的路径。
-        if fkey and self._dead_flavor_consistent(fkey, cid, anchor):
+        # v82 (P2): 日本最高头衔的烘死官称键 (关白/太政大臣/幕府将军/上皇/天皇) **只**从
+        # `japan_top_office` 出词 —— 它已按「该日此人是否真持 e_japan/高御座」把关。
+        # 通用烘死词通道没有这层门槛: 键是角色**卒时**按末档政体烘死的, 而日本全境的
+        # `_character_government` 在整段战役里都是 `japan_administrative_government`,
+        # `_dead_flavor_consistent` 只比政体前缀, 于是 874 年只持 `c_kazusa` 的
+        # 田所浩二也被写成「日本政权关白」(实测 probe10: `_primary_title_at`=(county,
+        # c_kazusa)、`japan_top_office`='' 、`_dead_flavor_consistent`=True)。
+        if fkey and fkey not in self._JAPAN_OFFICE_FROM_FLAVOR \
+                and self._dead_flavor_consistent(fkey, cid, anchor):
             v = L.loc(self.table, fkey)
             if v and not v.startswith("$") and not v.startswith("["):
                 if fkey.startswith(self._TIER_FLAVOR_PREFIXES):
@@ -11460,7 +11468,8 @@ class Facts:
             return f"天命：{name}{era_clause}，自{when}"
         return f"天命：{name}{era_clause}"
 
-    def assassination_method(self, killer_id, victim_id, date=None, reason_key=None):
+    def assassination_method(self, killer_id, victim_id, date=None, reason_key=None,
+                             name_date=None):
         """暗杀死法 (v25): 泛化死因按池子取一具体手法, 稳定伪随机不漂移。
 
         可用门 (见 _METHOD_REASON_TAGS / _ASSASSINATION_GAME_KEYS /
@@ -11484,7 +11493,10 @@ class Facts:
         # v28b: 凶手/行刑者称谓与全篇一致
         # v42 (问题4): 出口改 `event_name` —— 主角只出名字; 与 _death_sentence 的
         # 「缩为其」替换同源 (两处必须用同一称谓, 否则替换落空)
-        kname = self.event_name(killer_id, date=self.as_of) \
+        # v82 (P2b): `name_date` 给出**事发之日**时按该日取称谓 —— 历代记的历史行
+        # (874 年那条) 里凶手不能按本篇末日写成关白 (他 901 年才当关白; 实测 1006 终传
+        # 行文「死于关白魔罗之种田所浩二的拙劣治疗」, 模型还替他圆场写「时方微贱」)。
+        kname = self.event_name(killer_id, date=name_date or self.as_of) \
             or self.name_or(killer_id, "某人")
         age = self._age_at_death(victim_id, date)
         child = age is not None and age < 8
@@ -11702,7 +11714,8 @@ class Facts:
                 if zh:
                     out = f"被{kname}{zh}"
             if not out:
-                _mkey, mzh = self.assassination_method(killer, cid, date, reason)
+                _mkey, mzh = self.assassination_method(killer, cid, date, reason,
+                                                       name_date=_kdate)
                 if mzh:
                     out = mzh
             if not out:
@@ -18691,29 +18704,40 @@ def _chrono_office(f, cid, date):
 def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
                        vacant=False, is_h=False, family=False, nm=None,
                        prev_date=None, dtor=False):
-    """一位统治者一行 (v73 用户拍板「一人一行」; v81 问题2 改行形):
+    """一位统治者一行 (v73 用户拍板「一人一行」; v81 问题2 立行形; v82 去分栏):
 
-    `田所久保｜关白｜卒930年4月9日，享年55岁，死于心脏病发作｜919年2月24日从父
-      田所浩二处受任命继位，时年44岁；在位3年，922年7月7日剃发退位，传位于其子田所定治`
-    `平盛秀｜太政大臣，后为幕府将军｜卒1006年8月7日，享年49岁，酗酒而亡｜995年7月24日
-      被派系拥立，时年38岁；在位11年，卒于位`
+    `关白田所久保，卒930年4月9日，享年55岁，死于心脏病发作；919年2月24日从父田所浩二
+      处受任命继位，时年44岁；在位3年，922年7月7日剃发退位，传位于田所定治`
+    `上皇田所久荫，卒970年10月30日，享年53岁，死于心脏病发作；…；在位6年，970年10月30日退位上皇`
+    `幕府将军平盛秀，卒1006年8月7日，享年49岁，酗酒而亡；…；在位11年，开府，改称幕府将军，卒于位`
+    `西山阴道一族平有永，995年7月25日受封西山阴道栋梁`   (家族历代记行)
 
-    v81 (用户 2026-09-29 拍板) 的四处改动:
+    v81 (用户 2026-09-29 拍板) 立的三处:
       · 去「生X年」(出生日期在这不重要), 改「卒{日}，享年{N}岁，{死因}」;
-      · 加**官称**: 即位之日一个词、终了之日一个词, 不同则写「X，后为Y」;
       · 让位 (reign_end) 优先于 `lost_title_memory` 判失位, 写退位词与继承人;
-      · `family=True` (家族历代记) 一行不变 —— 那一路只写即位句与头衔名。
-    `prev`(前任) 与 `vacant`(前一段是空位期) 支撑天朝「建立天命 / 取代」的用户判据。"""
+      · 卒项跨缓存取最全一份记录。
+    v82 (用户 2026-09-29 拍板) 改行形:
+      · **称号紧贴人名**、不再用「｜」分栏 (「关白田所久保」);
+      · 称号取**最后的称号** (久荫=上皇 / 盛秀=幕府将军), 改称只在行内补一句
+        (「，开府，改称幕府将军」), 末词不被读成即位时就有;
+      · 卒时官称为「上皇」时行尾写退位句 —— 不再与「卒于位」自相矛盾。
+    `prev`(前任) 与 `vacant`(前一段是空位期) 支撑天朝「建立天命 / 取代」的用户判据。
+    返回 "" 表示此行无料可写 (无称号、无卒项、无即位句), 由调用方整行略去。"""
+
     nm = nm or _chrono_nm(f, cid, date)
     if not nm:
-        return ""
+        return "", False
     rec = _chrono_rec(f, cid)
     if family:
         word = _SUCC_WORD.get(hist_type or "", "") or ""
         acq = _chrono_acc_text(f, cid, date, word, None)
         tname = f.title(tid, date=date) if tid is not None else ""
-        bits = [x for x in (acq, tname) if x]
-        return nm + ("｜" + "｜".join(bits) if bits else "")
+        # v82: 家族行同样去「｜」分栏 —— 称号 (头衔名) 紧贴人名, 后接即位句。
+        head = f"{tname}{nm}" if tname else nm
+        row = f"{head}，{acq}" if acq else head
+        # v82: 明文回报「此行是否三样俱全」(称号/卒项/即位句) —— 旧稿靠数字「｜」个数
+        # 判料之有无, 分栏一去就无从判断; 判据仍在事实层, 供纪事块整行略去无料之行。
+        return row, bool(tname) and bool(acq)
     birth = rec.get("birth") or ""
     death = (rec.get("death") or {}).get("date") or ""
     # v81: 卒项 = 日 + 享年 + 死因 (死因走既有的 death_clause; 跨缓存取最全一份记录)
@@ -18725,9 +18749,12 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
             dead_bits.append("享年%d岁" % _age)
         _reason = (rec.get("death") or {}).get("reason") or ""
         try:
+            # v82: 凶手称谓按**事发前一日**取 (与 `_anchor_date` 的「卒日当天头衔已随
+            # 继承易主」同一条口径) —— 大和实世 901.7.30 被杀、浩二同日继位,
+            # 按当日取词会写成「被关白…赐死」(那天他才刚当上关白)。
             _clause = f.death_clause(cid, date=death, reason=_reason,
                                      killer=(rec.get("death") or {}).get("killer"),
-                                     killer_date=death)
+                                     killer_date=_day_before(death))
         except Exception:
             _clause = ""
         if _clause:
@@ -18760,10 +18787,11 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         _real_loss = loss_date          # 下一事件即毁弃 (holder = 失去者) 时直接认下
     _end = _real_loss or loss_date or death
     span = _chrono_span(date, _end)
-    # v81: 官称 —— 即位之日的词与终了之日的词, 不同则并写。
-    # 终了之日取 `_anchor_date` (卒日往前一日), 且**须仍持有本头衔** —— 失去头衔
-    # 那天的 `official_title` 已经换成他的退路身份 (田所宣方 → 「田所家族当主」),
-    # 那不是「在位期间的官称变化」。
+    # v82 (用户 2026-09-29 拍板): 称号取**最后的称号** —— 一行一个称号词, 紧贴人名
+    # (「关白田所久保」「上皇田所久荫」「幕府将军平盛秀」)。
+    # 为什么取最后: 旧稿写「X，后为Y」两词并列, 模型成稿只落第一个
+    # (实测 1006 终传: 「太政大臣，后为幕府将军」被写成「为太政大臣」, 上皇整词丢失),
+    # 而称号位与行首人名的黏合形式模型必写。
     office = _chrono_office(f, cid, date)
     _o2 = ""
     if _end:
@@ -18771,8 +18799,7 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         _t2, _tid2 = f._primary_title_at(cid, as_of=_a2)
         if isinstance(_tid2, int) and _tid2 == tid:
             _o2 = _chrono_office(f, cid, _a2)
-    if _o2 and _o2 != office:
-        office = f"{office}，后为{_o2}" if office else _o2
+    _last = _o2 or office
     tail = ""
     _re = _chrono_reign_end(f, cid)
     _red = _re.get("date") or ""
@@ -18783,18 +18810,32 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         _snm = _chrono_nm(f, _succ, _red) if isinstance(_succ, int) else ""
         _srel = _chrono_rel_word(f, cid, _succ) if isinstance(_succ, int) else ""
         tail = "，" + f.date(_red) + _w + (f"，传位于{_srel}{_snm}" if _snm else "")
+    elif _last == f._JAPAN_OFFICE_JOKO:
+        # v82: 卒时官称是「上皇」(游戏卒时窗口烘死词 `emperor_joko_*`) ⇒ 他是**退位**
+        # 后才卒的, 行尾不能再写「卒于位」(与称号位自相矛盾, 模型会据此丢掉上皇,
+        # 实测 1006 终传把久荫写成「在位六年…死于心脏病发作」)。
+        _rd = _real_loss or loss_date or death
+        tail = (f"，{f.date(_rd)}退位上皇" if _rd else "，退位上皇")
     elif _real_loss:
         tail = "，随后于" + f.date(_real_loss) + ("失去天命" if is_h else "失去头衔")
         if death and cl.date_key(death) == cl.date_key(_real_loss):
             tail = "，卒于位"
     elif death:
         tail = "，卒于位"
+    if _o2 and _o2 != office and _o2 != f._JAPAN_OFFICE_JOKO:
+        # v82: 在位期间改称 (惣領制 + 头衔带 `shogun_flag` = 开府) —— 称号位只出末词,
+        # 改称之由在行内补一句, 免得模型把末词当成即位时就有 (盛秀 995 年即位时是
+        # 太政大臣, 开府在他卒前的那一年里)。
+        tail = ("，开府，改称幕府将军" if _o2 == f._JAPAN_OFFICE_SHOGUN
+                else f"，改称{_o2}") + tail
     bits = [x for x in (acq, span) if x]
     body = "；".join(bits) + tail
-    fields = [x for x in (office, dead_bits and "，".join(dead_bits), body) if x]
-    if not fields:
-        return nm
-    return nm + "｜" + "｜".join(fields)
+    head = f"{_last}{nm}" if _last else nm
+    segs = [x for x in (dead_bits and "，".join(dead_bits), body) if x]
+    if not segs:
+        return "", False
+    row = head + "".join(("，" if i == 0 else "；") + s for i, s in enumerate(segs))
+    return row, bool(_last) and bool(dead_bits) and bool(bits)
 
 
 def _chrono_group(items, max_n):
@@ -18973,10 +19014,14 @@ def _chrono_build(f, tid, pid, is_h, own, periods, tname):
             claimed.add(gi)
             # v73: 下一事件即「毁弃」(holder = 失去者) 时, 该任的结束日就是真正的失位日
             _dtor = bool(gi + 1 < len(accs) and accs[gi + 1][2] == "destroyed")
-            p["rows"].append(_chrono_ruler_line(
+            # v82: 行文本与「此行是否三样俱全」的判据同时入库 (一一对应, 空行也占位),
+            # 供纪事块略去无料之行 (旧稿靠数字「｜」个数判, 分栏一去即无从判断)。
+            _row, _detail = _chrono_ruler_line(
                 f, tid, d, h, ty, _chrono_prev_for(accs, gi), end,
                 vacant=vac, is_h=is_h, dtor=_dtor,
-                prev_date=(accs[gi - 1][0] if gi > 0 else None)))
+                prev_date=(accs[gi - 1][0] if gi > 0 else None))
+            p["rows"].append(_row)
+            p.setdefault("rows_detail", []).append(bool(_detail))
     if not any(p["rows"] for p in periods):
         return None
     cur = next((p for p in reversed(periods) if p.get("ids")), None)
@@ -19031,32 +19076,35 @@ def _family_chronicle(f, pid, tid, is_h=False):
         return None
     picked.sort(key=lambda x: cl.date_key(x[0]))
     picked = picked[-_CHRONICLE_ANCESTOR_MAX:]
-    rows = []
+    rows, details = [], []
     for idx, (d, cid, atid, loss, _lt2) in enumerate(picked):
         _pv = f._gain_prev.get((cid, atid, d))
         if _pv is None and idx > 0:
             _pv = picked[idx - 1][1]
-        line = _chrono_ruler_line(
+        line, _det = _chrono_ruler_line(
             f, atid, d, cid, f._gain_reason.get((cid, atid, d), ""),
             _pv, loss, is_h=is_h, family=True,
             nm=_chrono_nm(f, cid, d), prev_date=(picked[idx - 1][0] if idx else None))
         if line:
             rows.append(line)
+            details.append(bool(_det))
     ivs = (f._hold_intervals(pid) or {}).get(tid) or []
     own_g = ivs[-1][0] if ivs else None
     own_l = ivs[-1][1] if ivs else None
-    own_line = _chrono_ruler_line(f, tid, own_g, pid, "created",
-                                  (picked[-1][1] if picked else None), own_l,
-                                  is_h=is_h, family=True,
-                                  nm=f.name(pid))
+    own_line, own_det = _chrono_ruler_line(f, tid, own_g, pid, "created",
+                                           (picked[-1][1] if picked else None), own_l,
+                                           is_h=is_h, family=True,
+                                           nm=f.name(pid))
     if own_line:
         rows.append(own_line)
+        details.append(bool(own_det))
     if not rows:
         return None
     name = (f.name(pid) or f.cache.get("player_name") or "") + "家"
     _fam_cur = {"name": "家族", "start": (picked[0][0] if picked else own_g),
                 "end": own_l, "vacant": False,
-                "ids": [p[1] for p in picked] + [pid], "rows": rows}
+                "ids": [p[1] for p in picked] + [pid], "rows": rows,
+                "rows_detail": details}
     return {
         "name": name,
         "family": True,
