@@ -18702,6 +18702,37 @@ def _chrono_office(f, cid, date):
     return w
 
 
+def _chrono_joko_clause(f, cid, date):
+    """「上皇」之由 (v83, 用户 2026-09-29 指正): 「关白之序及身，乃退天皇位，称上皇」。
+
+    机制 (两处脚本, 已在本局数据上核实 —— `logs/v82_probe2.txt`):
+      · `common/on_action/title_on_actions.txt:1461-1487` —— 新持有者取得 `e_japan`
+        (关白之位) 时, 若 `e_japan.var:administrative_ui_special_title` 所指头衔
+        (本局 = 高御座 `k_chrysanthemum_throne`) 仍在他手上, 即触发 9120 号事件;
+      · `events/dlc/tgp/tgp_japan_general_events.txt:733-767` —— 该事件让他**退天皇位**
+        (高御座交 `player_heir`, 故其持有区间在即位次日终结)、加 `joko_flag` 与
+        `former_emperor` ⇒ 称**上皇**: 仍持关白 = 实权摄政, 且先前做过天皇。
+    实测 (田所久荫 16851604): 高御座 962.2.27–964.11.20 → e_japan 964.11.19 及身
+    → 次日高御座交田所尹秀 ⇒ 上皇之称**始于即位之日**, 不是卒前某日。
+
+    ⇒ 这一句接在即位句后 (行尾不再写「退位上皇」); 查不到「即位日仍持高御座」的
+    证据时只写「，称上皇」。"""
+    tid = f.title_by_key("k_chrysanthemum_throne")
+    date_key = cl.date_key(date) if date else None
+    if isinstance(tid, int) and date_key:
+        ivs = f._hold_intervals(cid).get(tid)
+        if ivs is None:
+            ivs = (f._hold_intervals(cid) or {}).get(str(tid))
+        for iv in (ivs or []):
+            try:
+                gain, loss = iv[0], iv[1]
+            except (IndexError, TypeError):
+                continue
+            if gain and loss and cl.date_key(gain) <= date_key < cl.date_key(loss):
+                return "，关白之序及身，乃退天皇位，称上皇"
+    return "，称上皇"
+
+
 def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
                        vacant=False, is_h=False, family=False, nm=None,
                        prev_date=None, dtor=False):
@@ -18709,8 +18740,9 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
 
     `关白田所久保，卒930年4月9日，享年55岁，死于心脏病发作；919年2月24日从父田所浩二
       处受任命继位，时年44岁；在位3年，922年7月7日剃发退位，传位于田所定治`
-    `上皇田所久荫，卒970年10月30日，享年53岁，死于心脏病发作；…；在位6年，970年10月30日退位上皇`
-    `幕府将军平盛秀，卒1006年8月7日，享年49岁，酗酒而亡；…；在位11年，开府，改称幕府将军，卒于位`
+    `上皇田所久荫，卒970年10月30日，享年53岁，死于心脏病发作；…；964年11月19日从田所
+      为久处受任命继位，时年47岁，关白之序及身，乃退天皇位，称上皇；在位6年`
+    `幕府将军平盛秀，卒1006年8月7日，享年49岁，酗酒而亡；…；在位11年，开府，改称幕府将军`
     `西山阴道一族平有永，995年7月25日受封西山阴道栋梁`   (家族历代记行)
 
     v81 (用户 2026-09-29 拍板) 立的三处:
@@ -18720,8 +18752,11 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
     v82 (用户 2026-09-29 拍板) 改行形:
       · **称号紧贴人名**、不再用「｜」分栏 (「关白田所久保」);
       · 称号取**最后的称号** (久荫=上皇 / 盛秀=幕府将军), 改称只在行内补一句
-        (「，开府，改称幕府将军」), 末词不被读成即位时就有;
-      · 卒时官称为「上皇」时行尾写退位句 —— 不再与「卒于位」自相矛盾。
+        (「，开府，改称幕府将军」), 末词不被读成即位时就有。
+    v83 (用户 2026-09-29 指正) 两处:
+      · 行尾不再写「卒于位」 —— 卒项已在前, 「在位N年，卒于位」是同义重复;
+      · 上皇不是「在位若干年后退位」: 关白之序及身时, 时任天皇 (他本人) 退位、
+        称上皇 —— 这一句移到即位句后 (见 `_chrono_joko_clause`)。
     `prev`(前任) 与 `vacant`(前一段是空位期) 支撑天朝「建立天命 / 取代」的用户判据。
     返回 "" 表示此行无料可写 (无称号、无卒项、无即位句), 由调用方整行略去。"""
 
@@ -18801,6 +18836,8 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         if isinstance(_tid2, int) and _tid2 == tid:
             _o2 = _chrono_office(f, cid, _a2)
     _last = _o2 or office
+    # v83: 上皇之称始于即位之日 (关白之序及身 → 退天皇位 → 称上皇), 故这一句接在即位句后。
+    _joko = _chrono_joko_clause(f, cid, date) if _last == f._JAPAN_OFFICE_JOKO else ""
     tail = ""
     _re = _chrono_reign_end(f, cid)
     _red = _re.get("date") or ""
@@ -18811,25 +18848,16 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         _snm = _chrono_nm(f, _succ, _red) if isinstance(_succ, int) else ""
         _srel = _chrono_rel_word(f, cid, _succ) if isinstance(_succ, int) else ""
         tail = "，" + f.date(_red) + _w + (f"，传位于{_srel}{_snm}" if _snm else "")
-    elif _last == f._JAPAN_OFFICE_JOKO:
-        # v82: 卒时官称是「上皇」(游戏卒时窗口烘死词 `emperor_joko_*`) ⇒ 他是**退位**
-        # 后才卒的, 行尾不能再写「卒于位」(与称号位自相矛盾, 模型会据此丢掉上皇,
-        # 实测 1006 终传把久荫写成「在位六年…死于心脏病发作」)。
-        _rd = _real_loss or loss_date or death
-        tail = (f"，{f.date(_rd)}退位上皇" if _rd else "，退位上皇")
-    elif _real_loss:
+    elif _real_loss and not (death and cl.date_key(death) == cl.date_key(_real_loss)):
+        # v83: 失位日与卒日同日 = 在位而终, 行尾不再出词 (旧稿写的「卒于位」与卒项重复)。
         tail = "，随后于" + f.date(_real_loss) + ("失去天命" if is_h else "失去头衔")
-        if death and cl.date_key(death) == cl.date_key(_real_loss):
-            tail = "，卒于位"
-    elif death:
-        tail = "，卒于位"
     if _o2 and _o2 != office and _o2 != f._JAPAN_OFFICE_JOKO:
         # v82: 在位期间改称 (惣領制 + 头衔带 `shogun_flag` = 开府) —— 称号位只出末词,
         # 改称之由在行内补一句, 免得模型把末词当成即位时就有 (盛秀 995 年即位时是
         # 太政大臣, 开府在他卒前的那一年里)。
         tail = ("，开府，改称幕府将军" if _o2 == f._JAPAN_OFFICE_SHOGUN
                 else f"，改称{_o2}") + tail
-    bits = [x for x in (acq, span) if x]
+    bits = [x for x in (acq + _joko, span) if x]
     body = "；".join(bits) + tail
     head = f"{_last}{nm}" if _last else nm
     segs = [x for x in (dead_bits and "，".join(dead_bits), body) if x]
