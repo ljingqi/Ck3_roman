@@ -2979,12 +2979,56 @@ def _chrono_usable(p):
     return len([r for r in (p.get("rows") or []) if r]) >= 2
 
 
+def _chrono_row_chunks(p, per=None):
+    """把一个朝代按**人数**切成 ≤per 人一段 (v82 用户口径: 称号取最后的称号)。
+
+    为什么需要: 分篇旧稿只按**朝代**切, 单朝十六主的档 (田所 日本政权 868–1006)
+    于是只成一段 —— 一次请求要写十六个人。实测两种走样: 1007 档那次写到第 11 人
+    就收笔 (久荫、宣方、传主本人全都没写), 1006 档这次干脆收成一篇总说
+    (传主与久荫的头衔变化「幕府将军 / 上皇」因此一个字也没落到纸上)。
+    按人切段后每段 4 人, 与「篇幅要求 1200–1800 字」相称; 各段的年代区间取自
+    事实层逐行的即位日 (`rows_dates`), 战事切片 (`_chrono_wars_in`) 随之变准。
+
+    每段沿用该朝之名; 段止取**下一段首人的即位日** (末段沿用该朝段止)。"""
+    rows = [r for r in (p.get("rows") or [])]
+    if not rows:
+        return [p]
+    per = max(1, int(per or getattr(F, "CHRONICLE_ROWS_PER_SECTION", 4)))
+    if len(rows) <= per:
+        return [p]
+    dates = list(p.get("rows_dates") or [])
+    ids = list(p.get("rows_ids") or [])
+    dets = list(p.get("rows_detail") or [])
+    out = []
+    for i in range(0, len(rows), per):
+        chunk = rows[i:i + per]
+        seg = dict(p)
+        seg["rows"] = chunk
+        seg["rows_detail"] = dets[i:i + per] if len(dets) >= len(rows) \
+            else [None] * len(chunk)
+        seg["rows_dates"] = dates[i:i + per] if len(dates) >= len(rows) else []
+        seg["rows_ids"] = ids[i:i + per] if len(ids) >= len(rows) else []
+        if seg["rows_dates"]:
+            seg["start"] = seg["rows_dates"][0]
+        j = i + per
+        if j < len(rows) and len(dates) >= j + 1:
+            seg["end"] = dates[j]
+        out.append(seg)
+    if out:
+        out[-1]["end"] = p.get("end")
+    return out
+
+
 def _chrono_split(periods, cap=None):
     """把各朝尽量等分成 ≤cap 节 (v73; cap 缺省取 `facts.CHRONICLE_MID_MAX`)。
 
+    v82: 先按人把过长的朝代切段 (`_chrono_row_chunks`), 再按 cap 等分归并。
     返回**合并后的段**: 每段的 `name` 是所含各朝名 (「唐皇朝、群雄争霸」), `start`/`end`
     取该段首尾 (与素材块的段界同源)。只有一段时不再拆。"""
-    ps = [p for p in (periods or []) if _chrono_usable(p)]
+    ps = []
+    for p in (periods or []):
+        if _chrono_usable(p):
+            ps.extend(_chrono_row_chunks(p))
     if not ps:
         return []
     cap = max(1, int(cap if cap is not None
@@ -3162,13 +3206,15 @@ def build_articles(facts, cache, cfg):
                 _cap = max(1, int(getattr(F, "CHRONICLE_MID_MAX", 4)))
                 if _cur.get("rows") and _hist:
                     _parts = _chrono_split(_hist, cap=_cap - 1)
-                    _parts.append({
-                        "name": _cur.get("name"), "start": _cur.get("start"),
-                        "end": _cur.get("end"), "ids": list(_cur.get("ids") or []),
-                        "rows": list(_cur.get("rows") or []), "periods": [_cur],
-                        # v82: 与 rows 一一对应的「料之有无」判据 (见 `_chrono_split`)
-                        "rows_detail": list(_cur.get("rows_detail")
-                                            or [None] * len(_cur.get("rows") or []))})
+                    # v82: 本朝同样按人切段 (末段带 mid_last 要求, 收束于传主末年)
+                    for _cp in _chrono_row_chunks(_cur):
+                        _parts.append({
+                            "name": _cp.get("name"), "start": _cp.get("start"),
+                            "end": _cp.get("end"), "ids": list(_cp.get("ids") or []),
+                            "rows": list(_cp.get("rows") or []),
+                            "rows_detail": list(_cp.get("rows_detail") or []),
+                            "rows_dates": list(_cp.get("rows_dates") or []),
+                            "periods": [_cp]})
                 else:
                     # 本朝是唯一的朝代 (单朝单君/单朝多君): 全篇只有一个纪事节,
                     # 不再分出「前方各朝」—— 免得同一朝写两遍 (富兰克林档实测)。

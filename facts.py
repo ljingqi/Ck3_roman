@@ -18487,6 +18487,7 @@ def _estate_court_tid(f, pid):
 _CHRONICLE_ANCESTOR_MAX = 12     # 家族历代记的上溯位数上限
 _CHRONICLE_WAR_MAX = 40          # 单篇战事行上限 (每段再对半切)
 CHRONICLE_MID_MAX = 4            # 分篇上限 (与《家室列传》JIASHI_GROUP_MAX 同式)
+CHRONICLE_ROWS_PER_SECTION = 4   # v82: 单朝人数多于此数时按人再切段 (见 biography._chrono_row_chunks)
 # 天朝 (`h_`) 创建天命时的缘由词 (用户 2026-09-27 拍板):
 #   前一段是空位期 (群雄争霸) → 建立天命; 直接顶替在位者 → 取代 (王莽代汉之例)。
 # 其余头衔的 `created` 仍走 `created_verb_kind` 三档 (创建/重建/开创)。
@@ -19022,6 +19023,10 @@ def _chrono_build(f, tid, pid, is_h, own, periods, tname):
                 prev_date=(accs[gi - 1][0] if gi > 0 else None))
             p["rows"].append(_row)
             p.setdefault("rows_detail", []).append(bool(_detail))
+            # v82: 逐行的即位日与人物 id 同样入库 (与 rows 一一对应) —— 分节器按人
+            # 切段时要用它算各段的年代区间与所辖诸侯 (见 biography._chrono_row_chunks)。
+            p.setdefault("rows_dates", []).append(str(d))
+            p.setdefault("rows_ids", []).append(int(h))
     if not any(p["rows"] for p in periods):
         return None
     cur = next((p for p in reversed(periods) if p.get("ids")), None)
@@ -19104,7 +19109,9 @@ def _family_chronicle(f, pid, tid, is_h=False):
     _fam_cur = {"name": "家族", "start": (picked[0][0] if picked else own_g),
                 "end": own_l, "vacant": False,
                 "ids": [p[1] for p in picked] + [pid], "rows": rows,
-                "rows_detail": details}
+                "rows_detail": details,
+                "rows_dates": [p[0] for p in picked] + [own_g],
+                "rows_ids": [p[1] for p in picked] + [pid]}
     return {
         "name": name,
         "family": True,
