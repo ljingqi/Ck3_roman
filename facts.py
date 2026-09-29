@@ -16918,7 +16918,11 @@ def _house_founding_events(f):
         house_changed = hn != p_hn
         dyn_changed = dn != p_dn
         # 宗族名按家格句的称法 (「属菲利普宗族」, 不带「氏」)
-        clan = f"，属{dn_raw}宗族" if dn_raw and hn and dn != hn else ""
+        # v81 (问题1): 家族称法已含宗族名时 (东方名序的组装形「平氏下北沢家」)
+        # 不再补 —— 与 `house_history_lines` / `clan_line` 同一条口径,
+        # 免得同一件宗族关系在档案行与年表事件里各说一遍。
+        _east = f.name_order(pid) in cl.EASTERN_NAME_ORDERS
+        clan = f"，属{dn_raw}宗族" if dn_raw and hn and dn != hn and not _east else ""
         if new_house:
             body = f"{nm}别立{hn or dn}{clan}。"
         elif house_changed and dyn_changed:
