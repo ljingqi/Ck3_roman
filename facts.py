@@ -10405,6 +10405,53 @@ class Facts:
             return cid
         return fallback if isinstance(fallback, int) else None
 
+    def _capital_title_at(self, date=None):
+        """主角在 date 时点的**首都头衔 id** (v81): 逐档 `capital_history` → 末档
+        `landed.realm_capital`; 取不到返回 None。
+
+        (与 `_capital_province_at` 同源, 只是保留头衔 id —— 本处要的是**地名**
+        显示, 走 `title()` 才与《传主档案》的「治所」逐字一致。)"""
+        want = None
+        ch = self.cache.get("capital_history") or []
+        if ch and date:
+            dk = cl.date_key(str(date))
+            for pt in ch:
+                d = pt.get("date")
+                if d and cl.date_key(str(d)) <= dk:
+                    want = pt.get("title")
+                elif d:
+                    break
+        if want is None:
+            pid = self.cache.get("player_id")
+            rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+            want = (rec.get("landed") or {}).get("realm_capital")
+        return want if isinstance(want, int) else None
+
+    def artifact_home(self, cid, date=None):
+        """宝物所在地 (v81 问题4, 用户 2026-09-29 拍板): 定居统治者 → 其**当时首都**
+        的地名 (与《传主档案》的「治所」同一出口); 无地/游牧或取不到 → ''。
+
+        游戏口径「定居统治者的宝物藏于当前首都」, 故这是**存放地**; 流转条目上的
+        `location` 是「那次转移发生之地」(持有者行旅时即其行次, 田所档五件宝物
+        因此齐齐写成法国布洛涅), 只在取不到首都时由调用方兜底。"""
+        if not isinstance(cid, int):
+            return ""
+        tid = None
+        if cid == self.cache.get("player_id"):
+            tid = self._capital_title_at(date)
+        if tid is None:
+            c = self._chars.get(str(cid)) or {}
+            ld = c.get("landed_data") or {}
+            tid = ld.get("realm_capital")
+            if not isinstance(tid, int):
+                # 死者: 存档清掉 landed_data 时用卒时辖地之首 (退而求其次)
+                dom = (c.get("dead_data") or {}).get("domain") or []
+                tid = dom[0] if dom else None
+        if not isinstance(tid, int):
+            return ""
+        nm = self.title(tid, date=date) or ""
+        return nm
+
     def _artifact_dyn_of(self, cid):
         """角色所属宗族 id (熔件 `dynasty_house` → `dynasty`); 查不到返回 None。
 
@@ -10560,30 +10607,36 @@ class Facts:
             # 模型读不出「这件现在还在不在主角手上」(成稿把 141 件现属他人宗族的
             # 遗骨写成主角帐中之物)。程序端已能确定性给出, 故不由提示词叮嘱:
             # 现主取 as_of 时点的持有者 (流转史末条归属), 非传主时明标;
-            # 现藏取该条流转的 location → 州府名 (缺则不发)。
+            # 现藏见紧下的 v81 口径 (v68 旧稿取流转条目的 location)。            # v81 (问题4, 用户 2026-09-29 拍板): 「现藏」改取**持有者当时的首都** ——
+            # 游戏口径是「定居统治者宝物藏于当前首都」, 而旧稿取的是**流转条目上的
+            # `location`** (那是「这次转移发生之地」, 常是持有者行旅所在): 田所档
+            # 主角 1006 年正从肯特返日途中, 五件宝物的 `location` 全是 2132=布洛涅,
+            # 于是「现藏：布洛涅伯爵领」——五件齐刷刷写在法国。现主无地/游牧
+            # (宝物随营) 或首都取不到时, 才退回流转条目的 location。
             _own = self._artifact_owner_at(hist, self.as_of, fallback=a.get("owner"))
             _onm = self.name_or(_own, "") if isinstance(_own, int) else ""
             if _onm:
                 lines.append(f"现主：{_onm}" if _own == self.cache.get("player_id")
                              else f"现主：{_onm}，非传主")
-            _loc = None
-            _ldk = None
-            for e in hist:
-                if not isinstance(e, dict) or not isinstance(e.get("location"), int):
-                    continue
-                _d = e.get("date")
-                if self.as_of and (not _d or cl.date_key(_d) > cl.date_key(self.as_of)):
-                    continue
-                _dk = cl.date_key(_d) if _d else None
-                if _ldk is None or (_dk is not None and _dk >= _ldk):
-                    _ldk, _loc = _dk, e.get("location")
-            _lname = ""
-            if _loc is not None:
-                _ctid = self.county_at_province(_loc)
-                if _ctid is not None:
-                    _lname = self.title(_ctid, self.as_of) or ""
-            if _lname:
-                lines.append(f"现藏：{_lname}")
+            _hname = self.artifact_home(_own, self.as_of)
+            if not _hname:
+                _loc = None
+                _ldk = None
+                for e in hist:
+                    if not isinstance(e, dict) or not isinstance(e.get("location"), int):
+                        continue
+                    _d = e.get("date")
+                    if self.as_of and (not _d or cl.date_key(_d) > cl.date_key(self.as_of)):
+                        continue
+                    _dk = cl.date_key(_d) if _d else None
+                    if _ldk is None or (_dk is not None and _dk >= _ldk):
+                        _ldk, _loc = _dk, e.get("location")
+                if _loc is not None:
+                    _ctid = self.county_at_province(_loc)
+                    if _ctid is not None:
+                        _hname = self.title(_ctid, self.as_of) or ""
+            if _hname:
+                lines.append(f"现藏：{_hname}")
             if kind == "part":
                 mat = self._artifact_material(a.get("description"), self.as_of)
                 if mat:
@@ -10615,7 +10668,20 @@ class Facts:
                 elif t == "taken_in_siege" and actor:
                     entries.append(f"{d}，{actor}围攻中夺得")
                 elif t == "conquest":
-                    entries.append(f"{d}，克定所得")
+                    # v81 (问题4, 用户 2026-09-29): 旧稿硬写「克定所得」(成语「攻克
+                    # 而定」), 两个字的名形＋「所得」极易被读成一个叫「克定」的人取走
+                    # 了它 —— 而本条两端都带名字 (actor=失主, recipient=新主, 见
+                    # `ARTIFACT_HOLDER_SLOT`), 直接写成转移句。两端皆无名则整条不发。
+                    _win = self.name_or(e.get("recipient"), "") \
+                        if isinstance(e.get("recipient"), int) else ""
+                    _lose = self.name_or(e.get("actor"), "") \
+                        if isinstance(e.get("actor"), int) else ""
+                    if _win and _lose:
+                        entries.append(f"{d}，{_win}自{_lose}处夺得")
+                    elif _win:
+                        entries.append(f"{d}，{_win}夺得")
+                    elif _lose:
+                        entries.append(f"{d}，{_lose}处宝物易主")
                 elif t == "created_before_history":
                     # v30: 曾写「年代久远，创制无考」— 属考据按语, 整条略去
                     # (修复方案_菲利普4.md 问题4: 缺料不成句)
