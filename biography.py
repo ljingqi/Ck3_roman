@@ -2659,6 +2659,54 @@ def _drop_subject_roster_lines(md, facts, articles):
     return "\n".join(out), dropped
 
 
+# v84 (用户 2026-09-29 报告「每个 .md 开头标题重复两遍」): 总纲请求按
+# `style.PROMPTS["intro_user"]` 的输出格式块, 要求模型**自己**写两行头
+# (`# 《X传》` + `家族：…｜人物：…｜生卒：…`), 而本函数随后又按程序口径在正文
+# 之前统一加了标题行与 `> 家族：…` 题记行 —— 两者叠在一起, 于是每篇成稿开头
+# 出现两遍标题 (v81 及更早的旧稿同样如此, 不是 v83 新引入的回归)。
+# 程序口径那两行是权威行 (带「死于…，此为终传」/「<缘由>，此为终传」, 与
+# `pipeline.tail_state_applies`、各 verify 断言同一口径), 故保留程序行,
+# 只把**总纲开头**由模型另写的那几行剥掉 —— 与 `_normalize_section` v14
+# 「正则剔除模型误输出的重复标题 (不动提示词)」同一路数, 逐字相同的条数上限 3 行,
+# 且必须形如标题行/题记行, 免得吃掉总纲正文首句。
+_INTRO_HEAD_RES = (
+    # ① 标题行: 「# 《X传》」/「**《X传》**」/「标题：《X传》」/「## 《X传》」
+    re.compile(r"^[>\-*+\s]*#{0,6}[>\-*+\s]*(?:标题|题目)?\s*[：:]?\s*"
+               r"《[^》]{1,60}》[>\-*+\s]*$"),
+    # ② 题记行: 「家族：…｜人物：…｜…」式 (短行, 且带 ｜…人物：/生卒：/生平：)
+    re.compile(r"^[>\-*+]{0,2}\s*\**[^\n｜|]{0,40}[｜|][^\n]{0,8}"
+               r"(?:人物|生卒|生平)[：:][^\n]{0,80}$"),
+    # ③ 题记行的简版: 整行就以「家族：/人物：」起头
+    re.compile(r"^[>\-*+]{0,2}\s*\**(?:家族|人物)[：:][^\n]{0,120}$"),
+)
+
+
+def _strip_intro_head(intro):
+    """剥掉总纲开头模型另写的标题行/题记行 (v84, 幂等)。
+
+    逐行看开头: 空行跳过不计数; 命中「标题行 / 题记行」形状 (①②③ 之一) 的行剥掉,
+    最多 3 行; 首个非此类行即停 —— 故只动总纲最前面那几行, 正文一字不碰。
+    没有可剥的行时原样返回。"""
+    intro = intro or ""
+    lines = intro.split("\n")
+    i, dropped, sample = 0, 0, ""
+    while i < len(lines) and dropped < 3:
+        s = lines[i].strip()
+        if not s:
+            i += 1
+            continue
+        if not any(r.match(s) for r in _INTRO_HEAD_RES):
+            break
+        sample = sample or s
+        dropped += 1
+        i += 1
+    if not dropped:
+        return intro
+    llm.log(f"总纲开头剥掉模型另写的标题/题记行 {dropped} 行 "
+            f"(标题与题记由组装侧统一添加): {sample[:60]}")
+    return "\n".join(lines[i:]).strip()
+
+
 def _assemble(facts, intro, leads, sections, articles):
     parts = [f"# 《{facts['protagonist']['name']}传》"]
     p = facts["protagonist"]
@@ -2677,7 +2725,9 @@ def _assemble(facts, intro, leads, sections, articles):
     parts.append(f"> 家族：{house}｜人物：{p.get('name')}｜{span}")
     # v28: 不再向读者列出「存档来源：868.1.1 / …（共10份快照）」— 元信息无用
     parts.append("")
-    parts.append(intro.strip())
+    # v84: 总纲开头模型另写的标题行/题记行由 `_strip_intro_head` 剥掉,
+    # 只留本函数程序口径的标题行与 `> 家族：…` 题记行 (每篇开头不再重复两遍)。
+    parts.append(_strip_intro_head(intro))
     for i, a in enumerate(articles, 1):
         parts.append("")
         parts.append("---")
