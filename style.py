@@ -33,7 +33,7 @@ v35: 提示词与事实层一律以**世界内的人事措辞**行文 —— 「
 STYLE_PROFILES = {
     "east": {
         "jizhuanti": (
-            "「纪传体」笔法：仿《史记》纪传体——以人物为中心，按时间次序叙其一生，"
+            "「纪传体」笔法：仿《史记》纪传体——以人物为中心，按照时间顺序讲述该角色一生的故事，"
             "客观叙事，夹叙夹议，善用细节、对话与场景铺陈；"
             "文章末尾以「太史公曰」作史家评点收束。"
         ),
@@ -43,7 +43,7 @@ STYLE_PROFILES = {
     },
     "west": {
         "jizhuanti": (
-            "「传记体」笔法：仿西方古典传记 (普鲁塔克《名人传》体例)——以人物一生为纲，"
+            "「传记体」笔法：仿西方古典传记 (如普鲁塔克《名人传》)——以人物一生为纲，"
             "穿插轶事、对话与性格细节，夹叙夹议，兼作道德评点与命运省思；"
             "文章末尾以「史家按」作评点收束。"
         ),
@@ -225,18 +225,18 @@ JIASHI_VARIANTS = {
 # 板块要求: 每条都写「本篇须写出什么」, 一律正向表述
 SECTION_REQ = {
     "benji": {
-        "lead": "从家世出身写起：生于何年、家族渊源、族属信仰、性情特质，立起人物一生基调。",
+        "lead": "从家世出身写起：生于何年、家族渊源、文化和宗教、性情特质，立起人物一生基调。",
         "mid": "按时间次序叙述一生大事：执掌领地、经营营地或世族庄园、受任官职、让土、结仇、家变、再娶等，依本篇给出的年代与人事。本篇写出主角的登位与失土时刻、战争与囚狱转折，把每个关键日期写成戏剧场景。",
         "tail": None,
     },
     "friend": {
         "lead": "写传主与主角的交游渊源：二人如何相识、同处何朝何地，传主的家世与出身。",
-        "mid": "叙述传主一生际遇：婚姻、被囚、失土、起复、登位、结友等。本篇写出传主与主角结友的时刻与缘由，以及二人交游中的聚散。",
+        "mid": "叙述传主一生际遇：婚姻、被囚、失土、起复、执政、交友等。本篇写出传主与主角结友的时刻与缘由，以及二人交游中的聚散。",
         "tail": None,
     },
     "enemy": {
         "lead": "写仇家身世与结仇之由：传主何许人也，与主角因何成仇。",
-        "mid": "叙述仇家一生行迹：登位、婚姻、情事、结仇、私情等，以客观叙事行文。本篇写出结仇的日期与由头，以及仇怨在何时何地爆发。",
+        "mid": "叙述仇家一生行迹：执政、婚姻、情事、结仇、私情等，以客观叙事行文。本篇写出结仇的日期与由头，以及仇怨在何时何地爆发。",
         "tail": None,
     },
     "jiashi": {
@@ -294,18 +294,18 @@ SECTION_REQ = {
         "tail": None,
     },
     "feuds": {
-        "lead": "写与主角家族关系不和的各家族：结怨之由、恩怨始末、当前关系档位 (世仇/敌对/争吵)。恩怨之始按战争与领地的次序写出：宣战、胜负、领地易主、对方此后处境；囚禁与俘虏写在对应战役的过程里。",
+        "lead": "写与主角家族关系不和的各家族：结怨之由、恩怨始末、当前关系。恩怨之始按战争与领地的次序写出：宣战、胜负、领地易主、对方此后处境；囚禁与俘虏写在对应战役的过程里。",
         "mid": "依事件史叙述各家族的恩怨始末：联姻、囚禁、处决、宣战、反目等。本篇把每段恩怨的起点 (宣战与夺地的日期与由头) 写到收束，让恩怨链条从开战、战败、失地到对方处境完整可见。",
         "tail": None,
     },
     "artifacts": {
-        "lead": "写主角家族所藏重宝：宝物名称、形制、稀有度，立起传家重宝的画卷。",
-        "mid": "依流转史叙述每件宝物的来历与流转：何人造、何时被何人夺得或继承、现藏何处。",
+        "lead": "写主角持有的宝物相关内容：宝物名称、形制、稀有度。",
+        "mid": "依流转史叙述每件宝物的来历与流转。",
         "tail": None,
     },
     "secrets": {
-        "lead": "写主角身上的隐事：何事、涉及何人、事在何年、有谁知情；立起「其人其行之外另有隐情」的底色。",
-        "mid": "写家人与近臣的隐事、把柄的所属与流转：谁藏何隐事、谁已知情、此后往来如何。本篇写出各处隐事的年份与知情者的身份。",
+        "lead": "写主角身上的秘密：何事、涉及何人、事在何年、有谁知情。",
+        "mid": "写家人与近臣的秘密、把柄的所属与流转：谁藏什么秘密、谁已知情、此后往来如何。本篇写出各处秘密的年份与知情者的身份。",
         "tail": None,
     },
 }
@@ -776,18 +776,18 @@ MEMORY_TEMPLATES = {
     "released_from_prison_memory": "{name}获释。",
     # v32: 越狱 (escaped_from_prison_memory, participants=imprisoner) 此前无模板 →
     # _mem_sentence 返回 None, 越狱整条不入事实面 (主角 869.10.16 即如此)。
-    "escaped_from_prison_memory": "{name}自{other}的监禁中逃脱。",
+    "escaped_from_prison_memory": "{name}从{other}的监禁中逃脱。",
     "escaped_from_prison_memory_no_other": "{name}越狱脱身。",
     "lost_title_memory": "{name}让出{title}。",
-    "ascended_throne_memory": "{name}登位，得{title}。",
+    "ascended_throne_memory": "{name}获得{title}。",
     "child_born": "{name}添子{other}。",
     "first_born": "{name}得长子{other}。",
     # v32 (马克龙问题3): 夭折记忆的 participants 是 **mother** —— 旧句只有父名,
     # 模型据此写出「未知其母, 只知为某人之血脉」(主角只一位妻子, 母亲其实早有数据)。
     # 配偶词按持有人性别与关系取 (妻/夫; 妾另表, 见 facts._consort_word);
     # 生母本人持有该记忆 (自指) 时用 `_no_other` 版, 不出「A之妻A」。
-    "child_premature": "{name}之{rel}{other}孕期提前结束。",
-    "child_premature_no_other": "{name}孕期提前结束。",
+    "child_premature": "{name}之{rel}{other}流产。",
+    "child_premature_no_other": "{name}流产。",
     "child_stillborn": "{name}之{rel}{other}产下死婴。",
     "child_stillborn_no_other": "{name}产下死婴。",
     "twins_born": "{name}得孪生子。",
@@ -823,7 +823,7 @@ MEMORY_TEMPLATES = {
     "picked_serenity_aspect_memory": "{name}皈依安详之道。",
     "picked_creation_aspect_memory": "{name}皈依创世之道。",
     "ward_education_completed": "{name}学业有成。",
-    "childhood_education_guardian": "{name}受业于{other}。",
+    "childhood_education_guardian": "{name}被{other}教育。",
     "childhood_education_no_guardian": "{name}独自求学。",
     "completed_rites_of_passage": "{name}完成成人礼。",
     "completed_adult_education": "{name}完成深造。",
@@ -886,7 +886,7 @@ MEMORY_TEMPLATES = {
     "defeated_detractor_in_drinking_contest_memory_no_other":
         "{name}在加冕宴的斗酒中取胜。",
     "was_caught_cheating_in_drinking_contest_memory":
-        "{name}在加冕宴的斗酒中作弊，为{other}所觉。",
+        "{name}在加冕宴的斗酒中作弊，为{other}发现。",
     "was_caught_cheating_in_drinking_contest_memory_no_other":
         "{name}在加冕宴的斗酒中作弊。",
     # v78-5: 流放/逐出宗族三型 (旧稿零接管; 三型同源, 由
@@ -905,7 +905,7 @@ MEMORY_TEMPLATES = {
     "soulmate_died": "{name}的灵魂伴侣{other}去世。",
     "best_friend_died": "{name}的挚友{other}去世。",
     "nemesis_died": "{name}的死敌{other}去世。",
-    "developed_crush": "{name}倾心于{other}。",
+    "developed_crush": "{name}喜欢上了{other}。",
     "had_a_threesome_memory": "{name}与{other}、{other2}同宿。",
 }
 
@@ -1001,8 +1001,8 @@ SEX_MEM_WORDING["victim_consensual"] = SEX_MEM_CONSENSUAL
 # 类型名本地化 (L.loc(table, type)) 只是名词 (考试舞弊者/巫师/不信者), 提示词里
 # 需要可叙事的短语, 故按类型给模板; 未收录类型回退游戏本地化类型名。
 SECRET_TOPICS = {
-    "secret_murder": "谋害{target}",
-    "secret_murder_attempt": "行刺{target}未遂",
+    "secret_murder": "谋杀{target}",
+    "secret_murder_attempt": "谋杀{target}未遂",
     "secret_exam_cheater": "科举舞弊",
     "secret_lover": "与{target}私通",
     "secret_deviant": "性情怪僻",
@@ -1017,8 +1017,8 @@ SECRET_TOPICS = {
     # 「主角的女儿嫁的正是主角自己的私生子」接起来 (facts.secret_topic 传入
     # {father}; 实父判不出时退 SECRET_TOPICS_NO_FATHER 的简式)。
     "secret_unmarried_illegitimate_child":
-        "所出{target}血脉存疑，实父为{father}",
-    "secret_disputed_heritage": "所生{target}血统有争，实父为{father}",
+        "所出{target}血脉存疑，亲生父亲为{father}",
+    "secret_disputed_heritage": "所生{target}血统有争，亲生父亲为{father}",
     # v42 (问题1): 乱伦走自然动词式 —— 旧稿是 facts 里的 `乱伦：与{target}`
     # (全库唯一一条「标签：内容」式隐事主题), 嵌进「有隐事N桩：」成双层冒号;
     # 判不出对象时退 SECRET_TOPICS_NO_TARGET 的「乱伦」。

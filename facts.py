@@ -15162,7 +15162,7 @@ def _war_start_clause(f, ev, sl):
         opp = f.event_name(sl["dfd"], date=d) or ""
         s = f"{me}以{cb}向{opp}开战" if cb else f"{me}向{opp}开战"
         if tname:
-            s += f"，意在{tname}"
+            s += f"，目标是{tname}"
         cl = sl.get("claimant")
         if isinstance(cl, int) and cl != owner:
             cn = f.event_name(cl, date=d) or ""
@@ -15173,7 +15173,7 @@ def _war_start_clause(f, ev, sl):
         atk = f.event_name(sl["atk"], date=d) or ""
         s = f"{atk}以{cb}来攻，{me}应战" if cb else f"{atk}来攻，{me}应战"
         if tname:
-            s += f"，所争为{tname}"
+            s += f"，目标为{tname}"
         return s
     # joined_allys_war
     ally = f.event_name(sl.get("ally"), date=d) or ""
@@ -15210,7 +15210,7 @@ def _war_end_clause(f, ev, sl, d0):
     me = f.event_name(owner, date=d) or ""
     other = sl["dfd"] if owner == sl["atk"] else sl["atk"]
     onm = f.event_name(other, date=d) or ""
-    return f"{me}与{onm}以无条件和平罢兵"
+    return f"{me}与{onm}以无条件和平结束"
 
 
 # ---------------------------------------------------------------------------
