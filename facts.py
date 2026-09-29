@@ -17366,7 +17366,11 @@ def _protagonist(f):
             cap = f.title(ld.get("realm_capital"))
             if cap:
                 p["capital"] = cap
-            p["vassal_count"] = ld.get("vassal_count", 0)
+            # v81 (问题5, 用户 2026-09-29): 零值不下发 —— 「封臣0人」把模型的注意力
+            # 引到「他没有封臣」这件无事发生的事上; 无封臣即不出这一分句。
+            _vcount = int(ld.get("vassal_count") or 0)
+            if _vcount:
+                p["vassal_count"] = _vcount
             # v29: 御前会议席位改用动态官职名 + 大臣名 (解析不到则整句不发)
             cl_line = f.council_line()
             if cl_line:
@@ -18406,8 +18410,8 @@ def _chrono_war_lines(f, tid):
                 continue
             me += "；" + f.date(wd) + ("战胜" if wty == "war_won" else "败于")                 + (_chrono_label(f, wopp) if isinstance(wopp, int) else "对手")
             break
-        else:
-            me += "；胜负未见记载"
+        # v81 (问题5): 找不到决胜时**不再**补「；胜负未见记载」—— 无料分句只会占
+        # 模型的注意力 (与 v78 在 `_pair_war_events` 已定的口径一致: 只写兴兵句)。
         me += "。"
         if me in seen:
             continue
@@ -20900,7 +20904,10 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     stats = getattr(f, "_timeline_stats", None) or {}
     if stats:
         # 取计数前 6 的标签, 按计数降序; 供【概览】块渲染「本十年结怨9次…」
-        top = sorted(stats.items(), key=lambda kv: -kv[1])[:6]
+        # v81 (问题5, 用户 2026-09-29): 只取**正数** —— 「囚禁他人0次」是程序内部
+        # 占位键 (`stats["囚禁他人"]` 无条件置 0) 漏出来的, 零次的事不入概览。
+        top = [(k, v) for k, v in sorted(stats.items(), key=lambda kv: -kv[1])
+               if v > 0][:6]
         facts["decade_stats"] = [f"{k}{v}次" for k, v in top]
     # 妻族传 (仅限公主头衔/中华皇帝之女·姐妹)
     pid = cache.get("player_id")
