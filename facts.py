@@ -13808,10 +13808,10 @@ class Facts:
 
           1002年7月15日自秋田启程，赴坎特伯雷主办院校访学，途中死于1006年8月7日，酗酒而亡。
 
-        三个尾词各对应一种局面 (判据全在数据里):
-          · `leg == "回"`  ⇒ 「返程途中」(运行态 `activity_completed` 已置);
-          · 首段 `arrival_date` 有值 ⇒ 「在<目的地>」(已抵达, 活动未完);
-          · 其余 (含 `plan_state=paused` 的滞留) ⇒ 「途中」。
+        用户 2026-09-29 口径 (二选一, 已拍板「回来用返程, 去用途中」):
+          · `leg == "回"`  ⇒ 「返程途中」 (运行态 `activity_completed` 已置);
+          · 其余 (去程, 含 `paused` 滞留、含已抵目的地却仍在办活动者) ⇒ 「途中」。
+        `to_arrived` 只作**复核**用 (卒地若正是目的地, 值得回看这一档), 不参与取词。
         取不到启程日或目的地时返回 '' —— 宁可不并, 也不写成半句。"""
         if not t or not t.get("to_place"):
             return ""
@@ -13824,12 +13824,7 @@ class Facts:
         if t.get("activity"):
             seg += ("主办" if t.get("activity_host_self") else "参加") + str(t["activity"])
         bits.append(seg)
-        if t.get("leg") == "回":
-            bits.append("返程途中")
-        elif t.get("to_arrived"):
-            bits.append(f"在{t['to_place']}")
-        else:
-            bits.append("途中")
+        bits.append("返程途中" if t.get("leg") == "回" else "途中")
         return "，".join(bits)
 
     def death_place(self, cid):
