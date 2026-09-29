@@ -723,16 +723,17 @@ def _transit_line(t):
     纯数据来自 `facts.Facts.transit_facts` (熔件 `travel_plans` + `activity_manager`,
     不调 LLM、不改写); 数据缺项整分句省略, 全空返回 ''。例 (平盛秀 1006 终传):
 
-      远行：1002年7月15日自腭田启程，赴坎特伯雷（活动：院校访学，自为主办）；
-      1006年1月1日尚在途中，已历100站，末至亚眠，预计1006年1月24日抵坎特伯雷，
-      回程预计1009年8月15日返腭田。
+      远行：1002年7月15日自秋田启程，赴坎特伯雷主办院校访学；至1006年尚在途中，
+      已历100站，末至亚眠，预计1006年1月24日抵坎特伯雷，回程预计1009年8月15日返秋田。
 
     措辞口径 (依 `logs/v84_probe_transit.txt` / `v84_probe_place.txt` 实测):
       · **去/回** = 段序 `destinations=[活动地, 回家]` + 运行态 `activity_completed`
         (引擎不落 `travel_returning_home`/`from_activity` 任何硬标志, 不能凭字段名猜);
       · 未抵达的段 `arrival_date` 为空 ⇒ 不写「已抵」, 只写「预计…抵…」(游戏当时的
         预计, 不一定兑现 —— 模型据此写「行至某地而卒」是自己要做的判断);
-      · `plan_state` 三态: transit=尚在途中 / paused=滞留途中 / completed=行程已了。"""
+      · `plan_state` 三态: transit=尚在途中 / paused=滞留途中 / completed=行程已了;
+      · **全角括注一律不用** —— 事实面铁律「无『名词（名词）』括注同位语」
+        (verify_fast 逐条扫): 活动写成动词短语「主办X」/「参加X」。"""
     if not t:
         return ""
     bits = []
@@ -744,9 +745,10 @@ def _transit_line(t):
     to = t.get("to_place") or ""
     if to:
         seg = f"赴{to}"
+        # v84: **不用全角括注** —— 事实面铁律「无『名词（名词）』括注同位语」
+        # (verify_fast 会逐条扫); 活动改成动词短语: 自办=主办, 受邀=参加。
         if t.get("activity"):
-            seg += f"（活动：{t['activity']}"
-            seg += "，自为主办）" if t.get("activity_host_self") else "）"
+            seg += ("主办" if t.get("activity_host_self") else "参加") + str(t["activity"])
         bits.append(seg)
     head = ("远行：" + "，".join(bits) + "；") if bits else "远行："
     state = {"transit": "尚在途中", "paused": "滞留途中",
