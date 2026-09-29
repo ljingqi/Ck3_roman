@@ -4809,6 +4809,48 @@ class Facts:
         ("k_chrysanthemum_throne", "japan_administrative_government"): "king_tenno_male_japanese",
         ("k_chrysanthemum_throne", "japan_feudal_government"): "king_tenno_male_japanese",
     }
+    # v81 (问题3, 用户 2026-09-29 拍板): 日本最高头衔的官称改走**直表裸词**
+    # (「前面不加日本」——「关白某某某」「幕府将军某某某」「上皇某某某」)。
+    # 为什么要另立直表, 而不修 flavorization 那条链 (三层实证, 见
+    # logs/v81_probe3.txt / v81_probe7.txt):
+    #   ① 带 `flag` 的条目 (将军/上皇/幕府) 建表时被标 unsupported
+    #      (flavorization.py:126; 游戏原文 10_tgp_japan_flavorization.txt:398/424/435);
+    #   ② `_dead_flavor_consistent` 把键中段当政体前缀比对, `shogun`/`joko` 永不等于
+    #      `feudal`/`administrative` → 游戏**烘死的正词**被拒收 (盛秀 = 幕府将军被写成
+    #      太政大臣、久荫 = 上皇一次也没出现);
+    #   ③ `flavorization.resolve` 的 `top_liege` 缺省值让**领主政体**压过持有者政体
+    #      —— 律令制的久荫 (964.11.19) 与久保 (919.2.24) 因此被叫「太政大臣」。
+    # 表一: 游戏烘死的职称键 → 裸词 (带旗标信息, 是「上皇/幕府将军」唯一可靠来源)。
+    # 只在**卒时窗口**内采信 (该键是角色死亡时按卒时状态烘死的, 用在早年就是错词)。
+    _JAPAN_OFFICE_FROM_FLAVOR = {
+        "emperor_shogun_male_japanese": "幕府将军",
+        "emperor_shogun_female_japanese": "幕府将军",
+        "emperor_shogun_male_japanese_feudal": "幕府将军",
+        "emperor_shogun_female_japanese_feudal": "幕府将军",
+        "emperor_joko_male_japanese": "上皇",
+        "emperor_joko_female_japanese": "上皇",
+        "emperor_administrative_male_japanese": "关白",
+        "emperor_administrative_female_japanese": "关白",
+        "emperor_daijo_daijin_male_japanese_feudal": "太政大臣",
+        "emperor_daijo_daijin_female_japanese_feudal": "太政大臣",
+        "emperor_tenno_male_japanese": "天皇",
+        "emperor_tenno_female_japanese": "天皇",
+        "emperor_tenno_male_japanese_flag": "天皇",
+        "emperor_tenno_female_japanese_flag": "天皇",
+        "king_tenno_male_japanese": "天皇",
+        "king_tenno_female_japanese": "天皇",
+    }
+    # 表二: (头衔 key, 政体) → 裸词 —— 无烘死词时 (在世者/早年档期) 的判据。
+    # 惣領制 + 头衔带 `shogun_flag` (开府) 者另写「幕府将军」(见 `japan_top_office`)。
+    _JAPAN_TOP_OFFICE_WORD = {
+        ("e_japan", "japan_administrative_government"): "关白",
+        ("e_japan", "japan_feudal_government"): "太政大臣",
+        ("k_chrysanthemum_throne", "japan_administrative_government"): "天皇",
+        ("k_chrysanthemum_throne", "japan_feudal_government"): "天皇",
+    }
+    _JAPAN_OFFICE_SHOGUN = "幕府将军"
+    _JAPAN_OFFICE_JOKO = "上皇"
+    _SHOGUN_FLAG = "shogun_flag"
     # v62 (菲利普2 问题1/2): 日本最高头衔 = 天皇座 (高御座) + 日本帝国 (e_japan)。
     # 二者的**头衔名/国号一律不作「王子/公主」称号的前缀** —— 旧稿在父/母已故或已失位时
     # 走「一生最高头衔」兜底, 把它们拼成「高御座王子」「日本王子」, 而游戏侧从无此词:
@@ -6142,6 +6184,75 @@ class Facts:
             return best[2]
         return f"前{best[2]}" if include_former else ""
 
+    def _title_flags(self, tid, date=None):
+        """头衔**自身**的旗标集 (v81): 开府 (`shogun_flag`) 就是这样落在 e_japan 上的
+        (实测 melt_1007: `landed_titles.13279.variables.data[0]`)。
+
+        只认**当前状态** —— 熔件只存末档的 `variables`, 历史档期的旗标无从得知,
+        故历史日期一律返回空集 (宁缺勿错; 用户已拍板不为它加逐档闩存)。"""
+        if date is not None:
+            last = self.cache.get("last_date")
+            if last and cl.date_key(str(date)) < cl.date_key(str(last)):
+                return set()
+        t = self._lt.get(str(tid)) or {}
+        return {str(v.get("flag"))
+                for v in (((t.get("variables") or {}).get("data")) or [])
+                if isinstance(v, dict) and v.get("flag")}
+
+    def _char_flags(self, cid, date=None):
+        """角色自身的旗标集 (v81): 在世者取 `alive_data.variables.data[].flag`
+        (实测 melt_1007: 平干有带 `shogun_flag`); 死者存档会清掉 variables,
+        故返回空集 —— 死者的词由烘死的 `dead_data.flavor` 承担。
+        与 `_title_flags` 同一条「只认当前状态」的口径。"""
+        if date is not None:
+            last = self.cache.get("last_date")
+            if last and cl.date_key(str(date)) < cl.date_key(str(last)):
+                return set()
+        ad = (self._chars.get(str(cid)) or {}).get("alive_data") or {}
+        return {str(v.get("flag"))
+                for v in (((ad.get("variables") or {}).get("data")) or [])
+                if isinstance(v, dict) and v.get("flag")}
+
+    def japan_top_office(self, cid, date=None):
+        """日本最高头衔持有者的**官称裸词** (v81 问题3); 非此类持有者返回 ''。
+
+        判据顺序 (每层都有实测, 见 `_JAPAN_OFFICE_FROM_FLAVOR` 的注释):
+          ① 卒时窗口内的游戏烘死键 (`dead_data.flavor`) —— 上皇/幕府将军只有这里能得;
+          ② (头衔, 政体) 直表 —— 律令制=关白 / 惣領制=太政大臣;
+             另: 惣領制且**头衔带 `shogun_flag`** (已开府) → 幕府将军;
+          ③ 在世者本人带 `shogun_flag` → 幕府将军 (头衔旗标缺失时的兜底)。
+        返回裸词 (不带国号前缀) —— 用户 2026-09-29 拍板「e_japan 统治者前面不加日本」。"""
+        if cid is None:
+            return ""
+        anchor = self._anchor_date(cid, date)
+        _tier, tid = self._primary_title_at(cid, as_of=anchor)
+        if not isinstance(tid, int):
+            return ""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        if key not in self._JAPAN_TOP_TITLE_KEYS:
+            return ""
+        c = self._chars.get(str(cid)) or {}
+        dd = c.get("dead_data") or {}
+        fkey = dd.get("flavor") or ""
+        if fkey and anchor and dd.get("date") \
+                and abs(_date_ord(anchor) - _date_ord(dd["date"])) <= 1:
+            w = self._JAPAN_OFFICE_FROM_FLAVOR.get(fkey)
+            if w:
+                return w
+        gov = self._gov_for_word(cid, tid, anchor) or ""
+        if not gov:
+            gov = self._title_government_hist(tid, anchor) \
+                or (self._lt.get(str(tid)) or {}).get("history_government") or ""
+        if gov == "japan_feudal_government" \
+                and self._SHOGUN_FLAG in self._title_flags(tid, anchor):
+            return self._JAPAN_OFFICE_SHOGUN
+        w = self._JAPAN_TOP_OFFICE_WORD.get((key, gov))
+        if w:
+            return w
+        if self._SHOGUN_FLAG in self._char_flags(cid, anchor):
+            return self._JAPAN_OFFICE_SHOGUN
+        return ""
+
     def official_title(self, cid, date=None):
         """角色官职名: 「头衔名+官职词」(交州刺史/淄青节度使/青徐路观察使)。
         已死角色优先读存档 dead_data.flavor (游戏算好的键, 最准)。
@@ -6158,6 +6269,12 @@ class Facts:
         rhw = self.religious_head_word(cid)
         if rhw:
             return rhw
+        # v81 (问题3, 用户 2026-09-29 拍板): 日本最高头衔持有者 (e_japan / 高御座)
+        # 走直表裸词 —— 「关白X」「太政大臣X」「幕府将军X」「上皇X」「天皇X」,
+        # **不加**「日本政权/日本帝国」前缀 (见 `japan_top_office`)。
+        _jw = self.japan_top_office(cid, date)
+        if _jw:
+            return _jw
         anchor = self._anchor_date(cid, date)
         # v36 (问题6, 用户拍板2): ① 在任朝廷职司先行出词 — 存档 flavor 对礼部/户部
         # 只给通用词「尚书」(minister_any_male), 部名要靠头衔补;
