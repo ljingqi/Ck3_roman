@@ -32,9 +32,9 @@ sys.path.insert(0, ROOT)
 import biography as bio   # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, "output")
-# 首行机器注释 + 程序标题行 + `> 家族：…` 题记行 (+ 其后的空行)
+# 首行机器注释 + 程序标题行 + `> 家族：…` 题记行 (旧格式还会有第二行 `> 存档来源：…`)
 HEAD_RE = re.compile(
-    r"\A(?P<head><!--[^\n]*-->\n+[^\n]*#\s*《[^\n]*》\n>[^\n]*\n\n*)"
+    r"\A(?P<head><!--[^\n]*-->\n+[^\n]*#\s*《[^\n]*》\n(?:>[^\n]*\n)+\n*)"
     r"(?P<rest>.*)\Z", re.S)
 
 
@@ -60,20 +60,25 @@ def main():
     changed, skipped, n = [], [], 0
     for house, path in iter_md():
         n += 1
-        with io.open(path, encoding="utf-8") as fp:
+        d, fn = os.path.dirname(path), os.path.basename(path)
+        bak = os.path.join(d, ".bak_v84pre_" + fn)
+        # 已有备份时以**备份**为源 (幂等: 反复跑都从原始稿重算, 不叠加)
+        src = bak if os.path.exists(bak) else path
+        with io.open(src, encoding="utf-8") as fp:
             text = fp.read()
         m = HEAD_RE.match(text)
         if not m:
-            skipped.append((os.path.basename(path), "无「注释+标题+题记」头 (人工复核)"))
+            skipped.append((fn, "无「注释+标题+题记」头 (人工复核)"))
             continue
         rest = m.group("rest")
-        new_rest = bio._strip_intro_head(rest)
-        if new_rest == rest:
+        # 末尾换行形态原样保留 (源文件末尾有几个换行就留几个)
+        trail = re.search(r"\n+\Z", rest)
+        trail = trail.group(0) if trail else ""
+        core = rest[:-len(trail)] if trail else rest
+        new_core = bio._strip_intro_head(core)
+        if new_core == core and new_core + trail == rest:
             continue
-        tail = "\n" if text.endswith("\n") else ""
-        out = m.group("head") + new_rest.rstrip("\n") + "\n" + tail
-        d, fn = os.path.dirname(path), os.path.basename(path)
-        bak = os.path.join(d, ".bak_v84pre_" + fn)
+        out = m.group("head") + new_core + trail
         changed.append((house, fn))
         if not apply:
             continue
