@@ -1171,6 +1171,50 @@ def _house_branch(dn, hn):
     return house_display(hn)
 
 
+# v81 (问题1, 用户 2026-09-29 拍板): 家族名**按文化/名序组装**的单一出口。
+# 旧稿只有一条规则 (biography._house_text: 宗族名以「氏」结尾就直连分家名) ——
+# 对**家格词**成立 (藤原 + 北家 = 藤原北家; 源 + 黑子 = 源黑子), 对**地名型家名**
+# 就出非语 (平 + 下北沢 = 平下北沢; 施 + 斯卡利茨 = 施斯卡利茨)。四档口径:
+#   · 日本 (JAPANESE)                 → 本姓 + 氏 + 家名 (+「家」): 平氏下北沢家;
+#                                        家名已带家格词尾 (家/流/氏/…) 者不再补「家」:
+#                                        藤原氏式家 (藤原氏の式家)
+#   · 中华·朝鲜 (DYNASTY_ALWAYS_FIRST) → 家名已含姓者径作「家名＋氏」(庆州金氏 /
+#                                        关中李氏 / 庆州崔氏); 未含姓者「家名＋姓＋氏」
+#                                        (斯卡利茨施氏)
+#   · 西方·伊斯兰 (其余 / 名序未知)    → 「宗族，家族」(菲利普，顿巴斯 —— 现形不变;
+#                                        伊斯兰与西方同为名前姓后, 同此一档)
+#   · 宗族名与家族名同字 (创始家)      → 只出该名 (田所 / 诺兰 / 陆氏)
+_JAPAN_HOUSE_TAILS = ("家", "流", "氏", "門", "门", "宫", "宮", "院", "寺", "方")
+
+
+def house_label(dn, hn, order=None, template=None):
+    """(宗族名, 家族名, 名序约定, 文化模板) → 全篇统一的家族称法 (v81)。
+
+    `order` 取自 `cache_lib.resolved_name_order` ('' = 西方默认, None = 无从判定;
+    两者都走西方档); `template` 目前只作记录, 判据全在名序约定上 —— 日本与中华
+    用的正是两个**不同**的约定值 (JAPANESE / DYNASTY_ALWAYS_FIRST), 不必再查文化 id。
+    判不出 (dn/hn 皆空) 返回 '' —— 调用方整项略去。"""
+    dn = str(dn or "").strip()
+    hn = str(hn or "").strip()
+    if not hn:
+        return house_display(dn)
+    if not dn or dn == hn:
+        return house_display(dn or hn)
+    # 上游 (`_house_names_at`) 给的是**显示形** (单字已加「氏」: 平 → 平氏);
+    # 本函数自己补「氏」, 故先取回本姓, 免得拼出「平氏氏下北沢家」。
+    dn = dn[:-1] if dn.endswith("氏") else dn
+    if order not in cl.EASTERN_NAME_ORDERS:
+        return f"{house_display(dn)}，{house_display(hn)}"
+    if order == "JAPANESE":
+        if hn.endswith(_JAPAN_HOUSE_TAILS):
+            return f"{dn}氏{hn}"
+        return f"{dn}氏{hn}家"
+    # DYNASTY_ALWAYS_FIRST: 中华/朝鲜 —— 家名已含姓者不再叠姓 (庆州金氏 / 关中李氏)
+    if dn in hn:
+        return f"{hn}氏"
+    return f"{hn}{dn}氏"
+
+
 # v30: 事实层「无据」占位词 — 族属不详/信仰不详/官制不详/（特质不详）/（死因不详）等
 # 一律视为无料, 由调用方整句略去 (修复方案_菲利普4.md 问题4: 缺料按语一律不进提示词,
 # 模型看不到「未载/不详」这类词, 也就无从照抄)。
@@ -4209,11 +4253,17 @@ class Facts:
         用户 2026-09-15 定规: **不写「主支为谁」** —— 不点名宗族内哪一支为主。
         宗族名缺失、或分家名与宗族名相同 (即初始家族) 时返回 ''。
         v44 (问题1): 家族名按 date 取沿革之值 —— 家族改名后 (冯·亚琛 → 冯)
-        分家名与宗族名同为一字, 此句自然消失, 不再拿旧名说「为X宗族的分支」。"""
+        分家名与宗族名同为一字, 此句自然消失, 不再拿旧名说「为X宗族的分支」。
+        v81 (问题1, 用户 2026-09-29): 家族称法改由 `house_label` 按文化/名序组装,
+        组装形**必含宗族名** (平氏下北沢家 / 斯卡利茨施氏 / 菲利普，顿巴斯) ——
+        本句与【家族】行、名号句三重复述同一件事, 故不再出句; 只在**名序判不出**
+        (无从组装, 家族词退回旧形) 时保留旧句。"""
         if cid is None:
             return ""
         dn, hn = self._house_names_at(cid, date)
         if not dn or not hn or dn == hn:
+            return ""
+        if self.name_order(cid) is not None:
             return ""
         return f"{hn}为{dn}宗族的分支。"
 
@@ -4271,8 +4321,11 @@ class Facts:
             new_house = hid != p_hid
             house_changed = hn != p_hn
             dyn_changed = dn != p_dn
-            # 宗族名只在「别立家族」或「宗族本身改名」时补出 (避免逐句重复)
-            clan = f"，属{dn}宗族" if dn and hn and dn != hn \
+            # 宗族名只在「别立家族」或「宗族本身改名」时补出 (避免逐句重复);
+            # v81 (问题1): 家族称法已含宗族名 (东方名序的组装形) 时不再补 ——
+            # 否则「属平氏宗族」与【家族】行的「平氏下北沢家」两次同义。
+            _east = self.name_order(cid) in cl.EASTERN_NAME_ORDERS
+            clan = f"，属{dn}宗族" if dn and hn and dn != hn and not _east \
                 and (new_house or dyn_changed) else ""
             if new_house:
                 segs.append(f"{dm}起别立{nm}{clan}")
@@ -17264,6 +17317,11 @@ def _protagonist(f):
         # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充, 与宗族不同时给出)
         "house": _dynasty_display(_dn, _hn),
         "house_branch": _house_branch(_dn, _hn),
+        # v81 (问题1): 按文化/名序组装的全篇唯一家族称法 (平氏下北沢家 /
+        # 斯卡利茨施氏 / 菲利普，顿巴斯)
+        "house_label": house_label(_dn, _hn, f.name_order(pid),
+                                   (f._culture_entry(pid, f.as_of) or {})
+                                   .get("culture_template")),
         "birth": f.date(rec.get("birth")),
         "culture": f.culture(pid, f.as_of),
         "faith": f.faith(pid),
@@ -17750,6 +17808,12 @@ def _character_profiles(f):
                                       rec.get("house_name")),
             "house_branch": _house_branch(rec.get("dynasty_name"),
                                           rec.get("house_name")),
+            # v81 (问题1): 按文化/名序组装的全篇唯一家族称法
+            "house_label": house_label(rec.get("dynasty_name"),
+                                       rec.get("house_name"),
+                                       f.name_order(cid),
+                                       (f._culture_entry(cid, f.as_of) or {})
+                                       .get("culture_template")),
             "birth": f.date(rec.get("birth")),
             "culture": f.culture(cid),
             "faith": f.faith(cid),
@@ -20192,6 +20256,10 @@ def _killed_by_player(f):
                                       prof.get("house_name")),
             "house_branch": _house_branch(prof.get("dynasty_name"),
                                           prof.get("house_name")),
+            # v81 (问题1): 家族称法按文化/名序组装
+            "house_label": house_label(prof.get("dynasty_name"),
+                                       prof.get("house_name"),
+                                       f.name_order(cid), None),
             # v13: 死者官职 (含家族领袖的「XX家族乡绅」, 此前刺客列传无官职信息)
             # v21: 无领地头衔时接王子/公主称号兜底 (按死亡日期算父头衔 —
             # 王祦 → 高丽国皇子, 防模型把无头衔死者臆成平民)
@@ -20883,6 +20951,13 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
                                   _phn or cache.get("house_name")),
         "house_branch": _house_branch(_pdn or cache.get("dynasty_name"),
                                       _phn or cache.get("house_name")),
+        # v81 (问题1): 家族称法按文化/名序组装 (共享前缀【家族】行与名号句同源)
+        "house_label": house_label(_pdn or cache.get("dynasty_name"),
+                                   _phn or cache.get("house_name"),
+                                   f.name_order(_pid0) if _pid0 is not None else None,
+                                   ((f._culture_entry(_pid0, as_of) or {})
+                                    .get("culture_template")
+                                    if _pid0 is not None else None)),
         "player_name": cache.get("player_name"),
         "player_id": cache.get("player_id"),
         "period": period,

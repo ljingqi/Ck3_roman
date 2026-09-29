@@ -690,10 +690,16 @@ def _feud_sentences(facts, cache, cid, reasons, rel_date):
 
 
 def _house_text(facts, p=None):
-    """家族文本 (v14 自然语言): 宗族名 + 分家。
-    v29b: 不再用括注同位语 —— 宗族名以「氏」结尾时直连 (藤原氏 + 北家 → 藤原北家,
-    史书正体), 其余以逗号并列 (哈布斯堡，奥地利); 无分家时只给宗族名。"""
+    """家族文本: 事实层已按文化/名序组装好的家族称法 (v81)。
+
+    v81 (问题1, 用户 2026-09-29): 组装移进 `facts.house_label` 单一出口 ——
+    旧稿在此只用一条规则 (宗族名以「氏」结尾就直连分家名), 「藤原＋北家」成
+    「藤原北家」而「平氏＋下北沢」成「平下北沢」。此处只做取值; 旧快照/旧缓存
+    无 `house_label` 时退回旧拼法 (向后兼容)。"""
     p = p or {}
+    lab = p.get("house_label") or (facts or {}).get("house_label") or ""
+    if lab:
+        return lab
     h = (facts or {}).get("house") or p.get("house") or ""
     b = (facts or {}).get("house_branch") or p.get("house_branch") or ""
     if h and b:
@@ -771,8 +777,12 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         scope.seed(p.get("kin_ids"), _fi)
     bits = []
     h = _house_text(None, p)
+    # v81 (问题1): 传主本人的名号句不再重复家族词 —— 同一请求的共享前缀已出
+    # 【家族】行 (同源同一串); 为他人立传时 (cid 有值) 【家族】行讲的是主角,
+    # 该人的家族词是新信息, 照旧保留。
+    _dup_house = bool(cid is None and p.get("house_label"))
     # 家族/宗族: 分家存在或家族名不在显示名中才单列 (西方名·姓已含家族, 不重复)
-    if h and (p.get("house_branch") or h not in name):
+    if h and not _dup_house and (p.get("house_branch") or h not in name):
         bits.append(h)
     if p.get("culture"):
         bits.append(p["culture"])
