@@ -11640,7 +11640,7 @@ class Facts:
         return not self.killer_is_public(cid)
 
     def death_clause(self, cid, date=None, reason=None, killer=None, imprison=False,
-                     insider=False):
+                     insider=False, killer_date=None):
         """角色死因句 (含施事者): 处决走处决方式池, 暗杀类走暗杀死法池, 其余通用。
         date/reason/killer 显式传入时以传入为准 (受害者不在缓存时的熔件兜底用)。
         v26: imprison=True 时, 卒时已囚满一年者前置「囚禁N年后」— 处决/狱死
@@ -11678,7 +11678,11 @@ class Facts:
             # v28b: 施事者用统一称谓, 与全篇称谓一致
             # v42 (问题4): 出口改 `event_name` (主角只出名字) —— 刺客列传的
             # killer_pronoun 替换与这里必须同源
-            kname = self.event_name(killer, date=self.as_of) \
+            # v81 (问题2): `killer_date` 可显式钉住**事发之日** —— 历代记里
+            # 874 年那条死亡句的凶手不能按本篇末日写成「关白魔罗之种田所浩二」
+            # (他 901 年才当关白)。
+            _kdate = killer_date or self.as_of
+            kname = self.event_name(killer, date=_kdate) \
                 or self.name_or(killer, "某人")
             if reason == "death_execution":
                 _k, zh = self.execution_method(killer, cid, date)
@@ -11690,7 +11694,7 @@ class Facts:
                     out = mzh
             if not out:
                 out = _death_clause(self.table, reason, killer,
-                                    lambda k: self.event_name(k, date=self.as_of)
+                                    lambda k: self.event_name(k, date=_kdate)
                                     or self.name_or(k, "某人"))
         if imprison and out:
             dur = self.imprison_duration(cid, date)
@@ -18518,13 +18522,49 @@ def _chrono_loss_date(f, cid, tid, next_date):
     return None
 
 
+def _chrono_reign_end(f, cid):
+    """该统治者的**让位档** (v81 问题2): 同战役缓存里他当传主时写入的 `reign_end`
+    (由 `pipeline._cross_check_reign_ends` 从存档接替链判出, 含种类与继承人)。
+
+    为什么历代记要读它: 失位日旧稿只认 `lost_title_memory`, 而田所久保 922.7.7
+    的让位只落在**他自己那份缓存**的 `reign_end` 里 —— 于是 919 即位、922 失位
+    (在位 3 年) 的久保被写成「卒于位」(卒 930), 与在位年数自相矛盾。"""
+    key = int(cid)
+    if f.cache.get("player_id") == key:
+        return f.cache.get("reign_end") or {}
+    for c in (f.campaign or {}).values():
+        if (c or {}).get("player_id") == key:
+            return (c or {}).get("reign_end") or {}
+    return {}
+
+
+def _chrono_office(f, cid, date):
+    """该日在位者的官称 (v81 问题2/3): 日本最高头衔走 `japan_top_office` 的裸词
+    (关白/太政大臣/幕府将军/上皇/天皇), 其余头衔走 `official_title`; 取不到返回 ''。"""
+    if not date:
+        return ""
+    try:
+        w = f.japan_top_office(cid, date) or f.official_title(cid, date=date) or ""
+    except Exception:
+        w = ""
+    return w
+
+
 def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
                        vacant=False, is_h=False, family=False, nm=None,
                        prev_date=None, dtor=False):
-    """一位统治者一行 (v73 用户拍板「一人一行」):
+    """一位统治者一行 (v73 用户拍板「一人一行」; v81 问题2 改行形):
 
-    `奄美靖｜生933年12月27日，卒963年1月9日｜953年6月6日被派系拥立，时年19岁｜在位10年`
-      (生卒/时年/享国/卒于位皆缺则整段省略)。
+    `田所久保｜关白｜卒930年4月9日，享年55岁，死于心脏病发作｜919年2月24日从父
+      田所浩二处受任命继位，时年44岁；在位3年，922年7月7日剃发退位，传位于其子田所定治`
+    `平盛秀｜太政大臣，后为幕府将军｜卒1006年8月7日，享年49岁，酗酒而亡｜995年7月24日
+      被派系拥立，时年38岁；在位11年，卒于位`
+
+    v81 (用户 2026-09-29 拍板) 的四处改动:
+      · 去「生X年」(出生日期在这不重要), 改「卒{日}，享年{N}岁，{死因}」;
+      · 加**官称**: 即位之日一个词、终了之日一个词, 不同则写「X，后为Y」;
+      · 让位 (reign_end) 优先于 `lost_title_memory` 判失位, 写退位词与继承人;
+      · `family=True` (家族历代记) 一行不变 —— 那一路只写即位句与头衔名。
     `prev`(前任) 与 `vacant`(前一段是空位期) 支撑天朝「建立天命 / 取代」的用户判据。"""
     nm = nm or _chrono_nm(f, cid, date)
     if not nm:
@@ -18538,11 +18578,22 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         return nm + ("｜" + "｜".join(bits) if bits else "")
     birth = rec.get("birth") or ""
     death = (rec.get("death") or {}).get("date") or ""
-    life = []
-    if birth:
-        life.append("生" + f.date(birth))
+    # v81: 卒项 = 日 + 享年 + 死因 (死因走既有的 death_clause; 跨缓存取最全一份记录)
+    dead_bits = []
     if death:
-        life.append("卒" + f.date(death))
+        dead_bits.append("卒" + f.date(death))
+        _age = _chrono_year_age(birth, death)
+        if _age is not None:
+            dead_bits.append("享年%d岁" % _age)
+        _reason = (rec.get("death") or {}).get("reason") or ""
+        try:
+            _clause = f.death_clause(cid, date=death, reason=_reason,
+                                     killer=(rec.get("death") or {}).get("killer"),
+                                     killer_date=death)
+        except Exception:
+            _clause = ""
+        if _clause:
+            dead_bits.append(_clause)
     word = _chrono_accession_reason(f, cid, tid, hist_type, date)
     if hist_type == "created":
         if is_h:
@@ -18571,17 +18622,41 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         _real_loss = loss_date          # 下一事件即毁弃 (holder = 失去者) 时直接认下
     _end = _real_loss or loss_date or death
     span = _chrono_span(date, _end)
+    # v81: 官称 —— 即位之日的词与终了之日的词, 不同则并写。
+    # 终了之日取 `_anchor_date` (卒日往前一日), 且**须仍持有本头衔** —— 失去头衔
+    # 那天的 `official_title` 已经换成他的退路身份 (田所宣方 → 「田所家族当主」),
+    # 那不是「在位期间的官称变化」。
+    office = _chrono_office(f, cid, date)
+    _o2 = ""
+    if _end:
+        _a2 = f._anchor_date(cid, _end)
+        _t2, _tid2 = f._primary_title_at(cid, as_of=_a2)
+        if isinstance(_tid2, int) and _tid2 == tid:
+            _o2 = _chrono_office(f, cid, _a2)
+    if _o2 and _o2 != office:
+        office = f"{office}，后为{_o2}" if office else _o2
     tail = ""
-    if _real_loss:
+    _re = _chrono_reign_end(f, cid)
+    _red = _re.get("date") or ""
+    if _red and _end and cl.date_key(_red) == cl.date_key(_end):
+        # 让位 (v76 机制): 写退位词与继承人 (继承人只出名字, 与即位句同口径)
+        _w = f.reign_end_word(_re)
+        _succ = _re.get("successor")
+        _snm = _chrono_nm(f, _succ, _red) if isinstance(_succ, int) else ""
+        _srel = _chrono_rel_word(f, cid, _succ) if isinstance(_succ, int) else ""
+        tail = "，" + f.date(_red) + _w + (f"，传位于{_srel}{_snm}" if _snm else "")
+    elif _real_loss:
         tail = "，随后于" + f.date(_real_loss) + ("失去天命" if is_h else "失去头衔")
         if death and cl.date_key(death) == cl.date_key(_real_loss):
             tail = "，卒于位"
     elif death:
         tail = "，卒于位"
     bits = [x for x in (acq, span) if x]
-    if not bits:
+    body = "；".join(bits) + tail
+    fields = [x for x in (office, dead_bits and "，".join(dead_bits), body) if x]
+    if not fields:
         return nm
-    return nm + "｜" + "｜".join(life + ["；".join(bits) + tail])
+    return nm + "｜" + "｜".join(fields)
 
 
 def _chrono_group(items, max_n):
