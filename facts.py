@@ -13688,13 +13688,6 @@ class Facts:
         return legs if isinstance(legs, list) else []
 
     @staticmethod
-    def _plan_path(rec):
-        """旅行计划记录 → {"visited_locations": [...], "path": [...], "progress": f}。"""
-        d = (rec or {}).get("data") if isinstance(rec, dict) else None
-        p = (d or {}).get("path") if isinstance(d, dict) else None
-        return p if isinstance(p, dict) else {}
-
-    @staticmethod
     def _act_body(rec):
         """活动记录 → 活动对象 (type/host/current_phase/phases…); 兼容 `data` 包装。"""
         if not isinstance(rec, dict):
@@ -13737,10 +13730,11 @@ class Facts:
           · 本篇截止日 (`as_of`) 早于熔件当刻、或早于启程日 ⇒ **不下发**
             (与 v81 卒地同闸: 免得未来的行程漏进早年的十年传记)。
 
-        返回数据 dict (无计划返回 None); 句子由 `biography._transit_line` 拼:
-        `{role, plan_state, departure_date, departure_place, to_place, to_eta,
-          to_arrived, home_place, home_eta, activity, activity_type,
-          activity_host_self, leg, stops, current_place, melt_date, companions}`。"""
+        返回数据 dict (无计划返回 None); 句子由 `transit_death_clause` 拼进卒句:
+        `{role, plan_state, melt_date, departure_date, departure_place, to_place,
+          to_arrived, activity, activity_type, activity_host_self, leg}`
+        —— 站数/预计到达/末站**不入 dict**: 用户 2026-09-29 拍板「人都死了,
+        历程几个站、预计什么时候到哪根本不重要」。"""
         if cid is None:
             return None
         cid = str(cid)
@@ -13765,7 +13759,6 @@ class Facts:
         _prio, _pid, rec, role = best
         h = self._plan_header(rec)
         legs = self._plan_legs(rec)
-        path = self._plan_path(rec)
         melt_date = ((self.melt or {}).get("meta_data") or {}).get("meta_date") or ""
         dep = str(h.get("departure_date") or "")
         # ---- 篇章闸 (v81 卒地同旨): 未来信息不进早年篇 ----
@@ -13785,39 +13778,59 @@ class Facts:
             act_type = str(a.get("type") or "")
             act_name = L.loc(self.table, act_type) or "" if act_type else ""
             act_host_self = str(a.get("host")) == cid
-        visited = [v for v in (path.get("visited_locations") or [])
-                   if isinstance(v, int)]
         first = legs[0] if legs else {}
         arrived = str(first.get("arrival_date") or "")
         arrived = "" if arrived in ("-1.1.1", "none") else arrived
         out = {
             "role": role,
             "plan_state": str(rec.get("state") or ""),
-            "melt_date": melt_date,
+            "melt_date": melt_date,          # 出处档 (判据与追溯用)
             "departure_date": dep,
             "departure_place": self._place_of_province(h.get("departure_location")),
             "to_place": self._place_of_province(dests[0]) if dests else "",
-            "to_eta": (str(first.get("estimated_arrival_date") or "")
-                       if first.get("estimated_arrival_date") not in ("-1.1.1", None)
-                       else ""),
             "to_arrived": arrived,
-            "home_place": self._place_of_province(dests[1]) if len(dests) > 1 else "",
-            "home_eta": (str(legs[1].get("estimated_arrival_date") or "")
-                         if len(legs) > 1
-                         and legs[1].get("estimated_arrival_date") not in ("-1.1.1", None)
-                         else ""),
             "activity": act_name,
             "activity_type": act_type,
             "activity_host_self": act_host_self,
             # 去/回: 段序 [活动地, 回家] + `activity_completed` ⇒ 活动办完即回程
             "leg": "回" if rec.get("activity_completed") else "去",
-            "stops": len(visited),
-            "current_place": self._place_of_province(visited[-1]) if visited else "",
-            "companions": len(h.get("companions") or []),
         }
-        if not (out["to_place"] or out["current_place"] or out["departure_place"]):
+        if not (out["to_place"] or out["departure_place"]):
             return None                  # 地名全取不到 = 无料不下发
         return out
+
+    def transit_death_clause(self, t):
+        """卒句的**前半**: 「1002年7月15日自秋田启程，赴坎特伯雷主办院校访学，途中」(v84)。
+
+        用户 2026-09-29 口径: 死于旅途者, 卒句直接给出「启程日 + 自X启程 + 赴Y 干什么 +
+        (途中/返程途中)」四样, **不写**已历站数、预计到达日、末站 —— 人都死了,
+        行程细节无用。本从句接在 `p["death"]` 之前即成一整句:
+
+          1002年7月15日自秋田启程，赴坎特伯雷主办院校访学，途中死于1006年8月7日，酗酒而亡。
+
+        三个尾词各对应一种局面 (判据全在数据里):
+          · `leg == "回"`  ⇒ 「返程途中」(运行态 `activity_completed` 已置);
+          · 首段 `arrival_date` 有值 ⇒ 「在<目的地>」(已抵达, 活动未完);
+          · 其余 (含 `plan_state=paused` 的滞留) ⇒ 「途中」。
+        取不到启程日或目的地时返回 '' —— 宁可不并, 也不写成半句。"""
+        if not t or not t.get("to_place"):
+            return ""
+        dep = str(t.get("departure_date") or "")
+        bits = []
+        if dep and dep != "-1.1.1":
+            bits.append(f"{self.date(dep)}自{t['departure_place']}启程"
+                        if t.get("departure_place") else f"{self.date(dep)}启程")
+        seg = f"赴{t['to_place']}"
+        if t.get("activity"):
+            seg += ("主办" if t.get("activity_host_self") else "参加") + str(t["activity"])
+        bits.append(seg)
+        if t.get("leg") == "回":
+            bits.append("返程途中")
+        elif t.get("to_arrived"):
+            bits.append(f"在{t['to_place']}")
+        else:
+            bits.append("途中")
+        return "，".join(bits)
 
     def death_place(self, cid):
         """该角色的**卒地** (男爵领, v81 问题6 用户 2026-09-29 要求)。
@@ -17990,11 +18003,18 @@ def _protagonist(f):
         _dp = f.death_place(pid)
         if _dp:
             p["death_place"] = _dp
-        # v84: 远行 (卒前那一档仍在走的旅行计划) —— 与 `p["death"]` 同闸, 供档案层
-        # 写「当时正前往/正返回某地、为参加哪个活动」(见 `Facts.transit_facts`)。
+        # v84 (用户 2026-09-29 拍板「人都死了, 历程几个站、预计什么时候到哪根本不重要」):
+        # 卒前那一档仍在旅途者, 把「启程日 + 自X启程 + 赴Y 干什么 + (途中/返程途中)」
+        # 直接**并进卒句**, 不另出一行、不写站数与预计到达:
+        #   「1002年7月15日自秋田启程，赴坎特伯雷主办院校访学，途中死于1006年8月7日，酗酒而亡。」
+        # 与 `p["death"]` 同闸 (`elif pd:`); 取不到启程日/目的地时 `transit_death_clause`
+        # 返回 '' ⇒ 卒句逐字不变 (零回归)。数据见 `Facts.transit_facts`。
         _tr = f.transit_facts(pid)
         if _tr:
             p["transit"] = _tr
+            _tc = f.transit_death_clause(_tr)
+            if _tc:
+                p["death"] = _tc + p["death"]
     # v81 (问题6, 用户 2026-09-29): 生卒之地 (男爵领) —— 卒地与 `p["death"]` 同闸,
     # 生地取本人首见快照 (见 `birth_place` 的判据), 取不到即整项略去。
     _bp = f.birth_place(pid)
