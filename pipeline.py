@@ -855,6 +855,9 @@ def _backfill_tail_deaths(cfg, cache):
         return 0, None
     pid = cache.get("player_id")
     chars = cache.get("characters") or {}
+    # v82: 回填门槛 = `last_date` 之后死去的人 (与 v24 同口径)。此行在抽出
+    # `tail_melt_candidate` 时被一并带走, 之后每次终传都会在这里 NameError —— 补回。
+    last = cl.date_key(cache.get("last_date") or "0.0.0")
     dead = list((melt.get("dead_unprunable") or {}).items())
     dead += list(((melt.get("characters") or {}).get("dead_prunable") or {}).items())
     n = 0
