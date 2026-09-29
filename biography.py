@@ -969,6 +969,22 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         kin_bits.append(f"兄弟姊妹{p['siblings']}")
     if kin_bits:
         lines.append("，".join(kin_bits) + "。")
+    # ---- v81 (问题6, 用户 2026-09-29): 生卒之地 (男爵领) ----
+    # 与《刺客列传》的 victim_place 同一出口; 无料不写, 且 `with_death=False`
+    # 的篇目 (《刺客列传》讲主角自己的卒年) 连卒地一并省去。
+    _bp = p.get("birth_place") or ""
+    _dp = (p.get("death_place") or "") if with_death else ""
+    # 死亡句在「凶手为主角」时已自带「，死于X」(见 facts._death_sentence_body),
+    # 此处不再重述同一地名 (v81 实测本档 16 例重复)。
+    if _dp and _dp in (p.get("death") or ""):
+        _dp = ""
+    if _bp or _dp:
+        _place_bits = []
+        if _bp:
+            _place_bits.append(f"生地{_bp}")
+        if _dp:
+            _place_bits.append(f"卒地{_dp}")
+        lines.append("；".join(_place_bits) + "。")
     # ---- v74 (问题3 C4): 生母另有婚配时, 内宅档补一句「生母为X之妻。」 ----
     # 只讲生母的身份, 不讲孩子的来历 (公开私生不专门写); 独立成句以免与亲缘
     # 名单混读, 也不用括注 (项目铁律: 事实面无「名词（名词）」括注同位语)。

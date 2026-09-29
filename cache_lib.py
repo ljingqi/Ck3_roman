@@ -2572,6 +2572,13 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         _loc = (c.get("alive_data") or {}).get("location") or {}
         _prov = _loc.get("location") if isinstance(_loc, dict) else _loc
         if isinstance(_prov, int):
+            # v81 (问题6, 用户 2026-09-29): **首见快照**的所在 —— 唯一的出生地依据。
+            # 游戏不持久化出生地 (取证 docs/调研_v81_宝物所在地与出生地游戏口径.md:
+            # 新生儿落在母亲所在地, 落盘节点只有 born_in_the_purple 特质), 而
+            # `last_location` 只留最后一次观测; 故此处另闩首点, `facts.birth_place`
+            # 只在「首见距出生 ≤400 天」时把它当出生地 (婴幼期不会自行走动)。
+            if first_time:
+                rec["first_location"] = {"date": date_label, "province": _prov}
             rec["last_location"] = {"date": date_label, "province": _prov}
         # 特质与 trait_history (v4): 每快照 diff
         new_traits = c.get("traits") or []

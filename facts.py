@@ -369,6 +369,19 @@ def _year_of(d):
     return m.group(1) if m else ""
 
 
+def date_gap_days(d1, d2):
+    """两个游戏日期 (Y.M.D) 的整日差 (d2 − d1); 解析失败返回 None。
+
+    v81 (问题6): 只服务「首见快照距出生 ≤ 400 天」这类**粗判** (存档快照日是
+    每年 1月1日), 故按月 30 日、年 365 日折算, 不追求历法精确。"""
+    try:
+        y1, m1, x1 = (int(x) for x in str(d1).split(".")[:3])
+        y2, m2, x2 = (int(x) for x in str(d2).split(".")[:3])
+    except Exception:
+        return None
+    return (y2 - y1) * 365 + (m2 - m1) * 30 + (x2 - x1)
+
+
 # ---------------------------------------------------------------------------
 # v45: 亲缘定语 (「父亲X」「姻亲姊妹Y」)
 # ---------------------------------------------------------------------------
@@ -13594,11 +13607,36 @@ class Facts:
                 return nm
         loc = self.character_location_province(cid)
         if loc is None:
-            loc = (d.get("location_province")
-                   or (rec.get("last_location") or {}).get("province"))
+            loc = d.get("location_province")
+        if loc is None:
+            # v81 (问题6): 跨战役缓存兜底 —— 同一战役里别人那份缓存可能才记着
+            # 这个人的末次所在 (实测田所广久 卒957 的 location_province 只在
+            # `player_59838.json` 里, 平师久 卒960 的 last_location 只在他自己
+            # 那份缓存里), 34/37 → 36/37。
+            # 取值优先级: 先全战役找**死亡时复制的** `location_province` (最准),
+            # 都无则取 `last_location` 里**日期最晚**的一份 (不是「逢有值即取」)。
+            best_dk = None
+            for src in [self.cache] + list((self.campaign or {}).values()):
+                r = ((src or {}).get("characters") or {}).get(str(cid)) or {}
+                cand = (r.get("death") or {}).get("location_province")
+                if isinstance(cand, int):
+                    loc = cand
+                    break
+                ll = r.get("last_location") or {}
+                if isinstance(ll.get("province"), int) and ll.get("date"):
+                    dk = cl.date_key(str(ll["date"]))
+                    if best_dk is None or dk > best_dk:
+                        best_dk, loc = dk, ll["province"]
         if loc is None:
             return ""
-        prov = loc
+        return self._place_of_province(loc)
+
+    def _place_of_province(self, prov):
+        """省份 id → 男爵领名 (取不到退伯爵领名; 皆无返回 '')。
+
+        v81: 由 `victim_place` 的内联逻辑提出 —— 卒地与生地两处必须同一口径。"""
+        if not isinstance(prov, int):
+            return ""
         bid = self.barony_at_province(prov)
         if bid is not None:
             nm = self.title_base_name(bid)
@@ -13610,6 +13648,74 @@ class Facts:
             if nm and not nm.startswith("c_"):
                 return nm
         return ""
+
+    def death_place(self, cid):
+        """该角色的**卒地** (男爵领, v81 问题6 用户 2026-09-29 要求)。
+
+        与 `victim_place` 同一个出口 —— 同一件事在《刺客列传》与《人物档案》里
+        必须是同一个地名 (被处决者一律算在主角当时的首都, 见 v57 拍板);
+        本函数只是给它一个语义清楚的名字, 供档案层调用。取不到返回 ''。"""
+        return self.victim_place(cid)
+
+    def birth_place(self, cid):
+        """该角色的**生地** (男爵领; v81 问题6, 用户 2026-09-29 要求)。
+
+        存档**不持久化**出生地 —— 游戏侧逐条取证见
+        `docs/调研_v81_宝物所在地与出生地游戏口径.md`: 新生儿落在**母亲所在地**
+        (`game/common/on_action/child_birth_on_actions.txt:20-24`), 而落盘的出生
+        节点只有特质 `born_in_the_purple` (`events/birth_events.txt:3370`), 角色记录
+        与出生记忆里都没有地点字段。故本函数只用**本人首见快照的所在**
+        (v81 新增闩存 `cache_lib` 的 `first_location`) 且须满足「首见距出生 ≤ 400 天」
+        —— 婴幼期不会自行走动, 首见之地即出生之地; 首见远晚于出生者 (先在外邦、
+        后因婚配/往来才入档) 一律返回 '' (宁可不下发, 也不张冠李戴)。
+        跨战役缓存取**最早**一份观测 (与 `_chrono_rec` 同式)。
+        实测 (logs/v81_place2.txt): 田所档案集 97 名窗口内出生者可判 71 人;
+        宗族成员 510/512。"""
+        if cid is None:
+            return ""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        birth = rec.get("birth") or (self._chars.get(str(cid)) or {}).get("birth")
+        if not birth:
+            return ""
+        if self.as_of and cl.date_key(str(birth)) > cl.date_key(str(self.as_of)):
+            return ""                      # 本篇截止日尚未出生
+        best = None
+        for src in [self.cache] + list((self.campaign or {}).values()):
+            r = ((src or {}).get("characters") or {}).get(str(cid)) or {}
+            fl = r.get("first_location") or {}
+            if not fl.get("date") or not isinstance(fl.get("province"), int):
+                continue
+            if best is None or cl.date_key(str(fl["date"])) < cl.date_key(str(best["date"])):
+                best = fl
+        if best is None:
+            return ""
+        gap = date_gap_days(birth, best["date"])
+        if gap is None or gap < 0 or gap > 800:
+            return ""
+        # 精确闸 (依 docs/调研_v81_生卒地点.md §2.5 [6a]): 出生日与首见日之间
+        # **没有别的档期**时, 首见那一档就是出生后的第一次观测 —— 比固定 400 天闸
+        # 更贴语义 (本战役缺 869/880/929 三档, 那几档出生者会被 400 天闸误杀)。
+        bkey, fkey = cl.date_key(str(birth)), cl.date_key(str(best["date"]))
+        if any(bkey < k < fkey for k in self._snapshot_dates()):
+            return ""
+        return self._place_of_province(best["province"])
+
+    def _snapshot_dates(self):
+        """本战役**全部快照日** (升序 date_key; 各传主缓存 `sources` 的并集)。
+
+        v81 (问题6): 供 `birth_place` 判「出生后到首见之间还有没有别的档期」——
+        这是「首见所在地＝出生地」这一推断成立的前提。"""
+        if getattr(self, "_snap_keys", None) is not None:
+            return self._snap_keys
+        out = set()
+        for src in [self.cache] + list((self.campaign or {}).values()):
+            for d in ((src or {}).get("sources") or []):
+                try:
+                    out.add(cl.date_key(str(d)))
+                except Exception:
+                    continue
+        self._snap_keys = sorted(out)
+        return self._snap_keys
 
     def player_station_at(self, date):
         """主角在 date (含) 前最后已知驻地伯爵领名 (v20, B1/B3):
@@ -17705,6 +17811,20 @@ def _protagonist(f):
             f"死于{f.date(pd.get('date'))}，"
             f"{f.death_clause(pid, date=pd.get('date'), reason=pd.get('reason'), killer=pd.get('killer'))}。"
         )
+        # v81 (问题6, 用户 2026-09-29): 卒地 (男爵领) —— 与《刺客列传》的
+        # `victim_place` 同一出口, 取不到即整项略去 (无料不下发)。
+        # ⚠ 必须与 `p["death"]` **同闸** (`elif pd:`) —— 主角自己的
+        # `characters[pid]["death"]` 是空的 (死亡只写在 `cache["player_death"]`),
+        # 而 `victim_place` 的第三源 `last_location` 不受 as_of 约束; 无条件算会把
+        # **未来**的卒地漏进早年的十年传记 (实测 as_of=970.1.1 就多出一行「卒地亚眠」)。
+        _dp = f.death_place(pid)
+        if _dp:
+            p["death_place"] = _dp
+    # v81 (问题6, 用户 2026-09-29): 生卒之地 (男爵领) —— 卒地与 `p["death"]` 同闸,
+    # 生地取本人首见快照 (见 `birth_place` 的判据), 取不到即整项略去。
+    _bp = f.birth_place(pid)
+    if _bp:
+        p["birth_place"] = _bp
     # 家庭 (v11: as_of 截断 — 出生晚于 as_of 的未出生者不列)
     fam = rec.get("family") or {}
     # v60 (问题3): 先并入婚配闩存 —— 主角自身的 family_data 在死亡档被清空,
@@ -17949,6 +18069,7 @@ def _character_profiles(f):
         # 正是主角廷中骑士; 旧档案里这一身份完全缺席)。玩家**自家人**不写这一句
         # (妻室子女的档案行不必都挂一句「廷臣」)。
         _pid0 = f.cache.get("player_id")
+        _is_kin = False
         if _pid0 is not None and int(cid) != int(_pid0):
             _prec0 = (f.cache.get("characters") or {}).get(str(_pid0)) or {}
             _pfam0 = _prec0.get("family") or {}
@@ -17957,7 +18078,8 @@ def _character_profiles(f):
                        "concubine", "former_concubines", "father", "mother",
                        "siblings", "ever_spouses"):
                 _kin.update(x for x in (_pfam0.get(_k) or []) if isinstance(x, int))
-            if int(cid) not in _kin:
+            _is_kin = int(cid) in _kin
+            if not _is_kin:
                 _csp = f.court_service_phrase(cid)
                 if _csp:
                     prof["court_service"] = _csp
@@ -18173,6 +18295,18 @@ def _character_profiles(f):
             ds = _death_sentence(f, cid)
             if ds:
                 prof["death"] = ds
+            # v81 (问题6, 用户 2026-09-29 拍板): 卒地只写**主角的家族成员** ——
+            # 其他人的卒地已由《刺客列传》的 `victim_place` 承担 (那一处早就做了),
+            # 档案行不必逐人再挂一遍。
+            if _is_kin:
+                _dp = f.death_place(cid)
+                if _dp:
+                    prof["death_place"] = _dp
+        # v81 (问题6): 生地同样只写家族成员 —— 本人首见快照所在, 见 `birth_place`
+        if _is_kin:
+            _bp = f.birth_place(cid)
+            if _bp:
+                prof["birth_place"] = _bp
         # v75 (凶手点名): 死者档案带公开性旗标 (供板块期与快照复核)
         prof["killer_public"] = f.killer_is_public(cid)
         out[str(cid)] = prof
