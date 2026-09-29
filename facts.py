@@ -13662,6 +13662,163 @@ class Facts:
                 return nm
         return ""
 
+    # ---- v84: 长途旅行 (travel_plans / activity_manager) ----
+    @staticmethod
+    def _plan_header(rec):
+        """旅行计划记录 → **计划头** (owner/activity/departure_date/destinations…)。
+
+        实测形态 (logs/v84_probe_travel2.txt):
+        `database[<id>]` = 运行态 (`state`/`resume_date`/`progress_value`/
+        `activity_completed`…) + `data` → `{data: <计划头>, destinations: [...],
+        path: {...}}` —— 计划头在**第二层** `data.data`, 不是第一层。"""
+        d = (rec or {}).get("data") if isinstance(rec, dict) else None
+        if not isinstance(d, dict):
+            return {}
+        inner = d.get("data")
+        if isinstance(inner, dict) and ("owner" in inner or "departure_date" in inner):
+            return inner
+        return d
+
+    @staticmethod
+    def _plan_legs(rec):
+        """旅行计划记录 → 逐段行程 [{province, arrival_date, estimated_arrival_date,
+        path_index}] (未抵达的段 `arrival_date` = '-1.1.1')。"""
+        d = (rec or {}).get("data") if isinstance(rec, dict) else None
+        legs = (d or {}).get("destinations") if isinstance(d, dict) else None
+        return legs if isinstance(legs, list) else []
+
+    @staticmethod
+    def _plan_path(rec):
+        """旅行计划记录 → {"visited_locations": [...], "path": [...], "progress": f}。"""
+        d = (rec or {}).get("data") if isinstance(rec, dict) else None
+        p = (d or {}).get("path") if isinstance(d, dict) else None
+        return p if isinstance(p, dict) else {}
+
+    @staticmethod
+    def _act_body(rec):
+        """活动记录 → 活动对象 (type/host/current_phase/phases…); 兼容 `data` 包装。"""
+        if not isinstance(rec, dict):
+            return {}
+        inner = rec.get("data")
+        if isinstance(inner, dict) and ("type" in inner or "host" in inner):
+            return inner
+        return rec
+
+    @staticmethod
+    def _plan_db(melt):
+        """熔件 → {plan_id: 记录} (**只留活计划**)。
+
+        该段是熔件顶层段 (v84 实测: 278 MB 档里在 262 MB 处), 而 `Facts.melt` 是整份
+        已载入的熔件 ⇒ 零额外 I/O。空槽 (null) 与非 dict 条目一律跳过 —— 实测
+        1006 档 625 槽里只有 348 条是活计划。"""
+        db = ((melt or {}).get("travel_plans") or {}).get("database") or {}
+        return {str(k): v for k, v in db.items()
+                if isinstance(v, dict) and isinstance(v.get("data"), dict)}
+
+    def transit_facts(self, cid):
+        """该角色在**本篇熔件当刻**仍在走的旅行计划 (v84, 用户 2026-09-29)。
+
+        要解决的问题: 传主若**死在旅途中**, 成稿此前只有「卒于X」, 读不到
+        「当时正前往/正返回某地、为参加哪个活动」。存档里有这段 —— 逐条取证见
+        `docs/方案_v84_标题重复与旅途留痕.md` §2 与 `logs/v84_probe_travel*.txt`、
+        `logs/v84_probe_transit.txt`、`logs/v84_probe_place.txt`:
+          · `travel_plans.database[<id>]`: 运行态 (`state`=transit/paused/completed、
+            `activity_completed`) + 计划头 (owner/travel_leader/companions/activity/
+            departure_date/departure_location/destinations) + 逐段 `destinations[]`
+            (province/arrival_date/estimated_arrival_date/path_index) + `path`
+            (visited_locations/path/progress);
+          · `activity_manager.database[<id>]`: 活动对象 (type/host/phases/attending…)。
+
+        v84 实测定下的三条口径:
+          · **计划随死亡消失** (卒于两档之间者, 卒后档 0 条) ⇒ 只能读卒前那一档,
+            也就是本篇熔件; 故本函数不另开熔件;
+          · 段序 `destinations = [活动地, 回家]` + `activity_completed` ⇒ **去程/回程**
+            可判 (引擎不落 `travel_returning_home`/`from_activity` 任何硬标志);
+          · 本篇截止日 (`as_of`) 早于熔件当刻、或早于启程日 ⇒ **不下发**
+            (与 v81 卒地同闸: 免得未来的行程漏进早年的十年传记)。
+
+        返回数据 dict (无计划返回 None); 句子由 `biography._transit_line` 拼:
+        `{role, plan_state, departure_date, departure_place, to_place, to_eta,
+          to_arrived, home_place, home_eta, activity, activity_type,
+          activity_host_self, leg, stops, current_place, melt_date, companions}`。"""
+        if cid is None:
+            return None
+        cid = str(cid)
+        best = None                      # (优先级, plan_id, rec)
+        for pid, rec in self._plan_db(self.melt).items():
+            h = self._plan_header(rec)
+            role = ""
+            if str(h.get("owner")) == cid:
+                role = "owner"
+            elif str(h.get("travel_leader")) == cid:
+                role = "travel_leader"
+            elif any(str((c or {}).get("character")) == cid
+                     for c in (h.get("companions") or [])):
+                role = "companion"
+            if not role:
+                continue
+            prio = {"owner": 3, "travel_leader": 2, "companion": 1}[role]
+            if best is None or prio > best[0]:
+                best = (prio, pid, rec, role)
+        if best is None:
+            return None
+        _prio, _pid, rec, role = best
+        h = self._plan_header(rec)
+        legs = self._plan_legs(rec)
+        path = self._plan_path(rec)
+        melt_date = ((self.melt or {}).get("meta_data") or {}).get("meta_date") or ""
+        dep = str(h.get("departure_date") or "")
+        # ---- 篇章闸 (v81 卒地同旨): 未来信息不进早年篇 ----
+        if self.as_of:
+            ao = cl.date_key(str(self.as_of))
+            if melt_date and cl.date_key(melt_date) > ao:
+                return None
+            if dep and dep != "-1.1.1" and cl.date_key(dep) > ao:
+                return None
+        dests = [d for d in (h.get("destinations") or []) if isinstance(d, int)]
+        # ---- 活动: 计划头 `activity` → activity_manager ----
+        act_name, act_type, act_host_self = "", "", False
+        aid = h.get("activity")
+        if aid is not None:
+            adb = ((self.melt or {}).get("activity_manager") or {}).get("database") or {}
+            a = self._act_body(adb.get(str(aid)))
+            act_type = str(a.get("type") or "")
+            act_name = L.loc(self.table, act_type) or "" if act_type else ""
+            act_host_self = str(a.get("host")) == cid
+        visited = [v for v in (path.get("visited_locations") or [])
+                   if isinstance(v, int)]
+        first = legs[0] if legs else {}
+        arrived = str(first.get("arrival_date") or "")
+        arrived = "" if arrived in ("-1.1.1", "none") else arrived
+        out = {
+            "role": role,
+            "plan_state": str(rec.get("state") or ""),
+            "melt_date": melt_date,
+            "departure_date": dep,
+            "departure_place": self._place_of_province(h.get("departure_location")),
+            "to_place": self._place_of_province(dests[0]) if dests else "",
+            "to_eta": (str(first.get("estimated_arrival_date") or "")
+                       if first.get("estimated_arrival_date") not in ("-1.1.1", None)
+                       else ""),
+            "to_arrived": arrived,
+            "home_place": self._place_of_province(dests[1]) if len(dests) > 1 else "",
+            "home_eta": (str(legs[1].get("estimated_arrival_date") or "")
+                         if len(legs) > 1
+                         and legs[1].get("estimated_arrival_date") not in ("-1.1.1", None)
+                         else ""),
+            "activity": act_name,
+            "activity_type": act_type,
+            "activity_host_self": act_host_self,
+            # 去/回: 段序 [活动地, 回家] + `activity_completed` ⇒ 活动办完即回程
+            "leg": "回" if rec.get("activity_completed") else "去",
+            "stops": len(visited),
+            "current_place": self._place_of_province(visited[-1]) if visited else "",
+            "companions": len(h.get("companions") or []),
+        }
+        if not (out["to_place"] or out["current_place"] or out["departure_place"]):
+            return None                  # 地名全取不到 = 无料不下发
+        return out
+
     def death_place(self, cid):
         """该角色的**卒地** (男爵领, v81 问题6 用户 2026-09-29 要求)。
 
@@ -17833,6 +17990,11 @@ def _protagonist(f):
         _dp = f.death_place(pid)
         if _dp:
             p["death_place"] = _dp
+        # v84: 远行 (卒前那一档仍在走的旅行计划) —— 与 `p["death"]` 同闸, 供档案层
+        # 写「当时正前往/正返回某地、为参加哪个活动」(见 `Facts.transit_facts`)。
+        _tr = f.transit_facts(pid)
+        if _tr:
+            p["transit"] = _tr
     # v81 (问题6, 用户 2026-09-29): 生卒之地 (男爵领) —— 卒地与 `p["death"]` 同闸,
     # 生地取本人首见快照 (见 `birth_place` 的判据), 取不到即整项略去。
     _bp = f.birth_place(pid)

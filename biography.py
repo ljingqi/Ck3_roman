@@ -717,6 +717,62 @@ def _num1(v, nd=1):
         return ""
 
 
+def _transit_line(t):
+    """v84: 远行素材行 —— 「当时在去/回哪里、为哪个活动、走到哪一站」。
+
+    纯数据来自 `facts.Facts.transit_facts` (熔件 `travel_plans` + `activity_manager`,
+    不调 LLM、不改写); 数据缺项整分句省略, 全空返回 ''。例 (平盛秀 1006 终传):
+
+      远行：1002年7月15日自腭田启程，赴坎特伯雷（活动：院校访学，自为主办）；
+      1006年1月1日尚在途中，已历100站，末至亚眠，预计1006年1月24日抵坎特伯雷，
+      回程预计1009年8月15日返腭田。
+
+    措辞口径 (依 `logs/v84_probe_transit.txt` / `v84_probe_place.txt` 实测):
+      · **去/回** = 段序 `destinations=[活动地, 回家]` + 运行态 `activity_completed`
+        (引擎不落 `travel_returning_home`/`from_activity` 任何硬标志, 不能凭字段名猜);
+      · 未抵达的段 `arrival_date` 为空 ⇒ 不写「已抵」, 只写「预计…抵…」(游戏当时的
+        预计, 不一定兑现 —— 模型据此写「行至某地而卒」是自己要做的判断);
+      · `plan_state` 三态: transit=尚在途中 / paused=滞留途中 / completed=行程已了。"""
+    if not t:
+        return ""
+    bits = []
+    dep = str(t.get("departure_date") or "")
+    dep_zh = llm.fmt_cn_date(dep) if dep and dep != "-1.1.1" else ""
+    frm = t.get("departure_place") or ""
+    if dep_zh or frm:
+        bits.append(f"{dep_zh}自{frm}启程" if frm else f"{dep_zh}启程")
+    to = t.get("to_place") or ""
+    if to:
+        seg = f"赴{to}"
+        if t.get("activity"):
+            seg += f"（活动：{t['activity']}"
+            seg += "，自为主办）" if t.get("activity_host_self") else "）"
+        bits.append(seg)
+    head = ("远行：" + "，".join(bits) + "；") if bits else "远行："
+    state = {"transit": "尚在途中", "paused": "滞留途中",
+             "completed": "行程已了"}.get(str(t.get("plan_state") or ""), "行程在册")
+    tail = []
+    md = str(t.get("melt_date") or "")
+    tail.append(("至" + llm.fmt_cn_date(md) if md else "") + state)
+    if t.get("leg") == "回":
+        tail.append("事毕返程")
+    arr = str(t.get("to_arrived") or "")
+    if arr and to:
+        tail.append(f"已于{llm.fmt_cn_date(arr)}抵{to}")
+    if t.get("stops"):
+        tail.append(f"已历{t['stops']}站")
+    if t.get("current_place"):
+        tail.append(f"末至{t['current_place']}")
+    if to and t.get("to_eta") and not arr and t.get("leg") != "回":
+        tail.append(f"预计{llm.fmt_cn_date(str(t['to_eta']))}抵{to}")
+    if t.get("home_place"):
+        eta = t.get("home_eta")
+        tail.append(f"回程预计{llm.fmt_cn_date(str(eta))}返{t['home_place']}" if eta
+                    else f"其后返{t['home_place']}")
+    body = "，".join(x for x in tail if x)
+    return (head + body + "。") if body else (head.rstrip("；") + "。")
+
+
 def _profile_lines(facts, cid=None, with_real_parentage=False,
                    with_private_chains=False, scope=None, with_death=True,
                    with_court=True):
@@ -1015,6 +1071,15 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # ---- 死亡句 ----
     if p.get("death") and with_death:
         lines.append(p["death"])
+    # ---- v84: 远行句 (卒前那一档仍在走的旅行计划) ----
+    # 要解决的问题: 传主**死在旅途中**时, 成稿此前只有「卒于X」, 写不出
+    # 「当时正前往/正返回某地、为参加哪个活动」。数据来自
+    # `facts.Facts.transit_facts` (熔件 `travel_plans` + `activity_manager`),
+    # 本处只负责成句; 与卒地同闸 (`with_death=False` 的篇目一并省去)。
+    if p.get("transit") and with_death:
+        _tv = _transit_line(p["transit"])
+        if _tv:
+            lines.append(_tv)
     # ---- 戏剧性事件句 (v34: 揭底链只在内部档放行) ----
     df = list(p.get("dramatic_facts") or [])
     if with_private_chains:
