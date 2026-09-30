@@ -1083,8 +1083,26 @@ def _cond_block(items, groups, op="all", religions=None, split_inline=False):
             rk = _faith_religion_key(val, religions)
             children.append({"religion": rk} if rk else {"unknown": key})
             continue
-        if key == "has_doctrine":
+        elif key == "has_doctrine":
             children.append({"doctrine": str(val)})
+            continue
+        # ---- v86 (1.20): 新条件叶子 ----
+        # `rite = rite:roman_rite` / `rite_has_doctrine = doctrine_x`: 1.20 的
+        # 议会席位名链新增 (council_positions/00_council_positions.txt:694/705/773),
+        # 靠 scope 的 rite / rite_doctrines 求值 (facts 侧按角色礼仪填)。
+        if key == "rite":
+            rk = str(val or "").strip()
+            if rk.startswith("rite:"):
+                rk = rk[len("rite:"):]
+            children.append({"rite": rk} if rk else {"unknown": key})
+            continue
+        if key == "rite_has_doctrine":
+            children.append({"rite_doctrine": str(val)})
+            continue
+        # `government_allows` 在 1.20 改名为 `government_has_mechanic`
+        # (council_positions 10 条臂); 两者同义, 都归到 gov_flag 叶子。
+        if key in ("government_allows", "government_has_mechanic"):
+            children.append({"gov_flag": str(val).replace("government_is_", "")})
             continue
         if key.startswith("cp:") and kop == "?=":
             fem = None
@@ -1195,6 +1213,10 @@ def cond_match(cond, scope):
         return scope.get("religion_family") == cond["religion_family"]
     if "doctrine" in cond:
         return str(cond["doctrine"]) in (scope.get("doctrines") or ())
+    if "rite" in cond:
+        return scope.get("rite") == cond["rite"]
+    if "rite_doctrine" in cond:
+        return str(cond["rite_doctrine"]) in (scope.get("rite_doctrines") or ())
     if "chaplain_female" in cond:
         return bool(scope.get("chaplain_female")) == bool(cond["chaplain_female"])
     op = cond.get("op")
@@ -1449,33 +1471,69 @@ def _split_inline_items(txt):
 
 
 def _religion_maps(cfg, roots=None):
-    """`common/religion/religion_types/*.txt`
+    """`common/religion/religion_types/*.txt` + `common/religion/faith_types/*.txt`
     → {"religions": {宗教键: 宗教族}, "faiths": {信仰键: 宗教键}}。
 
     宗教族用于 `is_in_family = rf_pagan` 这类条件; 信仰表用于把
-    `faith.religion = faith:theravada.religion` 折成所在宗教键。"""
+    `faith.religion = faith:theravada.religion` 折成所在宗教键。
+
+    v86 (1.20): 信仰定义从 religion_types 里**拆到了新的 faith_types/** 目录 ——
+    1.20 的 religion_types 里 `faiths = {` 出现 0 次, 而 faith_types 的
+    `faith_details` 有 103 处。旧稿只扫 religion_types ⇒ 信仰→宗教映射塌成 0 条
+    (1.19 是 244 条), 主教称谓臂里 `faith.religion` 一类叶子全部失配
+    (实测含 religion 叶 66→10、unknown 叶 45→116)。现两目录都扫,
+    同一 root 内 faith_types 后扫 (Mod 仍整体后扫, 保持「Mod 覆盖本体」口径)。"""
     religions, faiths = {}, {}
+    _DIRS = (("religion_types", "family"), ("faith_types", "religion"))
     for root in (roots if roots is not None else _data_roots(cfg)):
-        d = os.path.join(root, "common", "religion", "religion_types")
-        if not os.path.isdir(d):
-            continue
-        for fn in sorted(os.listdir(d)):
-            if not fn.endswith(".txt"):
+        for sub, link in _DIRS:
+            d = os.path.join(root, "common", "religion", sub)
+            if not os.path.isdir(d):
                 continue
-            try:
-                with open(os.path.join(d, fn), encoding="utf-8-sig",
-                          errors="replace") as fp:
-                    txt = _strip_comments(fp.read())
-            except OSError:
-                continue
-            for key, body in _top_blocks(txt):
-                m = re.search(r"(?<![A-Za-z0-9_])family\s*=\s*([A-Za-z0-9_]+)",
-                              body)
-                if m:
-                    religions[key] = m.group(1)
-                for fb in _blocks_of(body, "faiths"):
-                    for fk, _fbody in _top_blocks(fb):
-                        faiths[fk] = key
+            for fn in sorted(os.listdir(d)):
+                if not fn.endswith(".txt"):
+                    continue
+                try:
+                    with open(os.path.join(d, fn), encoding="utf-8-sig",
+                              errors="replace") as fp:
+                        txt = _strip_comments(fp.read())
+                except OSError:
+                    continue
+                for key, body in _top_blocks(txt):
+                    if sub == "religion_types":
+                        m = re.search(
+                            r"(?<![A-Za-z0-9_])family\s*=\s*([A-Za-z0-9_]+)", body)
+                        if m:
+                            religions[key] = m.group(1)
+                        for fb in _blocks_of(body, "faiths"):
+                            for fk, _fbody in _top_blocks(fb):
+                                faiths[fk] = key
+                    else:
+                        # faith_types: 每个块是一件信仰, `faith_type = <键>` 是它
+                        # 在旧库里的键 (如 christian_faith), `religion = <id/键>`
+                        # 指向所属宗教 —— religion 是**块**时取其 tag/religion_type。
+                        fkey = key
+                        m = re.search(
+                            r"(?<![A-Za-z0-9_])faith_type\s*=\s*([A-Za-z0-9_]+)", body)
+                        if m:
+                            fkey = m.group(1)
+                        rb = _blocks_of(body, "religion")
+                        rkey = ""
+                        for _rb in rb:
+                            mk = re.search(
+                                r"(?<![A-Za-z0-9_])(?:tag|religion_type)\s*=\s*"
+                                r"([A-Za-z0-9_]+)", _rb)
+                            if mk:
+                                rkey = mk.group(1)
+                                break
+                        if not rkey:
+                            mk = re.search(
+                                r"(?<![A-Za-z0-9_])religion\s*=\s*([A-Za-z0-9_]+)",
+                                body)
+                            if mk:
+                                rkey = mk.group(1)
+                        if rkey:
+                            faiths[fkey] = rkey
     return {"religions": religions, "faiths": faiths}
 
 
@@ -1515,7 +1573,7 @@ def build_bishop_titles(cfg):
                         if tr else {}
                     arms.append({"loc_key": lk.group(1) if lk else "",
                                  "when": cond})
-    return {"schema": 1, "arms": arms,
+    return {"schema": 2, "arms": arms,
             "religions": rel.get("religions") or {},
             "faiths": rel.get("faiths") or {}}
 
@@ -1536,7 +1594,7 @@ def load_bishop_titles(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1 and data.get("arms"):
+            if data.get("schema") == 2 and data.get("arms"):
                 return data
         except Exception:
             pass
@@ -1618,7 +1676,7 @@ def build_council_names(cfg):
                 arms = _name_arms(src, groups, rel)
                 if arms:
                     positions[key] = arms     # Mod 同名定义整体覆盖
-    return {"schema": 1, "positions": positions}
+    return {"schema": 2, "positions": positions}
 
 
 def save_council_names(cfg, table):
@@ -1636,7 +1694,7 @@ def load_council_names(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1 and data.get("positions"):
+            if data.get("schema") == 2 and data.get("positions"):
                 return data
         except Exception:
             pass
@@ -2417,9 +2475,43 @@ def _doctrine_params_path(cfg):
     return os.path.join(cfg.get("data_dir", ""), "doctrine_parameters.json")
 
 
+def _param_flags(body):
+    """参数块体 → 参数名集合 (v86, 兼容 1.19 与 1.20 两种写法)。
+
+    1.19 / 教义: `human_sacrifice_active = yes` (布尔或数值)
+    1.20 tenets: **裸标志清单** —— `parameters = { human_sacrifice_active  … }`
+                 (无 `=` 号, `_script_items` 会整条跳过, 旧稿因此 1.20 下全丢)
+    1.20 教义:   `special_parameters = { hostility_levels = { … } }` (子块名即参数名)
+    """
+    flags = set()
+    for pk, op, val in _script_items(body):
+        if op == "block":
+            flags.add(pk)           # 子块名本身就是一个参数 (hostility_levels 等)
+            continue
+        if str(val).lower() in ("yes", "true") or str(val).isdigit():
+            flags.add(pk)
+    # 裸标志: 先抹掉所有 `key = 值` 与 `key = { … }` (含一层嵌套), 剩下的标识符即标志
+    stripped = re.sub(
+        r"[A-Za-z_][A-Za-z0-9_.]*\s*(?:>=|<=|!=|\?=|=|<|>)\s*(?:\{[^{}]*\}|[^\s{}]+)",
+        " ", body or "")
+    for m in re.finditer(r"[A-Za-z_][A-Za-z0-9_.]*", stripped):
+        flags.add(m.group(0))
+    return flags
+
+
 def build_doctrine_parameters(cfg):
-    """游戏 + 启用 Mod 的 doctrine_types/*.txt → {"doctrines": {教义: [参数…]},
-    "by_parameter": {参数: [教义…]}} (Mod 同名教义整体覆盖)。"""
+    """游戏 + 启用 Mod 的 doctrine_types/*.txt 与 tenet_types/*.txt
+    → {"doctrines": {教义: [参数…]}, "by_parameter": {参数: [教义…]}}
+    (Mod 同名教义整体覆盖)。
+
+    v86 (1.20): tenets 从 doctrine_types 拆到新的 `tenet_types/` 目录, 且参数块
+    改成**裸标志清单** (如 `game/common/religion/tenet_types/00_tenet_types.txt:3092`
+    的 `tenet_human_sacrifice` → `parameters = { human_sacrifice_active … }`),
+    教义侧则改用 `special_parameters`。旧稿只扫 doctrine_types 且只认 `key = 值`,
+    于是 1.20 下教义参数表从 213 条教义 / 347 个参数塌成 3 / 4,
+    `human_sacrifice_active` 等全丢 (处决「献祭」风味随之失效)。
+    现两目录、两种参数块 (parameters / special_parameters)、两种写法都收;
+    同一 root 内 tenet_types 后扫 (Mod 仍整体后扫, 保持「Mod 覆盖本体」口径)。"""
     by_doctrine = {}
     roots = []
     g = game_dir(cfg)
@@ -2427,36 +2519,33 @@ def build_doctrine_parameters(cfg):
         roots.append(g)
     roots += enabled_mod_dirs(cfg)
     for root in roots:
-        d = os.path.join(root, "common", "religion", "doctrine_types")
-        if not os.path.isdir(d):
-            continue
-        for fn in sorted(os.listdir(d)):
-            if not fn.endswith(".txt"):
+        for sub in ("doctrine_types", "tenet_types"):
+            d = os.path.join(root, "common", "religion", sub)
+            if not os.path.isdir(d):
                 continue
-            try:
-                with open(os.path.join(d, fn), encoding="utf-8-sig",
-                          errors="replace") as fp:
-                    txt = fp.read()
-            except OSError:
-                continue
-            for key, body in _top_blocks(txt):
-                params = set()
-                for pblk in _blocks_of(body, "parameters"):
-                    for pk, op, val in _script_items(pblk):
-                        if op == "block":
-                            continue
-                        if str(val).lower() in ("yes", "true") or \
-                                str(val).isdigit():
-                            params.add(pk)
-                if params:
-                    by_doctrine[key] = sorted(params)
+            for fn in sorted(os.listdir(d)):
+                if not fn.endswith(".txt"):
+                    continue
+                try:
+                    with open(os.path.join(d, fn), encoding="utf-8-sig",
+                              errors="replace") as fp:
+                        txt = fp.read()
+                except OSError:
+                    continue
+                for key, body in _top_blocks(txt):
+                    params = set()
+                    for pkey in ("parameters", "special_parameters"):
+                        for pblk in _blocks_of(body, pkey):
+                            params |= _param_flags(pblk)
+                    if params:
+                        by_doctrine[key] = sorted(params)
     by_param = {}
     for doc, params in by_doctrine.items():
         for p in params:
             by_param.setdefault(p, []).append(doc)
     for p in by_param:
         by_param[p] = sorted(by_param[p])
-    return {"schema": 1, "doctrines": by_doctrine, "by_parameter": by_param}
+    return {"schema": 2, "doctrines": by_doctrine, "by_parameter": by_param}
 
 
 def save_doctrine_parameters(cfg, data):
@@ -2475,7 +2564,7 @@ def load_doctrine_parameters(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1 and data.get("by_parameter"):
+            if data.get("schema") == 2 and data.get("by_parameter"):
                 return data
         except Exception:
             pass

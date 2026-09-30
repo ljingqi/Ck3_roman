@@ -10916,11 +10916,13 @@ class Facts:
     _NO_RELIGIOUS_HEAD = 4294967295  # 0xFFFFFFFF = 无宗教领袖
 
     def _faith_id(self, cid, date=None):
-        """角色信仰 id: 信仰沿革 (date) → 缓存现值 → 熔件角色对象 → 家族缺省。
+        """角色信仰 id: 信仰沿革 (date) → 缓存现值 → 熔件角色对象 → **礼仪反查** → 家族缺省。
 
         v47: 存档里 `faith` 与 `culture` 同为**可选键** (缺省 = 家族信仰), 死者
         记录里常被剪除。旧实现只读现值, 于是死者的信仰在 flavorization 的
-        `faiths`/`religions` 条件里失配、且教义类判定 (人祭等) 一并落空。"""
+        `faiths`/`religions` 条件里失配、且教义类判定 (人祭等) 一并落空。
+        v86: 1.20 角色**不再有 `faith`**, 只有 `rite` —— 信仰由
+        `rites.database[rite].faith` 反查 (见 cl.faith_id_of_char)。"""
         if cid is None:
             return None
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
@@ -10928,24 +10930,48 @@ class Facts:
         if fid is None:
             fid = rec.get("faith")
         if fid is None:
-            fid = (self._chars.get(str(cid)) or {}).get("faith")
+            fid = cl.faith_id_of_char(self.melt, self._chars.get(str(cid)))
+        if fid is None:
+            fid = cl.faith_id_of_rite(self.melt, self._rite_id(cid, date))
         if fid is None:
             fid = self._house_default(cid, "faith")
         return fid
 
+    def _rite_id(self, cid, date=None):
+        """角色所奉**礼仪** id (v86): 礼仪沿革 (date) → 缓存现值 → 熔件角色对象。
+
+        1.20 起角色带 `rite`; 旧档无此字段 → None (调用方回退信仰口径)。"""
+        if cid is None:
+            return None
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        rid = _hist_value_at(rec.get("rite_history"), date, "rite")
+        if rid is None:
+            rid = rec.get("rite")
+        if rid is None:
+            rid = cl.rite_id_of_char(self._chars.get(str(cid)))
+        return rid
+
+    def rite_name(self, cid, date=None):
+        """传主/某人当时所奉礼仪的中文名 (1.20 存档自带, 如「罗马礼」)。
+
+        旧档 (1.19) 无礼仪库时**回退信仰名** —— 1.20 的「国教」正是由
+        State Faith 改称 State Rite, 口径连续。无据返回 ''。"""
+        rid = self._rite_id(cid, date)
+        if rid is not None:
+            nm = cl.rite_name_of(self.melt, rid)
+            if nm:
+                return nm
+        return self._faith_name(self._faith_id(cid, date))
+
     def faith_doctrines(self, cid):
         """角色信仰的教义键列表 (v30)。
 
-        存档 religion.faiths[fid].doctrine 每个信仰一条 (重复键被 cl.load_melt 的
-        _merge_dup_pairs 并为列表, 见 cache_lib); 单条时是字符串。取不到返回 []。"""
+        v86: 信仰定义改走 `cl.faith_entry` (1.20 `faiths.database` → 旧档
+        `religion.faiths`); 单条时是字符串, 取不到返回 []。"""
         fid = self._faith_id(cid)
         if fid is None:
             return []
-        faiths = (self.melt.get("religion") or {}).get("faiths") or {}
-        e = faiths.get(str(fid))
-        if isinstance(e, str):  # v7: none 条目防护
-            return []
-        d = (e or {}).get("doctrine")
+        d = cl.faith_entry(self.melt, fid).get("doctrine")
         if isinstance(d, str):
             return [d]
         return [x for x in (d or []) if isinstance(x, str)]
@@ -10958,13 +10984,14 @@ class Facts:
         return bool(set(docs) & self._sacrifice_doctrines)
 
     def is_islamic(self, cid):
-        """角色是否伊斯兰教统治者: 信仰 → 宗教 → religion_type ∈ 伊斯兰系。"""
+        """角色是否伊斯兰教统治者: 信仰 → 宗教 → religion_type ∈ 伊斯兰系。
+
+        v86: 信仰定义改走 cl.faith_entry (1.20 在顶层 faiths.database)。"""
         fid = self._faith_id(cid)
         if fid is None:
             return False
-        faiths = (self.melt.get("religion") or {}).get("faiths") or {}
-        fe = faiths.get(str(fid))
-        if not isinstance(fe, dict):
+        fe = cl.faith_entry(self.melt, fid)
+        if not fe:
             return False
         rid = fe.get("religion")
         if not isinstance(rid, int):
@@ -10976,49 +11003,68 @@ class Facts:
 
     def is_caliph(self, cid):
         """是否兼任哈里发: 其信仰的宗教领袖头衔 (faith.religious_head, 如 d_sunni)
-        的当前持有者 == 本人。"""
+        的当前持有者 == 本人。
+
+        v86: 1.20 的 `faith.religious_head` 已是空值, 领袖改记在
+        `rites.database[rite].head_of_rite` ⇒ 加上「本人即本礼之首」且宗教属
+        伊斯兰系 的回退判据 (避免把教宗也算成哈里发)。"""
         fid = self._faith_id(cid)
         if fid is None:
             return False
-        faiths = (self.melt.get("religion") or {}).get("faiths") or {}
-        fe = faiths.get(str(fid))
-        if not isinstance(fe, dict):
-            return False
+        fe = cl.faith_entry(self.melt, fid)
         rh = fe.get("religious_head")
-        if not isinstance(rh, int) or rh == self._NO_RELIGIOUS_HEAD:
-            return False
-        t = self._lt.get(str(rh)) or {}
-        return isinstance(t, dict) and t.get("holder") == cid
+        if isinstance(rh, int) and rh != self._NO_RELIGIOUS_HEAD:
+            t = self._lt.get(str(rh)) or {}
+            if isinstance(t, dict) and t.get("holder") == cid:
+                return True
+        rid = self._rite_id(cid)
+        if rid is not None and cl.head_of_rite(self.melt, rid) == cid:
+            return self.is_islamic(cid)
+        return False
+
+    def _holds_head_seat(self, cid):
+        """本人是否持有「教宗座」类头衔 (k_papal_state / d_papacy …)。"""
+        for tid in (self._hold_intervals(cid) or {}):
+            tkey = (self._lt.get(str(tid)) or {}).get("key") or ""
+            if "papal" in tkey or "papacy" in tkey:
+                return True
+        return False
 
     def religious_head_word(self, cid):
         """宗教领袖称谓 (v15): 角色为其信仰的宗教领袖 (持有 faith.religious_head
         头衔, 如教宗国/教皇座) 时返回称谓 — 教宗; 否则 ''。
         修复「教宗国国王主教戈德弗鲁瓦」式错位: 教宗本人应称「教宗」,
         而非神权领主的通用官职词「国王主教」(该词只适用非领袖的神权君主)。
-        只对持有宗教领袖头衔者生效, 不影响普通神权领主。"""
+        只对持有宗教领袖头衔者生效, 不影响普通神权领主。
+
+        v86: 1.20 的 `faith.religious_head` 空 ⇒ 先走「本人即本礼之首」的
+        `rites.head_of_rite` 判据, 再沿用教皇座头衔检查。"""
         fid = self._faith_id(cid)
         if fid is None:
             return ""
-        faiths = (self.melt.get("religion") or {}).get("faiths") or {}
-        fe = faiths.get(str(fid))
-        if not isinstance(fe, dict):
-            return ""
-        rh = fe.get("religious_head")
-        if not isinstance(rh, int) or rh == self._NO_RELIGIOUS_HEAD:
-            return ""
-        t = self._lt.get(str(rh)) or {}
-        # 任职区间 (title history, 已按 as_of 截断 — 死者/前教宗亦算);
-        # 当前持有者只在无 as_of 缺口时兜底 (十年传记不把后期继任教宗泄漏进早期)
-        held_rh = rh in (self._hold_intervals(cid) or {})
-        melt_date = (self.melt.get("date") or "")
-        no_gap = not (self.as_of and cl.date_key(self.as_of) < cl.date_key(melt_date))
-        if not held_rh and not (no_gap and isinstance(t, dict) and t.get("holder") == cid):
-            return ""
-        # 只处理教皇座类头衔 (k_papal_state / d_papacy); 其余宗教领袖
-        # (哈里发等) 走既有 realm_name 动态国名路径, 不套用「教宗」。
-        tkey = t.get("key") or ""
-        if "papal" not in tkey and "papacy" not in tkey:
-            return ""
+        rh = cl.faith_entry(self.melt, fid).get("religious_head")
+        if isinstance(rh, int) and rh != self._NO_RELIGIOUS_HEAD:
+            t = self._lt.get(str(rh)) or {}
+            # 任职区间 (title history, 已按 as_of 截断 — 死者/前教宗亦算);
+            # 当前持有者只在无 as_of 缺口时兜底 (十年传记不把后期继任教宗泄漏进早期)
+            held_rh = rh in (self._hold_intervals(cid) or {})
+            melt_date = (self.melt.get("date") or "")
+            no_gap = not (self.as_of and cl.date_key(self.as_of) < cl.date_key(melt_date))
+            if not held_rh and not (no_gap and isinstance(t, dict)
+                                    and t.get("holder") == cid):
+                return ""
+            # 只处理教皇座类头衔 (k_papal_state / d_papacy); 其余宗教领袖
+            # (哈里发等) 走既有 realm_name 动态国名路径, 不套用「教宗」。
+            tkey = t.get("key") or ""
+            if "papal" not in tkey and "papacy" not in tkey:
+                return ""
+        else:
+            # v86 (1.20): 领袖记在礼仪上 —— 本人为本礼之首且持有教宗座类头衔
+            rid = self._rite_id(cid)
+            if rid is None or cl.head_of_rite(self.melt, rid) != cid:
+                return ""
+            if not self._holds_head_seat(cid):
+                return ""
         v = L.loc(self.table, "religiousheadname_pope")
         if v and not v.startswith("$") and not v.startswith("["):
             return v
@@ -12275,14 +12321,16 @@ class Facts:
         return ""
 
     def _faith_name(self, fid):
-        """信仰 id → 中文名 (未知返回 '')。"""
+        """信仰 id → 中文名 (未知返回 '')。
+
+        v86: 1.20 的信仰名在存档里**已汉化** (`faiths.database[fid].name`),
+        直接取用; 旧档无名字段, 仍走 `faith_type` → 本地化表 / FAITH_TYPE_ZH。"""
         if fid is None:
             return ""
-        faiths = (self.melt.get("religion") or {}).get("faiths") or {}
-        e = faiths.get(str(fid))
-        if isinstance(e, str):  # v7: none 条目防护
-            e = None
-        ft = (e or {}).get("faith_type") or ""
+        nm = cl.faith_name_of(self.melt, fid)
+        if nm:
+            return nm
+        ft = (cl.faith_entry(self.melt, fid) or {}).get("faith_type") or ""
         return L.loc(self.table, ft) or FAITH_TYPE_ZH.get(ft) or ""
 
     def faith(self, cid):

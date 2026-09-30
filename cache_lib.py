@@ -915,6 +915,83 @@ def _dead_prunable(melt):
     return (melt.get("characters") or {}).get("dead_prunable") or {}
 
 
+# ---------------------------------------------------------------------------
+# v86: 信仰 / 礼仪 取词口 (CK3 1.20 把信仰库与礼仪库换了位置)
+# ---------------------------------------------------------------------------
+# 1.19: 信仰定义在 `religion.faiths[<fid>]`, 角色带 `faith` (id)。
+# 1.20: 信仰定义搬到**顶层** `faiths.database[<fid>]` (另有 `faiths.saints`),
+#       礼仪定义在**顶层** `rites.database[<rid>]`; 角色**不再有 `faith`**,
+#       只有 `rite` —— 信仰由 `rites.database[rite].faith` 反查
+#       (实测 870 档 living 29528 人 100% 能在礼仪库里找到自己的 rite)。
+#       礼仪/信仰的显示名**存档里已汉化** (`data.name` / `name`), 不必查本地化表。
+#       另: 1.20 的 `faith.religious_head` 已是空值 (4294967295), 宗教领袖改记在
+#       `rites.database[rite].head_of_rite` —— 判「此人是否宗教领袖」必须走 rite。
+
+def faith_entry(melt, fid):
+    """信仰定义 dict: 1.20 `faiths.database` → 旧档 `religion.faiths`。取不到给 {}。"""
+    if fid is None:
+        return {}
+    e = (((melt or {}).get("faiths") or {}).get("database") or {}).get(str(fid))
+    if type(e) is dict:
+        return e
+    e = (((melt or {}).get("religion") or {}).get("faiths") or {}).get(str(fid))
+    return e if type(e) is dict else {}
+
+
+def faith_name_of(melt, fid):
+    """信仰显示名: 1.20 存档自带中文 `name`; 旧档无名字段, 返回 '' (调用方查本地化)。"""
+    return str(faith_entry(melt, fid).get("name") or "")
+
+
+def rite_entry(melt, rid):
+    """礼仪定义 dict: 1.20 `rites.database`。取不到给 {}。"""
+    if rid is None:
+        return {}
+    e = (((melt or {}).get("rites") or {}).get("database") or {}).get(str(rid))
+    return e if type(e) is dict else {}
+
+
+def rite_data(melt, rid):
+    """礼仪的展示块 (`rites.database[<rid>].data`): name/adjective/desc/fervor/tenets…"""
+    d = rite_entry(melt, rid).get("data")
+    return d if type(d) is dict else {}
+
+
+def rite_name_of(melt, rid):
+    """礼仪显示名 (存档已汉化, 如「罗马礼」); 取不到给 ''。"""
+    d = rite_data(melt, rid)
+    return str(d.get("name") or d.get("adjective") or "")
+
+
+def faith_id_of_rite(melt, rid):
+    """礼仪所属信仰 id (1.20 角色信仰的唯一权威来源)。"""
+    f = rite_entry(melt, rid).get("faith")
+    return f if isinstance(f, int) else None
+
+
+def rite_id_of_char(char_obj):
+    """角色所奉礼仪 id (1.20 `rite` 字段); 旧档无此字段 → None。"""
+    r = _as_char(char_obj).get("rite")
+    return r if isinstance(r, int) else None
+
+
+def faith_id_of_char(melt, char_obj):
+    """角色信仰 id: 旧档读 `faith` 字段 → 1.20 经其礼仪反查。取不到给 None。"""
+    c = _as_char(char_obj)
+    f = c.get("faith")
+    if isinstance(f, int):
+        return f
+    return faith_id_of_rite(melt, rite_id_of_char(c))
+
+
+def head_of_rite(melt, rid):
+    """礼仪之首 (1.20 的宗教领袖所在): 角色 id; 无 (4294967295) → None。"""
+    h = rite_entry(melt, rid).get("head_of_rite")
+    if isinstance(h, int) and h != 4294967295:
+        return h
+    return None
+
+
 def all_characters(melt):
     """全档角色表 (living + dead_unprunable + dead_prunable)。
 
@@ -2632,6 +2709,54 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 if not fh or fh[-1].get("faith") != _fid:
                     fh.append({"from": date_label, "faith": _fid})
             rec["faith"] = _fid
+        # v86: 礼仪沿革 —— 1.20 角色只带 `rite` (信仰由 rites.database[rite].faith
+        # 反查, 见 faith_id_of_char)。与 faith_history 同构逐档差分: 游戏另有
+        # converted_rite_memory (带 old_rite/new_rite + conversion_date), 是更准的
+        # 来源, 由 facts 侧优先取用; 这里兜住「记忆已 prune / 游戏未留记忆」的情形。
+        _rid = rite_id_of_char(c)
+        if _rid is not None:
+            _rid_fid = faith_id_of_rite(melt, _rid)
+            if _rid_fid is not None:
+                # 1.20: 信仰现值由礼仪反查, 供既有的 faith/faith_history 口径继续可用
+                if rec.get("faith") != _rid_fid:
+                    fh = rec.setdefault("faith_history", [])
+                    if not fh or fh[-1].get("faith") != _rid_fid:
+                        fh.append({"from": date_label, "faith": _rid_fid})
+                rec["faith"] = _rid_fid
+            if rec.get("rite") != _rid:
+                rh = rec.setdefault("rite_history", [])
+                if not rh or rh[-1].get("rite") != _rid:
+                    rh.append({"from": date_label, "rite": _rid})
+            rec["rite"] = _rid
+        # v86: 个人教义 / 灵性满足 / 宗教知识 (1.20 `playable_data`) ——
+        # 用户 2026-09-30 指名的「角色自己个人的礼仪转变」(实验档里点的
+        # 「你们要生育繁殖」= tenet_be_fruitful_and_multiply 即此)。
+        # 只有有地统治者与玩家带 playable_data (870 档 2197/29528), 无者整句略去。
+        _pd = c.get("playable_data")
+        if type(_pd) is dict and "tenets" in _pd:
+            _pt = [t for t in (_pd.get("tenets") or []) if type(t) is str]
+            _old = rec.get("personal_tenets") or []
+            if _old != _pt:
+                _pth = rec.setdefault("personal_tenet_history", [])
+                _seen = {h.get("tenet") for h in _pth}
+                for _t in _pt:
+                    if _t not in _seen:
+                        _pth.append({"from": date_label, "tenet": _t})
+                        _seen.add(_t)
+            rec["personal_tenets"] = _pt
+        if type(_pd) is dict:
+            _kd = _pd.get("known_doctrines")
+            if isinstance(_kd, list):
+                rec["known_doctrines_n"] = len(_kd)
+            _kt = _pd.get("known_tenets")
+            if isinstance(_kt, list):
+                rec["known_tenets_n"] = len(_kt)
+            _sf = _pd.get("current_spiritual_fulfillment")
+            if isinstance(_sf, (int, float)) and not isinstance(_sf, bool):
+                rec["spiritual_fulfillment"] = float(_sf)
+                _sfh = rec.setdefault("sf_history", [])
+                if not _sfh or _sfh[-1].get("value") != float(_sf):
+                    _sfh.append({"from": date_label, "value": float(_sf)})
         # v49 (O5): 绰号变化点 —— 游戏只在**当前**存档的 nickname_text 里给绰号,
         # 旧档一旦被压缩/清理, 十年前那篇传记就只能拿到末档绰号 (v20/v21 的老问题:
         # 郭靖 1197 年才得「欺诈者」, 第 1 个十年不得出现)。原实现靠"重读该时代
