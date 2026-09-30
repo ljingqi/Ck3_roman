@@ -2347,7 +2347,11 @@ TIER_KEY_OF_PREFIX = {"e_": "empire", "k_": "kingdom", "d_": "duchy",
                       "c_": "county", "b_": "barony", "h_": "hegemon"}
 
 GENERIC_TIER_ZH = {"empire": "帝国", "kingdom": "王国", "duchy": "公国",
-                   "county": "伯爵领", "barony": "堡", "hegemon": "皇朝"}
+                   "county": "伯爵领", "hegemon": "皇朝"}
+# v87 (问题4): 删去 `"barony": "堡"` —— 「堡」不是游戏文案 (全 simp_chinese 无任何键
+# 的值为「堡」; 领地类型 `castle_holding` 的正式名是「城堡」), 是项目自造的地名后缀,
+# 治所因此写出「罗马堡」。男爵领一律只用地名 (`facts._title_tier_word` 入口 barony
+# 早退 + `GENERIC_OFFICE_ZH` 的官称另有 rank<2 闸门)。
 
 # v30: 通用**官职词**兜底表 (男, 女) — 与上面的头衔名后缀表分列, 二者语义不同:
 # GENERIC_TIER_ZH 是「诺丁汉郡+伯爵领」这类头衔名后缀, GENERIC_OFFICE_ZH 是

@@ -2839,7 +2839,17 @@ class Facts:
           ② 命中**通用条目**（无 governments，如裸 `kingdom`/`empire`/`duchy`）时，
              政体属天朝链则改用天朝链词（国/路/军/镇/州府/行台/皇朝）—— 见
              `_celestial_chain_word`；
-          ③ 本地化表的政体层级词（缺失回退通用 王国/帝国/公国/伯爵领/堡/皇朝）。"""
+          ③ 本地化表的政体层级词（缺失回退通用 王国/帝国/公国/伯爵领/皇朝）。
+
+        v87 (问题4, 用户 2026-09-30 拍板「所有男爵领只用地名，不需要加后缀」):
+        **男爵层一律不出层级词** —— 早退返回 ''。旧稿在此落到
+        `GENERIC_TIER_ZH["barony"] = "堡"` (项目自造; 全 `simp_chinese` 没有任何键的
+        值为「堡」), 治所因此写出「罗马堡」; 游戏自己的男爵层词要么是爵级名词
+        (通用条目 `barony` = 男爵领), 要么是带 `holding = …` 闸门的领地类型词
+        (神殿/主教区/市 — 本项目的 flavorization 解析器对 `holding` 条目一律
+        unsupported), 两者都不该当地名后缀。见 docs/调研_v87_男爵领地名渲染.md。"""
+        if tier == "barony":
+            return ""
         if independent is None:
             independent = self._is_independent(cid, date) if cid is not None else True
             if independent is None:
