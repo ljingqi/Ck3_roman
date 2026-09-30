@@ -196,7 +196,7 @@ def _steam_library_roots():
     # 382,330 键), 中文人名/头衔整片退化成英文或裸键。libraryfolders.vdf 里
     # 的其它库路径同样扫一遍。
     cands = [steam] if steam else []
-    cands += [r"<Steam目录>", r"<Steam目录>"]
+    cands += [r"C:\Program Files (x86)\Steam", r"C:\Program Files\Steam"]
     for c in cands:
         if not c:
             continue
