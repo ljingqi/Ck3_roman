@@ -4,6 +4,14 @@ config.json
 # 本机调研文档（只留本地，不进版本库）
 docs/
 
+# 游戏更新日志（Paradox 版权文本，只留本机）
+Changelog.txt
+changelog.txt
+
+# 旧版对照表的本机归档（1.19 基线，只留本机）
+data/Archive/
+data/.tmp_*
+
 # 本机存档派生的全局表（首次运行/启用 Mod 变化时自动重建；含本机路径与 Mod 清单）
 data/localization.json
 data/trait_names.json
@@ -28,6 +36,7 @@ tools/**/probe_*.py
 tools/**/tmp_*.py
 tools/**/check_*.py
 tools/**/verify_v*_unit.py
+tools/tests/v86_*
 tools/out_*/
 
 # 研究文档 (一次性排查脚本与输出)
