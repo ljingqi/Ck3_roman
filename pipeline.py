@@ -2459,6 +2459,9 @@ def _table_builders():
          loc.save_council_names),
         ("主教称谓臂表", loc._bishop_titles_path, loc.build_bishop_titles,
          loc.save_bishop_titles),
+        # v87 (问题1): 神权官称自定义本地化臂表 (GetActualDuke/CountTheocracyTitle)
+        ("神权官称臂表", loc._custom_loc_path, loc.build_theocracy_titles,
+         loc.save_theocracy_titles),
         ("宗族与家族名", loc._dynasties_path, loc.build_dynasty_table,
          loc.save_dynasty_table),
         ("牵制类型", loc._hook_types_path, loc.build_hook_types, loc.save_hook_types),

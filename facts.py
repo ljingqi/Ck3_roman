@@ -1738,6 +1738,13 @@ class Facts:
             self._bishop_titles = L.bishop_titles()
         except Exception:
             self._bishop_titles = {"arms": []}
+        # v87 (问题1): 神权官称的自定义本地化臂表 (GetActualDukeTheocracyTitle /
+        # GetActualCountTheocracyTitle) —— 基督教神权统治者的官称整个委托给它们,
+        # 取值见 `_office_word` → `_loc_or_custom_word`。
+        try:
+            self._theocracy_titles = L.theocracy_titles()
+        except Exception:
+            self._theocracy_titles = {"blocks": {}}
         try:
             self._council_names = L.council_names()
         except Exception:
@@ -5528,8 +5535,10 @@ class Facts:
                                   gender=("female" if female else "male"),
                                   gov=gov, date=date)
         if fw_key and not (not gov and FZ.is_unconditional(fw_key)):
-            v = L.loc(self.table, fw_key)
-            if v and not v.startswith("$") and not v.startswith("["):
+            # v87 (问题1): 该键的值可能是 `[CHARACTER.Custom('GetActualDukeTheocracyTitle')]`
+            # 一族委托 (基督教神权官称), 由 `_loc_or_custom_word` 求臂表后出词。
+            v = self._loc_or_custom_word(fw_key, cid=cid, tid=tid, date=date)
+            if v:
                 return v
         if gov in ("japan_administrative_government", "japan_feudal_government"):
             tkey = (self._lt.get(str(tid)) or {}).get("key") or ""
@@ -6405,9 +6414,31 @@ class Facts:
                                  tid=tid, cid=cid, date=anchor)
         # v28b: 头衔无地名时 (营地/派系等 x_ 头衔) 官职词单用不成称谓 — 返回空串,
         # 由 person_label / 档案层回退显示名 (此前写出裸词「领袖」)
+        # v87 (问题1): **枢机名 (d_cd_*) 不是领地** —— 游戏 `07_pam_ecclesiastical_titles.txt`
+        # 的 `### Cardinal Titles` 一族是无地 titular (`landless = yes`,
+        # `destroy_on_succession = yes`), 官称已由臂表给出「枢机」; 叠地名会写出
+        # 「萨比娜枢机」(实测 洪秀全 终传后任句), 故此处只出官称词。
+        if word and self._is_cardinal_title(tid):
+            return word
         if name and word:
             return f"{name}{word}"
         return name or ""
+
+    def _is_cardinal_title(self, tid):
+        """该头衔是否「枢机名」(1.20 `d_cd_*` 一族: 无地 titular + 枢机选举人)。
+
+        判据用存档字段而非键名: `landed_titles[<tid>].clerical_elector` 非空
+        (实测 d_cd_sabina = 12; 该字段由 `special_title = clerical_elector` 的
+        条目写入, 见 `20_pam_flavorization.txt:180-191`)。
+        **不判 `landless`** —— 那是静态定义字段 (`07_pam_ecclesiastical_titles.txt:66-74`
+        写 `landless = yes`), 存档里的头衔对象并不持久化它 (实测该字段为 None),
+        拿它当判据会让本例失效。"""
+        if tid is None:
+            return False
+        t = self._lt.get(str(tid)) or {}
+        if not isinstance(t, dict):
+            return False
+        return t.get("clerical_elector") not in (None, "")
 
     # v13: 朝廷职司 (e_minister_*) → 官职词 (游戏本地化键, 六部+御史台+枢密院)
     _MINISTER_OFFICE_KEYS = {
@@ -13294,6 +13325,116 @@ class Facts:
             scope["doctrines"] = []
         return scope
 
+    def _held_title_scope_entries(self, cid, date=None):
+        """角色在 date 仍持有的头衔 → 条件求值用小表 (v87 自定义本地化臂)。
+
+        每项 = {tier, clerical_region, clerical_elector, key}; 供
+        `any_held_title = { tier = tier_duchy has_clerical_region = yes }` 与
+        `has_title = title:X` 两类叶子求值。持有区间的过滤与 `_primary_title_at`
+        同口径 (取得日 ≤ date 且未在 date 之前失去)。"""
+        if cid is None:
+            return []
+        ao = cl.date_key(date) if date else None
+        out = []
+        for tid, ivs in (self._hold_intervals(cid, date) or {}).items():
+            held = None
+            for (g, l, _lt) in ivs:
+                if ao is not None and g and cl.date_key(g) > ao:
+                    continue
+                if l and ao is not None and cl.date_key(l) <= ao:
+                    continue
+                held = (g, l)
+            if held is None:
+                continue
+            t = self._lt.get(str(tid)) or {}
+            out.append({
+                "tier": self._eff_rank(tid),
+                "clerical_region": bool(t.get("clerical_region")),
+                "clerical_elector": t.get("clerical_elector"),
+                "key": str(t.get("key") or ""),
+            })
+        return out
+
+    def _theocracy_scope(self, cid, tid=None, date=None):
+        """神权官称臂表的求值域 (v87 问题1) —— 对应
+        `GetActualDukeTheocracyTitle` / `GetActualCountTheocracyTitle` 的 trigger 槽位:
+        性别、信仰键、宗教键与族、礼仪与其教义、教义集、持有头衔 (层级/教省/枢机)、
+        本头衔层级与教省归属。
+
+        `clerical_elector_title` 是游戏特殊 scope (枢机选举人所在头衔), 判据为
+        「持有任一 `clerical_elector` 非空的头衔」(`07_pam_ecclesiastical_titles.txt`
+        的 `### Cardinal Titles` 一族, 如 d_cd_sabina 的 `clerical_elector = 12`);
+        `GetActualDukeTheocracyTitle` 的首个可用臂即 `exists = clerical_elector_title`
+        → 「枢机」。"""
+        s = {}
+        if cid is None:
+            return s
+        d = date or self.as_of
+        s["female"] = bool(self._is_female(cid))
+        ftag, rtag = self._faith_tags(cid, d)
+        s["faith"] = ftag
+        s["religion"] = rtag
+        fe = cl.faith_entry(self.melt, self._faith_id(cid, d)) or {}
+        re_ = ((self.melt.get("religion") or {}).get("religions") or {}) \
+            .get(str(fe.get("religion"))) or {}
+        s["religion_family"] = str(re_.get("family") or
+                                   (self._bishop_titles or {}).get("religions", {})
+                                   .get(rtag) or "")
+        rid = self._rite_id(cid, d)
+        s["rite"] = self._rite_type(cid, d)
+        try:
+            s["rite_doctrines"] = list(cl.rite_data(self.melt, rid).get("doctrine")
+                                       or [])
+        except Exception:
+            s["rite_doctrines"] = []
+        try:
+            s["doctrines"] = list(self.faith_doctrines(cid) or [])
+        except Exception:
+            s["doctrines"] = []
+        titles = self._held_title_scope_entries(cid, d)
+        s["held_titles"] = titles
+        s["title_keys"] = [t["key"] for t in titles if t["key"]]
+        s["clerical_elector_title"] = any(t["clerical_elector"] for t in titles)
+        rank = self._eff_rank(tid) if tid is not None else 0
+        s["tier"] = rank
+        s["clerical_region"] = any(t["clerical_region"] for t in titles
+                                   if rank and t["tier"] == rank)
+        return s
+
+    def _custom_loc_key(self, name, cid=None, tid=None, date=None, scope=None):
+        """自定义本地化块名 → 首个命中臂的本地化键 (无表/无命中 '')。
+
+        `GetActualBishopTitle` 走既有主教臂表 (`L.bishop_titles`, 宫廷司祭同源);
+        其余 (Duke/Count 神权官称) 走 v87 新表。"""
+        if not name:
+            return ""
+        sc = scope if scope is not None else self._theocracy_scope(cid, tid, date)
+        if name == "GetActualBishopTitle":
+            return L.pick_bishop_title(self._bishop_titles, sc)
+        return L.pick_custom_loc(self._theocracy_titles, name, sc)
+
+    def _loc_or_custom_word(self, key, cid=None, tid=None, date=None, scope=None):
+        """本地化键 → 中文词; 值为 `[CHARACTER.Custom('X')]` 时先求臂表 (v87)。
+
+        游戏把基督教神权官称整个委托给自定义本地化
+        (`duke_theocracy_male_christianity_religion = "[CHARACTER.Custom('GetActualDukeTheocracyTitle')]"`),
+        而 `localization.loc` 会把 `[...]` 整段剥空 ⇒ 旧稿这一支取不到词, 落到
+        通用「公爵」; 此处补上委托求值。返回值已排除 `$`/`[` 开头的未解析串。"""
+        raw = ""
+        try:
+            raw = str((self.table or {}).get(key) or "")
+        except Exception:
+            raw = ""
+        m = _CUSTOM_REF_RE.match(raw.strip())
+        if not m:
+            v = L.loc(self.table, key)
+            return v if v and not v.startswith(("$", "[")) else ""
+        k2 = self._custom_loc_key(m.group(1), cid, tid, date, scope=scope)
+        if not k2:
+            return ""
+        v = L.loc(self.table, k2)
+        return v if v and not v.startswith(("$", "[")) else ""
+
     def chaplain_title(self, cid, date=None):
         """宫廷司祭的教会称谓 (v58 问题6) → 「托斯卡纳主教」/「日本和尚」; 无料返回 ''。
 
@@ -15289,6 +15430,13 @@ _FEUD_ROLE_RE = re.compile(
 # v43: change_reason 里出现过的角色 id —— 两端同人即游戏把 TARGET_CHAR 填成 root
 # 的退化条目 (见 Facts._rerender_feud_event)。
 _FEUD_CHAR_RE = re.compile(r"ONCLICK:CHARACTER,(\d+)")
+
+# v87 (问题1): 「委托给自定义本地化」的本地化值形态 ——
+# `[CHARACTER.Custom('GetActualDukeTheocracyTitle')]` (基督教神权官称),
+# 见 `facts._loc_or_custom_word` 与 `localization.pick_custom_loc`。
+_CUSTOM_REF_RE = re.compile(
+    r"^\[(?:CHARACTER|ROOT\.Char|ROOT\.Character|"
+    r"councillor|second|bishop)\.Custom\('([A-Za-z0-9_]+)'\)\]$")
 
 # v63 第四轮: 家族关系流水里的**劫掠**措辞 —— 游戏本地化
 # `house_relation_reason_raid_desc`(劫掠了X)、`_raided_estate_desc`(劫掠了X的庄园)、

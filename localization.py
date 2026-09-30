@@ -1127,6 +1127,12 @@ def _cond_block(items, groups, op="all", religions=None, split_inline=False):
         # 议会席位名链新增 (council_positions/00_council_positions.txt:694/705/773),
         # 靠 scope 的 rite / rite_doctrines 求值 (facts 侧按角色礼仪填)。
         if key == "rite":
+            if kop == "block":
+                # v87: `rite = { rite_has_doctrine = X }` 块形 (GetActualDukeTheocracyTitle
+                # 的 NOR 臂用; 旧稿只认标量 `rite = rite:roman_rite`, 块形被判 unknown)
+                children.append(_cond_block(_items(val), groups, "all", religions,
+                                            split_inline))
+                continue
             rk = str(val or "").strip()
             if rk.startswith("rite:"):
                 rk = rk[len("rite:"):]
@@ -1134,6 +1140,33 @@ def _cond_block(items, groups, op="all", religions=None, split_inline=False):
             continue
         if key == "rite_has_doctrine":
             children.append({"rite_doctrine": str(val)})
+            continue
+        # ---- v87 (问题1): `[CHARACTER.Custom('GetActualDukeTheocracyTitle')]` 一族
+        # (基督教神权官称的委托标记; culture_titles_l_simp_chinese.yml:253/238) 的
+        # trigger 用到的新叶子 —— is_female / faith / has_title / any_held_title
+        # (tier + has_clerical_region) / has_clerical_region。
+        if key == "is_female":
+            children.append({"female": str(val).strip().lower() in ("yes", "true")})
+            continue
+        if key == "faith":
+            fk = str(val or "").strip()
+            if fk.startswith("faith:"):
+                fk = fk[len("faith:"):]
+            children.append({"faith": fk} if fk else {"unknown": key})
+            continue
+        if key == "has_title":
+            tk = str(val or "").strip()
+            if tk.startswith("title:"):
+                tk = tk[len("title:"):]
+            children.append({"title_in": [tk]} if tk else {"unknown": key})
+            continue
+        if key == "any_held_title" and kop == "block":
+            children.append({"any_held_title": _cond_block(
+                _items(val), groups, "all", religions, split_inline)})
+            continue
+        if key == "has_clerical_region":
+            children.append({"clerical_region":
+                             str(val).strip().lower() in ("yes", "true")})
             continue
         # `government_allows` 在 1.20 改名为 `government_has_mechanic`
         # (council_positions 10 条臂); 两者同义, 都归到 gov_flag 叶子。
@@ -1255,6 +1288,21 @@ def cond_match(cond, scope):
         return str(cond["rite_doctrine"]) in (scope.get("rite_doctrines") or ())
     if "chaplain_female" in cond:
         return bool(scope.get("chaplain_female")) == bool(cond["chaplain_female"])
+    # ---- v87 (问题1): 自定义本地化臂的新叶子 ----
+    if "female" in cond:
+        return bool(scope.get("female")) == bool(cond["female"])
+    if "faith" in cond:
+        return scope.get("faith") == cond["faith"]
+    if "title_in" in cond:
+        want = cond["title_in"] or []
+        have = scope.get("title_keys") or ()
+        return any(k in have for k in want)
+    if "clerical_region" in cond:
+        return bool(scope.get("clerical_region")) == bool(cond["clerical_region"])
+    if "any_held_title" in cond:
+        # any_held_title 语义: 持有头衔中**任一**满足子条件即真
+        return any(cond_match(cond["any_held_title"], t)
+                   for t in (scope.get("held_titles") or ()))
     op = cond.get("op")
     ch = cond.get("children") or []
     if not ch:
@@ -1579,7 +1627,10 @@ def _bishop_titles_path(cfg):
 
 def build_bishop_titles(cfg):
     """`GetActualBishopTitle` 保序臂表 → {"arms": [{"loc_key", "when"}…],
-    "religions": {宗教键: 族}, "faiths": {信仰键: 宗教键}} (保序, Mod 同名块覆盖)。"""
+    "religions": {宗教键: 族}, "faiths": {信仰键: 宗教键}} (保序, Mod 同名块覆盖)。
+
+    v87: schema 2 → 3 —— 条件树解析器新增 v87 的叶子 (`is_female`/`faith`/
+    `has_title`/`any_held_title`/块形 `rite`), 旧表须重建方与新解析器一致。"""
     groups = _heritage_groups(cfg)
     roots = _data_roots(cfg)
     rel = _religion_maps(cfg, roots)
@@ -1609,7 +1660,7 @@ def build_bishop_titles(cfg):
                         if tr else {}
                     arms.append({"loc_key": lk.group(1) if lk else "",
                                  "when": cond})
-    return {"schema": 2, "arms": arms,
+    return {"schema": 3, "arms": arms,
             "religions": rel.get("religions") or {},
             "faiths": rel.get("faiths") or {}}
 
@@ -1630,7 +1681,7 @@ def load_bishop_titles(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 2 and data.get("arms"):
+            if data.get("schema") == 3 and data.get("arms"):
                 return data
         except Exception:
             pass
@@ -1641,10 +1692,104 @@ def load_bishop_titles(cfg=None, force=False):
 
 def pick_bishop_title(table, scope):
     """保序臂表首个命中臂的本地化键 (无命中返回 '')。"""
-    for a in (table or {}).get("arms") or []:
+    return pick_arm((table or {}).get("arms") or [], scope)
+
+
+def pick_arm(arms, scope):
+    """保序臂表首个命中臂的本地化键 (无命中返回 ''); 空条件 = 恒真 (游戏 fallback 臂)。"""
+    for a in arms or []:
         if cond_match(a.get("when") or {}, scope or {}):
             return a.get("loc_key") or ""
     return ""
+
+
+# ---------------------------------------------------------------------------
+# 神权官称的自定义本地化臂表 (v87 问题1)
+# ---------------------------------------------------------------------------
+# 游戏把**基督教神权统治者**的官称整个委托给自定义本地化:
+#   duke_theocracy_male_christianity_religion  = "[CHARACTER.Custom('GetActualDukeTheocracyTitle')]"
+#   count_theocracy_male_christianity_religion = "[CHARACTER.Custom('GetActualCountTheocracyTitle')]"
+#   duke_theocracy_male_*_clerical_region*     = "[CHARACTER.Custom('GetActualBishopTitle')]"
+# (culture_titles_l_simp_chinese.yml:238/253; 定义在 common/customizable_localization/
+#  00_divinity_custom_loc.txt:2243 / :2294 / :659)
+# `localization.loc` 会把 `[...]` 整段剥空 ⇒ 旧稿取不到词, 一路落到通用「公爵」。
+# 本表把前两个块解析成保序臂 (`GetActualBishopTitle` 早已由 `bishop_titles` 承担),
+# 求值由 `Facts._theocracy_scope` 提供的域 (信仰/礼仪/持有头衔/枢机身份) 完成。
+
+_THEOCRACY_CUSTOM_BLOCKS = ("GetActualDukeTheocracyTitle",
+                            "GetActualCountTheocracyTitle")
+
+
+def _custom_loc_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "theocracy_titles.json")
+
+
+def build_theocracy_titles(cfg):
+    """两个神权官称块 → {"blocks": {块名: [臂…]}, "religions"/"faiths": 映射}。"""
+    groups = _heritage_groups(cfg)
+    roots = _data_roots(cfg)
+    rel = _religion_maps(cfg, roots)
+    blocks = {}
+    for root in roots:
+        d = os.path.join(root, "common", "customizable_localization")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = _strip_comments(fp.read())
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                if key not in _THEOCRACY_CUSTOM_BLOCKS:
+                    continue
+                arms = []          # Mod 同名定义整体覆盖 (与主教臂表同口径)
+                for blk in _blocks_of(body, "text"):
+                    lk = re.search(r"localization_key\s*=\s*([A-Za-z0-9_]+)", blk)
+                    tr = _blocks_of(blk, "trigger")
+                    cond = _cond_block(_script_items(_split_inline_items(tr[0])),
+                                       groups, religions=rel, split_inline=True) \
+                        if tr else {}
+                    arms.append({"loc_key": lk.group(1) if lk else "",
+                                 "when": cond})
+                if arms:
+                    blocks[key] = arms
+    return {"schema": 1, "blocks": blocks,
+            "religions": rel.get("religions") or {},
+            "faiths": rel.get("faiths") or {}}
+
+
+def save_theocracy_titles(cfg, table):
+    path = _custom_loc_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_theocracy_titles(cfg=None, force=False):
+    """载入神权官称臂表; 缺失或强制时重建 (与主教臂表同源)。"""
+    cfg = cfg or llm.load_config()
+    path = _custom_loc_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("blocks"):
+                return data
+        except Exception:
+            pass
+    data = build_theocracy_titles(cfg)
+    save_theocracy_titles(cfg, data)
+    return data
+
+
+def pick_custom_loc(table, key, scope):
+    """该块保序臂首个命中臂的本地化键 (无表/无命中返回 '')。"""
+    return pick_arm(((table or {}).get("blocks") or {}).get(key) or [], scope)
 
 
 # ---------------------------------------------------------------------------
@@ -2262,6 +2407,7 @@ _LEVELS = None
 _COURT_POSITIONS = None
 _COUNCIL_TASKS = None
 _BISHOP_TITLES = None
+_THEOCRACY_TITLES = None
 _COUNCIL_NAMES = None
 _TRAIT_NAMES = None
 _TRAIT_TRACKS = None
@@ -2298,6 +2444,14 @@ def bishop_titles(cfg=None):
     if _BISHOP_TITLES is None:
         _BISHOP_TITLES = load_bishop_titles(cfg or llm.load_config())
     return _BISHOP_TITLES
+
+
+def theocracy_titles(cfg=None):
+    """神权官称自定义本地化臂表单例 (v87): {"blocks": {块名: [臂…]}, …}。"""
+    global _THEOCRACY_TITLES
+    if _THEOCRACY_TITLES is None:
+        _THEOCRACY_TITLES = load_theocracy_titles(cfg or llm.load_config())
+    return _THEOCRACY_TITLES
 
 
 def council_names(cfg=None):
