@@ -1929,13 +1929,6 @@ def _article_facts(facts, cache, key, section=None):
         else:
             _set_block(blocks, "礼仪沿革", "\n".join(hist) if hist else "")
             _set_block(blocks, "礼仪教义", "\n".join(tns) if tns else "")
-    elif key == "jiaohui":
-        # v86《教会志·教廷与分裂》(仅终传): 教廷态势与催化剂流水
-        cs = list(facts.get("church_state") or [])
-        if str(section or "").startswith("mid"):
-            _set_block(blocks, "教廷大事", "\n".join(cs) if cs else "")
-        else:
-            _set_block(blocks, "教廷之势", "\n".join(cs) if cs else "")
     elif key == "secrets":
         # v28《阴私录·隐事秘辛》: 主角隐事归开篇, 家人近臣隐事与把柄归纪事
         sec = facts.get("secrets") or {}
@@ -3432,7 +3425,7 @@ def build_articles(facts, cache, cfg):
             "focus": "写隐事的揭底：何事、涉及何人、事在何年、有谁知情",
             "sections": mk_sections("secrets")})
     # v86 (用户 2026-09-30 拍板): 十年传记与终传都出《礼仪志》(传主所奉礼仪 +
-    # 个人教义转变 + 礼仪教义/热度); 《教会志》只在终传出。
+    # 个人教义转变 + 礼仪教义/热度); v87 起《教会志》整篇删除 (见本节末注释)。
     # v87 (问题3/7, 用户 2026-09-30 拍板): 删圣所圣髑与教义计数行, 纪事改写
     # 「该礼仪允许什么、禁止什么」(逐条点名)。
     if facts.get("rite") or facts.get("rite_profile"):
@@ -3447,15 +3440,12 @@ def build_articles(facts, cache, cfg):
                                   "focus": "写礼仪的沿革与教义：受礼、改礼、"
                                            "个人教义之更替、允许与禁止的教义",
                                   "sections": mk_sections("liyi")})
-    if _final and (facts.get("church_state") or []):
-        articles.append({"key": "jiaohui", "title": "教会志·教廷与分裂",
-                         "subject": None,
-                         "theme": "教廷的格局与大事",
-                         "focus": "写当今之局、众望所归、主流与竞争之礼、"
-                                  "教廷各方立场与历年大事",
-                         "sections": mk_sections("jiaohui")})
+    # v87 (问题5, 用户 2026-09-30 拍板): **删《教会志》整篇** —— 其素材全部来自
+    # 基督教教会情境 (`the_christian_church`), 而该局势只在 867 开局出现
+    # (游戏 `on_action/game_start.txt` 无其 start_situation; 脚本唯一发端是调试互动
+    # `00_debug_interactions.txt:4821`; 局面注释见 `pam_christian_situation.txt:288`),
+    # 且「当今之局/众望所归/主流之礼」一层对传记无实义。
     return articles
-
 
 def _is_admin(facts):
     """行政制判定: 主角政府为 administrative (行政官制)。"""

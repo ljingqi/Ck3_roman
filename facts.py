@@ -11133,14 +11133,6 @@ class Facts:
     #   · 灵性满足    playable_data.current_spiritual_fulfillment (普通浮点, 不下发数字)
     #   · 教会情境    situation_manager / situation_sub_region_manager / …participant_group_manager
 
-    _CHURCH_GROUP_ZH = {
-        "christian_clerical_main_power_rulers": "神职主盟",
-        "christian_regular_main_power_rulers": "世俗主盟",
-        "christian_clerical_secondary_powers_rulers": "神职次盟",
-        "christian_regular_secondary_powers_rulers": "世俗次盟",
-        "christian_clerical_heretic_rulers": "神职异端",
-        "christian_regular_heretic_rulers": "世俗异端",
-    }
 
     def rite_tenets(self, rid):
         """礼仪的教义分档 {status: [教义键…]} (1.20: 教义状态记在**礼仪**上)。"""
@@ -11371,107 +11363,6 @@ class Facts:
             elif drop:
                 rows.append(f"{year}年起，不复奉{_n(drop)}为个人教义。")
             prev = set(cur)
-        return rows
-
-    def _church_situation(self):
-        """基督教教会情境的 (id, 情境, 子区) —— 1.20 专有; 无则 (None, {}, {})。"""
-        sm = ((self.melt.get("situation_manager") or {}).get("database") or {})
-        sr = ((self.melt.get("situation_sub_region_manager") or {}).get("database") or {})
-        for sid, sv in (sm.items() if isinstance(sm, dict) else []):
-            if isinstance(sv, dict) and sv.get("type") == "the_christian_church":
-                try:
-                    _sid = int(sid)
-                except (TypeError, ValueError):
-                    continue
-                for _k, sub in (sr.items() if isinstance(sr, dict) else []):
-                    if isinstance(sub, dict) and sub.get("situation") == _sid:
-                        return _sid, sv, sub
-                return _sid, sv, {}
-        return None, {}, {}
-
-    def church_state_lines(self):
-        """《教会志》素材 (仅终传): 章节 / 领向与进度 / 主流与竞争礼仪 /
-        大分裂之势 / 立场分布 / 催化剂流水 (逐条带日期)。取不到返回 []。"""
-        sid, sv, sub = self._church_situation()
-        if sid is None:
-            return []
-        rows = []
-        ph = (sub or {}).get("phase") or {}
-        ch = str(ph.get("type") or "")
-        if ch:
-            rows.append(f"当今之局：{L.loc(self.table, ch) or ch}。")
-        lead = str(ph.get("leading_phase_type") or "")
-        if lead:
-            ln = L.loc(self.table, lead) or lead
-            val = 0
-            for fp in (ph.get("future_phases") or []):
-                if isinstance(fp, dict) and fp.get("type") == lead:
-                    v = fp.get("value")
-                    if isinstance(v, (int, float)):
-                        val = v
-            full = 1250.0            # 章节满值 (common/situation_types)
-            word = _progress_word(val / full if full else 0.0)
-            rows.append(f"众望所归：{ln}（{word}）。")
-        # 大分裂之势: 情境定点变量 ÷ 100000, 阈值 13
-        for d in (((sv.get("variables") or {}).get("data")) or []):
-            if not isinstance(d, dict):
-                continue
-            if d.get("flag") == "pam_progress_towards_great_schism":
-                ident = ((d.get("data") or {}).get("identity"))
-                if isinstance(ident, (int, float)):
-                    ratio = (float(ident) / 100000.0) / 13.0
-                    rows.append(f"大分裂之势：{_progress_word(ratio)}。")
-            elif d.get("flag") == "schism_mainline_rite":
-                rid = ((d.get("data") or {}).get("identity"))
-                nm = cl.rite_name_of(self.melt, rid) if isinstance(rid, int) else ""
-                if nm:
-                    rows.append(f"主流之礼：{nm}。")
-            elif d.get("flag") == "tcc_main_power_faith":
-                # v86: `schism_mainline_rite` 常只有 type 没有 identity (实测 870 档),
-                # 此时由「主盟信仰」的 main_rite 反推主流之礼。
-                fid = ((d.get("data") or {}).get("identity"))
-                if isinstance(fid, int) and not any(
-                        r.startswith("主流之礼") for r in rows):
-                    mr = cl.faith_entry(self.melt, fid).get("main_rite")
-                    nm = cl.rite_name_of(self.melt, mr) if isinstance(mr, int) else ""
-                    if nm:
-                        rows.append(f"主流之礼：{nm}。")
-            elif d.get("flag") == "schism_competitor_rite":
-                rid = ((d.get("data") or {}).get("identity"))
-                nm = cl.rite_name_of(self.melt, rid) if isinstance(rid, int) else ""
-                if nm:
-                    rows.append(f"竞争之礼：{nm}。")
-        # 立场分布 (六阵营人数)
-        pg = ((self.melt.get("situation_participant_group_manager")
-               or {}).get("database") or {})
-        bits = []
-        for _k, g in (pg.items() if isinstance(pg, dict) else []):
-            if not isinstance(g, dict) or g.get("situation") != sid:
-                continue
-            t = str(g.get("type") or "")
-            zh = self._CHURCH_GROUP_ZH.get(t) or L.loc(self.table, t)
-            n = len(g.get("characters") or [])
-            if zh and n:
-                bits.append(f"{zh}{n}人")
-        if bits:
-            rows.append("教廷之众：" + "、".join(bits) + "。")
-        # 催化剂流水 (逐条带日期; 取最近 8 条)
-        cats = []
-        for h in (sv.get("history") or []):
-            if not isinstance(h, dict):
-                continue
-            c = h.get("catalyst") or {}
-            key = str(c.get("catalyst") or "")
-            date = str(c.get("date") or "")
-            if not key or not date:
-                continue
-            nm = (L.loc(self.table, f"{key}_desc") or L.loc(self.table, key) or "")
-            if not nm or nm == key:
-                continue
-            cats.append((date, nm, c.get("character")))
-        cats.sort(key=lambda x: cl.date_key(x[0]))
-        for date, nm, who in cats[-8:]:
-            rows.append(f"{self.date(date)}，{nm}。")
         return rows
 
     def faith_doctrines(self, cid):
@@ -15282,19 +15173,6 @@ def _sf_word(v):
     if v >= 0:
         return "微薄"
     return "亏欠"
-
-
-def _progress_word(ratio):
-    """进度比例 (0–1) → 档位词 (大分裂之势 / 章节进度共用)。"""
-    if ratio >= 0.75:
-        return "迫近"
-    if ratio >= 0.5:
-        return "渐盛"
-    if ratio >= 0.25:
-        return "初萌"
-    if ratio > 0:
-        return "微动"
-    return "未起"
 
 
 def _clean_ck3_loc(s):
@@ -22356,7 +22234,6 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # v87: 允许/禁止教义逐条点名 (《礼仪志》纪事; 取代 v86 的计数行与圣所块)
         "rite_tenets": f.rite_tenet_lines(cache.get("player_id"), as_of),
         "personal_tenets": f.personal_tenet_lines(cache.get("player_id"), as_of),
-        "church_state": f.church_state_lines(),
         # v13: Facts 实例引用 (biography 的关系缘由渲染等需要实例方法)
         "_facts": f,
     }
