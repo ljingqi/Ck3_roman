@@ -1746,14 +1746,20 @@ def step_watch(cfg, continue_mode=False):
     _WATCH_SESSION["active"] = not continue_mode
     _WATCH_SESSION["folder"] = None
     _WATCH_SESSION["player_key"] = None
+    save_dir = cfg.get("save_dir", "")
+    # v85: 基准时间**先**取 —— 下面的启动自检 (校验来源指纹, 必要时重建本地化表)
+    # 可能耗时数秒到数分钟, 期间游戏写出的新存档仍须算「启动后的新存档」; 若基准取在
+    # 自检之后, 这些存档的 mtime 早于基准, 会被永久跳过。
+    baseline = max((s["mtime"] for s in scan_saves(save_dir)), default=0)
     _cleanup_tmp_melts(cfg)
+    # v85: 启动自检 —— 指纹不符即重建一次 (新用户首次运行必然缺表, 先建好再进循环,
+    # 免得首份传记生成到一半才停下来建表)。
+    _ensure_source_tables(cfg)
     # v44 (问题5): 冷熔件 gzip 归档在后台进行 (启动跑一遍, 之后每 10 分钟一轮)
     # v53 (问题5): continue 有爆发式补录, 归档线程让路 —— 等 _catchup 完成后再启动,
     # 避免 rakaly/load_melt 与 xz preset 6 抢单核和磁盘。watch 无爆发补录, 仍启动即归档。
     if not continue_mode:
         _ensure_compact_worker(cfg)
-    save_dir = cfg.get("save_dir", "")
-    baseline = max((s["mtime"] for s in scan_saves(save_dir)), default=0)
     llm.log("监控存档中 (只处理本程序启动后保存的新存档)...")
     llm.log(f"基准时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(baseline))} "
             f"— 更早的老存档一律不读、不记录")
@@ -2384,15 +2390,36 @@ def _ensure_compact_worker(cfg):
 
 
 def _log_loc_source(cfg):
-    """v29: 启动时通报本地化来源 (启用 Mod 个数与指纹) — 用户勾选 Mod 后一眼可查。
-    本地化表本身由 localization.load_localization_table 按指纹自动重建。"""
+    """v29/v85: 只读自检 —— 通报本地化来源 (游戏目录 + 启用 Mod 个数 + 来源指纹)
+    与三张派生表 (本地化/特质显示名/特质轨道) 的指纹比对结果, 供 status 一眼可查。
+
+    这里只报告**不重建**; 真正的「不符即重建一次」在 _ensure_source_tables,
+    由 watch / continue / scan 启动路径调用。"""
     try:
         import localization as loc
-        fp = loc.source_fingerprint(cfg)
+        rep = loc.inspect_source_tables(cfg)
+        fp = (rep.get("fingerprints") or {}).get("loc") or {}
         llm.log(f"本地化来源: 游戏 {fp.get('game') or '(未找到)'}, "
-                f"启用 Mod {len(fp.get('mods') or [])} 个, 指纹 {str(fp.get('hash'))[:12]}…")
+                f"启用 Mod {len(fp.get('mods') or [])} 个, "
+                f"来源指纹 {str(fp.get('hash'))[:12]}")
+        llm.log("本地化自检 (只读): " + "、".join(
+            f"{r['name']}{loc.state_text(r['state'])}"
+            for r in rep.get("rows") or []) + "。")
     except Exception as e:
         llm.log(f"本地化来源检查失败: {e}")
+
+
+def _ensure_source_tables(cfg):
+    """v85: 启动自检 —— 校验三张派生表的来源指纹, 缺失/过期/变化即自动重建一次。
+
+    调用点: watch / continue / scan 的启动路径 (两个启动器 .bat 都走这里)。
+    重建失败或游戏目录不可用时不阻断启动, localization 侧会保留旧表。"""
+    try:
+        import localization as loc
+        return loc.ensure_source_tables(cfg)
+    except Exception as e:
+        llm.log(f"本地化自检失败 ({e}) —— 沿用现有表, 程序继续。")
+        return None
 
 
 def main():
@@ -2400,14 +2427,12 @@ def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd == "watch":
         cfg["poll_interval_seconds"] = int(sys.argv[2]) if len(sys.argv) > 2 else 60
-        _log_loc_source(cfg)
         step_watch(cfg, continue_mode=False)
     elif cmd == "continue":
         cfg["poll_interval_seconds"] = int(sys.argv[2]) if len(sys.argv) > 2 else 60
-        _log_loc_source(cfg)
         step_watch(cfg, continue_mode=True)
     elif cmd == "scan":
-        _log_loc_source(cfg)
+        _ensure_source_tables(cfg)          # v85: 启动自检 (指纹不符即重建一次)
         step_scan(cfg)
     elif cmd == "status":
         _log_loc_source(cfg)

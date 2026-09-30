@@ -38,6 +38,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 
 import llm
 
@@ -427,14 +428,26 @@ LOC_OVERRIDES = {
 }
 
 
-def load_localization_table(cfg, force=False):
+def _fill_report(report, state, keys, why=""):
+    """把一次载入的结论写进调用方传入的 report (v85 启动自检用)。
+
+    report 为 None 时静默 —— 惰性载入路径 (等到查名字才建表) 无需向外汇报。"""
+    if report is None:
+        return
+    report.clear()
+    report.update({"state": state, "keys": int(keys), "why": why})
+
+
+def load_localization_table(cfg, force=False, report=None):
     """载入本地化表; 缺失、强制、或**来源指纹变化**时重建。返回 {key: 中文}。
 
     v29: 指纹 = 游戏目录 + 启用 Mod 清单 + 本地化文件数/字节数/mtime。用户启用
     新 Mod 或 Mod 更新后, 本函数自动重建并记日志; 新版表为空 (游戏目录不可用)
-    时保留旧表, 不清空已有键。"""
+    时保留旧表, 不清空已有键。
+    v85: 新增 report 出参 —— 启动自检 (ensure_source_tables) 据此区分
+    「指纹一致 / 已重建 / 保留旧表」, state ∈ ok / rebuilt / kept-old / no-source。"""
     path = _localization_path(cfg)
-    cached, old_fp = {}, None
+    cached, old_fp, schema_ok = {}, None, False
     if os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fp:
@@ -442,10 +455,13 @@ def load_localization_table(cfg, force=False):
             if data.get("schema") == 3:
                 cached = data.get("table") or {}
                 old_fp = data.get("fingerprint") or None
+                schema_ok = True
             # v44 (问题6): schema<=2 的表按「英文先、中文后」的旧序合并, 含 Mod
             # 英文顶掉本体中文的脏值 (Mathilde → Matilda), 一律不采用, 重建。
         except Exception:
-            cached, old_fp = {}, None
+            cached, old_fp, schema_ok = {}, None, False
+    why = "表缺失" if not os.path.isfile(path) else (
+        "旧版表或文件不可解析" if not schema_ok else "表内容为空")
     if not force and cached:
         try:
             fp = source_fingerprint(cfg)
@@ -453,14 +469,18 @@ def load_localization_table(cfg, force=False):
             fp = None
         if fp and old_fp and old_fp.get("hash") == fp.get("hash"):
             cached.update(LOC_OVERRIDES)     # v73: 修正表对**旧表**同样生效
+            _fill_report(report, "ok", len(cached), "来源指纹一致")
             return cached
         why = "旧版表无来源指纹" if not old_fp else "启用 Mod / 游戏本地化已变化"
-        llm.log(f"本地化表需重建 ({why})。")
+        # v85: 建表要几十秒到几分钟 (游戏 + 各 Mod 的全部 yml), 先说清在干什么,
+        # 用户才不会以为程序卡死 (启动自检与惰性载入两条路径都会走到这行)。
+        llm.log(f"本地化表需重建 ({why}) —— 建表期间请勿关闭窗口。")
     table, raw_templates = build_localization_table(cfg)
     if not table:
         # 游戏目录不可用 (换机 / 未配置): 保留旧表, 优于空表
         llm.log("本地化重建未取到任何键 (游戏目录不可用?), 沿用既有表。")
-        cached.update(LOC_OVERRIDES)         # v73: 修正表对旧表同样生效
+        cached.update(LOC_OVERRIDES)         # v73: 修正表对**旧表**同样生效
+        _fill_report(report, "no-source", len(cached), "游戏目录不可用, 沿用既有表")
         return cached
     # v58 (§0.1): **退表保护** —— 只在游戏目录不可用时会重建出「只剩 Mod 键」的
     # 小表 (实测 94,734 vs 382,330)。旧稿只挡「空表」, 于是这类退化表会覆盖好的表,
@@ -469,6 +489,8 @@ def load_localization_table(cfg, force=False):
         llm.log(f"本地化重建结果偏小 ({len(table)} 键 < 旧表 {len(cached)} 键的六成) —— "
                 f"疑游戏目录不可用, 保留旧表不落盘。若确为游戏更新, 请删 "
                 f"{path} 后重建。")
+        _fill_report(report, "kept-old", len(cached),
+                     f"重建结果偏小 ({len(table)} 键), 保留旧表")
         return cached
     fp = None
     try:
@@ -479,6 +501,7 @@ def load_localization_table(cfg, force=False):
     llm.log(f"本地化表已重建: {len(table)} 键"
             + (f", 启用 Mod {len((fp or {}).get('mods') or [])} 个。" if fp else "。"))
     table.update(LOC_OVERRIDES)              # v73: 女性层级词修正 (见 LOC_OVERRIDES)
+    _fill_report(report, "rebuilt", len(table), why)
     return table
 
 
@@ -1898,22 +1921,42 @@ def save_trait_tracks(cfg, table):
     return path
 
 
-def load_trait_tracks(cfg=None, force=False):
-    """载入特质轨道表; 缺失/旧版/**来源指纹不符**即重建 (v34, 问题4)。"""
+def load_trait_tracks(cfg=None, force=False, report=None):
+    """载入特质轨道表; 缺失/旧版/**来源指纹不符**即重建 (v34, 问题4)。
+
+    v85: report 出参 (启动自检) 与「需重建」日志 —— 见 load_localization_table;
+    并补上**退表保护**: 重建结果不足旧表六成时保留旧表不落盘 (游戏目录不可用时
+    会重建出空表, 启动自检不该因此抹掉好表)。"""
     cfg = cfg or llm.load_config()
     path = _trait_tracks_path(cfg)
-    if not force and os.path.isfile(path):
+    cached, why = None, "表缺失"
+    if os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fp:
-                data = json.load(fp)
-            if data.get("schema") == 2 and "tracks" in data:
-                cur = trait_source_fingerprint(cfg).get("hash")
-                if (data.get("fingerprint") or {}).get("hash") == cur:
-                    return data
+                cached = json.load(fp)
         except Exception:
-            pass
+            cached, why = None, "表文件不可解析"
+        if cached is not None and not force:
+            if cached.get("schema") == 2 and "tracks" in cached:
+                cur = trait_source_fingerprint(cfg).get("hash")
+                if (cached.get("fingerprint") or {}).get("hash") == cur:
+                    _fill_report(report, "ok", len(cached.get("tracks") or {}),
+                                 "来源指纹一致")
+                    return cached
+                why = "启用 Mod / 特质定义已变化"
+            else:
+                why = "旧版表或文件不可解析"
+    llm.log(f"特质轨道表需重建 ({why})。")
     data = build_trait_tracks(cfg)
+    new_n = len(data.get("tracks") or {})
+    old_n = len((cached or {}).get("tracks") or {})
+    if cached and new_n < old_n * 0.6:
+        llm.log(f"特质轨道表重建结果偏小 ({new_n} 条 < 旧表 {old_n} 条的六成) —— "
+                f"疑游戏目录不可用, 保留旧表不落盘。若确为游戏更新, 请删 {path} 后重建。")
+        _fill_report(report, "kept-old", old_n, f"重建结果偏小 ({new_n} 条), 保留旧表")
+        return cached
     save_trait_tracks(cfg, data)
+    _fill_report(report, "rebuilt", new_n, why)
     return data
 
 
@@ -1925,24 +1968,44 @@ def save_trait_names(cfg, table):
     return path
 
 
-def load_trait_names(cfg=None, force=False):
+def load_trait_names(cfg=None, force=False, report=None):
     """载入特质显示名 + 类别表; 缺失、旧版 (无 categories/level_names) 或
-    **来源指纹不符**时重建 (v34, 问题4 — 启用新 Mod 后自动补全)。"""
+    **来源指纹不符**时重建 (v34, 问题4 — 启用新 Mod 后自动补全)。
+
+    v85: report 出参 (启动自检) 与「需重建」日志 —— 见 load_localization_table;
+    并补上**退表保护**: 重建结果不足旧表六成时保留旧表不落盘 (游戏目录不可用时
+    会重建出空表, 启动自检不该因此抹掉好表)。"""
     cfg = cfg or llm.load_config()
     path = _trait_names_path(cfg)
-    if not force and os.path.isfile(path):
+    cached, why = None, "表缺失"
+    if os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fp:
-                data = json.load(fp)
-            if data.get("schema") == 4 and data.get("traits") \
-                    and "categories" in data and "level_names" in data:
-                cur = trait_source_fingerprint(cfg).get("hash")
-                if (data.get("fingerprint") or {}).get("hash") == cur:
-                    return data
+                cached = json.load(fp)
         except Exception:
-            pass
+            cached, why = None, "表文件不可解析"
+        if cached is not None and not force:
+            if cached.get("schema") == 4 and cached.get("traits") \
+                    and "categories" in cached and "level_names" in cached:
+                cur = trait_source_fingerprint(cfg).get("hash")
+                if (cached.get("fingerprint") or {}).get("hash") == cur:
+                    _fill_report(report, "ok", len(cached.get("traits") or {}),
+                                 "来源指纹一致")
+                    return cached
+                why = "启用 Mod / 特质定义已变化"
+            else:
+                why = "旧版表或文件不可解析"
+    llm.log(f"特质显示名表需重建 ({why})。")
     data = build_trait_names(cfg)
+    new_n = len(data.get("traits") or {})
+    old_n = len((cached or {}).get("traits") or {})
+    if cached and new_n < old_n * 0.6:
+        llm.log(f"特质显示名表重建结果偏小 ({new_n} 条 < 旧表 {old_n} 条的六成) —— "
+                f"疑游戏目录不可用, 保留旧表不落盘。若确为游戏更新, 请删 {path} 后重建。")
+        _fill_report(report, "kept-old", old_n, f"重建结果偏小 ({new_n} 条), 保留旧表")
+        return cached
     save_trait_names(cfg, data)
+    _fill_report(report, "rebuilt", new_n, why)
     return data
 
 
@@ -2204,6 +2267,140 @@ def dynasty_table(cfg=None):
     if _DYN_TABLE is None:
         _DYN_TABLE = load_dynasty_table(cfg or llm.load_config())
     return _DYN_TABLE
+
+
+# ---------------------------------------------------------------------------
+# 启动自检 (v85): 校验来源指纹, 不符即自动重建一次
+# ---------------------------------------------------------------------------
+# 2026-09-30 定规: 三张派生表 (本地化 / 特质显示名 / 特质轨道) 不再随仓库发布
+# (见 .gitignore), 于是**新用户首次运行必然缺表**, 老用户勾选/更新 Mod、游戏打
+# 补丁后指纹也会变。原本的重建是**惰性**的 —— 等到首份传记要查名字、查特质才
+# 触发, 于是这几分钟的代价落在「按下启动后什么都不发生」的窗口里, 像是卡死。
+# 现在 watch / continue / scan 启动时先自检一次: 打印本地化来源 (游戏目录 +
+# 启用 Mod 个数 + 来源指纹), 逐张比对表内指纹, 缺失/过期/不符者当场重建一次,
+# 建好即灌进模块单例 (省去后续再解析一遍 35MB 的 localization.json)。
+
+# 表清单: 显示名 / 表文件 / schema / 表内键容器 / 载入器 / 来源指纹 / 模块单例
+_SOURCE_TABLES = (
+    {"name": "本地化表", "path": _localization_path, "schema": 3, "keys": "table",
+     "load": load_localization_table, "fp": "loc", "singleton": "_TABLE"},
+    {"name": "特质显示名表", "path": _trait_names_path, "schema": 4, "keys": "traits",
+     "load": load_trait_names, "fp": "trait", "singleton": "_TRAIT_NAMES"},
+    {"name": "特质轨道表", "path": _trait_tracks_path, "schema": 2, "keys": "tracks",
+     "load": load_trait_tracks, "fp": "trait", "singleton": "_TRAIT_TRACKS"},
+)
+
+# 自检结论 → 人话 (状态取值见 _fill_report 与 _stored_state)
+_SELFCHECK_TEXT = {
+    "ok": "来源指纹一致",
+    "rebuilt": "已重建",
+    "kept-old": "保留旧表 (重建结果偏小)",
+    "no-source": "无可用来源, 沿用旧表",
+    "missing": "表缺失",
+    "stale": "旧版表 (schema 过期)",
+    "mismatch": "来源指纹不符",
+    "error": "表文件不可解析",
+}
+
+
+def state_text(state):
+    """自检状态 → 中文短句 (pipeline 打印用)。"""
+    return _SELFCHECK_TEXT.get(state, state)
+
+
+def _source_fingerprints(cfg):
+    """两张来源指纹 (本地化 / 特质): 取不到时留空而不抛 —— 自检不阻断启动。"""
+    out = {}
+    for key, fn in (("loc", source_fingerprint), ("trait", trait_source_fingerprint)):
+        try:
+            out[key] = fn(cfg) or {}
+        except Exception as e:
+            out[key] = {"hash": None, "game": "", "mods": [], "error": str(e)}
+    return out
+
+
+def _stored_state(path, schema, keys_key, source_hash):
+    """只读比对: 表里存的来源指纹 vs 当前来源 → (state, 表内条数)。
+
+    只用于只读自检; 真正的重建一律交给 load_* (那里有退表保护)。"""
+    if not os.path.isfile(path):
+        return "missing", 0
+    try:
+        with open(path, encoding="utf-8") as fp:
+            data = json.load(fp)
+    except Exception:
+        return "error", 0
+    keys = len(data.get(keys_key) or {})
+    if data.get("schema") != schema:
+        return "stale", keys
+    if not source_hash or (data.get("fingerprint") or {}).get("hash") != source_hash:
+        return "mismatch", keys
+    return "ok", keys
+
+
+def inspect_source_tables(cfg):
+    """只读自检 (不重建): 逐张报告三张派生表的状态, 供 `pipeline.py status` 打印。"""
+    fps = _source_fingerprints(cfg)
+    rows = []
+    for t in _SOURCE_TABLES:
+        path = t["path"](cfg)
+        state, keys = _stored_state(path, t["schema"], t["keys"],
+                                    (fps.get(t["fp"]) or {}).get("hash"))
+        rows.append({"name": t["name"], "path": path, "state": state, "keys": keys})
+    return {"fingerprints": fps, "rows": rows,
+            "rebuild_needed": [r["name"] for r in rows if r["state"] != "ok"]}
+
+
+def ensure_source_tables(cfg):
+    """启动自检 (v85): 校验三张派生表的来源指纹, 缺失 / 过期 / 不符者**当场重建
+    一次**, 结果灌进模块单例, 供本进程后续直接查表。返回自检报告 dict:
+    {"fingerprints", "rows", "seconds", "rebuilt", "warnings"}。
+
+    调用点: pipeline.py 的 watch / continue / scan 启动路径 —— 两个启动器 .bat
+    (启动监控 = watch、启动续传 = continue) 都走这条路。每张表至多重建一次;
+    游戏目录不可用时 localization 侧保留旧表 (见 load_localization_table 的退表
+    保护), 此处不抛异常、不阻断启动。"""
+    fps = _source_fingerprints(cfg)
+    loc_fp = fps.get("loc") or {}
+    llm.log(f"本地化来源: 游戏 {loc_fp.get('game') or '(未找到)'}, "
+            f"启用 Mod {len(loc_fp.get('mods') or [])} 个, "
+            f"来源指纹 {str(loc_fp.get('hash'))[:12]}")
+    t_all = time.time()
+    rows = []
+    for t in _SOURCE_TABLES:
+        rep, t0 = {}, time.time()
+        try:
+            data = t["load"](cfg, report=rep)
+        except Exception as e:
+            llm.log(f"  {t['name']}载入失败: {e}")
+            rows.append({"name": t["name"], "state": "error", "keys": 0,
+                         "why": str(e), "seconds": time.time() - t0})
+            continue
+        globals()[t["singleton"]] = data     # 灌单例: 后续查表不必再解析一遍
+        state = rep.get("state") or "ok"
+        rows.append({"name": t["name"], "state": state, "keys": rep.get("keys", 0),
+                     "why": rep.get("why") or "", "seconds": time.time() - t0})
+        llm.log(f"  自检 {t['name']}: {_SELFCHECK_TEXT.get(state, state)} "
+                f"({rep.get('keys', 0)} 条, {time.time() - t0:.1f} 秒)", detail=True)
+    secs = time.time() - t_all
+    rebuilt = [r for r in rows if r["state"] == "rebuilt"]
+    warn = [r for r in rows if r["state"] not in ("ok", "rebuilt")]
+    if warn:
+        llm.log(f"本地化自检: {len(rows) - len(warn)} 张表就绪; "
+                + "、".join(f"{r['name']}{_SELFCHECK_TEXT.get(r['state'], r['state'])}"
+                            for r in warn)
+                + f" (合计 {secs:.1f} 秒)。")
+    elif rebuilt:
+        llm.log(f"本地化自检: 本次重建 {len(rebuilt)} 张表 ("
+                + "、".join(f"{r['name']} {r['seconds']:.1f} 秒" for r in rebuilt)
+                + f"), 其余 {len(rows) - len(rebuilt)} 张来源指纹一致 "
+                f"(合计 {secs:.1f} 秒)。")
+    else:
+        llm.log(f"本地化自检: {len(rows)} 张表来源指纹一致, 无需重建 "
+                f"({secs:.1f} 秒)。")
+    return {"fingerprints": fps, "rows": rows, "seconds": secs,
+            "rebuilt": [r["name"] for r in rebuilt],
+            "warnings": [r["name"] for r in warn]}
 
 
 # ---------------------------------------------------------------------------
