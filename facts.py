@@ -5765,22 +5765,39 @@ class Facts:
         """角色信仰 → (faith tag, religion tag)。
 
         v47: 按 date 取 (信仰沿革 `faith_history` → 现值 → 家族缺省) —— 与
-        `_culture_entry` 同口径; 死者记录里 `faith` 同样会被存档剪除。"""
+        `_culture_entry` 同口径; 死者记录里 `faith` 同样会被存档剪除。
+        v87 (问题1): 信仰定义改走 `cl.faith_entry` —— 1.20 已搬到顶层
+        `faiths.database`, 而本函数旧稿仍读 `melt["religion"]["faiths"]`
+        (1.20 无此键) ⇒ 恒返回 `('','')`, 使 flavorization 的 `faiths`/`religions`
+        门在 1.20 全线失效 (实测代价: 基督教神权词被什叶词 `…_ismaili` 压过,
+        见 docs/调研_v87_后任称谓大阿亚图拉.md §4.4)。旧档 (1.19) 由
+        `faith_entry` 内部回落到 `religion.faiths`, 口径不变。"""
         fid = self._faith_id(cid, date) if cid is not None else None
         if fid is None:
             return "", ""
-        rel = self.melt.get("religion") or {}
-        e = (rel.get("faiths") or {}).get(str(fid))
-        if not isinstance(e, dict):
+        e = cl.faith_entry(self.melt, fid)
+        if not isinstance(e, dict) or not e:
             return "", ""
         ftag = str(e.get("faith_type") or e.get("tag") or "")
         rtag = ""
         rid = e.get("religion")
         if rid is not None:
-            re_ = (rel.get("religions") or {}).get(str(rid))
+            re_ = ((self.melt.get("religion") or {}).get("religions") or {}) \
+                .get(str(rid))
             if isinstance(re_, dict):
                 rtag = str(re_.get("tag") or re_.get("religion_type") or "")
         return ftag, rtag
+
+    def _rite_type(self, cid, date=None):
+        """角色所奉礼仪的 `rite_type` 键 (1.20 `flavorization` 的 `rites` 条件用)。
+
+        取词口与 `rite_name` 同源: `rites.database[<rid>].rite_type` (如 `roman_rite`、
+        `ismaili`)。旧档 (1.19) 无礼仪库 → '' —— 带 `rites` 条件的条目因此一律不命中,
+        与游戏「该角色没有礼仪」同效。"""
+        rid = self._rite_id(cid, date)
+        if rid is None:
+            return ""
+        return str(cl.rite_entry(self.melt, rid).get("rite_type") or "")
 
     def _top_liege_of(self, cid, tid):
         """角色沿 de_facto_liege 上溯的最高领主 (自身即最高时返回 (cid, tid))。"""
@@ -5823,6 +5840,7 @@ class Facts:
             gov = self._gov_for_word(cid, tid, date) if tid is not None else ""
         ce = self._culture_entry(cid, date)
         ftag, rtag = self._faith_tags(cid, date)
+        rtype = self._rite_type(cid, date)
         title_key = ""
         if tid is not None:
             title_key = ((self._lt.get(str(tid)) or {}).get("key") or "")
@@ -5841,13 +5859,14 @@ class Facts:
                                       if ltid else ""),
                        "name_list": lce.get("name_list") or "",
                        "heritage": lce.get("heritage") or "",
-                       "faith": lft, "religion": lrt}
+                       "faith": lft, "religion": lrt,
+                       "rite": self._rite_type(lid, date)}
         try:
             return FZ.resolve(
                 kind, tkey, gender, government=gov or "",
                 name_list=ce.get("name_list") or "",
                 heritage=ce.get("heritage") or "",
-                faith=ftag, religion=rtag, title_key=title_key,
+                faith=ftag, religion=rtag, rite=rtype, title_key=title_key,
                 independent=bool(independent), top=top,
                 obligation_flags=self._obligation_flags_at(cid, date),
                 special=(special or "holder"))
@@ -5883,6 +5902,7 @@ class Facts:
             return True
         ce = self._culture_entry(cid, date)
         ftag, rtag = self._faith_tags(cid, date)
+        rtype = self._rite_type(cid, date)
         title_key = ((self._lt.get(str(tid)) or {}).get("key") or "") \
             if tid is not None else ""
         # 封臣: 未显式 top_liege = no 的条目按最高领主判定 (与 `_flavor_key` 同式)
@@ -5896,7 +5916,8 @@ class Facts:
                                       if ltid else ""),
                        "name_list": lce.get("name_list") or "",
                        "heritage": lce.get("heritage") or "",
-                       "faith": lft, "religion": lrt}
+                       "faith": lft, "religion": lrt,
+                       "rite": self._rite_type(lid, date)}
         try:
             k = FZ.ruler_child_exists(
                 self._FLAVOR_TIER.get(ptier, ptier),
@@ -5904,7 +5925,7 @@ class Facts:
                 government=gov,
                 name_list=ce.get("name_list") or "",
                 heritage=ce.get("heritage") or "",
-                faith=ftag, religion=rtag, title_key=title_key,
+                faith=ftag, religion=rtag, rite=rtype, title_key=title_key,
                 independent=bool(independent), top=top,
                 obligation_flags=self._obligation_flags_at(cid, date))
         except Exception:

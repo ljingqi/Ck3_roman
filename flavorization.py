@@ -27,7 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm                 # noqa: E402
 import localization as L    # noqa: E402
 
-_SCHEMA = 3   # v64: ruler_child (王子/公主) 条目入表并可求值 (special 过滤)
+_SCHEMA = 4   # v87: 解析 1.20 的 `rites` 条件 (礼仪) + `lessee_*` 入 unsupported
+              # (v64: schema 3 = ruler_child 条目入表并可求值)
 _TABLE = None
 
 
@@ -121,12 +122,22 @@ def build_flavorization(cfg):
                 # council_position / 单值 faith 等条件。
                 # v53 (问题1): `_subject_contract_obligation_flags` 改可求值,
                 # 不再标 unsupported (天朝国王级观察使/经略使/都护靠它分档)。
+                # v87 (问题1): `rites` 改**可求值** (见 resolve 的 `rite` 形参);
+                # `lessee_*` (租约持有者的政体/传承/信仰/礼仪) 入 unsupported ——
+                # 只有 `monastery_*` 一族用它, 而 `monastery_christian`
+                # (20_pam_flavorization.txt:382-394, priority 210) 曾因此**假命中**
+                # 任何男爵领 (现无害, 只因 `_title_tier_word` 还要求 `governments`
+                # 非空才取词; 一旦放宽就会冒出来)。
                 obligation_flags = _list_of(items, "subject_contract_obligation_flags")
                 unsupported = bool(
                     items.get("flag") or items.get("domicile_type")
                     or items.get("holding") or items.get("council_position")
                     or items.get("faith")
-                    or items.get("_de_jure_liege"))
+                    or items.get("_de_jure_liege")
+                    or items.get("_lessee_governments")
+                    or items.get("_lessee_heritages")
+                    or items.get("_lessee_faiths")
+                    or items.get("_lessee_rites"))
                 # v64 (问题2): `special = ruler_child` (王子/公主) 改**可求值** ——
                 # 其 `governments` 是穷举, 部落/游牧制在**任何层级**都没有条目,
                 # 故「有没有称号」这件事必须问表 (旧稿由 `facts._prince_word` 的
@@ -146,6 +157,7 @@ def build_flavorization(cfg):
                     "name_lists": _list_of(items, "name_lists"),
                     "heritages": _list_of(items, "heritages"),
                     "faiths": _list_of(items, "faiths"),
+                    "rites": _list_of(items, "rites"),
                     "religions": _list_of(items, "religions"),
                     "titles": _list_of(items, "titles"),
                     "obligation_flags": obligation_flags,
@@ -193,12 +205,12 @@ def table(cfg=None):
 
 
 def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
-            faith="", religion="", title_key="", independent=True, top=None,
+            faith="", religion="", rite="", title_key="", independent=True, top=None,
             obligation_flags=None, cfg=None, special="holder"):
     """按游戏规则取词: 返回**本地化键** (块名) 或 ''。
 
     与游戏同序: priority 高者先试, 全部条件命中即取 (governments / name_lists /
-    heritages / faiths / religions 为空视为不限; 含 flag 的条目在建表时已标
+    heritages / faiths / rites / religions 为空视为不限; 含 flag 的条目在建表时已标
     unsupported)。`titles` 是**限定头衔**条件 — 只有传入的 title_key 在其中时才
     命中 (不传即跳过这类条目)。`independent` 用于 only_vassals/only_independent
     两条规则; `top` 传入最高领主的同名字段后, 未显式写 `top_liege = no` 的条目
@@ -208,12 +220,18 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
     v64 (问题2): `special` 过滤条目类别 —— 缺省 "holder" (统治者称谓, 旧行为逐字
     不变); 传 "ruler_child" 时只取 `special = ruler_child` 的王子/公主条目
     (由 `facts._prince_word` 用来判「此处游戏有没有称号」)。两类互不相干:
-    不传 special 时 ruler_child 条目一律不参与, 防「王子」压过统治者称谓。"""
+    不传 special 时 ruler_child 条目一律不参与, 防「王子」压过统治者称谓。
+    v87 (问题1): `rite` 是角色所奉**礼仪**的 `rite_type` 键 (1.20 新条件
+    `rites = { … }`, 见 `_flavourization.info:280`)。旧稿整条丢弃该条件, 于是
+    什叶专用的 `duke_theocracy_male_ismaili` (`00_title_holders.txt:3142-3153`)
+    退化成「只剩政体条件」, 压过所有基督教神权词; 同族的
+    `clerical_region_duchy_east_christian` (拜占庭/格鲁吉亚礼仪, priority 110)
+    也会抢走拉丁教省的名。取不到 rite 时带 `rites` 的条目一律不命中。"""
     fl = table(cfg)
     ents = (fl.get("entries") or {})
     if not ents:
         return ""
-    best_key, best_pri = "", None
+    best_key, best_pri, best_rites = "", None, False
     for e in ents.values():
         if e.get("type") != kind or e.get("tier") != tier:
             continue
@@ -227,8 +245,23 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
         if e.get("gender") and e["gender"] != gender:
             continue
         prio = e.get("priority") or 0
-        if best_pri is not None and prio <= best_pri:
-            continue
+        rts_e = e.get("rites") or []
+        # 取词序 (游戏文档 `_flavourization.info:143-148`: priority 更高者胜, 同值即跳过)。
+        # v87 (问题1) 唯一放宽: **同 priority 时「礼仪专属」条目 (带 `rites`) 压过
+        # 「教门通用」条目** —— 游戏把什叶专用的 `<tier>_theocracy_*_ismaili`
+        # (rites = { imami ismaili … }) 与伊斯兰通用的 `<tier>_theocracy_*_islam_religion`
+        # 写成**同一个 priority** (`00_title_holders.txt:1679` 与 `:3142`, 皆 27;
+        # count 层 `:1643` 与 `:3116`, 皆 18), 同值谁先谁后无法求证 —— 本机三份存档
+        # (洪氏 872 700 条 / 斯卡利茨 949 95 条 / 田所 1007 143 条烘死键) 里
+        # **0 条什叶神权统治者**, 无实证可依。取`专指优先`: 什叶统治者得
+        # 「大阿亚图拉/阿亚图拉/毛拉」而非逊尼口径的「大穆夫提/谢赫」, 既合 Paradox
+        # 立这两组词的本意, 也与 v87 之前的事实面一致 (旧稿因信仰标签取不到而恰好
+        # 命中 rites 条目); 基督教诸词不受影响 (rites 不匹配, 根本无并列)。
+        if best_pri is not None:
+            if prio < best_pri:
+                continue
+            if prio == best_pri and not (rts_e and not best_rites):
+                continue
         rules = e.get("rules") or {}
         # top_liege 默认 yes: 封臣按最高领主的政体/文化判定 (显式 no 者按自身)。
         use_top = bool(top) and rules.get("top_liege", True) is not False
@@ -246,6 +279,7 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
         nl_x = (top.get("name_list") or name_list) if use_top else name_list
         hs_x = (top.get("heritage") or heritage) if use_top else heritage
         fa_x = (top.get("faith") or faith) if use_top else faith
+        rt_x = (top.get("rite") or rite) if use_top else rite
         re_x = (top.get("religion") or religion) if use_top else religion
         govs = e.get("governments") or []
         if govs and gov_x not in govs:
@@ -258,6 +292,9 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             continue
         fs = e.get("faiths") or []
         if fs and fa_x not in fs:
+            continue
+        rts = e.get("rites") or []
+        if rts and rt_x not in rts:
             continue
         rs = e.get("religions") or []
         if rs and re_x not in rs:
@@ -273,7 +310,7 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             have = set(obligation_flags or [])
             if not have.intersection(want_flags):
                 continue
-        best_key, best_pri = e["key"], prio
+        best_key, best_pri, best_rites = e["key"], prio, bool(rts_e)
     return best_key
 
 
@@ -299,7 +336,7 @@ _PRINCE_CN_KEYS = frozenset({
 
 
 def ruler_child_exists(tier, gender, *, government="", name_list="", heritage="",
-                       faith="", religion="", title_key="", independent=True,
+                       faith="", religion="", rite="", title_key="", independent=True,
                        top=None, obligation_flags=None, cfg=None):
     """游戏侧在 (层级 × 性别 × 政体 × 独立/封臣) 下**有没有**王子/公主称号 ——
     返回命中的本地化键, 无则 '' (v64, 问题2)。
@@ -355,6 +392,10 @@ def ruler_child_exists(tier, gender, *, government="", name_list="", heritage=""
             fs = e.get("faiths") or []
             if fs and (top.get("faith") if use_top else faith) not in fs:
                 continue
+            # v87: `rites` 条件 (1.20) —— 与 resolve 同判; 取不到礼仪时不命中
+            rts = e.get("rites") or []
+            if rts and (top.get("rite") if use_top else rite) not in rts:
+                continue
             rs = e.get("religions") or []
             if rs and (top.get("religion") if use_top else religion) not in rs:
                 continue
@@ -373,7 +414,7 @@ def is_unconditional(key, cfg=None):
     """该条目是否**无任何条件** (只有 type/tier/gender/priority) — 即通用兜底层级词。
 
     v74 (问题2): `duke`/`count`/`king`/`emperor`/`baron`/`hegemon` 六条实测
-    `governments/name_lists/heritages/faiths/religions/titles/obligation_flags/rules`
+    `governments/name_lists/heritages/faiths/rites/religions/titles/obligation_flags/rules`
     **全空**, 是任何政体取值失败者的共同出口。`facts._office_word` 在**政体不可知**
     (`gov == ''`) 时把这类命中视为未命中, 以免通用层级词压过文化/政体词
     (实测: 律令制日本 `d_hitakami` 的持有者政体取不到时写出「日高见公爵」,
@@ -382,7 +423,7 @@ def is_unconditional(key, cfg=None):
     if not e:
         return False
     return not any(e.get(k) for k in (
-        "governments", "name_lists", "heritages", "faiths", "religions",
+        "governments", "name_lists", "heritages", "faiths", "rites", "religions",
         "titles", "obligation_flags", "rules"))
 
 
