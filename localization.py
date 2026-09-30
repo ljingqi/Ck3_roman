@@ -107,11 +107,42 @@ def resolve_refs(text, table, depth=4):
 
 
 def clean_loc_value(raw, table):
-    """YML 值 → 干净中文 (去格式码 + 解 $ref$ + 去空白)。"""
-    v = strip_ck3_format(raw or "")
+    """YML 值 → 干净中文 (概念引用换算 + 去格式码 + 解 $ref$ + 去空白)。"""
+    v = strip_ck3_format(_sub_concepts(raw or "", table))
     if "$" in v:
         v = resolve_refs(v, table)
     return v.strip()
+
+
+#: 概念引用 `[concept|E]` (小写开头的键名; 角色/地名访问器是大写开头, 不受影响)
+_CONCEPT_REF_RE = re.compile(r"\[([a-z][a-z0-9_]*)(?:\|[A-Za-z0-9_]*)?\]")
+#: 带内联中文名的概念引用 `[Concept('great_project','集体礼仪皈依')|E]` —— 直接用内联名
+_CONCEPT_INLINE_RE = re.compile(
+    r"\[Concept\('([A-Za-z0-9_]+)','([^']*)'\)(?:\|[A-Za-z0-9_]*)?\]")
+
+
+def _sub_concepts(text, table):
+    """`[concept|E]` → 该概念的**中文名** (`game_concept_<key>`)。
+
+    v86: 1.20 的教会/礼仪文案大量用概念引用 (如
+    `catalyst_the_christian_church_clerical_region_created_desc` =
+    「创建新[clerical_region|E]」)。旧稿在建表时把整段剥掉 (见
+    `strip_ck3_format` 的 `_DYN_RE`), 于是渲染出「创建新。」这类残句。
+    取不到概念名时保持原样, 随后仍由 `strip_ck3_format` 剥除 (与旧行为一致)。"""
+    if not text or "[" not in text:
+        return text
+    if "Concept(" in text:
+        text = _CONCEPT_INLINE_RE.sub(lambda m: m.group(2) or m.group(1), text)
+    if not table:
+        return text
+
+    def repl(m):
+        v = table.get("game_concept_" + m.group(1))
+        if isinstance(v, str) and v and not v.startswith(("$", "[")):
+            return v
+        return m.group(0)
+
+    return _CONCEPT_REF_RE.sub(repl, text)
 
 
 def relation_template(raw):

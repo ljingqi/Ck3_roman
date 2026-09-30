@@ -1910,6 +1910,35 @@ def _article_facts(facts, cache, key, section=None):
         # v27: 主角档案已在共享前缀
         arts = facts.get("family_artifacts") or []
         _set_block(blocks, "传家重宝", "\n\n".join(arts))
+    elif key == "liyi":
+        # v86《礼仪志·仪轨与教化》: 传主所受之礼与个人教义 (十年 + 终传都出)
+        _pf = facts.get("rite_profile") or []
+        if section and "lead" not in str(section):
+            pass
+        prof = list(_pf)
+        hist = list(facts.get("rite_history") or [])
+        pt = list(facts.get("personal_tenets") or [])
+        sites = list(facts.get("holy_sites") or [])
+        if str(section or "").startswith("mid"):
+            # 纪事: 教义分档/热度/圣所已在开篇, 此处给沿革与圣所细节
+            _set_block(blocks, "礼仪沿革", "\n".join(hist) if hist else "")
+            _set_block(blocks, "圣所与圣髑", "\n".join(sites) if sites else "")
+        else:
+            _set_block(blocks, "礼仪档案", "\n".join(prof) if prof else "")
+            if pt:
+                _set_block(blocks, "个人教义始奉", "\n".join(pt))
+            # 开篇给圣所清单的前半, 纪事给全部 (与阴私录的开篇/纪事分片同式)
+            if sites:
+                _set_block(blocks, "圣所与圣髑", "\n".join(sites[:4]))
+            if hist:
+                _set_block(blocks, "礼仪沿革", "\n".join(hist))
+    elif key == "jiaohui":
+        # v86《教会志·教廷与分裂》(仅终传): 教廷态势与催化剂流水
+        cs = list(facts.get("church_state") or [])
+        if str(section or "").startswith("mid"):
+            _set_block(blocks, "教廷大事", "\n".join(cs) if cs else "")
+        else:
+            _set_block(blocks, "教廷之势", "\n".join(cs) if cs else "")
     elif key == "secrets":
         # v28《阴私录·隐事秘辛》: 主角隐事归开篇, 家人近臣隐事与把柄归纪事
         sec = facts.get("secrets") or {}
@@ -3405,6 +3434,27 @@ def build_articles(facts, cache, cfg):
             # 年份由事实层的「N年见于记载」给足。
             "focus": "写隐事的揭底：何事、涉及何人、事在何年、有谁知情",
             "sections": mk_sections("secrets")})
+    # v86 (用户 2026-09-30 拍板): 十年传记与终传都出《礼仪志》(传主所奉礼仪 +
+    # 个人教义转变 + 礼仪教义/热度 + 圣所圣髑); 《教会志》只在终传出。
+    if facts.get("rite") or facts.get("rite_profile"):
+        # 线序: 紧跟《家室列传》(及其后的恩怨录/宝物志), 在《历代记》之前
+        _anchor = 0
+        for _i, _a in enumerate(articles):
+            if _a.get("key") in ("jiashi", "feuds", "artifacts"):
+                _anchor = _i + 1
+        articles.insert(_anchor, {"key": "liyi", "title": "礼仪志·仪轨与教化",
+                                  "subject": None,
+                                  "theme": "传主所受之礼与个人教义的演变",
+                                  "focus": "写礼仪的沿革与仪轨：受礼、改礼、教义分档、"
+                                           "圣所与龛中圣髑",
+                                  "sections": mk_sections("liyi")})
+    if _final and (facts.get("church_state") or []):
+        articles.append({"key": "jiaohui", "title": "教会志·教廷与分裂",
+                         "subject": None,
+                         "theme": "教廷的格局与大事",
+                         "focus": "写当今之局、众望所归、主流与竞争之礼、"
+                                  "教廷各方立场与历年大事",
+                         "sections": mk_sections("jiaohui")})
     return articles
 
 
