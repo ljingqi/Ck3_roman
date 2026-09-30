@@ -6,7 +6,7 @@ style/cache_lib/localization/llm/flavorization 取到临时目录，临时替换
 跑 tools/tests/snap.py 落一份快照，再原样恢复工作树（含未提交改动）。
 
 用法：
-    & tools\\tools\\py.ps1 tools\\snap_at_head.py <家族> <玩家id> <as_of> [十年] [输出名]
+    & tools\\py.ps1 tools\\tests\\snap_at_head.py <家族> <玩家id> <as_of> [十年] [输出名]
     输出落在 output/<家族>/data/<输出名>.json（默认 snap_head_<as_of>.json）
 """
 import os

@@ -2,7 +2,7 @@
 """facts 快照（提速基建）：载一次熔件，把「核对所需的一切」落成小 JSON。
 
 用法：
-    & tools\\tools\\py.ps1 tools\\tests\\snap.py <家族文件夹> <玩家id> <as_of> [十年序号] [--assert] [--pin-last-date]
+    & tools\\py.ps1 tools\\tests\\snap.py <家族文件夹> <玩家id> <as_of> [十年序号] [--assert] [--pin-last-date]
     ｜ as_of 传 final 表示终传/在世传（as_of=None）
     ｜ --assert 顺手跑 tools/tests/verify_fast.py — 一次熔件加载同时拿到快照与回归结论，
       省掉「为看一眼结果再整载一次」的反覆（本会话最大的时间浪费）

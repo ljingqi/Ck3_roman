@@ -2,7 +2,7 @@
 """v66 回填：把头衔**动态名逐档沿革**补进既有玩家缓存（不重熔）。
 
 用法：
-    & tools\tools\\py.ps1 tools\\backfill_title_dyn_names.py [家族 [玩家id]] [--dry] [--check]
+    & tools\\py.ps1 tools\\backfill_title_dyn_names.py [家族 [玩家id]] [--dry] [--check]
 
     家族缺省 = output/ 下全部战役文件夹；玩家 id 缺省 = 该文件夹全部 player_*.json。
     --dry    只报告，不写盘

@@ -10,7 +10,7 @@
 本脚本按熔件补齐该键（只补这一个键，其余缓存字段一概不动）。
 
 用法：
-    & tools\tools\\py.ps1 tools\\refresh_matrilineal.py <家族文件夹> <玩家id>
+    & tools\\py.ps1 tools\\refresh_matrilineal.py <家族文件夹> <玩家id>
 
 做法（省时口径）：从最新熔件**逆序**回溯逐档闩存（key = "<小id>><大id>"，值为
 首次见到的档期）；连续 N 档一无所获即停（N 默认 2 —— 关系条目自入库后长期驻留，

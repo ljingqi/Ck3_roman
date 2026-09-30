@@ -2,7 +2,7 @@
 """只重建**一个**战役文件夹的缓存（tools/rebuild_folder.py）
 
 用法：
-    & tools\tools\\py.ps1 tools\\rebuild_folder.py 马克龙 [玩家id]
+    & tools\\py.ps1 tools\\rebuild_folder.py 马克龙 [玩家id]
 
 不传玩家 id 时重建该文件夹下全部 `player_*.json`（斯卡利茨三传主各一份）。
 

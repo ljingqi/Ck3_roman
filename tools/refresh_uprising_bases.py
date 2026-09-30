@@ -9,7 +9,7 @@
 其余缓存字段一概不动。
 
 用法：
-    & tools\tools\\py.ps1 tools\\refresh_uprising_bases.py <家族文件夹> <玩家id> [--all]
+    & tools\\py.ps1 tools\\refresh_uprising_bases.py <家族文件夹> <玩家id> [--all]
 
 做法（省时口径）：不解析 JSON —— 直接在熔件原文里找 `"<title_id>":{"key":"x_script_`
 片段并截取后续 ~700 字符，正则取 holder/capital/date/name；一份熔件读一遍即可，

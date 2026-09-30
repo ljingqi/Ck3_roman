@@ -7,7 +7,7 @@
 本脚本按熔件补齐该键（只补这一个键，其余缓存字段一概不动）。
 
 用法：
-    & tools\tools\\py.ps1 tools\\refresh_court_offices.py <家族文件夹> <玩家id>
+    & tools\\py.ps1 tools\\refresh_court_offices.py <家族文件夹> <玩家id>
 
 做法（省时口径）：从最新熔件**逆序**回溯，逐档记录该玩家获授的职位集合；
 遇到「已找到过职位、且连续 N 档为空」即停（更早的档不可能再出现职位，

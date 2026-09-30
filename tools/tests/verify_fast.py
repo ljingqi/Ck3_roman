@@ -2,7 +2,7 @@
 """快速回归（提速基建）：无熔件、秒级；纯函数 + facts 快照。
 
 用法：
-    & tools\\tools\\py.ps1 tools\\verify_fast.py [快照路径]
+    & tools\\py.ps1 tools\\tests\\verify_fast.py [快照路径]
     ｜ 缺省自动取 output/周氏/data/snap_38673_889.1.1_d2.json
 
 分层原则（本会话教训）：

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """临时改写玩家缓存的 last_date（重跑旧十年传时复现原始提示词面）。
 
-用法：& tools\tools\\py.ps1 tools\\set_last_date.py 马克龙 38677 878.1.1
+用法：& tools\\py.ps1 tools\\set_last_date.py 马克龙 38677 878.1.1
      ｜ 用后务必改回真实末档（重建缓存会写回真值）：
         & tools\\py.ps1 tools\\set_last_date.py 马克龙 38677 879.1.1
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """v66 性能实测：用地名取值口对 build_facts 的耗时影响（D2-b 评估用）。
 
-用法: & tools\\tools\\py.ps1 tools\\bench_v66_names.py [家族] [玩家id] [as_of] [轮数]
+用法: & tools\\py.ps1 tools\\tests\\bench_v66_names.py [家族] [玩家id] [as_of] [轮数]
 
 口径：同一份熔件/缓存下连跑 N 轮 `build_facts`，报最短/中位耗时。熔件只载一次
 （`load_melt` 的记忆化），故数字只反映**事实构建**这一侧的差异；用地名查表

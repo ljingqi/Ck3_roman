@@ -8,8 +8,8 @@
 #   cmd + chcp 65001 **无效**（chcp 只改控制台代码页，不改管道下 Python 的编码）。
 #
 # 用法：在命令开头点源本文件，或直接用 tools\py.ps1 跑 Python：
-#   . tools\tools\enc.ps1 ; python localization.py mods
-#   & tools\tools\py.ps1 localization.py mods
+#   . tools\enc.ps1 ; python localization.py mods
+#   & tools\py.ps1 localization.py mods
 #
 # 注意：只在**开发/工具链**侧设置。产品入口（启动监控.bat，chcp 936）保持 GBK 输出，
 # 见技能 utf8-gbk-encoding —— 不要把 PYTHONIOENCODING 写死进项目代码。
