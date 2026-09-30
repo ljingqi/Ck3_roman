@@ -1912,26 +1912,23 @@ def _article_facts(facts, cache, key, section=None):
         _set_block(blocks, "传家重宝", "\n\n".join(arts))
     elif key == "liyi":
         # v86《礼仪志·仪轨与教化》: 传主所受之礼与个人教义 (十年 + 终传都出)
-        _pf = facts.get("rite_profile") or []
-        if section and "lead" not in str(section):
-            pass
-        prof = list(_pf)
+        # v87 (问题2/3/7 + 判定 bug 修复): 板块判定改用 `_sec_key(section)` ——
+        # `section` 是 **dict**, 旧稿 `str(section).startswith("mid")` 恒假, 于是
+        # 开篇与纪事下发同一批块 (实测请求面: 纪事请求带着开篇的礼仪档案与圣所);
+        # 同时删去「圣所与圣髑」块, 纪事改发「礼仪沿革 + 允许/禁止教义逐条点名」。
+        prof = list(facts.get("rite_profile") or [])
         hist = list(facts.get("rite_history") or [])
         pt = list(facts.get("personal_tenets") or [])
-        sites = list(facts.get("holy_sites") or [])
-        if str(section or "").startswith("mid"):
-            # 纪事: 教义分档/热度/圣所已在开篇, 此处给沿革与圣所细节
-            _set_block(blocks, "礼仪沿革", "\n".join(hist) if hist else "")
-            _set_block(blocks, "圣所与圣髑", "\n".join(sites) if sites else "")
-        else:
+        tns = list(facts.get("rite_tenets") or [])
+        if _sec_key(section) == "lead":
             _set_block(blocks, "礼仪档案", "\n".join(prof) if prof else "")
             if pt:
-                _set_block(blocks, "个人教义始奉", "\n".join(pt))
-            # 开篇给圣所清单的前半, 纪事给全部 (与阴私录的开篇/纪事分片同式)
-            if sites:
-                _set_block(blocks, "圣所与圣髑", "\n".join(sites[:4]))
+                _set_block(blocks, "个人教义沿革", "\n".join(pt))
             if hist:
                 _set_block(blocks, "礼仪沿革", "\n".join(hist))
+        else:
+            _set_block(blocks, "礼仪沿革", "\n".join(hist) if hist else "")
+            _set_block(blocks, "礼仪教义", "\n".join(tns) if tns else "")
     elif key == "jiaohui":
         # v86《教会志·教廷与分裂》(仅终传): 教廷态势与催化剂流水
         cs = list(facts.get("church_state") or [])
@@ -3435,18 +3432,20 @@ def build_articles(facts, cache, cfg):
             "focus": "写隐事的揭底：何事、涉及何人、事在何年、有谁知情",
             "sections": mk_sections("secrets")})
     # v86 (用户 2026-09-30 拍板): 十年传记与终传都出《礼仪志》(传主所奉礼仪 +
-    # 个人教义转变 + 礼仪教义/热度 + 圣所圣髑); 《教会志》只在终传出。
+    # 个人教义转变 + 礼仪教义/热度); 《教会志》只在终传出。
+    # v87 (问题3/7, 用户 2026-09-30 拍板): 删圣所圣髑与教义计数行, 纪事改写
+    # 「该礼仪允许什么、禁止什么」(逐条点名)。
     if facts.get("rite") or facts.get("rite_profile"):
         # 线序: 紧跟《家室列传》(及其后的恩怨录/宝物志), 在《历代记》之前
         _anchor = 0
         for _i, _a in enumerate(articles):
             if _a.get("key") in ("jiashi", "feuds", "artifacts"):
                 _anchor = _i + 1
-        articles.insert(_anchor, {"key": "liyi", "title": "礼仪志·仪轨与教化",
+        articles.insert(_anchor, {"key": "liyi", "title": "礼仪志·礼仪与教义",
                                   "subject": None,
                                   "theme": "传主所受之礼与个人教义的演变",
-                                  "focus": "写礼仪的沿革与仪轨：受礼、改礼、教义分档、"
-                                           "圣所与龛中圣髑",
+                                  "focus": "写礼仪的沿革与教义：受礼、改礼、"
+                                           "个人教义之更替、允许与禁止的教义",
                                   "sections": mk_sections("liyi")})
     if _final and (facts.get("church_state") or []):
         articles.append({"key": "jiaohui", "title": "教会志·教廷与分裂",

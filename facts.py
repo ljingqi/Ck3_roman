@@ -11131,11 +11131,8 @@ class Facts:
     #   · 教义名键    `<教义键>_name` (如 tenet_be_fruitful_and_multiply_name)
     #   · 个人教义    characters.<id>.playable_data.tenets  (+ 逐档差分沿革)
     #   · 灵性满足    playable_data.current_spiritual_fulfillment (普通浮点, 不下发数字)
-    #   · 圣所与圣髑  religion.holy_sites[<id>] + faiths.database[<fid>].holy_sites/eminent
     #   · 教会情境    situation_manager / situation_sub_region_manager / …participant_group_manager
 
-    _TENET_STATUS_ZH = {"core": "核心", "permitted": "允许", "prohibited": "禁止",
-                        "known": "已知", "unknown": "未知"}
     _CHURCH_GROUP_ZH = {
         "christian_clerical_main_power_rulers": "神职主盟",
         "christian_regular_main_power_rulers": "世俗主盟",
@@ -11203,8 +11200,16 @@ class Facts:
         return [str(x) for x in (rec.get("personal_tenets") or [])]
 
     def rite_profile_lines(self, cid, date=None):
-        """礼仪档案句 (《礼仪志》开篇): 所奉礼仪 / 礼仪之教 / 源流 / 首座 /
-        教义分档与核心 / 礼仪之热 / 灵性满足 / 个人教义。"""
+        """礼仪档案句 (《礼仪志》开篇): 所奉礼仪 / 源流 / 礼仪领袖 /
+        核心教义 / 宗教热情 / 灵性满足 / 个人教义。
+
+        v87 (问题2/7/8, 用户 2026-09-30 拍板):
+          · 删 `礼仪之教：{desc}` —— 礼仪描述是**模板文案** (自定义礼仪越来越多,
+            用的都是默认描述), 无信息量;
+          · 删 `礼仪教义：核心3条、允许18条…` 的**计数**行 (计数不是内容);
+            允许/禁止的**具体教义**改由 `rite_tenet_lines` 逐条点名, 随纪事下发;
+          · `本礼之首` → **`礼仪领袖`** (游戏概念原词, faith_view_l_simp_chinese.yml:186);
+          · `礼仪之热` → **`宗教热情`** (游戏 `FERVOR_TT` 原词, faith_view_l:64)。"""
         rid = self._rite_id(cid, date)
         if rid is None:
             return []
@@ -11214,9 +11219,6 @@ class Facts:
         nm = self.rite_name(cid, date)
         if nm:
             rows.append(f"所奉礼仪：{nm}。")
-        desc = str(d.get("desc") or "").strip()
-        if desc:
-            rows.append(f"礼仪之教：{desc}")
         origin = ent.get("origin_rite")
         if isinstance(origin, int) and origin != rid:
             onm = cl.rite_name_of(self.melt, origin)
@@ -11224,16 +11226,9 @@ class Facts:
                 rows.append(f"此礼出自{onm}。")
         head = cl.head_of_rite(self.melt, rid)
         if head is not None:
-            rows.append("本礼之首：" + ("本人。" if head == cid
+            rows.append("礼仪领袖：" + ("本人。" if head == cid
                                        else f"{self.event_name(head, date=date)}。"))
         st = self.rite_tenets(rid)
-        bits = []
-        for k in ("core", "permitted", "known", "prohibited", "unknown"):
-            ks = st.get(k) or []
-            if ks:
-                bits.append(f"{self._TENET_STATUS_ZH.get(k, k)}{len(ks)}条")
-        if bits:
-            rows.append("礼仪教义：" + "、".join(bits) + "。")
         core = st.get("core") or []
         cnames = [self.tenet_name(k, rid) for k in core]
         cnames = [n for n in cnames if n]
@@ -11241,7 +11236,7 @@ class Facts:
             rows.append("核心教义：" + "、".join("〈%s〉" % n for n in cnames) + "。")
         fv = d.get("fervor")
         if isinstance(fv, (int, float)):
-            rows.append(f"礼仪之热：{_fervor_word(float(fv))}。")
+            rows.append(f"宗教热情：{_fervor_word(float(fv))}。")
         sf = self._spiritual_fulfillment(cid, date)
         if sf is not None:
             rows.append(f"灵性满足：{_sf_word(sf)}。")
@@ -11249,6 +11244,23 @@ class Facts:
         if pt:
             names = [self.tenet_name(k, rid) or k for k in pt]
             rows.append("个人教义：" + "、".join("〈%s〉" % n for n in names) + "。")
+        return rows
+
+    def rite_tenet_lines(self, cid, date=None):
+        """礼仪的**允许/禁止教义**逐条点名 (《礼仪志》纪事, v87 问题7/P5)。
+
+        用户 2026-09-30 拍板: 删掉「核心3条、允许18条」这类计数行, 改为把该礼仪
+        **允许什么、禁止什么**写出来 (逐条点名) —— 这是《礼仪志》纪事板块的取材。"""
+        rid = self._rite_id(cid, date)
+        if rid is None:
+            return []
+        st = self.rite_tenets(rid)
+        rows = []
+        for key, label in (("permitted", "允许教义"), ("prohibited", "禁止教义")):
+            names = [self.tenet_name(k, rid) for k in (st.get(key) or [])]
+            names = [n for n in names if n]
+            if names:
+                rows.append(label + "：" + "、".join("〈%s〉" % n for n in names) + "。")
         return rows
 
     def rite_history_lines(self, cid, date=None):
@@ -11305,38 +11317,6 @@ class Facts:
             rows.append(f"自{int(str(h['from']).split('.')[0])}年起，"
                         f"奉〈{nm}〉为个人教义。")
         return rows if len(rows) >= 1 else []
-
-    def holy_site_lines(self, cid, date=None):
-        """圣所与圣髑 (《礼仪志》): 本信仰的圣地/大圣地 + 入龛圣髑件数与珍稀档。"""
-        fid = self._faith_id(cid, date)
-        if fid is None:
-            return []
-        fe = cl.faith_entry(self.melt, fid)
-        sites = fe.get("holy_sites") or []
-        eminent = set(fe.get("eminent_holy_sites") or [])
-        db = ((self.melt.get("religion") or {}).get("holy_sites") or {})
-        rows = []
-        for sid in (sites if isinstance(sites, list) else []):
-            e = db.get(str(sid))
-            if not isinstance(e, dict):
-                continue
-            stype = str(e.get("holy_site_type") or "")
-            nm = (L.loc(self.table, f"holy_site_{stype}_name")
-                  or L.loc(self.table, f"holy_site_{stype}") or "")
-            if not nm or nm.startswith("holy_site_"):
-                continue
-            rank = "大圣地" if sid in eminent else "圣地"
-            inv = e.get("inventory") or {}
-            eq = inv.get("equipped") or {}
-            n = len([k for k in eq if str(k).startswith("holy_relic")])
-            rar = e.get("total_artifact_rarity")
-            tail = ""
-            if n:
-                tail = f"，龛中供奉圣髑{n}件"
-                if isinstance(rar, (int, float)):
-                    tail += f"（珍稀{_rarity_word(float(rar))}）"
-            rows.append(f"{rank}{nm}{tail}。")
-        return rows
 
     def _church_situation(self):
         """基督教教会情境的 (id, 情境, 子区) —— 1.20 专有; 无则 (None, {}, {})。"""
@@ -15247,17 +15227,6 @@ def _sf_word(v):
     if v >= 0:
         return "微薄"
     return "亏欠"
-
-
-def _rarity_word(v):
-    """圣髑珍稀度 (holy_site.total_artifact_rarity) → 档位词。"""
-    if v >= 8:
-        return "卓绝"
-    if v >= 5:
-        return "上品"
-    if v >= 3:
-        return "中品"
-    return "寻常"
 
 
 def _progress_word(ratio):
@@ -22329,11 +22298,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "rite": f.rite_name(cache.get("player_id"), as_of),
         "rite_profile": f.rite_profile_lines(cache.get("player_id"), as_of),
         "rite_history": f.rite_history_lines(cache.get("player_id"), as_of),
+        # v87: 允许/禁止教义逐条点名 (《礼仪志》纪事; 取代 v86 的计数行与圣所块)
+        "rite_tenets": f.rite_tenet_lines(cache.get("player_id"), as_of),
         "personal_tenets": f.personal_tenet_lines(cache.get("player_id"), as_of),
-        "spiritual_fulfillment": (
-            f"灵性满足：{_sf_word(f._spiritual_fulfillment(cache.get('player_id'), as_of))}。"
-            if f._spiritual_fulfillment(cache.get("player_id"), as_of) is not None else ""),
-        "holy_sites": f.holy_site_lines(cache.get("player_id"), as_of),
         "church_state": f.church_state_lines(),
         # v13: Facts 实例引用 (biography 的关系缘由渲染等需要实例方法)
         "_facts": f,
