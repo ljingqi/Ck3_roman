@@ -1752,9 +1752,10 @@ def step_watch(cfg, continue_mode=False):
     # 自检之后, 这些存档的 mtime 早于基准, 会被永久跳过。
     baseline = max((s["mtime"] for s in scan_saves(save_dir)), default=0)
     _cleanup_tmp_melts(cfg)
-    # v85: 启动自检 —— 指纹不符即重建一次 (新用户首次运行必然缺表, 先建好再进循环,
-    # 免得首份传记生成到一半才停下来建表)。
-    _ensure_source_tables(cfg)
+    # v86 (用户 2026-09-30 拍板「启动完全不检查」): 启动路径**不再**做本地化自检,
+    # 也不再按指纹重建任何表 —— 建表一律手动 `重建对照表.bat` / build-tables。
+    # 表过期时惰性载入只打印一行提示 (见 localization.load_localization_table)。
+    # 基准时间的取值顺序保持不变: 先取基准再干别的, 免得启动期间写出的新档被漏掉。
     # v44 (问题5): 冷熔件 gzip 归档在后台进行 (启动跑一遍, 之后每 10 分钟一轮)
     # v53 (问题5): continue 有爆发式补录, 归档线程让路 —— 等 _catchup 完成后再启动,
     # 避免 rakaly/load_melt 与 xz preset 6 抢单核和磁盘。watch 无爆发补录, 仍启动即归档。
@@ -2410,16 +2411,164 @@ def _log_loc_source(cfg):
 
 
 def _ensure_source_tables(cfg):
-    """v85: 启动自检 —— 校验三张派生表的来源指纹, 缺失/过期/变化即自动重建一次。
+    """【v86 起不再由启动路径调用】指纹自检 + 按需重建 (保留给手动/诊断使用)。
 
-    调用点: watch / continue / scan 的启动路径 (两个启动器 .bat 都走这里)。
-    重建失败或游戏目录不可用时不阻断启动, localization 侧会保留旧表。"""
+    v85 曾把它挂在 watch / continue / scan 的启动上; 用户 2026-09-30 拍板
+    「启动完全不检查」 ⇒ 启动路径零自检, 建表一律走 `pipeline.py build-tables`
+    (双击 `重建对照表.bat`)。此函数保留: 诊断时可用, 也供 build-tables 复用其
+    逐表报告口径。"""
     try:
         import localization as loc
         return loc.ensure_source_tables(cfg)
     except Exception as e:
         llm.log(f"本地化自检失败 ({e}) —— 沿用现有表, 程序继续。")
         return None
+
+
+# ---------------------------------------------------------------------------
+# v86: 手动建表 (用户 2026-09-30 拍板 —— 启动不再自检/重建)
+# ---------------------------------------------------------------------------
+# 表分两类:
+#   · 派生表 (游戏/Mod 文件 → data/*.json): 本命令全量 force 重建;
+#   · 手工表 (人工维护, 无构建器, 删了就没了): 只做存在性校验并提示。
+# force 的语义: **一律落盘**, 只拒绝空结果 —— 手动命令就是「我确认要重建」,
+# Mod 停用导致条数变少也必须写下去 (旧稿的「重建结果偏小就保留旧表」正是
+# 1.20 升级后每次启动都白跑一遍建表的原因)。旧表条数仅作对照打印。
+_MANUAL_TABLES = (
+    ("宗族名(手工维护·无构建器)", "patronym_rules.json"),
+)
+
+
+def _table_builders():
+    """[(显示名, 旧表路径, 构建, 落盘)] —— 全部游戏/Mod 派生表。"""
+    import localization as loc
+    import flavorization as fl
+    return [
+        ("本地化总表", loc._localization_path, loc.build_localization_table,
+         lambda cfg, d: loc.save_localization_table(
+             cfg, d[0] if isinstance(d, tuple) else d,
+             d[1] if isinstance(d, tuple) else None,
+             fingerprint=loc.source_fingerprint(cfg))),
+        ("特质显示名表", loc._trait_names_path, loc.build_trait_names, loc.save_trait_names),
+        ("特质轨道表", loc._trait_tracks_path, loc.build_trait_tracks, loc.save_trait_tracks),
+        ("宫廷职位变体", loc._court_positions_path, loc.build_court_positions,
+         loc.save_court_positions),
+        ("议会任务→席位", loc._council_tasks_path, loc.build_council_tasks,
+         loc.save_council_tasks),
+        ("议会席位名链", loc._council_names_path, loc.build_council_names,
+         loc.save_council_names),
+        ("主教称谓臂表", loc._bishop_titles_path, loc.build_bishop_titles,
+         loc.save_bishop_titles),
+        ("宗族与家族名", loc._dynasties_path, loc.build_dynasty_table,
+         loc.save_dynasty_table),
+        ("牵制类型", loc._hook_types_path, loc.build_hook_types, loc.save_hook_types),
+        ("教义/信条参数", loc._doctrine_params_path, loc.build_doctrine_parameters,
+         loc.save_doctrine_parameters),
+        ("省份→伯爵领", loc._province_map_path, loc.build_province_map,
+         loc.save_province_map),
+        ("简称头衔", loc._short_titles_path, loc.build_short_titles, loc.save_short_titles),
+        ("币种档位", loc._currency_levels_path, loc.build_currency_levels,
+         loc.save_currency_levels),
+        ("头衔风味规则", fl._path, fl.build_flavorization, fl.save_flavorization),
+    ]
+
+
+def _count_keys(obj):
+    """表对象 → 条数 (取主容器; 拿不到给 -1)。
+
+    包装型表 ({schema, entries, <主容器>}) 按主容器计 —— 直接取「最大容器」会被
+    `categories` / `fingerprint` 这类附属容器带偏, 直接 len() 又会把 province_map
+    的 {省: {county, barony}} 数成主容器条数。"""
+    _PRIMARY = ("table", "entries", "traits", "tracks", "arms", "positions", "tasks",
+                "hook_types", "doctrines", "by_parameter", "map", "titles",
+                "dynasties", "houses", "rules", "positions")
+    if isinstance(obj, tuple):
+        obj = obj[0] if obj else {}
+    if isinstance(obj, dict):
+        for k in _PRIMARY:
+            v = obj.get(k)
+            if isinstance(v, int):
+                return v
+            if isinstance(v, (dict, list)):
+                return len(v)
+        if "schema" in obj:                      # 包装型但主容器名不在表内 → 取最大
+            best = -1
+            for v in obj.values():
+                if isinstance(v, (dict, list)) and len(v) > best:
+                    best = len(v)
+            return best if best >= 0 else len(obj)
+        return len(obj)                          # 纯映射 (如 province_map 的 map)
+    if isinstance(obj, (list, set)):
+        return len(obj)
+    return -1
+
+
+def step_build_tables(cfg, only=None):
+    """v86: 手动重建全部游戏/Mod 派生表 (force 落盘)。
+
+    用法:
+      python pipeline.py build-tables              # 全部
+      python pipeline.py build-tables --only=loc,traits
+    """
+    import json as _json
+    only = set(only or ())
+    rows = []
+    t_all = time.time()
+    print("游戏目录:", cfg.get("ck3_game_dir") or "(自动发现)")
+    print("建表中…… 每张表都会落盘 (手动命令一律 force)。\n")
+    for name, path_fn, build, save in _table_builders():
+        try:
+            path = path_fn(cfg)
+        except Exception:
+            path = ""
+        key = os.path.splitext(os.path.basename(path or ""))[0]
+        if only and key not in only and name not in only:
+            continue
+        old_n = -1
+        if path and os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as fp:
+                    old_n = _count_keys(_json.load(fp))
+            except Exception:
+                old_n = -1
+        t0 = time.time()
+        try:
+            data = build(cfg)
+            if isinstance(data, tuple):
+                new_n = _count_keys(data[0])
+            else:
+                new_n = _count_keys(data)
+            if new_n == 0:
+                rows.append((name, old_n, 0, time.time() - t0, "空结果, 未落盘"))
+                print(f"  [跳过] {name}: 重建结果为空 (游戏目录不可用?), 保留旧表")
+                continue
+            save(cfg, data)
+            note = ""
+            if old_n >= 0 and new_n < old_n:
+                note = f"  (少于旧表 {old_n - new_n} 条: 多为 Mod 停用, 已按手动口径落盘)"
+            rows.append((name, old_n, new_n, time.time() - t0, note))
+            print(f"  [完成] {name}: {old_n if old_n >= 0 else '—'} → {new_n} 条 "
+                  f"({time.time() - t0:.1f} 秒){note}")
+        except Exception as e:
+            rows.append((name, old_n, -1, time.time() - t0, str(e)))
+            print(f"  [失败] {name}: {type(e).__name__}: {e}")
+    # 手工表: 只校验存在性
+    for name, fn in _MANUAL_TABLES:
+        p = os.path.join(cfg.get("data_dir", ""), fn)
+        if os.path.isfile(p):
+            print(f"  [手工] {name}: 在 ({p})")
+        else:
+            print(f"  [手工] {name}: **缺失** —— 该表无构建器, 需从版本库取回"
+                  f" (git checkout HEAD -- data/{fn})")
+    secs = time.time() - t_all
+    ok = sum(1 for r in rows if r[2] >= 0)
+    print(f"\n建表完成: {ok}/{len(rows)} 张表落盘, 合计 {secs:.1f} 秒。")
+    try:
+        import localization as loc
+        loc.inspect_source_tables(cfg)
+    except Exception:
+        pass
+    return rows
 
 
 def main():
@@ -2432,8 +2581,14 @@ def main():
         cfg["poll_interval_seconds"] = int(sys.argv[2]) if len(sys.argv) > 2 else 60
         step_watch(cfg, continue_mode=True)
     elif cmd == "scan":
-        _ensure_source_tables(cfg)          # v85: 启动自检 (指纹不符即重建一次)
+        # v86: 启动零自检 (用户 2026-09-30 拍板) —— 表的事一律手动
         step_scan(cfg)
+    elif cmd == "build-tables":
+        only = set()
+        for a in sys.argv[2:]:
+            if a.startswith("--only="):
+                only = {x.strip() for x in a.split("=", 1)[1].split(",") if x.strip()}
+        step_build_tables(cfg, only=only)
     elif cmd == "status":
         _log_loc_source(cfg)
         step_status(cfg)

@@ -472,10 +472,15 @@ def load_localization_table(cfg, force=False, report=None):
             _fill_report(report, "ok", len(cached), "来源指纹一致")
             return cached
         why = "旧版表无来源指纹" if not old_fp else "启用 Mod / 游戏本地化已变化"
-        # v85: 建表要遍历游戏 + 各 Mod 的全部 yml (本机实测数秒, 冷盘或 Mod 很多
-        # 时更久), 先说清在干什么, 用户才不会以为程序卡死 (启动自检与惰性载入两
-        # 条路径都会走到这行)。
-        llm.log(f"本地化表需重建 ({why}) —— 建表期间请勿关闭窗口。")
+        # v86 (用户 2026-09-30 拍板「启动完全不检查, 只管读表」): 指纹不符时**不再
+        # 自动重建**, 只用现有表并提示手动建表 —— 游戏升级/Mod 变动后每次启动都
+        # 白跑一遍建表 (还可能被退表保护拒绝落盘) 正是旧口径的痛点。
+        if schema_ok:
+            llm.log(f"本地化表已过期 ({why}) —— 本轮沿用现有表; "
+                    f"要更新请运行 重建对照表.bat (或 python pipeline.py build-tables)。")
+            cached.update(LOC_OVERRIDES)
+            _fill_report(report, "outdated", len(cached), why)
+            return cached
     table, raw_templates = build_localization_table(cfg)
     if not table:
         # 游戏目录不可用 (换机 / 未配置): 保留旧表, 优于空表
@@ -2002,7 +2007,13 @@ def load_trait_tracks(cfg=None, force=False, report=None):
                     _fill_report(report, "ok", len(cached.get("tracks") or {}),
                                  "来源指纹一致")
                     return cached
+                # v86: 指纹不符只提示, 不自动重建 (建表一律手动 —— 见
+                # load_localization_table 同处注释)
                 why = "启用 Mod / 特质定义已变化"
+                llm.log(f"特质轨道表已过期 ({why}) —— 本轮沿用现有表; "
+                        f"要更新请运行 重建对照表.bat。")
+                _fill_report(report, "outdated", len(cached.get("tracks") or {}), why)
+                return cached
             else:
                 why = "旧版表或文件不可解析"
     llm.log(f"特质轨道表需重建 ({why})。")
@@ -2051,7 +2062,12 @@ def load_trait_names(cfg=None, force=False, report=None):
                     _fill_report(report, "ok", len(cached.get("traits") or {}),
                                  "来源指纹一致")
                     return cached
+                # v86: 指纹不符只提示, 不自动重建 (建表一律手动)
                 why = "启用 Mod / 特质定义已变化"
+                llm.log(f"特质显示名表已过期 ({why}) —— 本轮沿用现有表; "
+                        f"要更新请运行 重建对照表.bat。")
+                _fill_report(report, "outdated", len(cached.get("traits") or {}), why)
+                return cached
             else:
                 why = "旧版表或文件不可解析"
     llm.log(f"特质显示名表需重建 ({why})。")
@@ -2357,6 +2373,7 @@ _SELFCHECK_TEXT = {
     "no-source": "无可用来源, 沿用旧表",
     "missing": "表缺失",
     "stale": "旧版表 (schema 过期)",
+    "outdated": "已过期 (沿用旧表, 请手动建表)",
     "mismatch": "来源指纹不符",
     "error": "表文件不可解析",
 }
