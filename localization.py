@@ -472,8 +472,9 @@ def load_localization_table(cfg, force=False, report=None):
             _fill_report(report, "ok", len(cached), "来源指纹一致")
             return cached
         why = "旧版表无来源指纹" if not old_fp else "启用 Mod / 游戏本地化已变化"
-        # v85: 建表要几十秒到几分钟 (游戏 + 各 Mod 的全部 yml), 先说清在干什么,
-        # 用户才不会以为程序卡死 (启动自检与惰性载入两条路径都会走到这行)。
+        # v85: 建表要遍历游戏 + 各 Mod 的全部 yml (本机实测数秒, 冷盘或 Mod 很多
+        # 时更久), 先说清在干什么, 用户才不会以为程序卡死 (启动自检与惰性载入两
+        # 条路径都会走到这行)。
         llm.log(f"本地化表需重建 ({why}) —— 建表期间请勿关闭窗口。")
     table, raw_templates = build_localization_table(cfg)
     if not table:
@@ -2275,7 +2276,7 @@ def dynasty_table(cfg=None):
 # 2026-09-30 定规: 三张派生表 (本地化 / 特质显示名 / 特质轨道) 不再随仓库发布
 # (见 .gitignore), 于是**新用户首次运行必然缺表**, 老用户勾选/更新 Mod、游戏打
 # 补丁后指纹也会变。原本的重建是**惰性**的 —— 等到首份传记要查名字、查特质才
-# 触发, 于是这几分钟的代价落在「按下启动后什么都不发生」的窗口里, 像是卡死。
+# 触发, 于是这段等待落在「按下启动后什么都不发生」的窗口里, 像是卡死。
 # 现在 watch / continue / scan 启动时先自检一次: 打印本地化来源 (游戏目录 +
 # 启用 Mod 个数 + 来源指纹), 逐张比对表内指纹, 缺失/过期/不符者当场重建一次,
 # 建好即灌进模块单例 (省去后续再解析一遍 35MB 的 localization.json)。
