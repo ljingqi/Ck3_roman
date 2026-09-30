@@ -11187,16 +11187,62 @@ class Facts:
         v = rec.get("spiritual_fulfillment")
         return float(v) if isinstance(v, (int, float)) else None
 
-    def _personal_tenets(self, cid, date=None):
-        """个人教义键列表 (as_of 优先; 无沿革时取现值)。"""
+    def _tenet_change_points(self, cid, date=None):
+        """个人教义的**变更点** [(date, set(教义键))] (v87 问题6)。
+
+        精确来源 = 缓存 `personal_tenets_history` (逐档数组变化点, 见 cache_lib);
+        旧缓存无该字段时按「新增沿革 (`personal_tenet_history`) + 现值数组」**推断**:
+        不在现值里的教义视为**在它之后最近的一条沿革日期放弃** (其后无沿革条目则退用
+        末档日 `cache.last_date`)。返回按日期升序的列表; 无据返回 []。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        hist = [h for h in (rec.get("personal_tenet_history") or []) if h.get("tenet")]
-        if hist:
-            if date:
-                ao = cl.date_key(date)
-                return [str(h["tenet"]) for h in hist
-                        if cl.date_key(h.get("from") or "0.0.0") <= ao]
-            return [str(h["tenet"]) for h in hist]
+        psh = [h for h in (rec.get("personal_tenets_history") or [])
+               if isinstance(h, dict) and h.get("from")
+               and isinstance(h.get("tenets"), list)]
+        ao = cl.date_key(date) if date else None
+        if psh:
+            out = []
+            for h in psh:
+                if ao is not None and cl.date_key(h["from"]) > ao:
+                    break
+                out.append((str(h["from"]), {str(t) for t in h["tenets"]}))
+            return out
+        hist = [h for h in (rec.get("personal_tenet_history") or [])
+                if isinstance(h, dict) and h.get("tenet") and h.get("from")]
+        if not hist:
+            return []
+        final = {str(x) for x in (rec.get("personal_tenets") or [])}
+        by_date = {}
+        for h in hist:
+            by_date.setdefault(str(h["from"]), []).append(str(h["tenet"]))
+        dates = sorted(by_date, key=cl.date_key)
+        rows, running = [], set()
+        for i, d in enumerate(dates):
+            if ao is not None and cl.date_key(d) > ao:
+                break
+            add = set(by_date[d])
+            # 本次「放弃」= 此前持有、而现值里没有的教义 (旧稿只记新增, 故此处推断)
+            drop = {t for t in running if t not in final}
+            running = (running - drop) | add
+            rows.append((d, set(running)))
+        # 末点之后「只弃不增」的尾巴 (末条沿革里新采纳、却又不在现值中的教义)
+        if ao is None and dates:
+            tail = {t for t in by_date[dates[-1]] if t not in final}
+            end = str(self.cache.get("last_date") or "")
+            if tail and end and cl.date_key(end) > cl.date_key(dates[-1]):
+                rows.append((end, set(running) - tail))
+        return rows
+
+    def _personal_tenets(self, cid, date=None):
+        """该角色在 date **当时所奉**的个人教义键 (v87 问题6)。
+
+        个人教义有槽位上限 (随虔诚等级/特质/宗族 perk 增长, 实测 1–3 条), 故
+        「当时」是一个**集合**; 旧稿返回「沿革里 ≤date 的全部条目」, 把已放弃的
+        教义也当成现奉, 档案行因此写出「个人教义：〈买卖圣职〉、〈战争狂人〉」
+        (实际 871 年起只剩〈战争狂人〉)。"""
+        pts = self._tenet_change_points(cid, date)
+        if pts:
+            return sorted(pts[-1][1])
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         return [str(x) for x in (rec.get("personal_tenets") or [])]
 
     def rite_profile_lines(self, cid, date=None):
@@ -11297,26 +11343,35 @@ class Facts:
         return rows
 
     def personal_tenet_lines(self, cid, date=None):
-        """个人教义的**沿革**句: 逐档差分 (游戏无「何时采信」的记忆),
-        「自869年起奉〈你们要生育繁殖〉为个人教义」。单点/无沿革返回 []。"""
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        hist = [h for h in (rec.get("personal_tenet_history") or [])
-                if h.get("tenet") and h.get("from")]
-        if not hist:
+        """个人教义的**沿革**句: 逐变更点写「始奉 / 放弃 / 改奉」(v87 问题6, 用户拍板)。
+
+        旧稿逐条只写「自N年起，奉〈X〉为个人教义。」—— 沿革被写成并列, 模型照抄成
+        「自868年起，奉〈买卖圣职〉为个人教义。自871年起，奉〈战争狂人〉为个人教义。」
+        (实测 logs/v87_liyi_prompts.txt:618-619), 读成同时供奉两条。现按集合差分:
+          · 只增 → `871年起，奉〈A〉、〈B〉为个人教义。`
+          · 替换 → `871年起，放弃〈A〉，改奉〈B〉为个人教义。`
+          · 只减 → `871年起，不复奉〈A〉为个人教义。`
+        变更点见 `_tenet_change_points` (精确沿革优先, 旧缓存按新增沿革+现值推断)。"""
+        pts = self._tenet_change_points(cid, date)
+        if not pts:
             return []
-        ao = cl.date_key(date) if date else None
-        rows = []
-        for h in hist:
-            dk = cl.date_key(h["from"])
-            if ao is not None and dk > ao:
-                break
-            rid = self._rite_id(cid, date)
-            nm = self.tenet_name(h["tenet"], rid) or ""
-            if not nm:
-                continue
-            rows.append(f"自{int(str(h['from']).split('.')[0])}年起，"
-                        f"奉〈{nm}〉为个人教义。")
-        return rows if len(rows) >= 1 else []
+        rid = self._rite_id(cid, date)
+        rows, prev = [], set()
+        for d, cur in pts:
+            year = int(str(d).split(".")[0])
+            add = [t for t in sorted(cur - prev) if self.tenet_name(t, rid)]
+            drop = [t for t in sorted(prev - cur) if self.tenet_name(t, rid)]
+            _n = lambda ks: "、".join(  # noqa: E731
+                "〈%s〉" % self.tenet_name(k, rid) for k in ks)
+            if add and drop:
+                rows.append(f"{year}年起，放弃{_n(drop)}，"
+                            f"改奉{_n(add)}为个人教义。")
+            elif add:
+                rows.append(f"自{year}年起，奉{_n(add)}为个人教义。")
+            elif drop:
+                rows.append(f"{year}年起，不复奉{_n(drop)}为个人教义。")
+            prev = set(cur)
+        return rows
 
     def _church_situation(self):
         """基督教教会情境的 (id, 情境, 子区) —— 1.20 专有; 无则 (None, {}, {})。"""

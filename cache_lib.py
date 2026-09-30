@@ -2762,6 +2762,15 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     if _t not in _seen:
                         _pth.append({"from": date_label, "tenet": _t})
                         _seen.add(_t)
+                # v87 (问题6): **变更点快照** —— 个人教义可「放弃/替换」(槽位随虔诚
+                # 等级增长, 实测 289 人 1 条 / 35 人 2 条 / 6 人 3 条), 而游戏不留
+                # 「何时采信/何时放弃」的记忆 ⇒ 旧稿只记「新增」, 渲染便写成
+                # 「868 起奉A。871 起奉B。」并列, 模型读成同时供奉两条。此处按数组
+                # **变化点**记下完整集合, 渲染端 (facts.personal_tenet_lines) 据此
+                # 写出「放弃…改奉…」。
+                _psh = rec.setdefault("personal_tenets_history", [])
+                if not _psh or list(_psh[-1].get("tenets") or []) != _pt:
+                    _psh.append({"from": date_label, "tenets": list(_pt)})
             rec["personal_tenets"] = _pt
         if type(_pd) is dict:
             _kd = _pd.get("known_doctrines")
