@@ -2718,6 +2718,11 @@ class Facts:
                 or L.loc(self.table, key) or key
         if key.startswith("x_"):  # 无地营地/教团等特殊头衔: 只给名字
             return name if site else (self._specific_name(tid) or name)
+        # v87 (问题1): **枢机名 (d_cd_*) 不叠领地层级词** —— 它是无地 titular
+        # (`landless = yes`, `destroy_on_succession = yes`), 叠词会写出
+        # 「萨比娜总主教区」(历任行实测), 读成他治理过一块教省。
+        if self._is_cardinal_title(tid):
+            return name
         # v68 (问题5): 世族庄园 (`c_nf_`/`d_nf_`) 同判 —— 家业头衔是无地家业,
         # 只给名字, 不叠层级词 (旧稿 `title(16851)` = 「张氏州府」, 家业被当州府)。
         if self._is_estate_title(tid):
@@ -2848,7 +2853,11 @@ class Facts:
         (通用条目 `barony` = 男爵领), 要么是带 `holding = …` 闸门的领地类型词
         (神殿/主教区/市 — 本项目的 flavorization 解析器对 `holding` 条目一律
         unsupported), 两者都不该当地名后缀。见 docs/调研_v87_男爵领地名渲染.md。"""
-        if tier == "barony":
+        if tier == "barony" or self._is_cardinal_title(tid):
+            # v87 (问题4): 男爵层一律不出层级词 (「堡」是项目自造词, 游戏侧男爵层的
+            # 词要么是爵级名词「男爵领」, 要么带 `holding` 闸门; 详见方法文档串)。
+            # v87 (问题1): 枢机名 (`d_cd_*`, 无地 titular) 同判 —— 否则历任行写出
+            # 「萨比娜总主教区」, 读成他治理过一块教省。
             return ""
         if independent is None:
             independent = self._is_independent(cid, date) if cid is not None else True
@@ -11261,7 +11270,7 @@ class Facts:
         if isinstance(origin, int) and origin != rid:
             onm = cl.rite_name_of(self.melt, origin)
             if onm:
-                rows.append(f"此礼出自{onm}。")
+                rows.append(f"源自{onm}。")
         head = cl.head_of_rite(self.melt, rid)
         if head is not None:
             rows.append("礼仪领袖：" + ("本人。" if head == cid
@@ -15163,7 +15172,10 @@ def _fervor_word(v):
 
 
 def _sf_word(v):
-    """灵性满足 (可负) → 档位词。"""
+    """灵性满足 (可负) → 档位词。
+
+    v87 (问题8): 负档由「亏欠」改**「匮乏」** —— 「亏欠」是记账语 (亏欠某人),
+    与游戏概念 `spiritual_fulfillment` 的语义不合。"""
     if v >= 75:
         return "充盈"
     if v >= 50:
@@ -15172,7 +15184,7 @@ def _sf_word(v):
         return "尚可"
     if v >= 0:
         return "微薄"
-    return "亏欠"
+    return "匮乏"
 
 
 def _clean_ck3_loc(s):
