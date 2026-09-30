@@ -2010,6 +2010,38 @@ class Facts:
         n = self.name(cid, date=date)
         return n or fallback
 
+    def _regnal_name_zh(self, cid, date=None):
+        """角色的**继位改名** (教宗圣名/出家法名) 中文名; 无则 '' (v87 问题1/P2)。
+
+        取值: 缓存现值 (`characters.<id>.regnal_name`, 由 cache_lib 逐档同步) →
+        熔件角色对象 (旧缓存无该字段时的兜底)。中文走本地化表
+        (`Sergius_regnal` = 色尔爵 / `Nicolaus_regnal` = 尼各老); 取不到中文
+        (裸键/占位) 返回 ''。
+
+        **刻意不按 date 截断** —— 游戏把继位改名用于该角色的整个显示面
+        (`REGNAL_NAME_ONE_NAME: "$NAME$$NUMBER$"`, character_l_simp_chinese.yml:18),
+        存档里也没有「改名沿革」。按 date 截断反而会让同一篇传记里同一人出现两个
+        名字: 教宗尼各老 858 年当选, 而本档数据起于 870, 866 年的事件会退回本名
+        「尼科洛」。"""
+        if cid is None:
+            return ""
+        memo = getattr(self, "_regnal_zh_memo", None)
+        if memo is None:
+            memo = self._regnal_zh_memo = {}
+        if cid in memo:
+            return memo[cid]
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        rn = rec.get("regnal_name")
+        if not rn:
+            rn = (self._chars.get(str(cid)) or {}).get("regnal_name")
+        out = ""
+        if rn:
+            v = L.loc(self.table, str(rn)) or ""
+            if v and not v.startswith("$") and not v.startswith("["):
+                out = v
+        memo[cid] = out
+        return out
+
     # ---- v17: 世系编号 (II/III 二世标记) ----
     # 游戏不把编号存进存档, 显示时按「首要头衔 title history 中同名前任数 + 1」
     # 动态计算 (修复方案_汤利五问题.md 问题7, 实测: c_braila 860 年 Ciprian →
@@ -2019,12 +2051,17 @@ class Facts:
     def regnal_number(self, cid, tid, date=None):
         """角色 cid 在头衔 tid 上的世系序号: 1 + (登位前同名前任数)。
         同名按熔件 raw first_name 比对 (中文 mod 名同码点串一致)。
-        返回 ≥1 的整数。"""
+        v87 (问题1/P2): **有继位改名者按改名比对** —— 教宗的世系编号数的是同名
+        **圣名**前任 (色尔爵三世 = 前两位色尔爵), 不是出生名 (本档 38941 出生名
+        Giuseppe, 按出生名会算成「一世」; 游戏 `REGNAL_NAME_ONE_NAME` 的 `$NUMBER$`
+        正是按圣名算的)。返回 ≥1 的整数。"""
         key = (cid, tid, date)
         v = self._regnal_cache.get(key)
         if v is not None:
             return v
-        fn = (self._chars.get(str(cid)) or {}).get("first_name") or ""
+        _me = self._chars.get(str(cid)) or {}
+        fn = self._regnal_name_zh(cid) or _me.get("first_name") or ""
+        _by_regnal = bool(self._regnal_name_zh(cid))
         n = 1
         if fn and tid is not None:
             hist = (self._lt.get(str(tid)) or {}).get("history") or {}
@@ -2050,7 +2087,12 @@ class Facts:
                             continue
                         if cl.date_key(d) >= limit:
                             continue
-                        if fn == ((self._chars.get(str(hid)) or {}).get("first_name") or ""):
+                        _o = self._chars.get(str(hid)) or {}
+                        if _by_regnal:
+                            _onm = self._regnal_name_zh(hid) or ""
+                        else:
+                            _onm = _o.get("first_name") or ""
+                        if fn == _onm:
                             n += 1
         self._regnal_cache[key] = n
         return n
@@ -2289,7 +2331,11 @@ class Facts:
             return self._insert_nickname(nm, nick)
         if "·" not in nm:
             # v18: 东方人名 (姓+名 无分隔) 与单段名没有世系编号
-            return nm
+            # v87 (问题1/P2): 例外 —— **继位改名者** (教宗圣名/法名, 见 `regnal_name`
+            # 通道) 的名字本就是单段, 编号是其身分的一部分 (色尔爵三世 / 若望二十三),
+            # 故继续按下面同一个 `regnal_number` 口径补编号。
+            if not self._regnal_name_zh(cid, date):
+                return nm
         try:
             _tier, tid = self._primary_title_at(cid, as_of=date)
         except Exception:
@@ -4437,7 +4483,21 @@ class Facts:
     # ---- v44 (问题2): 传主链 (前任/后任传主) ----
 
     def _chain_person(self, cid, date=None):
-        """传主链里的一个人 → 名号文本 (本缓存查不到时用其本人缓存兜底)。"""
+        """传主链里的一个人 → 名号文本 (本缓存查不到时用其本人缓存兜底)。
+
+        v87 (问题1, 用户 2026-09-30 拍板「用游戏自渲染的名字」): 链成员若在数据
+        窗口里**没有真领地头衔** (只持枢机名一类的非领地尊号, 或干脆无头衔), 则
+        优先取**他本人缓存的 `player_name`** —— 那是游戏自己渲染的名号
+        (`meta_player_name`, 由 `cache_lib` 在该角色第一次作为玩家入库时写入,
+        即其继位那一档), 也是「继位改名」的权威记录: 洪氏档继任者 Giuseppe 在
+        872.5.17 当选教宗后按改名决议称 **色尔爵三世**, 而熔件重建只能给出生名
+        「朱塞佩」+ 尊号「枢机」(终传用的是他当选**前**那一档熔件, 见
+        docs/调研_v87_后任称谓大阿亚图拉.md §2/§6)。有真领地者仍走熔件重建
+        (信徒名下的「江西节度使马丁」不能被后来的「皇帝马丁」顶掉 —— 缓存信封名
+        是首见那一档的值, 可能晚于继位日)。罗马数字按项目世系口径折汉字。"""
+        gname = self._chain_game_name(cid)
+        if gname and self._chain_no_landed_dignity(cid, date):
+            return gname
         nm = self.person_label(cid, date=None, style="brief")
         if not nm:
             other = self.campaign.get(int(cid)) if str(cid).isdigit() else None
@@ -4447,6 +4507,41 @@ class Facts:
             if not nm:
                 nm = self.name(cid, date=None)
         return nm or ""
+
+    def _chain_game_name(self, cid):
+        """链成员的**游戏自渲染名** (本人缓存 `player_name`, v87 问题1); 无则 ''。
+
+        `player_name` 形如「教宗，洪秀全」(称号，名字, 旧稿的 mod 译法) 或
+        「关白久保」「教宗色尔爵III」; 逗号按项目既定口径去掉 (`_clean_ck3_loc`),
+        尾部罗马数字折汉字 (`_roman_ordinal_zh`)。"""
+        if cid is None:
+            return ""
+        try:
+            own = (self.campaign or {}).get(int(cid))
+        except (TypeError, ValueError):
+            own = None
+        if not isinstance(own, dict):
+            return ""
+        pn = _clean_ck3_loc(str(own.get("player_name") or "")).strip()
+        if not pn:
+            return ""
+        return _roman_ordinal_zh(pn)
+
+    def _chain_no_landed_dignity(self, cid, date=None):
+        """链成员在数据窗口里是否**只持非领地尊号** (枢机名 `d_cd_*` 一族) —— 此时
+        熔件重建不出其真实身分, 该用游戏自渲染名 (v87)。
+
+        判据刻意收得很窄: 只在**首要头衔是枢机名**时启用。无头衔者不启用 ——
+        那种情形熔件给的就是裸名, 而对「继位那一瞬」而言裸名反而是对的 (缓存信封名
+        取自首见那一档, 实测可能晚于继位日: 田所档继任者 1006.8.7 尚无头衔, 其
+        信封名「领袖业有」来自 1007 档)。"""
+        if cid is None:
+            return False
+        try:
+            _tier, tid = self._primary_title_at(cid, as_of=date)
+        except Exception:
+            return False
+        return self._is_cardinal_title(tid)
 
     def reign_end_word(self, re_end):
         """让位性质词 (v76 问题1): 剃发退位 / 退隐让位 / 去位，转徙无领地 / 让位。"""
@@ -15924,6 +16019,37 @@ def _ordinal_zh(n):
         t, r = divmod(n, 10)
         return digits[t] + "十" + (digits[r] if r else "")
     return str(n)
+
+
+# v87 (问题1/P2): 游戏信封名 / 头衔名里的**罗马数字** → 项目世系汉字体
+# (`教宗色尔爵III` → `教宗色尔爵三世`)。只在「汉字 + 尾部罗马数字」时折换,
+# 避免把西文缩写当编号 (Rex/IV 之类); 数值上限 99 (超出的照旧原样)。
+_ROMAN_RUN_RE = re.compile(r"([\u4e00-\u9fff])([IVXLCDM]+)$")
+_ROMAN_VAL = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+
+def _roman_value(s):
+    """罗马数字串 → 整数 (不合法返回 0)。"""
+    total, prev = 0, 0
+    for ch in reversed(s or ""):
+        v = _ROMAN_VAL.get(ch, 0)
+        if not v:
+            return 0
+        total += -v if v < prev else v
+        prev = max(prev, v)
+    return total
+
+
+def _roman_ordinal_zh(text):
+    """「教宗色尔爵III」→「教宗色尔爵三世」(v87); 无尾部罗马数字则原样返回。"""
+    s = str(text or "")
+    m = _ROMAN_RUN_RE.search(s)
+    if not m:
+        return s
+    n = _roman_value(m.group(2))
+    if not 1 <= n <= 99:
+        return s
+    return s[:m.start(2)] + _ordinal_zh(n)
 
 
 def _decade_lower_bound(f):

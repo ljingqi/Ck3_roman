@@ -1816,6 +1816,16 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
             dn = dn or n.get("dynasty_name") or ""
     if not nm:
         return rec.get("name_full") or ""
+    # v87 (问题1/P2): 继位改名 (教宗圣名 / 出家法名) —— 角色带 `regnal_name` 时
+    # 游戏显示该名 (`Sergius_regnal` → 色尔爵; 名字本体换掉, 且**不带**姓/父名,
+    # 与游戏里「教宗色尔爵三世」同形)。取不到中文 (裸键/占位串) 时照旧用本名。
+    _rn = rec.get("regnal_name")
+    if not _rn:
+        _rn = ((chars or {}).get(key) or {}).get("regnal_name")
+    if _rn:
+        _rz = localization.loc(localization.table(), str(_rn)) or ""
+        if _rz and not _rz.startswith("$") and not _rz.startswith("["):
+            return _rz
     memo = memo if memo is not None else {}
     # 1) 父名制文化 → 名·父名 (v70: 与本名同词时只写一次, 同东方/西方姓两条路径)
     ptn = _patronym_of(cache, cid, melt, names_path, chars=chars, memo=memo)
@@ -2620,6 +2630,10 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     or (rec.get("house_name", "") + rec["name_zh"])
             rec["birth"] = c.get("birth")
             rec["female"] = bool(c.get("female"))
+            # v87 (问题1/P2): 继位改名 (教宗圣名/法名) —— 显示名的权威字段,
+            # 见 `display_name`; 无该字段者为 None (与 female 同式, 由下面同步)。
+            rec["regnal_name"] = (str(c["regnal_name"]) if c.get("regnal_name")
+                                  else None)
             rec["culture"] = c.get("culture")
             rec["faith"] = c.get("faith")
             if rec["culture"] is not None:
@@ -2631,6 +2645,11 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         # v26: 性别自愈 — 旧缓存无该字段时按熔件补 (女性才有 female 键, 男性补 False)
         if rec.get("female") is None:
             rec["female"] = bool(c.get("female"))
+        # v87 (问题1/P2): 继位改名同步 (逐档现值; 游戏另有 remove_regnal_name 效果,
+        # 故按末档现值写, 不做「只记首次」的闩存) —— 显示名的取值见 `display_name`。
+        _rn_now = str(c.get("regnal_name") or "")
+        if _rn_now != (rec.get("regnal_name") or ""):
+            rec["regnal_name"] = _rn_now or None
         # v44 (问题1): 家族沿革 — 私生女另立家族 (阿德尔海德 1118.4.2 别立冯·亚琛氏)
         # 与家族/宗族改名 (冯·亚琛 → 冯) 都不是记忆, 逐档差一是唯一来源。
         # 旧语义 (首见冻结) 使改名后全档人名停在旧名, 此处改为「末档现值 + 变更点」。
