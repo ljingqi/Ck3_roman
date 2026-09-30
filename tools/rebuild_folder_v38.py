@@ -6,7 +6,7 @@
 (前代与当代) 各并入各自缓存, 再对各缓存做死者记忆回溯。
 
 用法:
-    & tools\\tools\\py.ps1 tools\\rebuild_folder_v38.py 周氏5
+    & tools\tools\\py.ps1 tools\\rebuild_folder_v38.py 周氏5
 """
 import json
 import os

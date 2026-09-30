@@ -2,7 +2,7 @@
 """回填 v81 新增的 `first_location` 闩存（角色**首见快照**的所在）
 
 用法：
-    & tools\\tools\\py.ps1 tools\\backfill_first_location.py <家族> [pid ...]
+    & tools\tools\\py.ps1 tools\\backfill_first_location.py <家族> [pid ...]
 
 为什么要有它：`cache_lib` v81 起在 ingest 时记 `first_location`（**出生地**的唯一依据，
 见 `facts.Facts.birth_place` 与 `docs/调研_v81_生卒地点.md`），而既有缓存没有这一键。

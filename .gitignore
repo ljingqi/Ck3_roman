@@ -1,6 +1,15 @@
 # 隐私与密钥
 config.json
 
+# 本机调研文档（只留本地，不进版本库）
+docs/
+
+# 本机存档派生的全局表（首次运行/启用 Mod 变化时自动重建；含本机路径与 Mod 清单）
+data/localization.json
+data/trait_names.json
+data/trait_tracks.json
+data/names.json
+
 # 本地备份 (勿提交；曾误提交 _backup_20260829 超大文件导致无法 push)
 _backup_*/
 *.bak
@@ -13,13 +22,19 @@ cache/
 logs/
 output/
 
+# 一次性排查脚本 (按需重建，不留版本库)
+tools/**/diag_*.py
+tools/**/probe_*.py
+tools/**/tmp_*.py
+tools/**/check_*.py
+tools/**/verify_v*_unit.py
+tools/out_*/
+
 # 研究文档 (一次性排查脚本与输出)
 experiments/
 
 # 第三方工具 (README 已说明需自行下载到 tools/)
 tools/rakaly.exe
-# 排查用落盘产物 (脚本在 tools/ 内, 输出可随时重跑)
-tools/out_*/
 
 # Python
 __pycache__/

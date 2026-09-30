@@ -1,7 +1,7 @@
 ---
 name: commit-before-destructive
 description: >-
-  Use whenever a change to this CK3 biography project (<项目根>) touches production code or
+  Use whenever a change to this CK3 biography project touches production code or
   regenerable-but-expensive artifacts — editing facts.py / biography.py / cache_lib.py /
   pipeline.py / localization.py / style.py / llm.py / htmlview.py, rebuilding data/*.json or
   output/**/data/*.json, running rebuild-cache / migrate / rebuild, or deleting or overwriting
@@ -11,7 +11,7 @@ description: >-
 
 # 破坏性改动前先 commit（commit-before-destructive）
 
-本技能用于本项目（`<项目根>`，CK3 家传 · 纪传体传记生成）以及本会话中的一切代码改动。
+本技能用于本项目（CK3 家传 · 纪传体传记生成）以及本会话中的一切代码改动。
 核心规则：**动手改生产代码或重建产物之前，先把当前工作树提交为一个检查点；改动分步进行，每步一个提交。**
 
 ## 什么是「破坏性改动」

@@ -65,13 +65,13 @@ PowerShell 5.1 的 `-Encoding Default` = 系统 ANSI（zh-CN 即 cp936），所�
 | `python -c "print('中文')"` | ❌ 乱码（Python 按 cp936 写出，pwsh/DSH 侧按 UTF-8 解码） |
 | `$env:PYTHONIOENCODING='utf-8'; python …` | ✅ 正常 |
 | `python -X utf8 …` | ✅ 正常 |
-| `. <项目根>\tools\enc.ps1; python …` | ✅ 正常（生效的是 `PYTHONIOENCODING` / `PYTHONUTF8`；见下方注） |
+| `. tools\enc.ps1; python …` | ✅ 正常（生效的是 `PYTHONIOENCODING` / `PYTHONUTF8`；见下方注） |
 | `cmd /c "chcp 65001 & python …"` | ❌ 仍乱码（chcp 只改控制台代码页，管道下 Python 用的是 locale 编码） |
 
 结论：**换控制台（cmd）解决不了**——问题在小进程写出的编码，不在 shell。做法：
 
-1. 开发侧跑 Python 一律用包装脚本：`& <项目根>\tools\py.ps1 <脚本> [参数]`；
-   混合命令先点源 `. <项目根>\tools\enc.ps1`（两者只设环境变量，不改项目代码）。
+1. 开发侧跑 Python 一律用包装脚本：`& tools\py.ps1 <脚本> [参数]`（在项目根目录下执行）；
+   混合命令先点源 `. tools\enc.ps1`（两者只设环境变量，不改项目代码）。
 2. 产品入口（`启动监控.bat`，chcp 936）**不要**设 `PYTHONIOENCODING`：那里 Python 输出
    GBK 才是与 cmd 控制台一致的正确行为。包装脚本只服务开发/自动化会话。
 3. 输出仍建议一并落 UTF-8 报告文件（`Out-File -Encoding UTF8` 或脚本内 `open(..., "w",

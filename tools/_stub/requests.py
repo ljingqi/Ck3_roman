@@ -6,8 +6,8 @@ llm.py 顶层 `import requests`。离线工具（tools/tests/snap.py 等）不�
 故用本替身占位：把 tools/_stub 放进 PYTHONPATH 即可。
 
 用法（PowerShell）：
-    $env:PYTHONPATH = '<项目根>\tools\_stub'
-    & <项目根>\tools\py.ps1 <项目根>\tools\tests\snap.py 崔佛 38660 final
+    $env:PYTHONPATH = 'tools\tools\_stub'
+    & tools\tools\py.ps1 tools\tools\tests\snap.py 崔佛 38660 final
 """
 
 

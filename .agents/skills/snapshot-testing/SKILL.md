@@ -1,7 +1,7 @@
 ---
 name: snapshot-testing
 description: >-
-  Use whenever this CK3 biography project (<项目根>) needs to read save data, inspect facts, check
+  Use whenever this CK3 biography project needs to read save data, inspect facts, check
   a playthrough's output, reproduce a prompt, or run any verification during development — before
   running pipeline.py rebuild-cache / migrate / scan, before deleting
   output/<家族>/data/melt_*.json, or before loading a melt. The rule is: look for an existing melt
@@ -11,7 +11,7 @@ description: >-
 
 # 测试走快照，不重熔存档（snapshot-testing）
 
-本技能用于本项目（`<项目根>`，CK3 家传 · 纪传体传记生成）的**一切测试与核对动作**。
+本技能用于本项目（CK3 家传 · 纪传体传记生成）的**一切测试与核对动作**。
 
 ## 为什么（本项目的实际代价）
 

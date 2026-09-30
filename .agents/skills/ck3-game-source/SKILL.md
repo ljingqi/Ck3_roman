@@ -1,16 +1,15 @@
 ---
 name: ck3-game-source
 description: >-
-  Use whenever this CK3 biography project (<项目根>) needs to look up a game mechanic, an
+  Use whenever this CK3 biography project needs to look up a game mechanic, an
   opinion/memory/hook key, a localization string, or any "why does the save say X" question —
   before grepping the game install or the wiki. The rule is: AUH (All Under Heaven / TGP 天命) is
-  BASE-GAME content shipped under game/, not a mod, so read game/ directly; and check the existing
-  docs/调研_*.md first so the same research is not redone.
+  BASE-GAME content shipped under game/, not a mod, so read game/ directly.
 ---
 
 # 读游戏机制先看这里（ck3-game-source）
 
-本技能用于本项目（`<项目根>`，CK3 家传 · 纪传体传记生成）的**一切游戏机制检索**：
+本技能用于本项目（CK3 家传 · 纪传体传记生成）的**一切游戏机制检索**：
 查脚本、查本地化、查「存档里这个键是什么意思」。**先读本技能，再动手 grep。**
 
 ## 铁律一：AUH 是游戏本体内容，不是 Mod
@@ -19,7 +18,7 @@ description: >-
 
 | 事实 | 值 |
 | --- | --- |
-| 游戏根 | `<CK3安装目录>\steamapps\common\Crusader Kings III\game` |
+| 游戏根 | `%CK3_GAME_DIR%`（即 CK3 安装目录下的 `game/`，可由 `config.json` 的 `ck3_game_dir` 指定，留空则自动发现） |
 | 版本 | **1.19.0**（`clausewitz_branch.txt` = `titus/release/1.19.0`） |
 | AUH/TGP 的 DLC 目录 | `game\dlc\dlc029_mp1` |
 | AUH 的互动脚本 | `game\common\character_interactions\10_tgp_interactions.txt`、`tgp_east_asia_interactions.txt`、`10_tgp_japan_interactions.txt` |
@@ -32,28 +31,21 @@ description: >-
 
 Mod 另有其地，不要在那里找 AUH：
 
-* 工坊订阅：`<Steam库>\steamapps\workshop\content\<CK3_appid>\<id>\`；
-* 用户 mod 目录：`%USERPROFILE%\Documents\Paradox Interactive\Crusader Kings III\mod\`（本机为空）；
+* 工坊订阅：`<Steam 库>\steamapps\workshop\content\<CK3_appid>\<id>\`；
+* 用户 mod 目录：`%USERPROFILE%\Documents\Paradox Interactive\Crusader Kings III\mod\`；
 * 实际启用项记在 `…\Documents\Paradox Interactive\Crusader Kings III\launcher-v2.sqlite`；
 * 本项目 `localization.py` 已按「模块指纹比对 → 自动重建本地化表」处理启用 Mod 的本地化覆盖，
   查某个键为何不是预期中文时，先看是否是某个启用的 Mod 压掉了本体文案。
 
 ## 铁律二：先查已落档的调研，别重跑
 
-**顺序**：① 本项目 `docs/` 下已有调研 → ② CK3 wiki（`https://ck3.paradoxwikis.com/Crusader_Kings_III_Wiki`）
+**顺序**：① 本项目 `docs/` 下已有的本地调研（该目录只留本机，不进版本库）
+→ ② CK3 wiki（`https://ck3.paradoxwikis.com/Crusader_Kings_III_Wiki`）
 → ③ `game/` 原文（引用一律给 `文件:行`）。
 
-已落档的调研（**先看这些**）：
-
-| 文档 | 内容 |
-| --- | --- |
-| `docs/调研_出狱机制与存档留痕.md` | 出狱机制全表（手动/自动/Mod）、13 条「无留痕」清单、诛灭世族脚本逐行、判据优先级 |
-| `docs/研究_v47_剪除规则实证.md` | 存档剪除规则 |
-| `docs/研究_v47_统治者头衔动态.md` | 头衔持有/更替 |
-| `docs/研究_v47_文化信仰存档来源.md` | 文化/信仰的存档来源 |
-| `docs/研究_v45_亲缘定语.md` / `研究_v45b_中式亲属.md` | 中式亲属称谓 |
-| `docs/研究_v49_加载性能与优化.md` | 熔件加载 |
-| `docs/方案_v4x/v5x_*.md` | 各轮问题的根因与判据（含游戏脚本引用） |
+已落档的调研（**先看这些**）：本机 `docs/` 目录下按主题分文件存放
+（`调研_*.md` 机制取证、`方案_v*_*.md` 各轮问题的根因与判据、`研究_v*_*.md` 专项结论）。
+该目录**只留本机、不进版本库**，用 `glob`/`grep` 在 `docs/` 里按关键词找。
 
 ## 检索姿势（省时间的几条）
 
@@ -67,9 +59,9 @@ Mod 另有其地，不要在那里找 AUH：
    **A 持有对 X 的看法**；`reverse_add_opinion` 方向相反。归档时把 `owner/target` 写清楚。
 4. **`common/on_action/*.txt` 决定「记忆是谁、什么时候被创建的」**：
    想判「这件事有没有留痕」，先找对应的 on_action，而不是逐个事件翻。
-5. **引用行号会随版本漂移**：本机是 1.19；`docs/` 里别人给的行号先核一遍再用
+5. **引用行号会随版本漂移**：本机是 1.19；`docs/` 里早先记的行号先核一遍再用
    （已发生过「用户给的 7600–8700 段其实是 castrate/blind 互动，不是 release_from_prison」这类偏差）。
-6. **子代理调研要落档**：派 subagent 去查机制时，要求它把结论写进 `docs/调研_*.md` 并给
+6. **子代理调研要落档**：派 subagent 去查机制时，要求它把结论写进本机 `docs/调研_*.md` 并给
    `文件:行` 引用，避免下次重跑。
 
 ## 收尾自查

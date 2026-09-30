@@ -12,9 +12,9 @@
 
 默认 **--dry-run** (只列不删); 确认后加 --apply。删除前对每份算大小并汇总。
 用法:
-  & tools\\tools\\py.ps1 tools\\cleanup_junk.py              # 只列
-  & tools\\tools\\py.ps1 tools\\cleanup_junk.py --apply       # 真删
-  & tools\\tools\\py.ps1 tools\\cleanup_junk.py --apply --no-bak    # 连 .bak-v* 也删
+  & tools\tools\\py.ps1 tools\\cleanup_junk.py              # 只列
+  & tools\tools\\py.ps1 tools\\cleanup_junk.py --apply       # 真删
+  & tools\tools\\py.ps1 tools\\cleanup_junk.py --apply --no-bak    # 连 .bak-v* 也删
 """
 import io
 import os

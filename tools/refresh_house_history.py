@@ -14,8 +14,8 @@
 运行期语义一致地重建历史点。
 
 用法:
-    & tools\\tools\\py.ps1 tools\\refresh_house_history.py 诺兰 [玩家id] [--dry]
-    & tools\\tools\\py.ps1 tools\\refresh_house_history.py 诺兰 --names   # 只按末档重算现值
+    & tools\tools\\py.ps1 tools\\refresh_house_history.py 诺兰 [玩家id] [--dry]
+    & tools\tools\\py.ps1 tools\\refresh_house_history.py 诺兰 --names   # 只按末档重算现值
 产物: output/<家族>/data/player_<id>.json 原位更新 (先备份 .bak-v44)。
 """
 import io
