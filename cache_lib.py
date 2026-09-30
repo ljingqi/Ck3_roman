@@ -531,6 +531,81 @@ def _clean_none_list(lst):
             _clean_none_list(v)
 
 
+# ---------------------------------------------------------------------------
+# v86: 角色桶的重复块校正 (CK3 1.20)
+# ---------------------------------------------------------------------------
+# 1.20 的存档把 dead_unprunable 里**每个角色块写两遍** (同键同值):
+#   dead_unprunable={\n3={…}\n…\n3={…}\n}  (870 档实测 11698 条里 11642 条如此,
+#   868/869 档同形; living 与 characters.dead_prunable 无此现象)。
+# rakaly 逐字转 JSON ⇒ 同一对象内出现重复键; 本文件的 `_merge_dup_pairs`
+# (v15, 为 agent_slots / family_data.spouse / variables.item 等**需要 list 语义**
+# 的键设计) 于是把角色对象并成 `[obj, obj]`, 而下游 20+ 处 (mem_ids_of /
+# family_of / all_characters / facts 与 pipeline 的直接取用) 一律按 dict 取用,
+# 于是整档在 extract_snapshot 抛 `'list' object has no attribute 'get'`
+# (实测 870 档: cache_lib.py:855 mem_ids_of ← _extract_snapshot:2183)。
+#
+# 修法: **只对三个角色桶**做一次折叠 (全同取首; 有差异则「后份只补空值」浅合并),
+# 不动 `_merge_dup_pairs` 的全局语义 (那会波及依赖 list 的键, v15 的教训)。
+_CHAR_BUCKETS = ("living", "dead_unprunable")
+
+
+def _char_buckets(melt):
+    """三个角色桶的 (名字, 桶) 列表: living / dead_unprunable / characters.dead_prunable。"""
+    out = []
+    for name in _CHAR_BUCKETS:
+        b = (melt or {}).get(name)
+        if type(b) is dict:
+            out.append((name, b))
+    b = ((melt or {}).get("characters") or {}).get("dead_prunable")
+    if type(b) is dict:
+        out.append(("characters.dead_prunable", b))
+    return out
+
+
+def _collapse_char_value(v):
+    """角色桶的一个值: 重复键并成的 list → 单 dict。非此形态原样返回。
+
+    全同取首份 (实测 11642/11642 全同); 有差异则浅合并, 后份只补空值
+    (None / '' / [] / {}), 不覆盖已有内容 —— 宁可少料也不猜。"""
+    if type(v) is not list:
+        return v
+    parts = [p for p in v if type(p) is dict]
+    if not parts or len(parts) != len(v):
+        return v          # 形态异常 (含非 dict 元素): 原样留给下游兜底
+    first = parts[0]
+    if all(p == first for p in parts[1:]):
+        return first
+    out = dict(first)
+    for p in parts[1:]:
+        for k, val in p.items():
+            cur = out.get(k)
+            if cur is None or cur == "" or cur == [] or cur == {}:
+                out[k] = val
+    return out
+
+
+def _collapse_char_buckets(melt):
+    """把三桶里「重复键并成的 list」折回单 dict; 返回折叠条数 (0 = 无需校正)。"""
+    n = 0
+    for _name, bucket in _char_buckets(melt):
+        c = 0
+        for k, v in bucket.items():
+            nv = _collapse_char_value(v)
+            if nv is not v:
+                bucket[k] = nv
+                c += 1
+        n += c
+    if n:
+        llm.log(f"角色桶校正: 并回 {n} 个重复块 (1.20 存档同键双写)", detail=True)
+    return n
+
+
+def _as_char(v):
+    """角色条目 → dict。形态异常 (list/None…) 时给空 dict ——
+    让上层「少一条料」而不是整档崩在流程里。"""
+    return v if type(v) is dict else {}
+
+
 def _merge_dup_pairs(pairs):
     """json object_pairs_hook: 重复键合并 + 空值清扫 (一趟做两件事)。
 
@@ -814,6 +889,7 @@ def load_melt(path, use_memo=True):
         gc.disable()
     try:
         data = json.loads(raw, object_pairs_hook=_merge_dup_pairs)
+        _collapse_char_buckets(data)   # v86: 1.20 角色块同键双写 → 折回单 dict
     finally:
         if gc_was_on:
             gc.enable()
@@ -840,10 +916,15 @@ def _dead_prunable(melt):
 
 
 def all_characters(melt):
+    """全档角色表 (living + dead_unprunable + dead_prunable)。
+
+    v86: 每个条目都过一道 `_collapse_char_value` 与 `_as_char` —— 1.20 存档的
+    同键双写 (见 `_collapse_char_buckets`) 若在别处再次出现, 这里保证调用方
+    拿到的一律是 dict。"""
     out = {}
-    out.update(_living(melt))
-    out.update(_dead_unprunable(melt))
-    out.update(_dead_prunable(melt))
+    for _name, bucket in _char_buckets(melt):
+        for k, v in bucket.items():
+            out[k] = _as_char(_collapse_char_value(v))
     return out
 
 
@@ -851,7 +932,7 @@ def mem_ids_of(char_obj):
     """角色 alive_data.memories (记忆ID列表); 死者 alive_data 被移除时,
     回退 dead_data.memories (v8: 曾为玩家 was_playable 的角色死亡时,
     游戏把记忆复制进 dead_data.memories 保留, 实测崔佛死档 6 条全在)。"""
-    c = char_obj or {}
+    c = _as_char(char_obj)
     ids = (c.get("alive_data") or {}).get("memories") or []
     if ids:
         return ids
@@ -888,7 +969,7 @@ def find_player(melt):
 
 
 def family_of(char_obj):
-    fd = (char_obj or {}).get("family_data") or {}
+    fd = (_as_char(char_obj)).get("family_data") or {}
     out = {}
     for key in ("primary_spouse", "spouse", "former_spouses", "child",
                 "father", "mother", "siblings", "real_father",
@@ -3057,8 +3138,8 @@ def _latch_spouse_dates(latch, melt, pid):
                     rec["since"] = st
         elif owner != pid:
             # owner 的原配被主角夺走: 取其前配偶中与主角闩存过的那一位
-            ex_fd = ((melt.get("living") or {}).get(str(owner))
-                     or (melt.get("dead_unprunable") or {}).get(str(owner)) or {})
+            ex_fd = _as_char((melt.get("living") or {}).get(str(owner))
+                             or (melt.get("dead_unprunable") or {}).get(str(owner)))
             ex_fd = ex_fd.get("family_data") or {}
             for partner in (ex_fd.get("former_spouses") or []):
                 if not isinstance(partner, int) or partner == pid:
