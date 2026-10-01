@@ -188,7 +188,11 @@ def main():
         # verify_fast 的 [V41] 组对 schema<2 的旧快照整组 SKIP。
         # v56: schema 3 = 含 v56 传输面 (列传共享前缀改称【主角】/加冕句带 host 与头衔/
         # 战斗俘获行/出狱缘由); 对 schema<3 的旧快照, v56 各组整组 SKIP。
-        "schema": 3,
+        # v88: schema 4 = 含 v88 传输面 (删「允许/禁止教义」与 rite_tenets 键, 增
+        # holy_orders / forbidden_tenets / vassal_tenets, 个人教义进各角色档案行,
+        # 礼仪志纪事块改「纪事·修会与教众」); verify_v87 的 [7]/[附] 两组对
+        # schema>=4 SKIP, 改由 tools/tests/verify_v88.py 断言。
+        "schema": 4,
         "meta": {
             "folder": folder, "player_id": pid, "as_of": as_of, "decade": decade,
             "melt": melt_name,

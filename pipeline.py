@@ -40,6 +40,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm
@@ -1650,7 +1651,13 @@ def _bio_worker_loop(cfg):
                     cl.save_cache(cur, path)
                     llm.log(f"十年传记已生成 (第{decade}个十年): {out_path}")
         except Exception as e:
-            llm.log(f"传记生成失败 (将重试): {e}")
+            # v88 (问题1 附带): 兜底 except 一并落 traceback 末行 —— 旧稿只记 `str(e)`,
+            # 2026-10-01 那个 `string index out of range` 因此全靠人猜位置
+            # (实为 biography.build_intro_messages 的篇目序号表越界)。
+            _tb = traceback.format_exc().strip().split("\n")
+            llm.log(f"传记生成失败 (将重试): {e}"
+                    + (f" | {_tb[-2].strip()} @ {_tb[-3].strip()}"
+                       if len(_tb) >= 3 else ""))
         finally:
             with _BIO_LOCK:
                 _BIO_LAST_TRY[key] = time.monotonic()

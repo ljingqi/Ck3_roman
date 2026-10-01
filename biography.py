@@ -831,6 +831,11 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # v26: 信仰履历 (改信过程) — 姓名句只写当前信仰, 改信节点在此补出
     if p.get("faith_history"):
         lines.append(f"信仰履历：{p['faith_history']}。")
+    # v88 (问题3/P3-A-⑤, 用户 2026-10-01 拍板「把最新快照中的个人教义映射到每个人物
+    # 档案中」): 个人教义逐人一行 —— 三段式 (始奉/放弃/改奉) 由 facts 侧程序组好
+    # (`facts.personal_tenet_lines`), 有地统治者才带此数据, 无者整句省略。
+    if p.get("personal_tenets"):
+        lines.append(f"个人教义：{p['personal_tenets']}")
     # ---- 营/政体句 ----
     if p.get("landless"):
         camp_bits = []
@@ -1911,24 +1916,33 @@ def _article_facts(facts, cache, key, section=None):
         arts = facts.get("family_artifacts") or []
         _set_block(blocks, "传家重宝", "\n\n".join(arts))
     elif key == "liyi":
-        # v86《礼仪志·仪轨与教化》: 传主所受之礼与个人教义 (十年 + 终传都出)
+        # v86《礼仪志·礼仪与教义》: 传主所受之礼与个人教义 (十年 + 终传都出)
         # v87 (问题2/3/7 + 判定 bug 修复): 板块判定改用 `_sec_key(section)` ——
         # `section` 是 **dict**, 旧稿 `str(section).startswith("mid")` 恒假, 于是
-        # 开篇与纪事下发同一批块 (实测请求面: 纪事请求带着开篇的礼仪档案与圣所);
-        # 同时删去「圣所与圣髑」块, 纪事改发「礼仪沿革 + 允许/禁止教义逐条点名」。
+        # 开篇与纪事下发同一批块; 同时删去「圣所与圣髑」块。
+        # v88 (问题3/P3-A, 用户 2026-10-01 拍板): 删「礼仪教义」(允许/禁止的礼仪级
+        # 静态池), 纪事改用有个人色彩的三样; 开篇与纪事**两块料不相交**:
+        #   开篇 = 礼仪档案 + 个人教义沿革 + 亲立修会      (他是谁)
+        #   纪事 = 礼仪沿革 + 禁忌个人信条 + 门下教众      (发生何事、他人如何)
+        # 无料的块整块不发 (`_set_block` 对空串即跳过), 纪事无料时该篇只出开篇。
         prof = list(facts.get("rite_profile") or [])
         hist = list(facts.get("rite_history") or [])
         pt = list(facts.get("personal_tenets") or [])
-        tns = list(facts.get("rite_tenets") or [])
+        hos = list(facts.get("holy_orders") or [])
+        fbs = list(facts.get("forbidden_tenets") or [])
+        vts = list(facts.get("vassal_tenets") or [])
         if _sec_key(section) == "lead":
             _set_block(blocks, "礼仪档案", "\n".join(prof) if prof else "")
             if pt:
                 _set_block(blocks, "个人教义沿革", "\n".join(pt))
-            if hist:
-                _set_block(blocks, "礼仪沿革", "\n".join(hist))
+            if hos:
+                _set_block(blocks, "所立修会", "\n".join(hos))
         else:
             _set_block(blocks, "礼仪沿革", "\n".join(hist) if hist else "")
-            _set_block(blocks, "礼仪教义", "\n".join(tns) if tns else "")
+            if fbs:
+                _set_block(blocks, "禁忌个人信条", "\n".join(fbs))
+            if vts:
+                _set_block(blocks, "门下教众", "\n".join(vts))
     elif key == "secrets":
         # v28《阴私录·隐事秘辛》: 主角隐事归开篇, 家人近臣隐事与把柄归纪事
         sec = facts.get("secrets") or {}
@@ -2182,6 +2196,35 @@ def _shared_facts_block(facts, subject=None, key=None):
     return F.sanitize_fact_text("".join(out), where="共享前缀") + ""
 
 
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def _cn_index(n):
+    """篇目序号汉字 (v88 问题1): 1 → 一 … 9 → 九、10 → 十、11 → 十一、21 → 二十一。
+
+    起因: 旧稿 `build_intro_messages` 里写死 `CN_NUMS = "一二三四五六七八九"` (9 字),
+    第 3 个十年传记的篇目数正好 **10** (`i == 9`), `CN_NUMS[9]` 抛
+    `IndexError: string index out of range` —— 整个十年传记生成在此崩掉
+    (2026-10-01 12:11:54 洪氏2 实测, 日志只有一行 `传记生成失败 (将重试)`)。
+
+    与 `facts._count_zh` / `facts._ordinal_zh` 分用: 前者 2 作「两」、后者 <10 带「世」,
+    都不适合篇目序号。"""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return str(n)
+    if n <= 0:
+        return str(n)
+    if n < 10:
+        return _CN_DIGITS[n]
+    if n < 20:
+        return "十" + (_CN_DIGITS[n - 10] if n > 10 else "")
+    if n < 100:
+        t, r = divmod(n, 10)
+        return _CN_DIGITS[t] + "十" + (_CN_DIGITS[r] if r else "")
+    return str(n)
+
+
 def build_intro_messages(facts, cfg, articles=None):
     """总纲提示词 (共享前缀 + 篇目预告)。v11: 输出头改为 生卒; 明确以「太史公曰」作结。"""
     p = facts["protagonist"]
@@ -2213,10 +2256,11 @@ def build_intro_messages(facts, cfg, articles=None):
                                facts, scope=F.KinScope(facts.get("player_id")))) \
         + "\n\n" + shared
     # 文章预告: 用实际文章标题 (好友/仇人姓名已定; v5 支持任意篇数)
-    CN_NUMS = "一二三四五六七八九"
+    # v88 (问题1): 序号改走 `_cn_index` —— 旧稿写死 9 个汉字, 篇目到 10 就抛
+    # `IndexError: string index out of range` (第 3 个十年传记整篇失败)。
     if articles:
         preview = "\n".join(
-            f"{CN_NUMS[i]}、《{a['title']}》——{a.get('focus') or a.get('theme') or a['key']}"
+            f"{_cn_index(i + 1)}、《{a['title']}》——{a.get('focus') or a.get('theme') or a['key']}"
             for i, a in enumerate(articles))
         n_articles = len(articles)
     else:
@@ -3174,9 +3218,108 @@ def _mid_req_for_group(base_req, idx, total, group):
     return head + "\n\n" + (base_req or "")
 
 
+# ---------------------------------------------------------------------------
+# v88 (问题1/P1): 篇目上限与「按素材量/重要性出篇」
+# ---------------------------------------------------------------------------
+# 用户 2026-10-01 拍板: 「加入上限, 最多十篇, 按照重要性决定是否生成该板块
+# (比如如果仇人和朋友记忆很少就不生成, 没有礼仪写就不写礼仪)」。
+#
+# `ARTICLE_MAX` = 一传的篇目上限。第 3 个十年传记曾正好凑到 10 篇, 而
+# `build_intro_messages` 的序号表只有 9 个汉字 ⇒ 整篇生成失败 (见 `_cn_index`)。
+# 上限与序号一并解决: 上限 10 篇, 序号支持到 99。
+ARTICLE_MAX = 10
+# 好友/仇人列传的**出篇门槛**: 该传主本人（好友或仇人）在档案里的行迹条数。
+# 实测 (既有 30 余份快照): 行迹 1–2 条的列传只能靠模型铺陈 —— 斯卡利茨第 1–3 个
+# 十年即此例 (仇人行迹 2/1/2 条), 故门槛取 3。
+SUBJECT_ART_MIN_EVENTS = 3
+# 篇目优先级 (越大越先保留)。只在上限被顶满时起作用; 挑选后仍按原有相对次序排列。
+# 次序依据: 本纪/家室是骨, 刺客列传与阴私录是本项目投入最重的两条戏剧线,
+# 好友/仇人列传是原始五篇之一; 群英录与朝局/历代记重叠最多, 故排在末位。
+_ARTICLE_PRIO = {
+    "benji": 100,      # 本纪 (必出)
+    "jiashi": 90,      # 家室列传 (必出)
+    "assassins": 84,   # 刺客列传·刀下诸魂
+    "secrets": 82,     # 阴私录·隐事秘辛
+    "friend": 80,      # 列传·好友
+    "enemy": 80,       # 列传·仇人
+    "feuds": 76,       # 家族恩怨录
+    "artifacts": 74,   # 宝物志
+    "liyi": 72,        # 礼仪志
+    "chaoju": 70,      # XX历代记 (仅终传)
+    "youxia": 68,      # 游侠列传 (仅无地)
+    "qizu": 60,        # 妻族传·帝胄姻亲
+    "qunying": 50,     # 群英录·朝堂要员
+}
+
+
+def _subject_has_material(facts, cid):
+    """好友/仇人列传是否有料: 该传主本人的行迹条数 ≥ `SUBJECT_ART_MIN_EVENTS`。
+
+    取的是列传正文实际用的那口 (`facts.characters[<cid>].events`,
+    见 `_subject_facts`/`_article_facts`), 不是估计值。档案缺席 (该 id 未进
+    `_profile_needed_ids`) 时按无料处理 —— 那一篇本来就无正文可写。"""
+    if cid is None:
+        return False
+    p = (facts.get("characters") or {}).get(str(cid)) or {}
+    return len(p.get("events") or []) >= SUBJECT_ART_MIN_EVENTS
+
+
+def _liyi_has_material(facts):
+    """《礼仪志》出篇门槛 (v88 问题3/P3-A, 用户「没有礼仪写就不写礼仪」)。
+
+    要求宗教面有**可系年的事**, 四者任一:
+      · 礼仪沿革 ≥2 段 (改礼/立礼 —— 1 段只是「他一直奉某礼」, 不构成事件);
+      · 个人教义的变更点 ≥2 (始奉之外还有放弃/改奉);
+      · 亲立修会 (已按 as_of 截断, 见 `facts.holy_order_lines`);
+      · 禁忌个人信条 (见 `facts.forbidden_tenet_lines`)。
+    全无者不出该篇 —— 他的个人教义仍会写进自己的档案行 (P3-A-⑤), 信息不丢。"""
+    if not (facts.get("rite") or facts.get("rite_profile")):
+        return False
+    return len(facts.get("rite_history") or []) >= 2 \
+        or len(facts.get("personal_tenets") or []) >= 2 \
+        or bool(facts.get("holy_orders")) \
+        or bool(facts.get("forbidden_tenets"))
+
+
+def _liyi_has_mid(facts):
+    """《礼仪志》纪事 (mid) 是否有料: 礼仪沿革 / 禁忌个人信条 / 门下教众三者任一。
+
+    开篇与纪事按模块切片、**两块料不相交** (v27 口径): 开篇给「他是谁」(礼仪档案 +
+    个人教义沿革 + 亲立修会), 纪事给「发生了什么事、他人如何」(礼仪沿革 + 禁忌信条 +
+    门下教众)。纪事无料时该篇只出开篇。"""
+    return bool(facts.get("rite_history")) \
+        or bool(facts.get("forbidden_tenets")) \
+        or bool(facts.get("vassal_tenets"))
+
+
+def _apply_article_cap(articles):
+    """篇目上限 (v88 问题1/P1): 超限时按 `_ARTICLE_PRIO` 留前 N, 其余略去并落日志。
+
+    实现取「按优先级挑下标 → 下标升序还原」: 挑选只决定**去留**, 不改变**
+    原有相对次序**, 故未超限时输出与本轮之前逐字相同。"""
+    n = len(articles)
+    if n <= ARTICLE_MAX:
+        return articles
+    keep = sorted(range(n),
+                  key=lambda i: (-_ARTICLE_PRIO.get(articles[i]["key"], 0), i))
+    keep = sorted(keep[:ARTICLE_MAX])
+    dropped = [articles[i]["title"] for i in range(n) if i not in set(keep)]
+    llm.log(f"[篇目] 候选 {n} 篇超过上限 {ARTICLE_MAX}，"
+            f"按重要性保留 {ARTICLE_MAX} 篇，略去: {'、'.join(dropped)}")
+    return [articles[i] for i in keep]
+
+
 def build_articles(facts, cache, cfg):
     """按 cfg.bio_sections 组装文章列表 (标题含主角/好友/仇人姓名)。
-    v5: 动态追加 刺客列传/游侠列传/妻族传/群英录 (依数据条件)。"""
+    v5: 动态追加 刺客列传/游侠列传/妻族传/群英录 (依数据条件)。
+
+    v88 (问题1/P1, 用户 2026-10-01 拍板「加入上限, 最多十篇, 按重要性决定是否生成该
+    板块」): 本函数末尾统一做两件事 ——
+      ① **按素材量出篇**: 好友/仇人列传要求传主本人**至少 `SUBJECT_ART_MIN_EVENTS`
+         条行迹**, 《礼仪志》要求宗教面有可系年的事 (`_liyi_has_material`);
+      ② **总量上限 `ARTICLE_MAX`**: 候选多于上限时按 `_ARTICLE_PRIO` 取前 N 名,
+         被略去的篇目写进日志。取「按优先级挑选 → 再按原有相对次序排列」,
+         故不超上限时篇目与次序与本轮之前逐字相同。"""
     pid = facts.get("player_id")
     pname = (facts["protagonist"] or {}).get("name") or "主角"
     style_name = facts.get("bio_style") or "east"
@@ -3323,6 +3466,16 @@ def build_articles(facts, cache, cfg):
          "focus": "以公开行迹为限：家世、执掌之地、战和囚狱、家门添丁",
          "sections": mk_sections("benji")},
     ]
+    # v88 (问题1/P1): 好友/仇人列传按素材量出篇 —— 该传主本人行迹少于
+    # `SUBJECT_ART_MIN_EVENTS` 条时整篇略去 (用户: 「如果仇人和朋友记忆很少就不生成」)。
+    if friend is not None and not _subject_has_material(facts, friend):
+        llm.log(f"[篇目] 好友 {friend} 行迹不足 {SUBJECT_ART_MIN_EVENTS} 条，"
+                f"《列传·{fname or '好友'}》整篇略去")
+        friend = None
+    if enemy is not None and not _subject_has_material(facts, enemy):
+        llm.log(f"[篇目] 仇人 {enemy} 行迹不足 {SUBJECT_ART_MIN_EVENTS} 条，"
+                f"《列传·{ename or '仇人'}》整篇略去")
+        enemy = None
     if friend is not None:
         articles.append({"key": "friend", "title": f"列传·{fname or '好友'}",
                          "subject": fname, "theme": "好友传记（最亲近同僚的一生）",
@@ -3425,27 +3578,39 @@ def build_articles(facts, cache, cfg):
             "focus": "写隐事的揭底：何事、涉及何人、事在何年、有谁知情",
             "sections": mk_sections("secrets")})
     # v86 (用户 2026-09-30 拍板): 十年传记与终传都出《礼仪志》(传主所奉礼仪 +
-    # 个人教义转变 + 礼仪教义/热度); v87 起《教会志》整篇删除 (见本节末注释)。
-    # v87 (问题3/7, 用户 2026-09-30 拍板): 删圣所圣髑与教义计数行, 纪事改写
-    # 「该礼仪允许什么、禁止什么」(逐条点名)。
-    if facts.get("rite") or facts.get("rite_profile"):
+    # 个人教义转变 + 宗教热情/灵性满足); v87 起《教会志》整篇删除 (见本节末注释)。
+    # v87 (问题3/7): 删圣所圣髑与教义计数行。
+    # v88 (问题3/P3-A, 用户 2026-10-01 拍板): **删「允许/禁止教义」整块** (礼仪级
+    # 静态池, 非传主所选 —— 见 `_liyi_has_material` 注释), 纪事改用「礼仪沿革 +
+    # 禁忌个人信条 + 门下教众的个人教义」; 并加**素材门槛**: 宗教面无实据者整篇不出
+    # (用户: 「没有礼仪写就不写礼仪」)。
+    if _liyi_has_material(facts):
         # 线序: 紧跟《家室列传》(及其后的恩怨录/宝物志), 在《历代记》之前
         _anchor = 0
         for _i, _a in enumerate(articles):
             if _a.get("key") in ("jiashi", "feuds", "artifacts"):
                 _anchor = _i + 1
+        # 纪事无料时只出开篇 (开篇/纪事两块料不相交, 见 `_liyi_has_mid`)
+        _secs = mk_sections("liyi")
+        if not _liyi_has_mid(facts):
+            _secs = _secs[:1]
         articles.insert(_anchor, {"key": "liyi", "title": "礼仪志·礼仪与教义",
                                   "subject": None,
                                   "theme": "传主所受之礼与个人教义的演变",
-                                  "focus": "写礼仪的沿革与教义：受礼、改礼、"
-                                           "个人教义之更替、允许与禁止的教义",
-                                  "sections": mk_sections("liyi")})
+                                  "focus": "写礼仪的沿革与教门中的作为：受礼、改礼、"
+                                           "立礼、个人教义之更替、所立修会、"
+                                           "门下诸人所奉的个人信条",
+                                  "sections": _secs})
+    elif facts.get("rite_profile"):
+        llm.log("[篇目] 宗教面无实据 (无改礼、无信条更替、无所立修会、无禁忌信条)，"
+                "《礼仪志》整篇略去")
     # v87 (问题5, 用户 2026-09-30 拍板): **删《教会志》整篇** —— 其素材全部来自
     # 基督教教会情境 (`the_christian_church`), 而该局势只在 867 开局出现
     # (游戏 `on_action/game_start.txt` 无其 start_situation; 脚本唯一发端是调试互动
     # `00_debug_interactions.txt:4821`; 局面注释见 `pam_christian_situation.txt:288`),
     # 且「当今之局/众望所归/主流之礼」一层对传记无实义。
-    return articles
+    # v88 (问题1/P1): 统一上限 —— 候选多于 `ARTICLE_MAX` 时按 `_ARTICLE_PRIO` 取前 N。
+    return _apply_article_cap(articles)
 
 def _is_admin(facts):
     """行政制判定: 主角政府为 administrative (行政官制)。"""

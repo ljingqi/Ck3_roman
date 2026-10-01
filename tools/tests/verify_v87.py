@@ -13,9 +13,15 @@
     [4] 男爵领不再带层级词 (纯函数 + 快照: 无「堡」后缀的地名)
     [5] 无 jiaohui 篇 / 无 facts.church_state 键 / 无「当今之局」「教廷之势」
     [6] 个人教义为「放弃…改奉…」式; 档案行只出当时所奉
-    [7] `礼仪教义：核心…条` 计数行不再出现; 允许/禁止教义逐条点名
+    [7] `礼仪教义：核心…条` 计数行不再出现; 允许/禁止教义逐条点名 (schema<4 的旧快照)
     [8] 用词: 礼仪领袖 / 宗教热情 / 个人教义沿革; 「本礼之首」「礼仪之热」不再出现
-    [附] 板块判定: 开篇拿档案、纪事拿允许/禁止 (不再同块)
+    [附] 板块判定: 开篇拿档案、纪事拿允许/禁止 (schema<4 的旧快照)
+
+v88 同步 (2026-10-01, 见 docs/方案_v88_三问题.md §4.6):
+    「允许/禁止教义」整块已删 ⇒ [7] 与 [附] 两组只对 **schema<4** 的 v87 期快照断言;
+    schema>=4 的快照改由 `tools/tests/verify_v88.py` 断言 (新增 holy_orders /
+    forbidden_tenets / vassal_tenets 与「纪事·修会与教众」块面)。
+    U7 的板块名随之改为「纪事·修会与教众」(v88/P4 拍板)。
 """
 import json
 import os
@@ -67,7 +73,7 @@ def unit_checks():
           and "jiaohui" not in style.SECTION_REQ)
     check("U7 礼仪志篇名已改口",
           style.SECTION_TITLES.get("liyi", {}).get("lead") == "开篇·所奉礼仪"
-          and style.SECTION_TITLES.get("liyi", {}).get("mid") == "纪事·礼仪沿革")
+          and style.SECTION_TITLES.get("liyi", {}).get("mid") == "纪事·修会与教众")
     check("U8 Facts 无 church_state_lines / holy_site_lines",
           not hasattr(F.Facts, "church_state_lines")
           and not hasattr(F.Facts, "holy_site_lines"))
@@ -127,13 +133,19 @@ def snap_checks(path):
           not re.search(r"礼仪教义：核心\d+条", txt))
     check("7b 无「核心3条」「允许18条」计数",
           not re.search(r"(?:核心|允许|已知|禁止)\d+条", txt))
-    rt = " ".join(facts.get("rite_tenets") or [])
-    if rt:
-        check("7c 允许/禁止教义逐条点名",
-              "允许教义：" in rt and "禁止教义：" in rt and "〈" in rt, rt[:80])
+    # v88: 「允许/禁止教义」整块已删 (礼仪级静态池 ⇒ 有个人色彩的三样取代), 故本组
+    # 只对 v87 期 (schema<4) 快照断言; 新快照由 verify_v88.py 断言。
+    if int(snap.get("schema") or 1) < 4:
+        rt = " ".join(facts.get("rite_tenets") or [])
+        if rt:
+            check("7c 允许/禁止教义逐条点名",
+                  "允许教义：" in rt and "禁止教义：" in rt and "〈" in rt, rt[:80])
+        else:
+            check("7c 允许/禁止教义逐条点名 (有 rite 时应非空)",
+                  not facts.get("rite_profile"), "rite_tenets 为空")
     else:
-        check("7c 允许/禁止教义逐条点名 (有 rite 时应非空)",
-              not facts.get("rite_profile"), "rite_tenets 为空")
+        print("  SKIP [7c] v88 起「允许/禁止教义」已删 (schema>=4), "
+              "改由 tools/tests/verify_v88.py 断言")
     # [8] 用词
     check("8a 无「本礼之首」", "本礼之首" not in txt)
     check("8b 无「礼仪之热」", "礼仪之热" not in txt)
@@ -142,14 +154,22 @@ def snap_checks(path):
     check("8d 无「仪轨与教化」", "仪轨与教化" not in txt)
     check("8e 块名 个人教义沿革 / 无 个人教义始奉",
           "个人教义始奉" not in json.dumps(blocks, ensure_ascii=False))
-    # [附] 板块判定
+    # [附] 板块判定 (v88: schema<4 的旧快照断言「纪事拿礼仪教义」; 新快照见 verify_v88)
     lead = blocks.get("liyi_lead") or {}
     mid = blocks.get("liyi_mid") or {}
     if lead or mid:
         check("附1 开篇有礼仪档案、无礼仪教义",
               ("礼仪档案" in lead) and ("礼仪教义" not in lead))
-        check("附2 纪事有礼仪教义、无礼仪档案",
-              ("礼仪教义" in mid) and ("礼仪档案" not in mid))
+        if int(snap.get("schema") or 1) < 4:
+            check("附2 纪事有礼仪教义、无礼仪档案",
+                  ("礼仪教义" in mid) and ("礼仪档案" not in mid))
+        else:
+            # v88: 纪事只许纪事类块 (礼仪沿革 / 禁忌个人信条 / 门下教众) + 传主档案
+            _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "门下教众"}
+            check("附2 v88 纪事只含纪事类块、无礼仪档案/礼仪教义",
+                  set(mid) <= _mid_ok
+                  and ("礼仪档案" not in mid) and ("礼仪教义" not in mid),
+                  str(list(mid)))
         check("附3 开篇/纪事不再同块",
               {k: v for k, v in lead.items() if k != "传主档案"}
               != {k: v for k, v in mid.items() if k != "传主档案"})
