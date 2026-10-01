@@ -23,6 +23,9 @@ _backup_*/
 *.bak
 *.corrupt*
 
+# 沙箱权限诊断的 ACL 备份与报告 (本机专用；见 .agents/skills/diagnose-windows-sandbox-acl)
+.acl-recovery/
+
 # 生成物 (可再生成)
 data/melt_*.json
 data/player_*.json
