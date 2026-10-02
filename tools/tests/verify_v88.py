@@ -31,6 +31,10 @@ _DEFAULT = (
     os.path.join(ROOT, "output", "洪氏2", "data", "snap_38957_878.1.1_d1.json"),
     os.path.join(ROOT, "output", "洪氏2", "data", "snap_38957_888.1.1_d2.json"),
     os.path.join(ROOT, "output", "洪氏2", "data", "snap_38957_898.1.1_d3.json"),
+    # v89: 用当前代码重建的三份 (新传输面) + 终传
+    os.path.join(ROOT, "output", "洪氏2", "data", "snap_v89_d1.json"),
+    os.path.join(ROOT, "output", "洪氏2", "data", "snap_v89_d3.json"),
+    os.path.join(ROOT, "output", "洪氏2", "data", "snap_v89_final.json"),
 )
 _OK = True
 _CN = "一二三四五六七八九"
@@ -133,17 +137,26 @@ def snap_checks(path):
           f"decade={meta.get('decade')} ({os.path.basename(path)})")
     check("S0 快照 schema>=4 (v88 传输面)", int(snap.get("schema") or 1) >= 4,
           str(snap.get("schema")))
+    # v89: 只有用 v89 代码重建的快照才断言 v89 传输面 (旧快照是历史基线)
+    _v89 = "rite_tenet_changes" in facts
     txt = _texts(snap)
     # [3] 删块
     check("S1 facts 无 rite_tenets 键", "rite_tenets" not in facts)
     check("S2 无「允许教义：」「禁止教义：」", "允许教义" not in txt and "禁止教义" not in txt)
-    check("S3 新素材键齐备",
-          all(k in facts for k in ("holy_orders", "forbidden_tenets",
-                                   "rite_tenet_changes", "personal_tenets")),
-          str([k for k in ("holy_orders", "forbidden_tenets",
-                           "rite_tenet_changes", "personal_tenets")
-               if k not in facts]))
-    check("S3b 门下教众键已删 (v89 问题5)", "vassal_tenets" not in facts)
+    if _v89:
+        check("S3 新素材键齐备 (v89)",
+              all(k in facts for k in ("holy_orders", "forbidden_tenets",
+                                       "rite_tenet_changes", "personal_tenets")),
+              str([k for k in ("holy_orders", "forbidden_tenets",
+                               "rite_tenet_changes", "personal_tenets")
+                   if k not in facts]))
+        check("S3b 门下教众键已删 (v89 问题5)", "vassal_tenets" not in facts)
+    else:
+        check("S3 新素材键齐备 (v88 基线)",
+              all(k in facts for k in ("holy_orders", "forbidden_tenets",
+                                       "vassal_tenets", "personal_tenets")),
+              str([k for k in ("holy_orders", "forbidden_tenets", "vassal_tenets",
+                               "personal_tenets") if k not in facts]))
     # [1] 篇目
     check("S4 篇目数 ≤ ARTICLE_MAX", len(keys) <= bio.ARTICLE_MAX,
           f"{len(keys)} 篇: {keys}")
@@ -160,19 +173,28 @@ def snap_checks(path):
     lead = blocks.get("liyi_lead") or {}
     mid = blocks.get("liyi_mid") or {}
     if lead or mid:
-        # v89 (问题4/5): 修会块改「修会」并留在开篇; 纪事加「本礼教义沿革」、删「门下教众」
-        _lead_ok = {"传主档案", "礼仪档案", "个人教义沿革", "修会"}
-        _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "本礼教义沿革"}
+        if _v89:
+            # v89 (问题4/5): 修会块改「修会」并留在开篇; 纪事加「本礼教义沿革」、删「门下教众」
+            _lead_ok = {"传主档案", "礼仪档案", "个人教义沿革", "修会"}
+            _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "本礼教义沿革"}
+        else:
+            _lead_ok = {"传主档案", "礼仪档案", "个人教义沿革", "所立修会"}
+            _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "门下教众"}
         check("S6a 开篇只含开篇类块", set(lead) <= _lead_ok, str(list(lead)))
         check("S6b 纪事只含纪事类块 (无礼仪档案/修会)",
               set(mid) <= _mid_ok, str(list(mid)))
-    # [3] 修会行 (v89: 旧「门下教众 ≤12 行」断言作废)
-    ho = facts.get("holy_orders") or []
-    check("S7 修会行 ≤ 6 行", len(ho) <= 6, str(len(ho)))
-    if ho:
-        check("S7b 每行含「他立」或「在其领地之内」或「庇护者」",
-              all(("他立" in x or "在其领地之内" in x or "庇护者" in x)
-                  for x in ho), ho[0][:80])
+    # [3] 门下教众 (v88 基线) / 修会行 (v89)
+    if _v89:
+        ho = facts.get("holy_orders") or []
+        check("S7 修会行 ≤ 6 行", len(ho) <= 6, str(len(ho)))
+        if ho:
+            check("S7b 每行含「他立」或「在其领地之内」或「庇护者」",
+                  all(("他立" in x or "在其领地之内" in x or "庇护者" in x)
+                      for x in ho), ho[0][:80])
+    else:
+        vt = facts.get("vassal_tenets") or []
+        check("S7 门下教众 ≤ 12 行 (v88 基线, 常量已随 v89 删除)",
+              len(vt) <= 12, str(len(vt)))
     # [3] 个人教义进档案
     profs = facts.get("characters") or {}
     n_pt = sum(1 for v in profs.values()
@@ -203,8 +225,12 @@ def snap_checks(path):
             check("S9c2 898 年两所修会都在 (880 立 / 891 立)",
                   len(facts.get("holy_orders") or []) == 2,
                   str(facts.get("holy_orders")))
-            check("S9c3 898 年本礼核心教义尚无更替 (902 才换) ⇒ 无该块",
-                  "本礼教义沿革" not in mid, str(list(mid)))
+            if _v89:
+                _tcs = facts.get("rite_tenet_changes") or []
+                check("S9c3 898 年《礼仪志》纪事含 887 年的本礼教义更替",
+                      "本礼教义沿革" in mid
+                      and any("887年起" in x and "换成" in x for x in _tcs),
+                      json.dumps(_tcs, ensure_ascii=False)[:200])
 
 
 def main():

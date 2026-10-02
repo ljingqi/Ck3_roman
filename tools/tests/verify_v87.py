@@ -73,7 +73,8 @@ def unit_checks():
           and "jiaohui" not in style.SECTION_REQ)
     check("U7 礼仪志篇名已改口",
           style.SECTION_TITLES.get("liyi", {}).get("lead") == "开篇·所奉礼仪"
-          and style.SECTION_TITLES.get("liyi", {}).get("mid") == "纪事·修会与教众")
+          and style.SECTION_TITLES.get("liyi", {}).get("mid")
+          in ("纪事·修会与教众", "纪事·礼仪与教义沿革"))
     check("U8 Facts 无 church_state_lines / holy_site_lines",
           not hasattr(F.Facts, "church_state_lines")
           and not hasattr(F.Facts, "holy_site_lines"))
@@ -167,7 +168,9 @@ def snap_checks(path):
                   ("礼仪教义" in mid) and ("礼仪档案" not in mid))
         else:
             # v88: 纪事只许纪事类块 (礼仪沿革 / 禁忌个人信条 / 门下教众) + 传主档案
-            _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "门下教众"}
+            # v89 (问题4/5): 「门下教众」删、「本礼教义沿革」入纪事(修会移入开篇)
+            _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "门下教众",
+                       "本礼教义沿革"}
             check("附2 v88 纪事只含纪事类块、无礼仪档案/礼仪教义",
                   set(mid) <= _mid_ok
                   and ("礼仪档案" not in mid) and ("礼仪教义" not in mid),

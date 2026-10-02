@@ -11593,10 +11593,17 @@ class Facts:
                 cn = self.event_name(cur, date=date)
                 hd = self._title_holder_since(tid, cur, date)
                 if cn:
+                    # 不加括注 (见 `rite_tenet_changes` 同注)
                     bits.append("现任之长" + cn
-                                + (f"（自{self._year_only(hd)}年起）" if hd else ""))
+                                + (f"，{self._year_num(hd)}年起在任" if hd else ""))
             rows.append(head + ("，" + "，".join(bits) if bits else "") + "。")
         return rows
+
+    @staticmethod
+    def _year_num(d):
+        """日期串 → 年份数字 ('' 输入给 '')。"""
+        s = str(d or "").split(".")[0]
+        return s if s.isdigit() else ""
 
     def forbidden_tenet_lines(self, cid, date=None):
         """「禁忌个人信条」句 (《礼仪志》纪事, v88 问题3/P3-A、P6)。
@@ -11655,10 +11662,12 @@ class Facts:
         谁改的: 机制上只有本礼 `head_of_rite` 能改 (或他受人操控而改), 故按该档
         `head_of_rite` 写出当时的礼仪领袖 (`person_label`, 取不到则略去该分句)。
 
-        输出两式 (v89 问题3 起教义名不加〈〉):
-          · 首个已知档: `886年起，礼仪领袖X定本礼核心教义为宗徒继承、圣人敬礼、华夏综摄主义。`
-          · 有更替  : `890年起，礼仪领袖X改本礼核心教义：圣人敬礼换成圣洁自然
-                      （今为宗徒继承、圣洁自然、华夏综摄主义）。`"""
+        输出**只写真正的更替** (首个已知档只作基线, 不出句 —— 开篇的「核心教义」行
+        已给当前三条), 句式 (v89 问题3 起教义名不加〈〉):
+          · 换出且换入: `890年起，礼仪领袖X改本礼核心教义：圣人敬礼换成圣洁自然
+                        （今为宗徒继承、圣洁自然、华夏综摄主义）。`
+          · 只增      : `…为本礼增定Y（今为…）。`
+          · 只减      : `…本礼核心教义去Y（今为…）。`"""
         rid = self._rite_id(cid, date)
         if rid is None:
             return []
@@ -11678,23 +11687,22 @@ class Facts:
             if not core:
                 continue
             names = [self.tenet_name(k, rid) or k for k in core]
-            year = self._year_only(d)
-            if prev is None:
-                rows.append(f"{year}年起，{self._leader_clause(h, d)}"
-                            f"定本礼核心教义为{'、'.join(names)}。")
-            elif set(core) != set(prev):
+            year = int(str(d).split(".")[0]) if str(d).split(".")[0].isdigit() \
+                else self._year_only(d)
+            if prev is not None and set(core) != set(prev):
                 out = [self.tenet_name(k, rid) or k for k in prev if k not in core]
                 inn = [self.tenet_name(k, rid) or k for k in core if k not in prev]
+                # 不加括注 (`verify_fast` 明令传输面无「名词（名词）」式同位语);
+                # 当前三条已由开篇的「核心教义」行给出, 此处不重复。
                 if out and inn:
                     rows.append(f"{year}年起，{self._leader_clause(h, d)}"
                                 f"改本礼核心教义：{'、'.join(out)}换成"
-                                f"{'、'.join(inn)}（今为{'、'.join(names)}）。")
+                                f"{'、'.join(inn)}。")
                 elif inn:
                     rows.append(f"{year}年起，{self._leader_clause(h, d)}"
-                                f"为本礼增定{'、'.join(inn)}（今为{'、'.join(names)}）。")
+                                f"为本礼增定{'、'.join(inn)}。")
                 else:
-                    rows.append(f"{year}年起，本礼核心教义去{'、'.join(out)}"
-                                f"（今为{'、'.join(names)}）。")
+                    rows.append(f"{year}年起，本礼核心教义去{'、'.join(out)}。")
             prev = core
         return rows
 

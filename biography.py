@@ -3270,19 +3270,22 @@ def _subject_has_material(facts, cid):
 def _liyi_has_material(facts):
     """《礼仪志》出篇门槛 (v88 问题3/P3-A, 用户「没有礼仪写就不写礼仪」)。
 
-    要求宗教面有**可系年的事**, 五者任一:
+    要求宗教面有**可系年的事**, 四者任一:
       · 礼仪沿革 ≥2 段 (改礼/立礼 —— 1 段只是「他一直奉某礼」, 不构成事件);
       · 个人教义的变更点 ≥2 (始奉之外还有放弃/改奉);
-      · 修会 (亲立/庇护/领地内同信仰者, 已按 as_of 截断, 见 `facts.holy_order_lines`);
-      · 本礼核心教义自身的更替 (见 `facts.rite_tenet_changes`);
+      · 修会 (亲立/领地内同信仰者, 已按 as_of 截断, 见 `facts.holy_order_lines`);
       · 禁忌个人信条 (见 `facts.forbidden_tenet_lines`)。
-    全无者不出该篇 —— 他的个人教义仍会写进自己的档案行 (P3-A-⑤), 信息不丢。"""
+    全无者不出该篇 —— 他的个人教义仍会写进自己的档案行 (P3-A-⑤), 信息不丢。
+
+    v89 (问题4): **本礼教义更替不单独作门槛** —— 那三条教义只有本礼礼仪领袖能改,
+    可能是别国的礼仪领袖改的 (本档实测 878 年就是教宗色尔爵三世改的罗马礼),
+    不是传主本人的行迹; 它只在《礼仪志》已因别的理由立起时, 进纪事当一块料
+    (见 `_liyi_has_mid`)。"""
     if not (facts.get("rite") or facts.get("rite_profile")):
         return False
     return len(facts.get("rite_history") or []) >= 2 \
         or len(facts.get("personal_tenets") or []) >= 2 \
         or bool(facts.get("holy_orders")) \
-        or bool(facts.get("rite_tenet_changes")) \
         or bool(facts.get("forbidden_tenets"))
 
 
@@ -3608,8 +3611,8 @@ def build_articles(facts, cache, cfg):
                                            "他所亲立或庇护的修会",
                                   "sections": _secs})
     elif facts.get("rite_profile"):
-        llm.log("[篇目] 宗教面无实据 (无改礼、无信条更替、无所立修会、无禁忌信条)，"
-                "《礼仪志》整篇略去")
+        llm.log("[篇目] 宗教面无实据 (无改礼、无信条更替、无修会、无禁忌信条)，"
+                "《礼仪志》整篇略去 (本礼教义更替单独不作门槛, 见 `_liyi_has_material`)")
     # v87 (问题5, 用户 2026-09-30 拍板): **删《教会志》整篇** —— 其素材全部来自
     # 基督教教会情境 (`the_christian_church`), 而该局势只在 867 开局出现
     # (游戏 `on_action/game_start.txt` 无其 start_situation; 脚本唯一发端是调试互动
