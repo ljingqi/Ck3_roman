@@ -23313,6 +23313,93 @@ def _secrets_facts(f):
     return out
 
 
+# ---------------------------------------------------------------------------
+# v95 (问题4): 教育记忆的**隔日重复**归并
+# ---------------------------------------------------------------------------
+# 用户 2026-10-02 报「接受教育的事件会隔一天出现」:
+#     885年8月7日，堕邪者洪天贵福被伯爵曹楠教育。
+#     885年8月8日，堕邪者洪天贵福被伯爵曹楠教育。
+# 根因 (游戏侧, 见 docs/调研_v95_教育记忆双日.md):`childhood_education_guardian`
+# 全脚本只有一个创建点 `wrap_up_education_effect` (`00_education_effects.txt:1933`,
+# 加记忆在 `:1981-1986`), 但 16 岁生日链把它**调用两次** —— `coming_of_age.0001-.0005`
+# 的 `immediate` (`coming_of_age_events.txt:516` 等, 生日当天) 与
+# `childhood_on_actions.txt:198` 的 `delay = { days = 2 }` → `childhood_education.0006`
+# (`childhood_education_events.txt:249`)。三条记忆都挂在**学生**名下, `vars` 逐项相同,
+# 只有 `creation_date` (与其平移的 `end_date`) 差 0–2 天; 第二条的 `guardian` 常被
+# 重解析为宫廷太傅 —— 故缓存既有的去重键 `(记忆id, creation_date)`
+# (`cache_lib.py:3058-3068`) 与 `_timeline` 的 `(type, date, participants)` 都抓不到它。
+# 实测本档 34177 人 / 297140 条记忆: 该型 229 组重复, 日差分布 {0: 4, 1: 225};
+# 镜像类型 `ward_education_completed` 228 组同型。保留**较早**那条 = 真监护人
+# (第二条常是宫廷太傅), 故只按「同签名 (type+participants+vars) 且日差 ≤3 天」折一。
+_EDU_DUP_TYPES = ("childhood_education_guardian", "ward_education_completed")
+_EDU_DUP_MAX_DAYS = 3          # 实测只 0/1/2 天; 留一天余量, 更远者视为另一次受学
+
+
+def _edu_day_ord(date):
+    """CK3 日期 → 序数 (年×360 + 月×30 + 日); 只用于**同日/相邻**比较。"""
+    y, m, d = cl.date_key(date)
+    if y == 9999:
+        return None
+    return y * 360 + m * 30 + d
+
+
+def _dedupe_education_memories(cache):
+    """把「同一次受学被留两条」的教育记忆折成一条 (v95 问题4) —— 原地归一。
+
+    判据 (全部数据可判, 与 `participants` 无关 —— 第二条的业师常是宫廷太傅,
+    照 `participants` 比就永远抓不到):
+      ① 同型 (`_EDU_DUP_TYPES`); ② `participants` 与 `vars` 的签名逐项相同;
+      ③ 日差 ≤ `_EDU_DUP_MAX_DAYS` 天 (同日重复也只留最先一条);
+      ④ 保留**最早**那条 (真监护人)。
+    更远的两条视为两次受学, 都留。返回被折掉的条数 (供日志与断言)。"""
+    dropped = 0
+    for rec in (cache.get("characters") or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        mems = rec.get("memories")
+        if not isinstance(mems, list) or not mems:
+            continue
+
+        def _sig(m):
+            return (str(m.get("type") or ""),
+                    json.dumps(m.get("participants") or {}, sort_keys=True),
+                    json.dumps(m.get("vars") or [], sort_keys=True))
+
+        best = {}
+        for m in mems:
+            if not isinstance(m, dict) or str(m.get("type") or "") not in _EDU_DUP_TYPES:
+                continue
+            sig = _sig(m)
+            d = str(m.get("creation_date") or "")
+            cur = best.get(sig)
+            if cur is None or cl.date_key(d) < cl.date_key(cur):
+                best[sig] = d
+        if not best:
+            continue
+        out, kept_same_day = [], set()
+        for m in mems:
+            if isinstance(m, dict) and str(m.get("type") or "") in _EDU_DUP_TYPES:
+                sig = _sig(m)
+                d = str(m.get("creation_date") or "")
+                base = best.get(sig)
+                if base is not None:
+                    o1, o2 = _edu_day_ord(d), _edu_day_ord(base)
+                    if o1 is not None and o2 is not None and o1 == o2:
+                        # 同日同签名的退化成对: 只留最先遇到的一条
+                        if sig in kept_same_day:
+                            dropped += 1
+                            continue
+                        kept_same_day.add(sig)
+                    elif o1 is not None and o2 is not None \
+                            and 0 < o1 - o2 <= _EDU_DUP_MAX_DAYS:
+                        dropped += 1
+                        continue
+            out.append(m)
+        if len(out) != len(mems):
+            rec["memories"] = out
+    return dropped
+
+
 def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
                 nickname_override=None, cfg=None, campaign=None):
     """渲染干净事实集。melt 为 dict (已加载)。
@@ -23322,6 +23409,12 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     nickname_override (v20): {cid: 绰号} 按时代绰号覆盖 (十年传记重跑用)。
     cfg (v41): 配置 (开关类口径); 缺省读 config.json。
     campaign (v44): 同战役全部传主缓存 {player_id: cache} — 传主链亲缘/名号用。"""
+    # v95 (问题4): 教育记忆「同一次受学留两条 (隔日)」先折一 —— 放在建 Facts 之前,
+    # 于是年表 (`:18531`)、逐人档案 (`:20226`)、列传 (`:16886`) 等全部读取点一并受益
+    _edu_dup = _dedupe_education_memories(cache)
+    if _edu_dup:
+        llm.log(f"  [v95-4] 教育记忆隔日重复折掉 {_edu_dup} 条 "
+                f"(childhood_education_guardian / ward_education_completed)")
     f = Facts(cache, melt, names_path, as_of=as_of, decade=decade,
               nickname_override=nickname_override, cfg=cfg, campaign=campaign)
     period = ""
