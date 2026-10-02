@@ -2132,8 +2132,39 @@ class Facts:
         memo[cid] = out
         return out
 
-    # ---- v17: 世系编号 (II/III 二世标记) ----
-    # 游戏不把编号存进存档, 显示时按「首要头衔 title history 中同名前任数 + 1」
+    def regnal_birth_name(self, cid, date=None):
+        """继位改名者 (教宗圣名) 的**本名**中文; 无改名 / 与本名同 → '' (v95 问题7)。
+
+        数据方向 (见 `docs/调研_v95_教皇教名.md`): `regnal_name` 是**权威显示名字段**
+        (即位当档由引擎授予, 头衔定义驱动), `first_name` 即位后不再出现在任何游戏显示面
+        —— 故「教名为主、本名为辅」。本名取 `first_name` 的中文 (`cl.name_zh`), 与
+        圣名相同 (或圣名含本名) 时返回 '', 不写重复的一句。"""
+        rn = self._regnal_name_zh(cid, date)
+        if not rn:
+            return ""
+        c = self._chars.get(str(cid)) or {}
+        birth = ""
+        if c:
+            try:
+                birth = cl.name_zh(c) or ""
+            except Exception:                                     # noqa: BLE001
+                birth = ""
+        if not birth:
+            birth = (((self.cache.get("characters") or {}).get(str(cid)) or {})
+                     .get("name_zh")) or ""
+        if not birth or birth == rn:
+            return ""
+        return birth
+
+    def label_with_birth_name(self, cid, label, date=None):
+        """称谓 + 本名注 (v95 问题7, 用户 2026-10-02 拍板「本名与圣名并写」)。
+
+        仅**标识性栏目**用 (礼仪领袖 / 现任教宗 / 人物档案行), 年表逐行不加 ——
+        免得同一篇里「教宗克肋孟（本名阿斯卡尼奥）」重复几十次。"""
+        b = self.regnal_birth_name(cid, date)
+        return f"{label}（本名{b}）" if b else label
+
+    # ---- v17: 世系编号 (II/III 二世标记) ----    # 游戏不把编号存进存档, 显示时按「首要头衔 title history 中同名前任数 + 1」
     # 动态计算 (修复方案_汤利五问题.md 问题7, 实测: c_braila 860 年 Ciprian →
     # 893 年 Ciprian 即「奇普里安II」; k_ruthenia 881 年父子两代 Ruslan →
     # 子为「鲁斯兰·克里维奇二世」)。I 不显示。
@@ -9641,6 +9672,23 @@ class Facts:
                 out.add(str(it["flag"]))
         return out
 
+    def _char_var(self, cid, flag):
+        """角色变量 `variables.data[flag]` 的 `data.identity` (v95 问题2, 取不到 None)。
+
+        `value` 型 (如 `pam_papabile_score`, 定点 ×100000) 返回原值; `char` 型
+        (如 `pam_papabile_leaning_target`) 返回角色 id; 变量不存在返回 None。
+        取值面与渲染面同源 (`self._chars` = `cl.all_characters(melt)`, 三桶合一)。"""
+        rec = self._chars.get(str(cid)) or {}
+        vs = (rec.get("alive_data") or {}).get("variables")
+        items = vs.get("data") if isinstance(vs, dict) else vs
+        for it in (items or []):
+            if isinstance(it, dict) and str(it.get("flag")) == flag:
+                d = it.get("data")
+                if isinstance(d, dict) and isinstance(d.get("identity"), (int, float)):
+                    return d["identity"]
+                return None
+        return None
+
     def _battle_poi_hits(self, jailer, date, victim=None):
         """省份战场兴趣点命中 (v63 问题1 最强判据之一) → 省份 id 列表。
 
@@ -11644,8 +11692,12 @@ class Facts:
                 rows.append(f"源自{onm}。")
         head = cl.head_of_rite(self.melt, rid)
         if head is not None:
-            rows.append("礼仪领袖：" + ("本人。" if head == cid
-                                       else f"{self.event_name(head, date=date)}。"))
+            # v95 (问题7): 继位改名者 (教宗圣名) 在此附本名 —— 「礼仪领袖：教宗
+            # 亚纳大削（本名恂）。」; 非改名者逐字不变。
+            _hl = "本人。" if head == cid else f"{self.event_name(head, date=date)}。"
+            if head != cid:
+                _hl = self.label_with_birth_name(head, _hl.rstrip("。"), date) + "。"
+            rows.append("礼仪领袖：" + _hl)
         # v94 (问题4): 本信仰的**对立方之首** (对立教宗) —— 只认 `head_of_rite`
         # 会把玩家自己扶立的那一位整条漏掉 (用户 2026-10-02 报「礼仪志里没有
         # 宗教领袖」)。行面与行首词见 `antipope_lines`。
@@ -12205,11 +12257,35 @@ class Facts:
             self._antipope_ids = ids
         return self._antipope_ids
 
+    def _title_destroyed_date(self, tid):
+        """该头衔 history 里最早的 `destroyed` 事件日期 (无则 '') (v95 问题7 附带)。
+
+        用于「职位头衔已被销毁 ⇒ 该职已终结」的判据: 对立的职位头衔在**转正**
+        (或挑战终结) 时被 `destroy_title`, 而末档仍留着 holder 字段。"""
+        hist = (self._lt.get(str(tid)) or {}).get("history")
+        if not isinstance(hist, dict):
+            return ""
+        out = ""
+        for d, v in hist.items():
+            for e in (v if isinstance(v, list) else [v]):
+                if not isinstance(e, dict) or e.get("type") != "destroyed":
+                    continue
+                ds = str(d)
+                if not out or cl.date_key(ds) < cl.date_key(out):
+                    out = ds
+        return out
+
     def antipope_office_at(self, cid, date=None):
         """本人在 date 时点**在任**的对立教宗头衔 id (无则 None)。
 
         「在任」走 `_hold_intervals` (按 as_of 截断; `abdication` 是受禅换人,
-        与项目既有口径一致 —— 该位 `always_follows_primary_heir`, 家族世袭)。"""
+        与项目既有口径一致 —— 该位 `always_follows_primary_heir`, 家族世袭)。
+
+        v95 (问题7 附带): 头衔**已被 destroyed** 的排除 —— 本档 946.2.24 对立教宗
+        转正为教宗时, `pam_antipope_effects.txt:189-194` 销毁了职位头衔, 而末档
+        `holder` 仍是那个人, `_hold_intervals` 于是把他一直算作「在任对立教宗」,
+        终传里**罗马教宗被写成「罗马对立教宗亚纳大削三世」**(用户 2026-10-02 的
+        相邻发现)。销毁日之后一律不算在任; 销毁日之前照旧。"""
         if cid is None:
             return None
         pos = self._antipope_office_ids()
@@ -12220,6 +12296,9 @@ class Facts:
         for tid in sorted(pos):
             rng = ivs.get(tid)
             if not rng:
+                continue
+            _dd = self._title_destroyed_date(tid)
+            if _dd and (not date or cl.date_key(str(date)) >= cl.date_key(_dd)):
                 continue
             if best is None:
                 best = tid
@@ -12374,6 +12453,224 @@ class Facts:
         # (其他地方按它的返回值再补场面/国号), 故只给概念原词, 不加定位前缀
         # (带前缀的完整称谓走 `antipope_label`, 供年表与《礼仪志》用)。
         return self._ANTIPOPE_WORD if self.antipope_office_at(cid) is not None else ""
+
+    # ---- v95 (问题2): 枢机团与教宗选举 ----
+    # 游戏侧取证见 `docs/调研_v95_枢机团与教宗选举.md`:
+    #   · 席位 = 头衔 `clerical_elector = <fid>` (`11_dlc_pam_scripted_effects.txt:169,257,592`),
+    #     席位名取 `title_name_data.name` (存档已汉化), 持有人走头衔 `.holder`;
+    #   · 在位/虚悬 = `faiths.database[<fid>].active_clerical_electors` /
+    #     `inactive_clerical_electors` (前者 33 顶实测全有持有人);
+    #   · 教宗候选声望 = 角色变量 `pam_papabile_score` (定点 ×100000, **无 history**);
+    #   · 下届名单与票 = 教宗座头衔的
+    #     `succession_election{nominations[], candidate_sources[]}` (票 = 同候选
+    #     `strength` 求和; `heir` 实测即票序), 派别 = `candidate_sources[].key`;
+    #   · 现任教宗 = `k_papal_state` 的 `.holder` (空 = 宗座出缺);
+    #   · 奔走 = 枢机变量 `pam_papabile_leaning_target` (20 年计时), 压力 =
+    #     `pam_forced_papal_vote_target` (本档 0 例, 故不单出一行)。
+    # 不写: 当选概率 (引擎内部, 存档无字段)、逐档分数曲线 (无 history)。
+    _CARDINAL_LIST_MAX = 12          # 「本朝封臣入枢机者」逐人列出的上限
+    _PAPAL_FACTION_WORDS = (
+        ("theocratic_elective_pious", "虔诚派"),
+        ("theocratic_elective_populist", "大众派"),
+        ("theocratic_elective_powerful", "权势派"),
+    )
+
+    def _cardinal_word(self):
+        """「枢机」的中文 (查概念键, 缺则兜底原词)。"""
+        for key in ("game_concept_cardinal", "cardinal_male"):
+            try:
+                v = L.loc(self.table, key) or ""
+            except Exception:                                     # noqa: BLE001
+                v = ""
+            if v and not v.startswith(("$", "[")):
+                return v
+        return "枢机"
+
+    def _cardinal_seats(self, fid=None):
+        """枢机席位 {tid: {"fid", "name", "holder"}} (v95 问题2; 惰性全表扫一遍)。
+
+        `tid` = `landed_titles` 里 `clerical_elector` 非空的头衔; `fid` 给定时只留
+        该信仰的席位。"""
+        memo = getattr(self, "_cardinal_seats_memo", None)
+        if memo is None:
+            memo = {}
+            for tid, t in self._lt.items():
+                if not isinstance(t, dict):
+                    continue
+                _f = t.get("clerical_elector")
+                if _f is None:
+                    continue
+                memo[str(tid)] = {
+                    "fid": _f if isinstance(_f, int) else None,
+                    "name": str(((t.get("title_name_data") or {}).get("name")) or ""),
+                    "holder": t.get("holder") if isinstance(t.get("holder"), int) else None,
+                }
+            self._cardinal_seats_memo = memo
+        if fid is None:
+            return dict(memo)
+        return {k: v for k, v in memo.items() if v.get("fid") == fid}
+
+    def _seat_in_realm_of(self, tid, cid):
+        """该席位头衔的 `de_facto_liege` 链上是否出现 `cid` 持有的头衔 (v95 问题2)。
+
+        存档不存**逐档**臣属层级, 只有当前 de_facto 链 (与该块的时效闸同刻),
+        故只用于「当前态」篇目 (见 `papal_election_lines` 的时效闸)。"""
+        seen = set()
+        cur = (self._lt.get(str(tid)) or {}).get("de_facto_liege")
+        for _ in range(20):
+            if not isinstance(cur, int) or cur in seen:
+                return False
+            seen.add(cur)
+            t = self._lt.get(str(cur)) or {}
+            if not isinstance(t, dict):
+                return False
+            if t.get("holder") == cid:
+                return True
+            cur = t.get("de_facto_liege")
+        return False
+
+    def _papal_seat_tid(self):
+        """教宗座头衔 id (`k_papal_state`; 取不到 None)。"""
+        memo = getattr(self, "_papal_seat_tid_memo", None)
+        if memo is not None:
+            return memo
+        tid = None
+        for _tid, t in self._lt.items():
+            if isinstance(t, dict) and t.get("key") == "k_papal_state":
+                tid = int(_tid) if str(_tid).isdigit() else _tid
+                break
+        self._papal_seat_tid_memo = tid
+        return tid
+
+    def _papal_vote_tally(self, tid=None):
+        """教宗选举 → (选举人数, [(候选 cid, 票数)] 按票降序, {候选 cid: 派别键})。
+
+        票 = `succession_election.nominations[].strength` 按候选求和 (该求和实测与
+        头衔 `heir` 逐条一致, 见调研 §4); 取不到返回 (0, [], {})。"""
+        if tid is None:
+            tid = self._papal_seat_tid()
+        t = self._lt.get(str(tid)) or {}
+        se = t.get("succession_election") if isinstance(t, dict) else None
+        if not isinstance(se, dict):
+            return 0, [], {}
+        tally = {}
+        for n in (se.get("nominations") or []):
+            if not isinstance(n, dict) or not isinstance(n.get("candidate"), int):
+                continue
+            try:
+                tally[n["candidate"]] = tally.get(n["candidate"], 0.0) \
+                    + float(n.get("strength") or 0)
+            except (TypeError, ValueError):
+                continue
+        fac = {}
+        for cs in (se.get("candidate_sources") or []):
+            if isinstance(cs, dict) and isinstance(cs.get("character"), int):
+                fac[cs["character"]] = str(cs.get("key") or "")
+        rows = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
+        return len(se.get("electors") or []), rows, fac
+
+    def _papal_score(self, cid):
+        """教宗候选声望 (`pam_papabile_score`, 定点 ×100000) → 数 (取不到 None)。
+
+        只对**枢机**有意义 (教宗本人也带此变量但无 `cardinal_flag`, 见调研 §2 注)。"""
+        v = self._char_var(cid, "pam_papabile_score")
+        return (v / 100000.0) if isinstance(v, (int, float)) else None
+
+    def papal_election_lines(self, cid=None, date=None):
+        """《礼仪志》第三板块「枢机团与教宗选举」的事实行 (v95 问题2)。
+
+        门槛 (用户 2026-10-02 定的前提) 三条同时成立才出块:
+          ① **当前态** —— `date` 不早于 `cache.last_date`。选举数据无 history
+             (`succession_election`/`papabile` 都是当时字段, 见调研 §2), 十年传记
+             早于末档时整块不出, 免得 915 档写出 952 年的短名单;
+          ② 本文主角**当年所奉之礼**就是该枢机团所属信仰;
+          ③ 该信仰的枢机里有**本文主角的封臣**, 或主角本人即枢机 —— 否则返回 []。
+
+        行面 (全部程序可判): 席次 / 本朝封臣入枢机者 (席位名+姓氏+候选声望) /
+        现任教宗 (含自何日起) / 下届推举与票数 / 派别 / 奔走。"""
+        pid = int(cid) if isinstance(cid, int) else self.cache.get("player_id")
+        if pid is None:
+            return []
+        last = self.cache.get("last_date")
+        if date and last and cl.date_key(str(date)) < cl.date_key(str(last)):
+            return []
+        fid = self._faith_id(pid, date)
+        if fid is None:
+            return []
+        seats = self._cardinal_seats(fid)
+        if not seats:
+            return []
+        mine = {tid: s for tid, s in seats.items()
+                if isinstance(s.get("holder"), int)
+                and s["holder"] != pid
+                and self._seat_in_realm_of(tid, pid)}
+        if not mine and not any(s.get("holder") == pid for s in seats.values()):
+            return []
+        rows = []
+        entry = cl.faith_entry(self.melt, fid)
+        act = [x for x in (entry.get("active_clerical_electors") or [])]
+        ina = [x for x in (entry.get("inactive_clerical_electors") or [])]
+        n_act = len(act) or len([s for s in seats.values()
+                                 if isinstance(s.get("holder"), int)])
+        rows.append(f"枢机团：在位枢机 {n_act} 席"
+                    + (f"，虚悬 {len(ina)} 席。" if ina else "。"))
+        if mine:
+            word = self._cardinal_word()
+            parts = []
+            for tid, s in sorted(mine.items(), key=lambda kv: int(kv[0])
+                                 if str(kv[0]).isdigit() else 0)[:self._CARDINAL_LIST_MAX]:
+                h = s["holder"]
+                # 席位名 + 「枢机」 + **裸名** —— `event_name` 已自带「枢机」等头衔词
+                # (实测「枢机京兆总主教洪思忠」), 直接拼会写出「圣巴比诺枢机枢机X」。
+                nm = self.name_or(h) or self.event_name(h, date=date) or ""
+                seat = s.get("name") or self.title(tid) or ""
+                seg = f"{seat}{word}{nm}" if seat else f"{word}{nm}"
+                sc = self._papal_score(h)
+                if sc is not None:
+                    seg += f"（教宗候选声望 {_num_word(sc)}）"
+                parts.append(seg)
+            rows.append(f"本朝封臣入枢机者 {len(mine)} 人：" + "、".join(parts) + "。")
+        pap = self._papal_seat_tid()
+        holder = (self._lt.get(str(pap)) or {}).get("holder") if pap is not None else None
+        if isinstance(holder, int):
+            # 现任教宗写**裸名** —— 他的 `event_name` 会带上「罗马对立教宗…」
+            # (v94 的对立教宗称谓在「对立教宗转正」后仍生效, 见调研 §3 注), 与
+            # 此处「现任教宗」的身份相抵。
+            nm = self.name_with_regnal(holder, date=date) or self.name(holder, date=date) or ""
+            since = self._title_holder_since(pap, holder, date)
+            _tail = (f"自{self.date(since)}起" if since else "")
+            _b = self.regnal_birth_name(holder, date)
+            _note = "，".join(x for x in ((f"本名{_b}" if _b else ""), _tail) if x)
+            rows.append(f"现任教宗：{nm}" + (f"（{_note}）" if _note else "") + "。")
+        else:
+            rows.append("现任教宗：宗座出缺。")
+        n_el, tally, fac = self._papal_vote_tally(pap)
+        if tally:
+            def _nm(_c):
+                return self.event_name(_c, date=date) or self.name_or(_c)
+
+            seg = "、".join(f"{_nm(c)} {_num_word(v)} 票" for c, v in tally)
+            rows.append(f"下届选举：{n_el or '全'} 位枢机推举 {len(tally)} 人 —— {seg}；"
+                        f"第一顺位为{_nm(tally[0][0])}。")
+            _fw = dict(self._PAPAL_FACTION_WORDS)
+            fparts = [f"{_nm(c)}属{_fw[k]}" for c, _v in tally
+                      if (k := fac.get(c)) and k in _fw]
+            if fparts:
+                rows.append("派别：" + "，".join(fparts) + "。")
+            # 奔走: 指向某候选的 leaning 枢机数 (≥2 人才写, 免得单人噪声)
+            lean = {}
+            for s in seats.values():
+                h = s.get("holder")
+                if not isinstance(h, int):
+                    continue
+                tgt = self._char_var(h, "pam_papabile_leaning_target")
+                if isinstance(tgt, int):
+                    lean[tgt] = lean.get(tgt, 0) + 1
+            for tgt, n in sorted(lean.items(), key=lambda kv: (-kv[1], kv[0])):
+                if n >= 2 and tgt in dict(tally):
+                    rows.append(f"奔走：{n} 位枢机在替{_nm(tgt)}奔走。")
+                    break
+        return rows
 
     # ---- v22: 处决方式 (近似复现 execute_prisoner_interaction 的 send_option) ----
 
@@ -19667,6 +19964,12 @@ def _protagonist(f):
     fhl = f.faith_history_lines(pid)
     if fhl:
         p["faith_history"] = "；".join(fhl)
+    # v95 (问题7): 继位改名者 (教宗圣名) 的**本名**单列一行 (用户 2026-10-02 拍板
+    # 「本名与圣名并写」) —— 显示名/称谓一律走圣名 (游戏口径), 本名在此给一次,
+    # 由 `biography._profile_lines` 渲染「本名：阿斯卡尼奥。」。
+    _rbn = f.regnal_birth_name(pid, f.as_of)
+    if _rbn:
+        p["birth_name"] = _rbn
     # v95 (问题3, 用户 2026-10-02 拍板「整行删去」): 主角档案**不再**写个人教义 ——
     # 旧稿 (v88 问题3/P3-A-⑤) 把 `personal_tenet_lines` 的三段式沿革 (「905年起，
     # 奉转世、圣洁自然为个人教义。908年起，放弃…改奉…」) 塞进主角档案行, 而《礼仪志》
@@ -20228,6 +20531,11 @@ def _character_profiles(f):
         fhl = f.faith_history_lines(cid)
         if fhl:
             prof["faith_history"] = "；".join(fhl)
+        # v95 (问题7): 继位改名者 (教宗圣名) 的**本名**逐人一行 —— 称谓走圣名,
+        # 本名在此给一次 (用户 2026-10-02 拍板「本名与圣名并写」)。
+        _rbn = f.regnal_birth_name(cid, f.as_of)
+        if _rbn:
+            prof["birth_name"] = _rbn
         # v88 (问题3/P3-A-⑤): 个人教义**逐人**入档 (不只是传主) —— 有地统治者才带
         # `playable_data.tenets`, 故只有这些人出这一行 (本档 90 人档案里 18 人)。
         ptl = f.personal_tenet_lines(cid, f.as_of)
@@ -23445,6 +23753,20 @@ _EDU_DUP_TYPES = ("childhood_education_guardian", "ward_education_completed")
 _EDU_DUP_MAX_DAYS = 3          # 实测只 0/1/2 天; 留一天余量, 更远者视为另一次受学
 
 
+def _num_word(v):
+    """数值 → 干净的十进制串 (v95 问题2): 12.0 → '12', 12.5 → '12.5'; 取不到 ''。
+
+    票数 (`nominations[].strength`) 与教宗候选声望 (定点 ×100000) 都是浮点,
+    直出会写成一串 .0。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if abs(f - round(f)) < 1e-6:
+        return str(int(round(f)))
+    return ("%g" % f)
+
+
 def _day_ord(date):
     """CK3 日期 → 序数 (年×360 + 月×30 + 日); 用于**同日/相邻**比较 (v95)。
 
@@ -23659,6 +23981,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # v89 (问题4): 本礼**核心教义自身**的更替 (缓存逐档锁存 + 差分;
         # 键名与 v88 删掉的 `rite_tenets`(允许/禁止清单) 有意区分)。
         "rite_tenet_changes": f.rite_tenet_changes(cache.get("player_id"), as_of),
+        # v95 (问题2): 枢机团与教宗选举 —— 《礼仪志》第三板块的素材。
+        # 只在**当前态**且本文主角的封臣在枢机团里时非空 (无料即空列表, 该节整节不出)。
+        "papal_election": f.papal_election_lines(cache.get("player_id"), as_of),
         # v13: Facts 实例引用 (biography 的关系缘由渲染等需要实例方法)
         "_facts": f,
     }

@@ -2794,6 +2794,17 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         _rn_now = str(c.get("regnal_name") or "")
         if _rn_now != (rec.get("regnal_name") or ""):
             rec["regnal_name"] = _rn_now or None
+            # v95 (问题7, 用户 2026-10-02 报「教皇用的是他的本名」): 继位改名
+            # (教宗圣名/法名) 是**引擎在即位那一档**才写进存档的
+            # (`landed_titles/00_landed_titles.txt:99-103` 的 holding_regnal_male_names),
+            # 而 `name_full` 是**首见那一档**算好的 (上面 `first_time` 块) —— 于是
+            # 出现不一致态: `regnal_name` 已是 `Anastasius_regnal`, `name_full` 还停在
+            # 本名「恂」。任何走 `name_full` 的回退路径 (facts._chain_person /
+            # _chrono_nm 等跨缓存窗口处) 就会把本名写进正文。改名一出现即重算一次
+            # `name_full` —— 与下面「家格改名重算 name_full」(:2838/:2865) 同式。
+            rec["name_full"] = display_name(cache, cid, melt=melt, chars=chars,
+                                            memo=_name_memo) \
+                or rec.get("name_full") or ""
         # v44 (问题1): 家族沿革 — 私生女另立家族 (阿德尔海德 1118.4.2 别立冯·亚琛氏)
         # 与家族/宗族改名 (冯·亚琛 → 冯) 都不是记忆, 逐档差一是唯一来源。
         # 旧语义 (首见冻结) 使改名后全档人名停在旧名, 此处改为「末档现值 + 变更点」。

@@ -837,6 +837,11 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # v26: 信仰履历 (改信过程) — 姓名句只写当前信仰, 改信节点在此补出
     if p.get("faith_history"):
         lines.append(f"信仰履历：{p['faith_history']}。")
+    # v95 (问题7, 用户 2026-10-02 拍板「本名与圣名并写」): 继位改名者 (教宗圣名/法名)
+    # 的**本名**单列一行 —— 游戏显示面一律用圣名 (见 cache_lib.display_name), 本名
+    # 只在此给一次, 免得同一篇里「（本名X）」重复几十次。
+    if p.get("birth_name"):
+        lines.append(f"本名：{p['birth_name']}。")
     # v88 (问题3/P3-A-⑤, 用户 2026-10-01 拍板「把最新快照中的个人教义映射到每个人物
     # 档案中」): 个人教义逐人一行 —— 三段式 (始奉/放弃/改奉) 由 facts 侧程序组好
     # (`facts.personal_tenet_lines`), 有地统治者才带此数据, 无者整句省略。
