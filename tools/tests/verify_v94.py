@@ -154,14 +154,20 @@ def _war_checks_body(f):
 # ---------------------------------------------------------------------------
 # 二、信仰沿革承前 (缓存桩, 不载熔件)
 # ---------------------------------------------------------------------------
-class _MeltStub(dict):
-    """`cache_lib` 取词口的替身: 礼仪 154 在**当下**已划归信仰 13 (天主教)。"""
-
-    def rite_entry(self, rid):
-        return {154: {"data": {"name": "拜上帝会"}, "faith": 13}}.get(rid) or {}
-
-    def faith_entry(self, fid):
-        return {12: {"name": "迦克墩基督教"}, 13: {"name": "天主教"}}.get(fid) or {}
+def _melt_stub():
+    """最小熔件形状: 礼仪 154 在**当下**已划归信仰 13 (天主教) —— 正是问题 2 的陷阱。"""
+    return {
+        "landed_titles": {"landed_titles": {}},
+        "faiths": {"database": {
+            "12": {"name": "迦克墩基督教"},
+            "13": {"name": "天主教"},
+            "31": {"name": "儒家"},
+        }},
+        "rites": {"database": {
+            "154": {"faith": 13, "data": {"name": "拜上帝会"}},
+            "32": {"faith": 31, "data": {"name": "经学"}},
+        }},
+    }
 
 
 def faith_checks():
@@ -186,7 +192,7 @@ def faith_checks():
                       {"flag": "old_faith", "identity": 31}]},
         ],
     }}}
-    f = F.Facts(cache, _MeltStub(), None, as_of="935.1.1", decade=3)
+    f = F.Facts(cache, _melt_stub(), None, as_of="935.1.1", decade=3)
     cp = f.conversion_points(900)
     check("U2a 只带 new_rite 的记忆点承前取信仰 (885 → 12, 不按当下的 13)",
           cp.get("885.6.4") == (12, 154), cp)

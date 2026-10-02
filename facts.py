@@ -13371,10 +13371,16 @@ class Facts:
         """改信/改礼的**精确**变更点 (v91): {日期: (信仰id|None, 礼仪id|None)}。
 
         数据源 = 该角色记忆里的 `converted_faith_memory` / `converted_rite_memory`
-        (见本段注释)。同日两条 (既改信又改礼) 合成一对值, 缺项互补; 只给
-        `new_rite` 时信仰由礼仪反查。无记忆或无此类记忆返回 {}。"""
+        (见本段注释)。同日两条 (既改信又改礼) 合成一对值, 缺项互补。
+
+        v94 (问题2, 用户 2026-10-02 报「885年至893年信**天主教**拜上帝会」):
+        只带 `new_rite` 的改礼记忆**承前取该角色最近的已知信仰**, 不再用
+        「此刻该礼仪挂在哪个信仰名下」反查 —— 礼仪的信仰归属会随游戏新立信仰而变
+        (本档礼仪 154 拜上帝会 929 年从信仰 12 迦克墩基督教划到新立的 13 天主教),
+        拿**熔件当期**的挂靠去解 885 年, 就会把早年的宗教名写成晚期的。无记忆或
+        无此类记忆返回 {}。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        out = {}
+        raw = {}
         for m in (rec.get("memories") or []):
             if not isinstance(m, dict) or m.get("type") not in self._CONV_MEM_TYPES:
                 continue
@@ -13388,14 +13394,44 @@ class Facts:
             fid, rid = v.get("new_faith"), v.get("new_rite")
             fid = fid if isinstance(fid, int) else None
             rid = rid if isinstance(rid, int) else None
-            if fid is None and rid is not None:
-                fid = cl.faith_id_of_rite(self.melt, rid)
             if fid is None and rid is None:
                 continue
-            prev = out.get(d) or (None, None)
-            out[d] = (fid if fid is not None else prev[0],
+            prev = raw.get(d) or (None, None)
+            raw[d] = (fid if fid is not None else prev[0],
                       rid if rid is not None else prev[1])
+        # 按日序承前: 改礼不改信 ⇒ 信仰仍是上一点的那一个; 首点取缓存沿革最早一档
+        out, prev_fid, prev_rid = {}, None, None
+        for d in sorted(raw, key=cl.date_key):
+            fid, rid = raw[d]
+            if fid is None and rid is not None:
+                fid = prev_fid if prev_fid is not None \
+                    else self._faith_baseline(cid)
+            if rid is None:
+                rid = prev_rid
+            if fid is None and rid is None:
+                continue
+            out[d] = (fid, rid)
+            if fid is not None:
+                prev_fid = fid
+            if rid is not None:
+                prev_rid = rid
         return out
+
+    def _faith_baseline(self, cid):
+        """该角色**缓存沿革里最早一档**的信仰 id (v94); 无据返回 None。
+
+        用于「改礼记忆只带 `new_rite`、其日又早于所有改信点」的情形: 人若未改信,
+        信仰不该变, 故取已知最早值, 而**不**取熔件里「此刻」该礼仪的挂靠
+        (礼仪的信仰归属会随游戏新立信仰而变 —— 本档 929 年就迁过一次)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fh = [h for h in (rec.get("faith_history") or []) if h.get("from")]
+        if fh:
+            first = min(fh, key=lambda h: cl.date_key(h["from"]))
+            fid = first.get("faith")
+            if isinstance(fid, int):
+                return fid
+        return None
+
 
     def faith_rite_history(self, cid):
         """信仰+礼仪的沿革点 (v91): [(日期, 信仰id, 礼仪id)], 按日升序、相邻同值合并。
