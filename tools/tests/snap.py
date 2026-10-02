@@ -203,7 +203,13 @@ def main():
         # ④教育记忆隔日重复折一 (同一次受学不再出两条);
         # ⑤承继句补死法 (「于当日溺死」); ⑥连坐处死由日级改人级判据。
         # verify_v88 S8b / verify_v90 S5 的档案与板块断言按 schema>=6 分支。
-        "schema": 6,
+        # v96: schema 7 = 含 v96 传输面 (三问) —— ①《礼仪志》删「禁忌个人信条」整块与
+        # facts 键 `forbidden_tenets` (该秘密不带教义键, 反查出的教义名与年份都不可靠);
+        # ②《礼仪志》开篇的「礼仪领袖」与「核心教义」两行改按 as_of 取 (旧稿取末档现值,
+        # 用末档缓存重跑十年篇时会把 946 年即位的教宗与 947/950 才换的教义写进 935 年);
+        # ③疾病动态名去「称号，名字」的逗号 (「皇帝，洪天贵福热」→「皇帝洪天贵福热」)。
+        # 见 tools/tests/verify_v96.py; verify_v88 S3 按 schema>=7 分支。
+        "schema": 7,
         "meta": {
             "folder": folder, "player_id": pid, "as_of": as_of, "decade": decade,
             "melt": melt_name,

@@ -91,7 +91,7 @@ def unit_checks():
           and not bio._subject_has_material(f, None))
     # [3] 礼仪志门槛
     base = {"rite": "罗马礼", "rite_profile": ["所奉礼仪：罗马礼。"]}
-    check("U5a 无改礼/无更替/无修会/无禁忌 ⇒ 不出篇",
+    check("U5a 无改礼/无更替/无修会 ⇒ 不出篇",
           not bio._liyi_has_material(dict(base)))
     check("U5b 有改礼 ⇒ 出篇",
           bio._liyi_has_material(dict(base, rite_history=["a", "b"])))
@@ -99,13 +99,16 @@ def unit_checks():
           bio._liyi_has_material(dict(base, personal_tenets=["a", "b"])))
     check("U5d 有亲立修会 ⇒ 出篇",
           bio._liyi_has_material(dict(base, holy_orders=["880年，他立x。"])))
-    check("U5e 纪事门槛: 修会/个人教义沿革/改礼/教义更替/禁忌任一即成立 (v90)",
+    check("U5e 纪事门槛: 修会/个人教义沿革/改礼/教义更替任一即成立 (v90)",
           bio._liyi_has_mid(dict(base, holy_orders=["x"]))
           and bio._liyi_has_mid(dict(base, personal_tenets=["a", "b"]))
           and bio._liyi_has_mid(dict(base, rite_history=["a", "b"]))
           and bio._liyi_has_mid(dict(base, rite_tenet_changes=["x"]))
-          and bio._liyi_has_mid(dict(base, forbidden_tenets=["x"]))
           and not bio._liyi_has_mid(dict(base)))
+    # v96 (问题1/2): 「禁忌个人信条」整块删 —— 该键（若旧数据仍在）不再构成门槛
+    check("U5f 禁忌个人信条已不作门槛 (v96 整块删)",
+          not bio._liyi_has_mid(dict(base, forbidden_tenets=["x"]))
+          and not bio._liyi_has_material(dict(base, forbidden_tenets=["x"])))
     # [3] style 文本
     # v89 (问题4/5): 修会整块移入开篇、门下教众删除 ⇒ 纪事改名「纪事·礼仪与教义沿革」
     check("U6 纪事板块名已改「纪事·礼仪与教义沿革」",
@@ -145,7 +148,23 @@ def snap_checks(path):
     # [3] 删块
     check("S1 facts 无 rite_tenets 键", "rite_tenets" not in facts)
     check("S2 无「允许教义：」「禁止教义：」", "允许教义" not in txt and "禁止教义" not in txt)
-    if _v89:
+    if int(snap.get("schema") or 1) >= 7:
+        # v96 (问题1/2): 「禁忌个人信条」整块删 ⇒ 该键与那块都不再存在
+        check("S3 新素材键齐备 (v96)",
+              all(k in facts for k in ("holy_orders", "rite_tenet_changes",
+                                       "personal_tenets")),
+              str([k for k in ("holy_orders", "rite_tenet_changes",
+                               "personal_tenets") if k not in facts]))
+        check("S3c 禁忌个人信条键已删 (v96)", "forbidden_tenets" not in facts)
+        # 只查《礼仪志》三块 —— 「禁忌个人信条」也是**游戏**给该秘密类型的名字
+        # (secrets_l_simp_chinese.yml:20), 《阴私录》照写不算错。
+        check("S3d 礼仪志的禁忌个人信条块已删 (v96)",
+              all("禁忌个人信条" not in (blocks.get(_k) or {})
+                  for _k in ("liyi_lead", "liyi_mid", "liyi_tail")),
+              str([_k for _k in ("liyi_lead", "liyi_mid", "liyi_tail")
+                   if "禁忌个人信条" in (blocks.get(_k) or {})]))
+        check("S3b 门下教众键已删 (v89 问题5)", "vassal_tenets" not in facts)
+    elif _v89:
         check("S3 新素材键齐备 (v89)",
               all(k in facts for k in ("holy_orders", "forbidden_tenets",
                                        "rite_tenet_changes", "personal_tenets")),

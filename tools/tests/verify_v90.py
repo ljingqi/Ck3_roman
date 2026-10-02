@@ -113,8 +113,7 @@ def unit_checks():
           all(bio._liyi_has_mid(dict(base, **{k: v}))
               for k, v in (("rite_history", ["a", "b"]),
                            ("personal_tenets", ["a", "b"]),
-                           ("holy_orders", ["x"]),
-                           ("forbidden_tenets", ["x"]))))
+                           ("holy_orders", ["x"]))))
     req = style.SECTION_REQ.get("liyi", {})
     check("U3c 提示词无负向禁令词 (no-negative-prompts)",
           not re.search(r"不要|请勿|勿|禁止|避免|切勿|不得|别 |严禁|不可|不再|除非",

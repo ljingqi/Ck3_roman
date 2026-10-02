@@ -1945,12 +1945,14 @@ def _article_facts(facts, cache, key, section=None):
         # 静态池), 纪事改用有个人色彩的三样; 开篇与纪事**两块料不相交**:
         #   开篇 = 礼仪档案 + 个人教义沿革 + 亲立修会      (他是谁)
         #   纪事 = 礼仪沿革 + 禁忌个人信条 + 门下教众      (发生何事、他人如何)
+        # v96 (问题1/2, 用户 2026-10-02 拍板): 「禁忌个人信条」整块删除 (该秘密不带
+        # 教义键, 反查出的教义名与年份都不可靠 —— 终传据此写出「三度采纳同一组三条」);
+        # 个人教义本身的沿革由「个人教义沿革」块全给。
         # 无料的块整块不发 (`_set_block` 对空串即跳过), 纪事无料时该篇只出开篇。
         prof = list(facts.get("rite_profile") or [])
         hist = list(facts.get("rite_history") or [])
         pt = list(facts.get("personal_tenets") or [])
         hos = list(facts.get("holy_orders") or [])
-        fbs = list(facts.get("forbidden_tenets") or [])
         tcs = list(facts.get("rite_tenet_changes") or [])
         if _sec_key(section) == "lead":
             _set_block(blocks, "礼仪档案", "\n".join(prof) if prof else "")
@@ -1974,8 +1976,6 @@ def _article_facts(facts, cache, key, section=None):
                 _set_block(blocks, "礼仪沿革", "\n".join(hist))
             if tcs:
                 _set_block(blocks, "本礼教义沿革", "\n".join(tcs))
-            if fbs:
-                _set_block(blocks, "禁忌个人信条", "\n".join(fbs))
     elif key == "secrets":
         # v28《阴私录·隐事秘辛》: 主角隐事归开篇, 家人近臣隐事与把柄归纪事
         sec = facts.get("secrets") or {}
@@ -3300,39 +3300,38 @@ def _subject_has_material(facts, cid):
 def _liyi_has_material(facts):
     """《礼仪志》出篇门槛 (v88 问题3/P3-A, 用户「没有礼仪写就不写礼仪」)。
 
-    要求宗教面有**可系年的事**, 四者任一:
+    要求宗教面有**可系年的事**, 三者任一:
       · 礼仪沿革 ≥2 段 (改礼/立礼 —— 1 段只是「他一直奉某礼」, 不构成事件);
       · 个人教义的变更点 ≥2 (始奉之外还有放弃/改奉);
-      · 修会 (亲立/领地内同信仰者, 已按 as_of 截断, 见 `facts.holy_order_lines`);
-      · 禁忌个人信条 (见 `facts.forbidden_tenet_lines`)。
+      · 修会 (亲立/领地内同信仰者, 已按 as_of 截断, 见 `facts.holy_order_lines`)。
     全无者不出该篇 —— 他的个人教义仍会写进自己的档案行 (P3-A-⑤), 信息不丢。
 
     v89 (问题4): **本礼教义更替不单独作门槛** —— 那三条教义只有本礼礼仪领袖能改,
     可能是别国的礼仪领袖改的 (本档实测 878 年就是教宗色尔爵三世改的罗马礼),
     不是传主本人的行迹; 它只在《礼仪志》已因别的理由立起时, 进纪事当一块料
-    (见 `_liyi_has_mid`)。"""
+    (见 `_liyi_has_mid`)。
+    v96 (问题1/2, 用户 2026-10-02 拍板): 「禁忌个人信条」不再是门槛之一 (整块删)。"""
     if not (facts.get("rite") or facts.get("rite_profile")):
         return False
     return len(facts.get("rite_history") or []) >= 2 \
         or len(facts.get("personal_tenets") or []) >= 2 \
-        or bool(facts.get("holy_orders")) \
-        or bool(facts.get("forbidden_tenets"))
+        or bool(facts.get("holy_orders"))
 
 
 def _liyi_has_mid(facts):
-    """《礼仪志》纪事 (mid) 是否有料: 个人教义沿革 / 修会 / 礼仪沿革 / 本礼教义沿革 /
-    禁忌个人信条, 五者任一。
+    """《礼仪志》纪事 (mid) 是否有料: 个人教义沿革 / 修会 / 礼仪沿革 / 本礼教义沿革,
+    四者任一。
 
     开篇与纪事按模块切片、**两块料不相交** (v27 口径): 开篇给「他是谁」(礼仪档案),
-    纪事给「发生了什么事」(个人教义沿革 + 修会 + 礼仪沿革 + 本礼教义沿革 + 禁忌信条)。
+    纪事给「发生了什么事」(个人教义沿革 + 修会 + 礼仪沿革 + 本礼教义沿革)。
     v89 (问题4/5): 加「本礼教义沿革」, 删「门下教众」(廷臣个人教义无收录意义)。
     v90 (问题5, 用户 2026-10-02 拍板): 「个人教义沿革」与「修会」移入纪事, 门槛同步
-    —— 出篇门槛 (`_liyi_has_material`) 的任一条件都落在纪事里, 故本事恒有纪事板块。"""
+    —— 出篇门槛 (`_liyi_has_material`) 的任一条件都落在纪事里, 故本事恒有纪事板块。
+    v96 (问题1/2): 删「禁忌个人信条」(该秘密不带教义键, 反查不可靠)。"""
     return bool(facts.get("personal_tenets")) \
         or bool(facts.get("holy_orders")) \
         or bool(facts.get("rite_history")) \
-        or bool(facts.get("rite_tenet_changes")) \
-        or bool(facts.get("forbidden_tenets"))
+        or bool(facts.get("rite_tenet_changes"))
 
 
 def _liyi_has_tail(facts):
@@ -3359,10 +3358,12 @@ def _liyi_req(facts):
       · 开篇: 按 `rite_profile` 的**行首**对齐 (名目 / 源流 / 礼仪领袖 / 核心教义 /
         宗教热情 / 灵性满足 / 个人教义), 全行俱全时与旧文逐字相同;
       · 纪事: 礼仪沿革 → 受礼改礼立礼之年月缘由; 个人教义沿革 → 个人信条之更替;
-        本礼教义沿革 → 礼仪核心教义的演变; 禁忌信条 → 起止与了结; 修会 → 逐所写出
+        本礼教义沿革 → 礼仪核心教义的演变; 修会 → 逐所写出
         立会之年、会规、所领教堂领地与现任之长。
       · 题面 (`focus`) 只写两块都立得住的话, **不含修会** —— 修会只在纪事下发
         (v90 拍板「开篇只讲所奉之礼是谁、是什么」), 题面点它, 开篇就会自造会名。
+    v96 (问题1/2, 用户 2026-10-02 拍板): 删「禁忌信条之起止」那一条 —— 它对模型的
+    唯一提示作用是把那桩秘密写成传主亲历的禁忌事件。
     """
     prof = [str(x) for x in (facts.get("rite_profile") or [])]
 
@@ -3390,7 +3391,7 @@ def _liyi_req(facts):
     lead = "写传主所受之礼：" + first + "。" \
         + ("".join(x + "，" for x in tail[:-1]) + tail[-1] + "。" if tail else "")
 
-    # ---- 纪事 (五个块) ----
+    # ---- 纪事 (四个块) ----
     mid_bits, focus_bits = [], []
     if facts.get("rite_history"):
         mid_bits.append("受礼、改礼、立礼的年月与缘由")
@@ -3401,9 +3402,6 @@ def _liyi_req(facts):
     if facts.get("rite_tenet_changes"):
         mid_bits.append("礼仪核心教义的演变")
         focus_bits.append("本礼核心教义之更替")
-    if facts.get("forbidden_tenets"):
-        mid_bits.append("他所持禁忌信条的起止与了结")
-        focus_bits.append("禁忌信条之起止")
     if facts.get("holy_orders"):
         mid_bits.append("他建立或庇护的修会，逐所写出立会之年、会规、"
                         "所领教堂领地与现任之长")
@@ -3764,7 +3762,8 @@ def build_articles(facts, cache, cfg):
     # v87 (问题3/7): 删圣所圣髑与教义计数行。
     # v88 (问题3/P3-A, 用户 2026-10-01 拍板): **删「允许/禁止教义」整块** (礼仪级
     # 静态池, 非传主所选 —— 见 `_liyi_has_material` 注释), 纪事改用「礼仪沿革 +
-    # 禁忌个人信条 + 门下教众的个人教义」; 并加**素材门槛**: 宗教面无实据者整篇不出
+    # 禁忌个人信条 + 门下教众的个人教义」(v96 起其中「禁忌个人信条」亦删, 见下);
+    # 并加**素材门槛**: 宗教面无实据者整篇不出
     # (用户: 「没有礼仪写就不写礼仪」)。
     if _liyi_has_material(facts):
         # v93 (用户 2026-10-02 报「第二部分没给相关信息却编出本礼三义」): 题面与两板块
@@ -3788,7 +3787,7 @@ def build_articles(facts, cache, cfg):
                                   "focus": _lq["focus"],
                                   "sections": _secs})
     elif facts.get("rite_profile"):
-        llm.log("[篇目] 宗教面无实据 (无改礼、无信条更替、无修会、无禁忌信条)，"
+        llm.log("[篇目] 宗教面无实据 (无改礼、无信条更替、无修会)，"
                 "《礼仪志》整篇略去 (本礼教义更替单独不作门槛, 见 `_liyi_has_material`)")
     # v87 (问题5, 用户 2026-09-30 拍板): **删《教会志》整篇** —— 其素材全部来自
     # 基督教教会情境 (`the_christian_church`), 而该局势只在 867 开局出现

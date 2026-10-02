@@ -64,10 +64,14 @@ def unit_checks():
     r_full = bio._liyi_req(full)
     check("U1 全料时开篇要求与旧静态文本逐字相同",
           r_full["lead"] == OLD_LEAD_FULL, r_full["lead"])
-    check("U2 全料时纪事要求五条俱全",
+    check("U2 全料时纪事要求四条俱全",
           all(t in r_full["mid"] for t in
-              ("受礼、改礼、立礼", "个人信条", "核心教义的演变", "禁忌信条", "修会")),
+              ("受礼、改礼、立礼", "个人信条", "核心教义的演变", "修会")),
           r_full["mid"])
+    # v96 (问题1/2): 「禁忌信条之起止」那条已删 (键即便还在也不再触发该要求)
+    check("U2b 禁忌信条不再进纪事要求 (v96 整块删)",
+          "禁忌" not in r_full["mid"] and "禁忌" not in r_full["focus"],
+          r_full["mid"] + " | " + r_full["focus"])
 
     # 天贵福 915 档实况: 无本礼教义沿革块、无禁忌信条
     gf = dict(rite_profile=PROF_FULL, rite_history=["a", "b"],

@@ -1190,7 +1190,9 @@ def _disease_dynamic_name(f, cid, typ, year):
     hits = [c for c in cands if _hit(c[0])] if mine else []
     pool = hits or cands
     pool.sort(key=lambda c: c[1])
-    return str(pool[-1][0].get("name") or "")
+    # v96 (问题3): 游戏自渲染的疫名会带「称号，名字」的逗号 (存档实测
+    # 「皇帝，洪天贵福热」), 直拼「染{名}而亡」会被读成断句 ⇒ 出词口去逗号。
+    return _strip_title_comma(str(pool[-1][0].get("name") or ""))
 
 
 def _battlefield_provinces(f, cid):
@@ -11677,16 +11679,27 @@ class Facts:
         v88 (问题3/P3-A, 用户 2026-10-01 拍板): 「允许/禁止教义」逐条点名**整块删除** ——
         那 38 条是礼仪级的静态池 (引擎算、教会首脑才能改、同宗教内成批复制), 与传主
         本人所奉只 19% 重叠 (见 `docs/调研_v88_个人教义与修会.md` §1.6), 模型却把它
-        逐条写成传主亲自裁定的教规; 纪事改用「本礼教义沿革 / 礼仪沿革 / 禁忌个人信条」
-        (见 `rite_tenet_changes` / `rite_history_lines` / `forbidden_tenet_lines`)。
+        逐条写成传主亲自裁定的教规; 纪事改用「本礼教义沿革 / 礼仪沿革」
+        (见 `rite_tenet_changes` / `rite_history_lines`)。
         v89 (问题5, 用户 2026-10-02 拍板): 「门下教众」整块删除 (廷臣的个人教义与各人
         档案行重复), 修会改由 `holy_order_lines` 按「亲立 / 领地内同信仰」收录。
-        此处**只留**开篇要用的七行。"""
+        v96 (问题1/2): 纪事的「禁忌个人信条」整块删除 (见 `biography._article_blocks`
+        的 liyi 分支), 本方法不受影响。
+        此处**只留**开篇要用的七行。
+
+        v96 (附带发现, 用户拍板「一起修」): 「礼仪领袖」与「核心教义」两行改按 **as_of**
+        取 —— 旧稿读 `self.melt`(末档) 的 `head_of_rite` 与 `rite_tenets`, 于是用末档
+        缓存重跑十年篇时, 947/950 才换的核心教义与 946 年才即位的教宗会漏进 935 年
+        (实测 `洪天贵福(869)_传记_第3个十年_935_01_01.md:312/314`)。现走
+        `_rite_point_at`(缓存逐档锁存点), 取不到史才回退末档现值。"""
         rid = self._rite_id(cid, date)
         if rid is None:
             return []
         ent = cl.rite_entry(self.melt, rid)
         d = cl.rite_data(self.melt, rid)
+        # v96: 该礼在 as_of 当日的锁存点 (「礼仪领袖」与「核心教义」两行的共同来源)。
+        _pt = self._rite_point_at(rid, date) or {}
+        _ten = _pt.get("tenets") or None
         rows = []
         nm = self.rite_name(cid, date)
         if nm:
@@ -11696,7 +11709,8 @@ class Facts:
             onm = cl.rite_name_of(self.melt, origin)
             if onm:
                 rows.append(f"源自{onm}。")
-        head = cl.head_of_rite(self.melt, rid)
+        _h = _pt.get("head")
+        head = _h if isinstance(_h, int) else cl.head_of_rite(self.melt, rid)
         if head is not None:
             # v95 (问题7): 继位改名者 (教宗圣名) 在此附本名 —— 「礼仪领袖：教宗
             # 亚纳大削，本名恂。」; 非改名者逐字不变。注式用逗号 (v55 事实层
@@ -11709,7 +11723,7 @@ class Facts:
         # 会把玩家自己扶立的那一位整条漏掉 (用户 2026-10-02 报「礼仪志里没有
         # 宗教领袖」)。行面与行首词见 `antipope_lines`。
         rows.extend(self.antipope_lines(cid, date))
-        st = self.rite_tenets(rid)
+        st = _ten or self.rite_tenets(rid)
         core = st.get("core") or []
         cnames = [self.tenet_name(k, rid) for k in core]
         cnames = [n for n in cnames if n]
@@ -11973,53 +11987,35 @@ class Facts:
         s = str(d or "").split(".")[0]
         return s if s.isdigit() else ""
 
-    def forbidden_tenet_lines(self, cid, date=None):
-        """「禁忌个人信条」句 (《礼仪志》纪事, v88 问题3/P3-A、P6)。
+    def _rite_point_at(self, rid, date):
+        """该礼在 date 当日的**锁存点** `{from, tenets, head}` (无史 → None)。
 
-        礼仪的允许/禁止清单**唯一**值得留的用法 (调研_v88 §1.7): 它解释传主为何
-        身负 `secret_forbidden_personal_tenet`。实测洪氏一代传主 38948:
-        `secrets_history["11"]` = {first_seen 868.1.1, lost_at 871.1.1}, 同期
-        `personal_tenet_history` = [{868, tenet_simony}, {871, tenet_warmonger}],
-        而 `tenet_simony` 正在罗马礼 7 条禁止项之内 —— 成句:
-        「868年，他采纳本礼禁忌的〈买卖圣职〉为个人信条，此事只能藏着；
-          871年他改奉他条，此事随之了结。」
+        v96 (附带发现, 用户 2026-10-02 拍板「一起修」): 「礼仪领袖」与「核心教义」
+        两行原读 `self.melt`(末档) 的现值, 用末档缓存重跑十年篇时会把未来的教宗与
+        未来的核心教义写进早年 (`洪天贵福(869)_传记_第3个十年_935_01_01.md:312/314`
+        实测: 935 年写出 946 年即位的教宗与 947/950 才换的教义)。
 
-        秘密记录**不带教义键**, 故此处从「该时点所奉的个人教义」∩「本礼禁止集」
-        反查; 交集为空则整句不发 (宁缺勿猜)。十年传记按 `first_seen` 截断:
-        尚未发生的秘密不写, 已了结的写出来。"""
-        if cid is None:
-            return []
-        cut = date or self.cache.get("last_date")
-        ck = cl.date_key(cut) if cut else None
-        rows = []
-        for _sid, rec in (self.cache.get("secrets_history") or {}).items():
-            if not isinstance(rec, dict):
+        取法: 锁存点里 `from ≤ date` 的最后一个; date 早于首点 → 取首点 (与
+        `_hist_value_at` 的「早于首点取首点」同口径); 无史 → None (调用方回退现值)。
+        `rite_tenets_history` 只在**教义分档变化**时锁存 (见 `cache_lib.py` 该键),
+        故单换礼仪领袖而不换教义的那几年只能夹逼到上一个锁存点 —— 这仍比末档现值近。
+        返回值是**整个点** (含 `head`), 不只是 `tenets` —— 两行同源取词。"""
+        hist = ((self.cache.get("rite_tenets_history") or {}).get(str(rid)) or [])
+        if not hist:
+            return None
+        dk = cl.date_key(date) if date else None
+        pick = None
+        for h in hist:
+            if not isinstance(h, dict) or not h.get("from"):
                 continue
-            if rec.get("type") != "secret_forbidden_personal_tenet":
+            if pick is None:
+                pick = h
                 continue
-            if rec.get("owner") != cid:
-                continue
-            fs = rec.get("first_seen")
-            if not fs:
-                continue
-            if ck is not None and cl.date_key(fs) > ck:
-                continue
-            rid = self._rite_id(cid, fs)
-            banned = set(self.rite_tenets(rid).get("prohibited") or [])
-            hit = sorted(set(self._personal_tenets(cid, fs)) & banned)
-            if not hit:
-                continue
-            names = "、".join(self.tenet_name(k, rid) or k for k in hit)
-            y0 = self._year_only(fs)
-            la = rec.get("lost_at")
-            if la and (ck is None or cl.date_key(la) <= ck):
-                rows.append(f"{y0}，他采纳礼仪禁忌的{names}为个人信条，"
-                            f"此事只能藏着；{self._year_only(la)}他改奉他条，"
-                            f"此事随之了结。")
+            if dk is None or cl.date_key(h["from"]) <= dk:
+                pick = h
             else:
-                rows.append(f"{y0}，他采纳礼仪禁忌的{names}为个人信条，"
-                            f"此事至今只能藏着。")
-        return rows
+                break
+        return pick or None
 
     def rite_tenet_changes(self, cid, date=None):
         """**本礼核心教义自身的更替**句 (《礼仪志》纪事, v89 问题4, 用户拍板)。
@@ -16580,6 +16576,21 @@ def _sf_word(v):
     return "匮乏"
 
 
+# 称号(≤4字)与名字之间的逗号 → 删 (国王，张格本 → 国王张格本)。
+# v13 立的规则 (本地化清洗), v96 抽成独立出口: 游戏**自己渲染**的名字也会带这个逗号
+# (存档信封 `meta_player_name` = 「皇帝，洪天贵福」、疫名 = 「皇帝，洪天贵福热」,
+# 见 `_disease_dynamic_name` / `_plague_facts` 的调用)。
+_TITLE_COMMA_RE = re.compile(r"([\u4e00-\u9fff]{1,4})，(?=[\u4e00-\u9fff]{2,})")
+
+
+def _strip_title_comma(s):
+    """「称号，名字」之间的逗号按项目既定口径去掉 (v13/v87/v96 同源)。
+
+    只做这一件事 —— 不用整只 `_clean_ck3_loc` 是因为它对无中日韩字符的串返回 '',
+    疫情名一旦非中文会被整条丢掉。"""
+    return _TITLE_COMMA_RE.sub(r"\1", str(s or ""))
+
+
 def _clean_ck3_loc(s):
     """剥离 CK3 本地化格式标签: \\x15ONCLICK:... \\x15TOOLTIP:... \\x15L \\x15high ...\\x15!
     (家族关系事件文本用, 产出干净中文)。中文后无词边界, 直接用字符级匹配。
@@ -16589,7 +16600,8 @@ def _clean_ck3_loc(s):
     (`TOOLTIP:LANDED_TITLE,13449` 残留), 且 `L; 名称` 链接标记剥不掉:
     `[A-Z]`→`[A-Z_]+`, 头衔链接块整体剥离, `L` 后允许 `;`。
     v29: 结果为不可读文本 (裸键/哨兵串/无中日韩字符) 时返回 '' — 调用方改用
-    程序重建的句子 (实测 house_relations 出现 'MAX_RECURSIVE_DEPTH')。"""
+    程序重建的句子 (实测 house_relations 出现 'MAX_RECURSIVE_DEPTH')。
+    v96: 逗号那一步改用 `_strip_title_comma` (规则不变, 单一出口)。"""
     s = str(s or "").replace("\x15", "")
     # v17: 头衔链接块 (ONCLICK:TITLE,id TOOLTIP:LANDED_TITLE,id L; 名称) 整体剥离
     s = re.sub(r"ONCLICK:TITLE,\d+\s*TOOLTIP:[A-Z_]+,\d+\s*L[; ]?", "", s)
@@ -16600,8 +16612,7 @@ def _clean_ck3_loc(s):
     s = re.sub(r"high\s*", "", s)
     s = s.replace("!", "").replace("  ", " ").strip()
     s = re.sub(r"(?<=[\u4e00-\u9fff]) (?=[\u4e00-\u9fff])", "", s)
-    # 称号(≤4字)与名字之间的逗号 → 删 (国王，张格本 → 国王张格本)
-    s = re.sub(r"([\u4e00-\u9fff]{1,4})，(?=[\u4e00-\u9fff]{2,})", r"\1", s)
+    s = _strip_title_comma(s)
     return s if loc_text_ok(s) else ""
 
 
@@ -23453,7 +23464,9 @@ def _plague_facts(f):
         if not isinstance(e, dict):
             continue
         typ = e.get("type") or ""
-        name = str(e.get("name") or "")
+        # v96 (问题3): 同上, 游戏自渲染疫名的「称号，名字」逗号在此也去掉
+        # (本函数直读熔件, 不经 `_disease_dynamic_name`)。
+        name = _strip_title_comma(str(e.get("name") or ""))
         disease = _trait_name(f.table, typ) if typ else ""
         label = name or disease
         if not label:
@@ -24006,10 +24019,11 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "rite_history": f.rite_history_lines(cache.get("player_id"), as_of),
         # v88 (问题3/P3-A, 用户 2026-10-01 拍板): **删**「允许/禁止教义」逐条点名
         # (礼仪级静态池, 与传主本人所奉只 19% 重叠、且不归他定 —— 见
-        # docs/调研_v88_个人教义与修会.md §1); 纪事改用有个人色彩的三样。
+        # docs/调研_v88_个人教义与修会.md §1); 纪事改用有个人色彩的两样。
+        # v96 (问题1/2, 用户 2026-10-02 拍板): 再删 `forbidden_tenets`
+        # («禁忌个人信条»整块, 秘密不带教义键 ⇒ 教义名与年份都不可靠)。
         "personal_tenets": f.personal_tenet_lines(cache.get("player_id"), as_of),
         "holy_orders": f.holy_order_lines(cache.get("player_id"), as_of),
-        "forbidden_tenets": f.forbidden_tenet_lines(cache.get("player_id"), as_of),
         # v89 (问题4): 本礼**核心教义自身**的更替 (缓存逐档锁存 + 差分;
         # 键名与 v88 删掉的 `rite_tenets`(允许/禁止清单) 有意区分)。
         "rite_tenet_changes": f.rite_tenet_changes(cache.get("player_id"), as_of),
