@@ -11310,7 +11310,9 @@ class Facts:
         cnames = [self.tenet_name(k, rid) for k in core]
         cnames = [n for n in cnames if n]
         if cnames:
-            rows.append("核心教义：" + "、".join("〈%s〉" % n for n in cnames) + "。")
+            # v89 (问题3, 用户 2026-10-02 拍板「全项目」): 教义/修会名**不再加〈〉** ——
+            # 全项目只此地用这对符号, 与其余板块的「、」并列形态不一致。
+            rows.append("核心教义：" + "、".join(cnames) + "。")
         fv = d.get("fervor")
         if isinstance(fv, (int, float)):
             rows.append(f"宗教热情：{_fervor_word(float(fv))}。")
@@ -11320,7 +11322,7 @@ class Facts:
         pt = self._personal_tenets(cid, date)
         if pt:
             names = [self.tenet_name(k, rid) or k for k in pt]
-            rows.append("个人教义：" + "、".join("〈%s〉" % n for n in names) + "。")
+            rows.append("个人教义：" + "、".join(names) + "。")
         return rows
 
     @staticmethod
@@ -11383,7 +11385,7 @@ class Facts:
             if ten:
                 tn = self.tenet_name(ten, rid if isinstance(rid, int) else None)
                 if tn:
-                    bits.append(f"会规〈{tn}〉")
+                    bits.append(f"会规：{tn}")
             lands = [self.title(t, date) for t in (h.get("titles") or [])
                      if isinstance(t, int)]
             lands = [x for x in lands if x]
@@ -11391,7 +11393,7 @@ class Facts:
                 shown = "、".join(lands[:2])
                 bits.append(f"领{shown}等{len(lands)}处教堂领地"
                             if len(lands) > 2 else f"领{'、'.join(lands)}")
-            head = f"{year}，他立〈{name}〉" if year else f"他立〈{name}〉"
+            head = f"{year}，他立{name}" if year else f"他立{name}"
             rows.append(head + ("，" + "，".join(bits) if bits else "") + "。")
         return rows
 
@@ -11431,7 +11433,7 @@ class Facts:
             hit = sorted(set(self._personal_tenets(cid, fs)) & banned)
             if not hit:
                 continue
-            names = "、".join("〈%s〉" % (self.tenet_name(k, rid) or k) for k in hit)
+            names = "、".join(self.tenet_name(k, rid) or k for k in hit)
             y0 = self._year_only(fs)
             la = rec.get("lost_at")
             if la and (ck is None or cl.date_key(la) <= ck):
@@ -11542,10 +11544,11 @@ class Facts:
 
         旧稿逐条只写「自N年起，奉〈X〉为个人教义。」—— 沿革被写成并列, 模型照抄成
         「自868年起，奉〈买卖圣职〉为个人教义。自871年起，奉〈战争狂人〉为个人教义。」
-        (实测 logs/v87_liyi_prompts.txt:618-619), 读成同时供奉两条。现按集合差分:
-          · 只增 → `871年起，奉〈A〉、〈B〉为个人教义。`
-          · 替换 → `871年起，放弃〈A〉，改奉〈B〉为个人教义。`
-          · 只减 → `871年起，不复奉〈A〉为个人教义。`
+        (实测 logs/v87_liyi_prompts.txt:618-619), 读成同时供奉两条。现按集合差分
+        (v89 问题3 起教义名不再加〈〉):
+          · 只增 → `871年起，奉A、B为个人教义。`
+          · 替换 → `871年起，放弃A，改奉B为个人教义。`
+          · 只减 → `871年起，不复奉A为个人教义。`
         变更点见 `_tenet_change_points` (精确沿革优先, 旧缓存按新增沿革+现值推断)。"""
         pts = self._tenet_change_points(cid, date)
         if not pts:
@@ -11557,7 +11560,7 @@ class Facts:
             add = [t for t in sorted(cur - prev) if self.tenet_name(t, rid)]
             drop = [t for t in sorted(prev - cur) if self.tenet_name(t, rid)]
             _n = lambda ks: "、".join(  # noqa: E731
-                "〈%s〉" % self.tenet_name(k, rid) for k in ks)
+                self.tenet_name(k, rid) for k in ks)
             if add and drop:
                 rows.append(f"{year}年起，放弃{_n(drop)}，"
                             f"改奉{_n(add)}为个人教义。")

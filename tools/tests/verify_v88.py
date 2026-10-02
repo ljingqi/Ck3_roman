@@ -93,7 +93,7 @@ def unit_checks():
     check("U5c 有信条更替 ⇒ 出篇",
           bio._liyi_has_material(dict(base, personal_tenets=["a", "b"])))
     check("U5d 有亲立修会 ⇒ 出篇",
-          bio._liyi_has_material(dict(base, holy_orders=["880年，他立〈x〉。"])))
+          bio._liyi_has_material(dict(base, holy_orders=["880年，他立x。"])))
     check("U5e 纪事门槛: 只有修会时不出纪事 (开篇/纪事两块料不相交)",
           not bio._liyi_has_mid(dict(base, holy_orders=["x"]))
           and bio._liyi_has_mid(dict(base, rite_history=["a", "b"]))

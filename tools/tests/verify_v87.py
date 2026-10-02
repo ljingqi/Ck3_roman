@@ -119,10 +119,11 @@ def snap_checks(path):
     pt = " ".join(facts.get("personal_tenets") or [])
     prof = " ".join(facts.get("rite_profile") or [])
     if pid == "38948":
+        # v89 (问题3): 教义名不再加〈〉 —— 断言同步去括号
         check("6a 沿革写「放弃…改奉…」",
-              "放弃〈买卖圣职〉" in pt and "改奉〈战争狂人〉" in pt, pt)
-        check("6b 档案行只出当时所奉 (个人教义：〈战争狂人〉)",
-              "个人教义：〈战争狂人〉。" in prof and "个人教义：〈买卖圣职〉" not in prof,
+              "放弃买卖圣职" in pt and "改奉战争狂人" in pt, pt)
+        check("6b 档案行只出当时所奉 (个人教义：战争狂人)",
+              "个人教义：" in prof and "买卖圣职" not in prof,
               prof)
     if pt:
         check("6c 沿革无并列「奉…奉…为个人教义」重复式",
@@ -135,11 +136,12 @@ def snap_checks(path):
           not re.search(r"(?:核心|允许|已知|禁止)\d+条", txt))
     # v88: 「允许/禁止教义」整块已删 (礼仪级静态池 ⇒ 有个人色彩的三样取代), 故本组
     # 只对 v87 期 (schema<4) 快照断言; 新快照由 verify_v88.py 断言。
+    # v89 (问题3): 教义名去〈〉后, 7c 的符号判据不再适用 —— 对 schema>=4 一律 SKIP。
     if int(snap.get("schema") or 1) < 4:
         rt = " ".join(facts.get("rite_tenets") or [])
         if rt:
             check("7c 允许/禁止教义逐条点名",
-                  "允许教义：" in rt and "禁止教义：" in rt and "〈" in rt, rt[:80])
+                  "允许教义：" in rt and "禁止教义：" in rt, rt[:80])
         else:
             check("7c 允许/禁止教义逐条点名 (有 rite 时应非空)",
                   not facts.get("rite_profile"), "rite_tenets 为空")
