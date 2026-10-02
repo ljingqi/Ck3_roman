@@ -1704,6 +1704,111 @@ def pick_arm(arms, scope):
 
 
 # ---------------------------------------------------------------------------
+# 灵性满足分档表 (v89 问题6)
+# ---------------------------------------------------------------------------
+# 游戏本体自带**官方等级名**, 分两套 (按 religion 分派):
+#   game\common\spiritual_fulfillment\00_spiritual_fulfillment_types.txt
+#     christian_fulfillment = { religions = { christianity_religion } level = { threshold… } … }  # 7 档
+#     default_fulfillment   = { level = { threshold… } … }                                        # 5 档 (无 religions = 兜底)
+# 等级名 = `<type 键>_level_<i>` (i 从 0 起, 与 level 出现次序一致; 见同目录
+# `_spiritual_fulfillment_type.info:8`), 中文原文:
+#   christian_fulfillment_level_0..6 = 诅咒之人/离弃之人/忧心之人/悔悟之人/得赦之人/宁定之人/蒙恩之人
+#   default_fulfillment_level_0..4   = 茫然无措/上下求索/循规蹈矩/虔诚笃信/从心所欲
+# (game\localization\simp_chinese\modifiers\pam_modifiers_l_simp_chinese.yml:2-13)
+# 值域 -100…100 (`common\defines\00_defines.txt:889-890`); 取档 = 最后一个
+# `threshold ≤ 值` 的 level 下标。
+
+
+def _spiritual_fulfillment_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "spiritual_fulfillment.json")
+
+
+def build_spiritual_fulfillment(cfg):
+    """→ {"schema": 1, "types": [{"key", "religions": [...], "levels": [{"threshold": …}]}…],
+    "religions"/"faiths": 宗教信仰映射 (与主教臂表同源, 供调用方选型)。"""
+    roots = _data_roots(cfg)
+    rel = _religion_maps(cfg, roots)
+    types = []
+    for root in roots:
+        d = os.path.join(root, "common", "spiritual_fulfillment")
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".txt"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8-sig",
+                          errors="replace") as fp:
+                    txt = _strip_comments(fp.read())
+            except OSError:
+                continue
+            for key, body in _top_blocks(txt):
+                m = re.search(r"\breligions\s*=\s*\{([^}]*)\}", body)
+                religions = m.group(1).split() if m else []
+                levels = []
+                for blk in _blocks_of(body, "level"):
+                    tm = re.search(r"threshold\s*=\s*(-?\d+(?:\.\d+)?)", blk)
+                    if not tm:
+                        continue
+                    fv = float(tm.group(1))
+                    levels.append({"threshold": int(fv) if fv.is_integer() else fv})
+                if levels:
+                    types.append({"key": key, "religions": religions,
+                                  "levels": levels})
+    return {"schema": 1, "types": types,
+            "religions": rel.get("religions") or {},
+            "faiths": rel.get("faiths") or {}}
+
+
+def save_spiritual_fulfillment(cfg, table):
+    path = _spiritual_fulfillment_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(table, fp, ensure_ascii=False)
+    return path
+
+
+def load_spiritual_fulfillment(cfg=None, force=False):
+    """载入灵性满足分档表; 缺失/版本不符时重建 (静态表, 与本地化表同源)。"""
+    cfg = cfg or llm.load_config()
+    path = _spiritual_fulfillment_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1 and data.get("types"):
+                return data
+        except Exception:
+            pass
+    data = build_spiritual_fulfillment(cfg)
+    if data.get("types"):
+        save_spiritual_fulfillment(cfg, data)
+    return data
+
+
+def sf_type_for(table, religion_key):
+    """按宗教键取分档类型: 命中 `religions` 者优先; 否则取无 `religions` 的兜底类型。"""
+    types = (table or {}).get("types") or []
+    for t in types:
+        if religion_key and religion_key in (t.get("religions") or []):
+            return t
+    for t in types:
+        if not (t.get("religions") or []):
+            return t
+    return types[0] if types else {}
+
+
+def sf_level_index(levels, value):
+    """最后一个 `threshold ≤ value` 的下标 (低于首档时给 0)。"""
+    idx = 0
+    for i, lv in enumerate(levels or []):
+        th = (lv or {}).get("threshold")
+        if isinstance(th, (int, float)) and value is not None and value >= th:
+            idx = i
+    return idx
+
+
+# ---------------------------------------------------------------------------
 # 神权官称的自定义本地化臂表 (v87 问题1)
 # ---------------------------------------------------------------------------
 # 游戏把**基督教神权统治者**的官称整个委托给自定义本地化:
@@ -2412,6 +2517,7 @@ _COURT_POSITIONS = None
 _COUNCIL_TASKS = None
 _BISHOP_TITLES = None
 _THEOCRACY_TITLES = None
+_SPIRITUAL_FULFILLMENT = None
 _COUNCIL_NAMES = None
 _TRAIT_NAMES = None
 _TRAIT_TRACKS = None
@@ -2456,6 +2562,14 @@ def theocracy_titles(cfg=None):
     if _THEOCRACY_TITLES is None:
         _THEOCRACY_TITLES = load_theocracy_titles(cfg or llm.load_config())
     return _THEOCRACY_TITLES
+
+
+def spiritual_fulfillment(cfg=None):
+    """灵性满足分档表单例 (v89 问题6): {"types": [{key, religions, levels}…]}。"""
+    global _SPIRITUAL_FULFILLMENT
+    if _SPIRITUAL_FULFILLMENT is None:
+        _SPIRITUAL_FULFILLMENT = load_spiritual_fulfillment(cfg or llm.load_config())
+    return _SPIRITUAL_FULFILLMENT
 
 
 def council_names(cfg=None):

@@ -1745,6 +1745,12 @@ class Facts:
             self._theocracy_titles = L.theocracy_titles()
         except Exception:
             self._theocracy_titles = {"blocks": {}}
+        # v89 (问题6): 灵性满足分档表 (游戏 `common/spiritual_fulfillment/*.txt`) ——
+        # 档位词用游戏自带的等级名 (christian_fulfillment_level_N / default_…), 不再自造。
+        try:
+            self._sf_types = L.spiritual_fulfillment()
+        except Exception:
+            self._sf_types = {"types": []}
         try:
             self._council_names = L.council_names()
         except Exception:
@@ -11213,6 +11219,28 @@ class Facts:
         v = rec.get("spiritual_fulfillment")
         return float(v) if isinstance(v, (int, float)) else None
 
+    def _sf_level_word(self, cid, sf, date=None):
+        """灵性满足值 → **游戏官方等级名** (v89 问题6, 用户 2026-10-02 拍板)。
+
+        分档定义见 `localization.build_spiritual_fulfillment` 的注释: 按角色
+        **宗教族**选型 (本档传主 `christianity_religion` ⇒ 7 档「诅咒之人…蒙恩之人」;
+        其余宗教 5 档「茫然无措…从心所欲」), 取 `threshold ≤ 值` 的最高档。
+        表缺/键缺时回退自造档位词 `_sf_word` (宁可用旧词, 不猜)。"""
+        if sf is None:
+            return ""
+        _ftag, rtag = self._faith_tags(cid, date)
+        ty = L.sf_type_for(self._sf_types or {}, rtag)
+        lv = ty.get("levels") or []
+        if not lv:
+            return _sf_word(sf)
+        key = "%s_level_%d" % (ty.get("key"), L.sf_level_index(lv, sf))
+        v = ""
+        try:
+            v = L.loc(self.table, key) or ""
+        except Exception:
+            v = ""
+        return v if v and not v.startswith(("$", "[")) else _sf_word(sf)
+
     def _tenet_change_points(self, cid, date=None):
         """个人教义的**变更点** [(date, set(教义键))] (v87 问题6)。
 
@@ -11318,7 +11346,7 @@ class Facts:
             rows.append(f"宗教热情：{_fervor_word(float(fv))}。")
         sf = self._spiritual_fulfillment(cid, date)
         if sf is not None:
-            rows.append(f"灵性满足：{_sf_word(sf)}。")
+            rows.append(f"灵性满足：{self._sf_level_word(cid, sf, date)}。")
         pt = self._personal_tenets(cid, date)
         if pt:
             names = [self.tenet_name(k, rid) or k for k in pt]

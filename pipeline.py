@@ -2469,6 +2469,9 @@ def _table_builders():
         # v87 (问题1): 神权官称自定义本地化臂表 (GetActualDuke/CountTheocracyTitle)
         ("神权官称臂表", loc._custom_loc_path, loc.build_theocracy_titles,
          loc.save_theocracy_titles),
+        # v89 (问题6): 灵性满足分档表 (common/spiritual_fulfillment/*.txt)
+        ("灵性满足分档", loc._spiritual_fulfillment_path,
+         loc.build_spiritual_fulfillment, loc.save_spiritual_fulfillment),
         ("宗族与家族名", loc._dynasties_path, loc.build_dynasty_table,
          loc.save_dynasty_table),
         ("牵制类型", loc._hook_types_path, loc.build_hook_types, loc.save_hook_types),
