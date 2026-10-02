@@ -119,9 +119,10 @@ def unit_checks():
     check("U3c 提示词无负向禁令词 (no-negative-prompts)",
           not re.search(r"不要|请勿|勿|禁止|避免|切勿|不得|别 |严禁|不可|不再|除非",
                         (req.get("lead") or "") + (req.get("mid") or "")))
-    check("U3d 开篇要求不再点名修会 (修会已入纪事)",
-          "修会" not in (req.get("lead") or "")
-          and "修会" in (req.get("mid") or ""))
+    # v93: 礼仪志的实际要求改由 `bio._liyi_req` 按素材生成 (本断言改测生成结果)
+    _rq = bio._liyi_req({"rite_history": ["a", "b"], "holy_orders": ["x"]})
+    check("U3d 开篇要求不点修会、修会入纪事要求 (v90 口径, v93 素材驱动)",
+          "修会" not in _rq["lead"] and "修会" in _rq["mid"])
     # [1] 加冕见证带 owner 槽
     check("U4 加冕见证记忆已入 _IDENT_TYPES (按持有人判方向)",
           "witnessed_a_coronation_memory" in F._IDENT_TYPES)

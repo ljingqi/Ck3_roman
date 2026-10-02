@@ -11683,9 +11683,11 @@ class Facts:
           层级 ≥ 公爵、realm 含其首府, **就近**取链上第一个公爵以上的持有者
           (`common\\defines\\00_defines.txt:1312 PATRON_MIN_TIER = 3`)。
 
-        截断: 取该修会**头衔的创立日** (`landed_titles[<title>].date`, 缺则取 `history`
-        最早一键) —— 洪氏2 实测 丅形十字骑士团头衔 880.10.6 立、南岭隐修院 891.4.16 立,
-        故第 2 个十年 (as_of=888) 只写前者、第 3 个十年 (898) 两个都写。
+        截断: 取该修会**头衔的创立日** = `landed_titles[<title>].history` 最早一键
+        (无 history 时才用 `date`) —— 洪氏2 实测 丅形十字骑士团头衔 880.10.6 立、
+        南岭隐修院 891.4.16 立, 故第 2 个十年 (as_of=888) 只写前者、第 3 个十年
+        (898) 两个都写。v93 修正: 原先取 `date` (头衔**最后一次变更日**) 会把
+        换过持有人的老修会误判为「尚未创立」(见下 `holy_order_lines` 内注)。
 
         **不写成员层** (全档在世 `order_member` 仅 0.11%, 见调研_v88 §2.2), 也**不写**
         `worldliness` (世俗度; 本档 29 个修会全为 0, 且 `MAX_WORLDLINESS` 不在随包
@@ -11726,11 +11728,19 @@ class Facts:
             if not (is_founder or (same_faith and in_realm)):
                 continue
             lt = self._lt.get(str(tid)) or {}
-            fdate = lt.get("date")
+            # v93 (用户 2026-10-03 报「修会少了一所」): **创立日取 `history` 最早一键**,
+            # 不取 `landed_titles[].date` —— 后者是「该头衔最后一次变更之日」(持有人
+            # 一换就前移), 拿它当「尚未创立」的判据会把老修会按 as_of 整个截掉。
+            # 洪氏2 实测: 南岭隐修院 `date`=918.7.7 (918 年换持有人)、`history` 最早
+            # =891.4.16, 于是 915.1.1 的十年传记里这所 891 年立的修会整所消失;
+            # 906 年立的咏礼会 `date` 恰等于其创立日 906.7.1, 故一直没暴露。
+            # `date` 只在头衔无 history 时兜底。
+            fdate = ""
+            _hist = lt.get("history")
+            if isinstance(_hist, dict) and _hist:
+                fdate = min(_hist, key=cl.date_key)
             if not fdate:
-                _hist = lt.get("history")
-                if isinstance(_hist, dict) and _hist:
-                    fdate = min(_hist, key=cl.date_key)
+                fdate = lt.get("date")
             if ao is not None and (not fdate or cl.date_key(fdate) > ao):
                 continue          # 尚未创立 (十年传记不穿越)
             name = self.title(tid, date) or ""

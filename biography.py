@@ -3325,6 +3325,80 @@ def _liyi_has_mid(facts):
         or bool(facts.get("forbidden_tenets"))
 
 
+def _liyi_req(facts):
+    """《礼仪志》的题面与两板块要求 —— **只写本篇真有料的那几条** (v93)。
+
+    根因 (用户 2026-10-03 报「第二部分是不是没给相关信息」): 开篇/纪事的要求原是
+    **静态文本**, 无论该块是否下发都照索。天贵福 915 档的纪事实际只下发三块
+    (个人教义沿革 / 修会 / 礼仪沿革), `rite_tenet_changes` 为空即**没有**本礼教义
+    沿革块, 可题面与要求照旧写「本礼核心教义之更替」「礼仪核心教义的演变」——
+    模型为填满 1200–1800 字, 把上手给的**个人**教义改写成「本礼」的沿革, 并自造
+    开山三义 (「曰天父天兄，曰耶稣救赎，曰圣灵运行」, 与档案给的「宗徒继承、
+    基督的精兵、华夏综摄主义」无一相符); 题面点名修会而开篇不给修会料, 开篇板块
+    又自造了「圣兵儿子会」「天京孝道姊妹会」两所不存在的修会。
+
+    做法: 逐块/逐行判在不在, 在才写那一条 ——
+      · 开篇: 按 `rite_profile` 的**行首**对齐 (名目 / 源流 / 礼仪领袖 / 核心教义 /
+        宗教热情 / 灵性满足 / 个人教义), 全行俱全时与旧文逐字相同;
+      · 纪事: 礼仪沿革 → 受礼改礼立礼之年月缘由; 个人教义沿革 → 个人信条之更替;
+        本礼教义沿革 → 礼仪核心教义的演变; 禁忌信条 → 起止与了结; 修会 → 逐所写出
+        立会之年、会规、所领教堂领地与现任之长。
+      · 题面 (`focus`) 只写两块都立得住的话, **不含修会** —— 修会只在纪事下发
+        (v90 拍板「开篇只讲所奉之礼是谁、是什么」), 题面点它, 开篇就会自造会名。
+    """
+    prof = [str(x) for x in (facts.get("rite_profile") or [])]
+
+    def _has(prefix):
+        return any(x.startswith(prefix) for x in prof)
+
+    # ---- 开篇 (礼仪档案逐行对齐) ----
+    first = "所奉礼仪的名目"
+    if _has("源自"):
+        first += "与源流"
+    if _has("礼仪领袖"):
+        first += "、礼仪领袖为谁"
+    tail = []
+    if _has("核心教义"):
+        tail.append("核心教义逐条点名")
+    _fv, _sf = _has("宗教热情"), _has("灵性满足")
+    if _fv and _sf:
+        tail.append("宗教热情与灵性满足依档位词写来")
+    elif _fv:
+        tail.append("宗教热情依档位词写来")
+    elif _sf:
+        tail.append("灵性满足依档位词写来")
+    if _has("个人教义"):
+        tail.append("个人教义写出当前所奉的条目")
+    lead = "写传主所受之礼：" + first + "。" \
+        + ("".join(x + "，" for x in tail[:-1]) + tail[-1] + "。" if tail else "")
+
+    # ---- 纪事 (五个块) ----
+    mid_bits, focus_bits = [], []
+    if facts.get("rite_history"):
+        mid_bits.append("受礼、改礼、立礼的年月与缘由")
+        focus_bits.append("受礼、改礼、立礼")
+    if facts.get("personal_tenets"):
+        mid_bits.append("他本人采纳个人信条的更替之年")
+        focus_bits.append("个人教义之更替")
+    if facts.get("rite_tenet_changes"):
+        mid_bits.append("礼仪核心教义的演变")
+        focus_bits.append("本礼核心教义之更替")
+    if facts.get("forbidden_tenets"):
+        mid_bits.append("他所持禁忌信条的起止与了结")
+        focus_bits.append("禁忌信条之起止")
+    if facts.get("holy_orders"):
+        mid_bits.append("他建立或庇护的修会，逐所写出立会之年、会规、"
+                        "所领教堂领地与现任之长")
+    src = style.SECTION_REQ.get("liyi", {})
+    return {
+        "lead": lead or (src.get("lead") or ""),
+        "mid": (("写礼仪与教义的沿革、传主在教门中的作为：" + "；".join(mid_bits) + "。")
+                if mid_bits else (src.get("mid") or "")),
+        "focus": ("写礼仪的沿革与教门中的作为：" + "、".join(focus_bits)
+                  if focus_bits else "写传主所受之礼与其教门中的作为"),
+    }
+
+
 def _apply_article_cap(articles):
     """篇目上限 (v88 问题1/P1): 超限时按 `_ARTICLE_PRIO` 留前 N, 其余略去并落日志。
 
@@ -3376,6 +3450,9 @@ def build_articles(facts, cache, cfg):
         titles = style.SECTION_TITLES.get(key, {})
         _var = (style.JIASHI_VARIANTS.get(facts.get("_jiashi_variant") or "")
                 if key == "jiashi" else None)
+        # v93: 《礼仪志》的开篇/纪事要求按**本篇真有料的块**逐条生成
+        # (见 `_liyi_req`; 旧的静态要求会索要没下发的「本礼教义沿革」)。
+        _dyn = (facts.get("_liyi_req") or {}) if key == "liyi" else {}
         if _var:
             titles = dict(titles)
             titles["lead"] = _var["lead_title"]
@@ -3489,7 +3566,8 @@ def build_articles(facts, cache, cfg):
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
             "req": _section_req(
-                       (_var or {}).get(sk)
+                       _dyn.get(sk)
+                       or (_var or {}).get(sk)
                        or style.SECTION_REQ.get(key, {}).get(sk)
                        or "按传记笔法写作。", facts),
         } for sk in sec_keys]
@@ -3618,6 +3696,11 @@ def build_articles(facts, cache, cfg):
     # 禁忌个人信条 + 门下教众的个人教义」; 并加**素材门槛**: 宗教面无实据者整篇不出
     # (用户: 「没有礼仪写就不写礼仪」)。
     if _liyi_has_material(facts):
+        # v93 (用户 2026-10-03 报「第二部分没给相关信息却编出本礼三义」): 题面与两板块
+        # 要求改由 `_liyi_req` 按**本篇真有料的块**生成 —— 原先的静态题面照索
+        # 「本礼核心教义之更替」, 而 `rite_tenet_changes` 为空时该块根本不下发。
+        _lq = _liyi_req(facts)
+        facts["_liyi_req"] = _lq
         # 线序: 紧跟《家室列传》(及其后的恩怨录/宝物志), 在《历代记》之前
         _anchor = 0
         for _i, _a in enumerate(articles):
@@ -3630,9 +3713,7 @@ def build_articles(facts, cache, cfg):
         articles.insert(_anchor, {"key": "liyi", "title": "礼仪志·礼仪与教义",
                                   "subject": None,
                                   "theme": "传主所受之礼与个人教义的演变",
-                                  "focus": "写礼仪的沿革与教门中的作为：受礼、改礼、"
-                                           "立礼、个人教义之更替、本礼核心教义之更替、"
-                                           "他所亲立或庇护的修会",
+                                  "focus": _lq["focus"],
                                   "sections": _secs})
     elif facts.get("rite_profile"):
         llm.log("[篇目] 宗教面无实据 (无改礼、无信条更替、无修会、无禁忌信条)，"
