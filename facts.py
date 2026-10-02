@@ -1900,7 +1900,8 @@ class Facts:
                 except Exception:
                     pass
         self._indep_cache = {}
-        self._purge_dates_map = {}
+        # v95 (问题6): **人级**判据 —— {行刑者: {日期: frozenset(被诛族)}}, 见 `purged_houses`
+        self._purge_houses_map = {}
         self._hold_cache = {}  # (cid, as_of) -> 持有区间 (历任/官职/称号复用)
         # v11: 头衔 holder 序列预计算 (历任/朝局多次全表扫描用)
         self._title_seqs = {}
@@ -10238,24 +10239,37 @@ class Facts:
         """该次囚禁是否属**诛灭世族** (v55 问题1b) —— 判据取自 `b99d162` (v54)。
 
         v54 在 `_timeline` 里用的是**双判据**: ①受害者在 `family_purge_victims(监禁者)`
-        名单内; ②该日 ∈ `_purge_dates(监禁者)` 且监禁者是主角。年表那一侧只做**丢弃**,
+        名单内; ②该日 ∈ `purged_houses(监禁者)` 的诛灭日且该族即被诛之族 (v95 人级)。年表那一侧只做**丢弃**,
         故①不带日期也安全; 本处是**造行** (族级句), 不带日期的①会把几十年后的事搬到
         当年 —— 实测任宗本 927.8.2 被沙米尔囚禁、933.5.15 才被处决, 却因①在 927.8.2
         造出「诛灭任氏满门」。故此处只取**带日期的②**, 并把「监禁者是主角」按同一口径
         放宽为「监禁者属主角一族」(亨利/马丁/沙米尔三代同族)。
 
         实测: 诛灭日的逐人监禁记忆与该日诛灭日**同日** (918.4.8 49 条、920.1.24 72 条、
-        924.3.25 129 条), ②足以覆盖①在本篇的全部命中面。"""
-        return jailer is not None and bool(date) \
-            and str(date) in self._purge_dates(jailer)
+        924.3.25 129 条), ②足以覆盖①在本篇的全部命中面。
+
+        v95 (问题6): ②由「该日 ∈ 诛灭日集合」收紧为「**受囚者之族**恰为该日被诛之族」
+        (见 `purged_houses`) —— 旧稿不看受害者的族, 该日任何被囚者都会被折进族级行。"""
+        if jailer is None or not date or victim is None:
+            return False
+        houses = self.purged_houses(jailer).get(str(date))
+        if not houses:
+            return False
+        try:
+            hid = self._house_of_cid(int(victim))
+        except (TypeError, ValueError):
+            return False
+        return hid is not None and hid in houses
 
     def house_purge_pairs(self, house_id, my_houses):
         """该族在**诛灭日**上被处决的 (日期, 行刑者) 对 (v55 问题1b)。
 
-        与 `_house_prison_nodes` 的 purge 判据同源 (`_purge_dates`): 有些族的族人并未
+        与 `_house_prison_nodes` 的 purge 判据同源 (`purged_houses`): 有些族的族人并未
         在诛灭日下狱 (如陶氏/边氏: 917.11.13 下狱、918.4.8 才处决家主), 只认监禁节点会
         漏掉它们的族级行 —— v54 `family_purge_events(15403)` 对同一天给的是
-        「诛灭…42 族」, 两处口径必须一致。"""
+        「诛灭…42 族」, 两处口径必须一致。
+
+        v95 (问题6): 判据由日期改为**族级**（`house_id ∈ 该日被诛之族`）。"""
         out = set()
         for cid, c in self._chars.items():
             if not isinstance(c, dict) or c.get("dynasty_house") != house_id:
@@ -10270,7 +10284,7 @@ class Facts:
             k = int(k)
             if k not in my_houses and self._house_of_cid(k) not in my_houses:
                 continue
-            if d in self._purge_dates(k):
+            if house_id in self.purged_houses(k).get(d, ()):
                 out.add((d, k))
         return out
 
@@ -12416,6 +12430,10 @@ class Facts:
         return key, zh
 
     _PURGE_OPINION = ("purged_banishment_opinion", "purged_execution_opinion")
+    # v95 (问题6): 下面两条是**日级**通道, 人级收窄后不再作判据 —— 催化剂条目
+    # (`catalyst_tyrannical_extinguish_noble_family`, 事件 `tgp_east_asia_interaction_events.2000`
+    # 经 `10_tgp_interactions.txt:11618-11622` 写入) 与「一日 ≥3 族被处决」都**不带族信息**,
+    # 照它们出人名就会退回「同日全判连坐」。保留常量只为取证可对照。
     _PURGE_CATALYST = "catalyst_tyrannical_extinguish_noble_family"
     _PURGE_HOUSE_THRESHOLD = 3
     # v60 (问题1): 互动 `celestial_extinguish_noble_family` 的 `is_shown` 硬门 ——
@@ -12438,84 +12456,55 @@ class Facts:
                     return hist
         return []
 
-    def _purge_dates(self, killer_id):
-        """行刑者诛灭世族的日期集 (v53; v60 加机制门)。
+    def purged_houses(self, killer_id):
+        """行刑者的诛灭世族记录 **{日期: frozenset(被诛族 id)}** (v95 问题6 人级收窄)。
 
-        v60 (问题1) 重写: 旧稿四条通道取「诛灭日」, **没有一条核对机制前提**,
-        于是部落制的崔佛把 879.9.1 批量吃掉的五名俘虏 (Mod「食人赋能」把
-        `devour_single_character_effect` 写成 `death_execution`) 记成
-        「诛灭波埃氏、瓦讷氏、韦尔夫氏」, 又把 869.3.31 中国「崔氏」庄园
-        (持有人 10923, 与当日两名死者毫无关系) 的销毁日撞成「诛灭二族」。
+        v95 (用户 2026-10-02 报「有很多人不是被诛灭世族互动击杀也显示连坐」) 重写:
+        旧稿只给「诛灭日集合」, `is_family_purge` 又不用 victim_id, 于是该行刑者
+        **当天处决的每一个人**都写成「连坐处死」—— 本档 30 名连坐者里 23 人误标
+        (943.11.3 处决 16 人 16 族, 当日只有 1 族的世族庄园被销毁; 951.6.26 九人里只 1 人)。
+        现在**族级**收口, 每条判据都落在「族」上:
 
-        现在两条纪律同时生效:
+          · **主判据 (互动自己的动作)** —— `10_tgp_interactions.txt:11594-11615`:
+            互动处死受者时, 把其名下凡 `is_noble_family_title = yes` 的头衔
+            (世族庄园 `_nf_`) 一律 `destroy_title`; 而互动只杀受者与**同 house** 的
+            近亲 (`:11370-11404`)。故「当日 `_nf_` 庄园被销毁、且该庄园持有人
+            **恰于当日被本行刑者处决**」的那些族 = 当日确实被诛灭的族。
+          · **退路 (无庄园条目时)** —— 该日 `owner == 行刑者` 的 `purged_*` 好感,
+            其 target 之族 ∩「当日被本行刑者处决者之族」(被驱逐残党留下的唯一痕迹;
+            948.8.24 徐氏即此路, 顺带排除外族配偶之族)。
           · **机制门** —— 该日行刑者政体须为 `celestial_government`
             (与互动 `is_shown` 的 `government_has_flag = government_is_celestial`
-            同口径, 见 `_PURGE_GOVS`)。政体不可知时不判 (宁缺勿错, 同 v58 天命闸)。
-          · **正证门** —— 除「同名日期」外, 该日还须至少一项机制指纹:
-            ① 与该日**受害者同族**的 `_nf_` 世族庄园于该日销毁 (旧稿只做
-               「全世界任一庄园销毁日 ∩ 本地处决日」, 与受害者无涉);
-            ② 该日新得 `purged_*_opinion` (互动对被驱逐残党留下的唯一痕迹);
-            ③ 天命催化剂条目 `catalyst_tyrannical_extinguish_noble_family`
-               且 `character == 行刑者` (旧稿 `character` 缺省即放行 —— 全球任意
-               天朝灭族日都会塞进任何 killer 的日期集)。
-        另: 食人硬证 (该日有 `devour_bone_visual` 宝物成物且 recipient == 行刑者)
-        的日期一律排除 —— 吃掉共享 `death_execution` 死因, 但它不是灭族
-        (见 `_devour_bones`)。"""
+            同口径, 见 `_PURGE_GOVS`); 政体不可知时不因此改口 (宁缺勿错, 同 v58 天命闸)。
+          · **食人排除** —— 有 `devour_bone_visual` 硬证 (成物收件人 == 行刑者) 的日期
+            一律排除: 吃掉共享 `death_execution` 死因, 但它不是灭族 (见 `_devour_bones`)。
+
+        返回空 dict = 该行刑者没有可判定的诛灭。"""
         if killer_id is None:
-            return set()
+            return {}
         kid = int(killer_id)
-        cached = self._purge_dates_map.get(kid)
+        cached = self._purge_houses_map.get(kid)
         if cached is not None:
             return cached
-        # 该日被本行刑者处决者 —— {日期: {house_id: [cid…]}}:
-        # 「异族数」与「庄园旧持有人是否属当日受害者之族」共用一份索引
+        # 该日被本行刑者处决者 —— {日期: [(cid, house_id)]}
         victims_by_day = {}
         for cid, c in self._chars.items():
             if not isinstance(c, dict):
                 continue
             dd = c.get("dead_data") or {}
-            if dd.get("reason") != "death_execution":
+            if dd.get("reason") != "death_execution" or dd.get("killer") != kid:
                 continue
-            if dd.get("killer") != kid:
-                continue
-            d = dd.get("date")
+            d = str(dd.get("date") or "")
             if not d:
                 continue
-            victims_by_day.setdefault(str(d), {}).setdefault(
-                c.get("dynasty_house"), []).append(int(cid))
+            victims_by_day.setdefault(d, []).append((int(cid), c.get("dynasty_house")))
         if not victims_by_day:
-            self._purge_dates_map[kid] = set()
-            return set()
-        # 日期候选集 (须过机制门)
-        cand = {d for d, houses in victims_by_day.items()
-                if len([h for h in houses if h is not None])
-                >= self._PURGE_HOUSE_THRESHOLD}
-        proof = self._purge_opinion_dates(kid)
-        cand |= proof
-        for e in self._dynastic_cycle_history_entries():
-            if not isinstance(e, dict):
-                continue
-            cat = e.get("catalyst") if isinstance(e.get("catalyst"), dict) else e
-            if not isinstance(cat, dict):
-                continue
-            if cat.get("catalyst") != self._PURGE_CATALYST:
-                continue
-            # character 必须**就是**本行刑者: 缺 character 的条目归属不明, 丢弃
-            if cat.get("character") != kid:
-                continue
-            if cat.get("date"):
-                cand.add(str(cat["date"]))
-        dates = {d for d in cand if self._purge_gov_ok(kid, d)}
-        if not dates:
-            self._purge_dates_map[kid] = dates
-            return dates
-        devoured = {d for d, _rec, _vid in self._devour_bones().values()}
-        # 正证①: 与该日受害者**同族**的世族庄园于该日销毁
-        proof = set()
+            self._purge_houses_map[kid] = {}
+            return {}
+        out = {}
+        # 主判据: 当日销毁的世族庄园, 其持有人恰于当日被本行刑者处决
         for tid, t in self._lt.items():
-            if not isinstance(t, dict):
-                continue
-            if not self._is_estate_title(tid):
+            if not isinstance(t, dict) or not self._is_estate_title(tid):
                 continue
             hist = t.get("history") or {}
             if not isinstance(hist, dict):
@@ -12528,31 +12517,63 @@ class Facts:
                     h = e.get("holder")
                     if not isinstance(h, int):
                         continue
-                    if d not in victims_by_day:
+                    rows = victims_by_day.get(d)
+                    if not rows or h not in {c for c, _hh in rows}:
                         continue
-                    if self._house_of_cid(h) in set(victims_by_day.get(d) or {}):
-                        proof.add(d)
-        # 正证②: 该日新得 purged_* 好感 (owner/target 任一涉本行刑者)
-        proof |= self._purge_opinion_dates(kid)
-        self._purge_dates_map[kid] = {
-            d for d in dates if d in proof and d not in devoured}
-        return self._purge_dates_map[kid]
+                    hid = self._house_of_cid(h)
+                    if hid is not None:
+                        out.setdefault(d, set()).add(hid)
+        # 退路: owner == 行刑者 的 purged_* 好感 target 之族 ∩ 当日被处决者之族
+        for d, houses in self._purge_opinion_houses(kid).items():
+            vhouses = {hh for _c, hh in (victims_by_day.get(d) or [])
+                       if hh is not None}
+            hit = {hh for hh in houses if hh in vhouses}
+            if hit:
+                out.setdefault(d, set()).update(hit)
+        # 机制门 + 食人排除
+        devoured = {d for d, _rec, _vid in self._devour_bones().values()}
+        self._purge_houses_map[kid] = {
+            d: frozenset(hs) for d, hs in out.items()
+            if hs and d not in devoured and self._purge_gov_ok(kid, d)}
+        return self._purge_houses_map[kid]
 
-    def _purge_opinion_dates(self, killer_id):
-        """涉本行刑者的 `purged_*` 好感日期集 (v60 问题1 正证②)。
+    def _purge_dates(self, killer_id):
+        """诛灭日集合 —— `purged_houses` 的**日期投影**, 仅供取证/回归脚本对照。
 
-        互动对被驱逐的残党留 `purged_banishment_opinion` / `purged_execution_opinion`
-        (自带 `start_date`), 这是「确实发生了一次世族诛灭」的机制指纹之一。"""
-        out = set()
+        判据一律走 `purged_houses` / `is_family_purge` (人级); 本函数不带族信息,
+        照它按「日」过滤人名就会退回 v95 之前那次「同日全判连坐」的误标。"""
+        return set(self.purged_houses(killer_id))
+
+    def _purge_opinion_houses(self, killer_id):
+        """本行刑者持有的 `purged_*` 好感 → {日期: {target 之族}} (v95 问题6 退路)。
+
+        方向: 事件 `tgp_east_asia_interaction_events.txt:773-828` 用
+        `reverse_add_opinion = { target = root }` 写 ⇒ **owner = 行刑者**、
+        target = 被诛族人 (存档 11/11 条 owner=44503); 旧稿「owner 或 target 任一涉
+        行刑者」把方向放宽了, 现收紧为 `owner == 行刑者`。
+        两条 purged 好感 `years = 25`、`decaying = yes`
+        (`common/opinion_modifiers/00_crime_and_prison_opinions.txt:580-593`), 且
+        **任一方死亡即刻消失** ⇒ 被处决者那条永远查不到, 只有活着残党这条留得下来。"""
+        out = {}
         for o in (self.melt.get("opinions") or {}).get("active_opinions") or []:
-            if not isinstance(o, dict):
+            if not isinstance(o, dict) or o.get("owner") != killer_id:
                 continue
-            if o.get("owner") != killer_id and o.get("target") != killer_id:
+            tgt = o.get("target")
+            if not isinstance(tgt, int):
+                continue
+            hid = self._house_of_cid(tgt)
+            if hid is None:
                 continue
             for v in cl._opinion_values(o):
                 if v.get("modifier") in self._PURGE_OPINION and v.get("start_date"):
-                    out.add(str(v["start_date"]))
+                    out.setdefault(str(v["start_date"]), set()).add(hid)
         return out
+
+    def _purge_opinion_dates(self, killer_id):
+        """涉本行刑者的 `purged_*` 好感日期集 (v60 问题1 正证②; v95 方向收紧)。
+
+        见 `_purge_opinion_houses` —— 本函数只作日期投影, 判据走族级。"""
+        return set(self._purge_opinion_houses(killer_id))
 
     def _purge_gov_ok(self, killer_id, date):
         """该日行刑者政体是否具备诛灭世族的机制前提 (v60 问题1)。
@@ -12627,47 +12648,60 @@ class Facts:
         return int(key) if str(key).isdigit() else None
 
     def is_family_purge(self, killer_id, victim_id, date=None):
-        """该处决是否属于诛灭世族 (同日旁证命中)。"""
-        if killer_id is None or not date:
+        """该**人**该次处决是否属于诛灭世族 (v95 问题6 人级收窄)。
+
+        判据 = 「死者之族 ∈ 该日被诛之族」(见 `purged_houses`), 不再只看日期 ——
+        旧稿只用日期, 于是行刑者当天处决的每一个人都被写成「连坐处死」。"""
+        if killer_id is None or victim_id is None or not date:
             return False
-        return str(date) in self._purge_dates(killer_id)
+        houses = self.purged_houses(killer_id).get(str(date))
+        if not houses:
+            return False
+        try:
+            hid = self._house_of_cid(int(victim_id))
+        except (TypeError, ValueError):
+            return False
+        return hid is not None and hid in houses
 
     def family_purge_victims(self, killer_id):
-        """诛灭世族涉及者 id 集 (v54 问题3): 该日被处决者 + 被驱逐者。
+        """诛灭世族涉及者 id 集 (v54 问题3; v95 人级收窄): 被诛族里被处决者 + 被驱逐者。
 
         互动 `celestial_extinguish_noble_family_interaction`（与事件
         `tgp_east_asia_interaction_events.2000`）的实际动作是**先尽囚、后驱逐**：
         对 recipient 的 `every_close_or_extended_family_member` 与 `every_spouse`
         **一律** `imprison = { type = house_arrest }`，随后处死 recipient、其余驱逐
         （存档留 `purged_banishment_opinion`）。所以存档里这一件事同时产出
-        36 条处决与 ~94 条囚禁+释放 —— 年表逐人成行会塞满（马丁终传 920.1.24 有 85 行）。"""
-        if killer_id is None:
+        36 条处决与 ~94 条囚禁+释放 —— 年表逐人成行会塞满（马丁终传 920.1.24 有 85 行）。
+
+        v95: 逐条都先核「此人之族是否就是该日被诛之族」—— 被处决者按族集合认领;
+        被驱逐残党 (含外族配偶 —— 互动 `every_spouse` 一并驱逐) 按「该日
+        `owner == 行刑者` 的 `purged_*` 好感 target」认领 (该互动是这两条好感的
+        **唯一施加者**, 见 `_purge_opinion_houses`)。"""
+        killer_houses = self.purged_houses(killer_id)
+        if not killer_houses:
             return set()
         kid = int(killer_id)
-        dates = self._purge_dates(kid)
-        if not dates:
-            return set()
         out = set()
         for cid, c in self._chars.items():
             if not isinstance(c, dict):
                 continue
             dd = c.get("dead_data") or {}
-            if dd.get("reason") == "death_execution" and dd.get("killer") == kid \
-                    and str(dd.get("date") or "") in dates:
+            if dd.get("reason") != "death_execution" or dd.get("killer") != kid:
+                continue
+            houses = killer_houses.get(str(dd.get("date") or ""))
+            if houses and c.get("dynasty_house") in houses:
                 out.add(int(cid))
         for o in (self.melt.get("opinions") or {}).get("active_opinions") or []:
-            if not isinstance(o, dict):
+            if not isinstance(o, dict) or o.get("owner") != kid:
                 continue
-            if o.get("owner") != kid and o.get("target") != kid:
+            tgt = o.get("target")
+            if not isinstance(tgt, int) or tgt == kid:
                 continue
             for v in cl._opinion_values(o):
-                if v.get("modifier") not in self._PURGE_OPINION:
-                    continue
-                if str(v.get("start_date") or "") not in dates:
-                    continue
-                for who in (o.get("owner"), o.get("target")):
-                    if isinstance(who, int) and who != kid:
-                        out.add(int(who))
+                if v.get("modifier") in self._PURGE_OPINION \
+                        and str(v.get("start_date") or "") in killer_houses:
+                    out.add(tgt)
+                    break
         return out
 
     def family_purge_events(self, killer_id):
@@ -12675,13 +12709,14 @@ class Facts:
 
         供两处共用: 年表插入（整件事一行）+《刺客列传》名录前的摘要。
         被驱逐者**不列名** —— 互动里凡有地者一律处决，被流放的必是无地残党，
-        逐人开列只是噪声（用户 2026-09-18 拍板：直接写「剩余残党被流放」）。"""
-        if killer_id is None:
+        逐人开列只是噪声（用户 2026-09-18 拍板：直接写「剩余残党被流放」）。
+
+        v95 (问题6): 只数**该日被诛之族**的被处决者 —— 旧稿把当日所有被处决者
+        都算作「家主 N 人」(本档 943.11.3 写成「十六族 / 16 人」, 实为 1 族 1 人)。"""
+        killer_houses = self.purged_houses(killer_id)
+        if not killer_houses:
             return []
         kid = int(killer_id)
-        dates = self._purge_dates(kid)
-        if not dates:
-            return []
         by_day = {}
         for cid, c in self._chars.items():
             if not isinstance(c, dict):
@@ -12690,9 +12725,10 @@ class Facts:
             if dd.get("reason") != "death_execution" or dd.get("killer") != kid:
                 continue
             d = str(dd.get("date") or "")
-            if d not in dates:
-                continue
+            houses = killer_houses.get(d)
             hid = c.get("dynasty_house")
+            if not houses or hid is None or hid not in houses:
+                continue
             by_day.setdefault(d, []).append((int(cid), hid))
         out = []
         for d in sorted(by_day, key=lambda x: cl.date_key(x)):
@@ -18500,8 +18536,9 @@ def _timeline(f):
                     and cl.date_key(str(date)) < _era_key)
 
     # v54 (问题3): 诛灭世族涉及者 —— 其监禁类记忆不进年表 (整件事由族级行承担)
+    # v95 (问题6): 判据随 `purged_houses` 改人级 —— `purge_houses` 是 {日期: 被诛族}
     purge_victims = f.family_purge_victims(pid) if pid is not None else set()
-    purge_dates = f._purge_dates(pid) if pid is not None else set()
+    purge_houses = f.purged_houses(pid) if pid is not None else {}
     events = []        # (date, type, text)
     idents = {}        # (date, type, text) -> {"owner", "parts"} — 镜像对/监禁对配对用
     seen_keys = set()  # 成对事件去重: (type, creation_date, participants 集)
@@ -18667,11 +18704,12 @@ def _timeline(f):
             # 两条判据并用: ①受害者在诛灭名单里 (被处决者及其同族);
             # ②该日即诛灭日**且监禁者是主角** —— 被驱逐的残党无地、不在处决名单里,
             # 只认①会漏掉他们 (实测 85 行里 69 行如此)。
-            if purge_dates and norm_type in _PRISON_MEM_TYPES:
+            if purge_houses and norm_type in _PRISON_MEM_TYPES:
                 _pd = f.mem_date(cid, mem) or mem.get("creation_date")
-                if _prison_victim(cid, mem) in purge_victims \
-                        or (str(_pd) in purge_dates
-                            and _prison_jailer(cid, mem) == pid):
+                _pv = _prison_victim(cid, mem)
+                if _pv in purge_victims \
+                        or (_prison_jailer(cid, mem) == pid
+                            and f.is_purge_prisoner(_pv, pid, _pd)):
                     continue
             s = _mem_sentence(f, cid, mem)
             if not s:
