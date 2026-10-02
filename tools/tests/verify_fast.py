@@ -1204,21 +1204,28 @@ def group_v43(snap_path):
     lines = [ln.strip() for ln in all_text.splitlines() if ln.strip()]
 
     # ---- [1] 婚姻线系 ----
-    matri = [ln for ln in lines if "入赘婚" in ln]
-    # v55 (问题2): 现行形态是分句「，是入赘婚」; 历史快照里还有 v51 短式括注
-    # 「（入赘婚）」与更早的长式——各自都算合法, 但同一快照里只许出现一种。
+    matri = [ln for ln in lines if "入赘" in ln]
+    # v92 (问题2): 现行形态是**动词**「结入赘婚」(成婚句) 与名单补注「，入赘」;
+    # 历史快照里还有 v55 分句「，是入赘婚」、v51 短式括注「（入赘婚）」
+    # 与更早的长式——各自都算合法, 但同一快照里只许出现一种。
+    _VERB = re.compile(r"结入赘婚")
+    _LIST = re.compile(r"，入赘(?=[，。；])")
     _NOW = re.compile(r"，是入赘婚")
     _SHORT = re.compile(r"（入赘婚）")
     _LONG = re.compile(r"（入赘婚：所生子女随母方，属[^（）]+）")
     bad_form = [ln for ln in matri
-                if not (_NOW.search(ln) or _SHORT.search(ln) or _LONG.search(ln))]
+                if not (_VERB.search(ln) or _LIST.search(ln) or _NOW.search(ln)
+                        or _SHORT.search(ln) or _LONG.search(ln))]
     check("[1] 入赘婚补注形态统一", not bad_form, bad_form[:3])
-    kinds = sorted({"分句式" if _NOW.search(ln) else
+    kinds = sorted({"动词式" if _VERB.search(ln) else
+                    "名单式" if _LIST.search(ln) else
+                    "分句式" if _NOW.search(ln) else
                     "短式" if _SHORT.search(ln) else "长式" for ln in matri})
     check("[1] 同一快照只用一种入赘婚形态", len(kinds) <= 1, kinds)
 
     class _MatriStub:
-        """marriage_lineality_note 只用到这两个方法 → 桩即可验现行形态。"""
+        """marriage_lineality_note / marriage_verb 只用到这两个方法 →
+        桩即可验现行形态。"""
 
         def wedding_date(self, a, b):
             return "1100.1.1"
@@ -1227,7 +1234,10 @@ def group_v43(snap_path):
             return True
 
     note = F.Facts.marriage_lineality_note(_MatriStub(), 1, 2)
-    check("[1] 现行补注为「，是入赘婚」(v55 去括注)", note == "，是入赘婚", note)
+    check("[1] 名单补注现行为「，入赘」(v92 去「是入赘婚」)",
+          note == "，入赘", note)
+    verb = F.Facts.marriage_verb(_MatriStub(), 1, 2)
+    check("[1] 成婚句动词现行为「结入赘婚」(v92)", verb == "结入赘婚", verb)
     arts = facts.get("family_artifacts") or []
     if pid == 62045:
         # 四桩入赘婚 (多萝特娅 1095 / 阿莱克西娅 1103 / 欧金尼娅 1108 / 阿德尔海德
@@ -1244,14 +1254,12 @@ def group_v43(snap_path):
             print(f"  INFO [1] 本篇 as_of={as_of}, 入赘婚行 {len(matri)} 条 "
                   f"(只查形态)")
         # 主角自身两段婚事 (埃卡泰里妮 / 康斯坦恰) 均为普通婚 —— 只认成婚句与
-        # 配偶行形态 (孙辈同名「克里斯托弗·诺兰」不算)
-        wrong = [ln for ln in matri
-                 if "与倾国倾城埃卡泰里妮成婚" in ln
-                 or "与波兰女王康斯坦恰·皮雅斯特成婚" in ln
-                 or "康斯坦恰·皮雅斯特，是入赘婚" in ln
-                 or "倾国倾城埃卡泰里妮，是入赘婚" in ln
-                 or "康斯坦恰·皮雅斯特（入赘婚" in ln
-                 or "倾国倾城埃卡泰里妮（入赘婚" in ln]
+        # 配偶行形态 (孙辈同名「克里斯托弗·诺兰」不算); v92 起「入赘」有动词式与
+        # 名单式两种形态, 故按「该名之后紧跟入赘标记」判, 不逐字列举旧句式。
+        _NEAR = re.compile(
+            r"(康斯坦恰·皮雅斯特|倾国倾城埃卡泰里妮)[^，。；]{0,8}"
+            r"(，入赘|结入赘婚|，是入赘婚|（入赘婚)")
+        wrong = [ln for ln in matri if _NEAR.search(ln)]
         check("[1] 主角自身两段婚事不误判为入赘", not wrong, wrong[:2])
     else:
         print(f"  SKIP [1] 诺兰专属入赘断言 (player_id={pid})")
