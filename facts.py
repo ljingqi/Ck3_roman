@@ -17055,7 +17055,19 @@ def _war_title_gain(f, winner, loser, d0, d1):
 
 
 def _war_start_clause(f, ev, sl):
-    """兴兵小句 (不含日期与句号) —— 对手/战名/争战目标/宣称者按槽位写出。"""
+    """兴兵小句 (不含日期与句号) —— 对手/战名/争战目标/宣称者按槽位写出。
+
+    v94 (问题1, 用户 2026-10-02 报「不文不白」):
+      · 防御战旧句「{atk}以{cb}来攻，{me}应战，目标为{tname}」—— 末句是公文体
+        谓语小句 (「目标为X」), 与前半的史传腔相抵; 现改为「…兴兵，{me}应战，
+        兵锋向{tname}」: 目标改用动词短语承接, 地点信息不丢。
+      · 「来攻」一并换掉 (用户追加: 该词同属不文不白) —— 它在项目里还被用作
+        「随某人来攻」的盟友句面, 词面本有歧义; 「兴兵」只表起兵, 与「应战」对举。
+      · 进攻战在 claimant 与 war_title 同时在时**同一句点两次目标**
+        (「目标是X，为…索取X的宣称」), 现只在索取分句里点一次。
+      · claimant 处补**亲缘定语** (「为外甥洪地保索取…」) —— 战事行由
+        `_pair_war_events` 整句改写, 不走 `name_index` 登记, v45 亲缘机制够不到
+        这一句, 故在这里直算 (用户 2026-10-02 报「没写出他是主角的亲戚」)。"""
     t = ev.get("type")
     d = ev.get("date")
     owner = (ev.get("ident") or {}).get("owner")
@@ -17065,19 +17077,22 @@ def _war_start_clause(f, ev, sl):
     if t == "offensive_war":
         opp = f.event_name(sl["dfd"], date=d) or ""
         s = f"{me}以{cb}向{opp}开战" if cb else f"{me}向{opp}开战"
-        if tname:
-            s += f"，目标是{tname}"
         cl = sl.get("claimant")
         if isinstance(cl, int) and cl != owner:
-            cn = f.event_name(cl, date=d) or ""
+            cn = _claimant_name(f, cl, d, owner)
             if cn:
+                # tname 由索取分句点出, 故前面不再写「目标是{tname}」(v94 去重)
                 s += f"，为{cn}索取{tname}的宣称" if tname else f"，为{cn}索取宣称"
+            elif tname:
+                s += f"，目标是{tname}"
+        elif tname:
+            s += f"，目标是{tname}"
         return s
     if t == "defensive_war":
         atk = f.event_name(sl["atk"], date=d) or ""
-        s = f"{atk}以{cb}来攻，{me}应战" if cb else f"{atk}来攻，{me}应战"
+        s = f"{atk}以{cb}兴兵，{me}应战" if cb else f"{atk}兴兵，{me}应战"
         if tname:
-            s += f"，目标为{tname}"
+            s += f"，兵锋向{tname}"
         return s
     # joined_allys_war
     ally = f.event_name(sl.get("ally"), date=d) or ""
@@ -17086,6 +17101,26 @@ def _war_start_clause(f, ev, sl):
     if cb:
         s += f"，此役为{cb}"
     return s
+
+
+def _claimant_name(f, cid, date, owner):
+    """索取宣称者之名 + **亲缘定语** (v94)。
+
+    战事行是整句改写出来的, 既不走 `name_index` 登记 (v45 亲缘机制无从插入),
+    也没有第二条更早的句面可挂, 故在此直算: 与行主语 (兴兵方) 有可判血亲时
+    写「外甥洪地保」, 判不出亲缘时退回平称。词形走 `blood_kin_word_for`
+    (与《家室列传》的「本为X之外甥女」同一判据、同一词表: `NEPHEW` 一族)。"""
+    nm = f.event_name(cid, date=date) or ""
+    if not nm or owner is None:
+        return nm
+    try:
+        kin = f.blood_kin_word_for(cid, owner) or ""
+    except Exception:                                        # noqa: BLE001
+        kin = ""
+    if kin and kin not in nm:
+        return f"{kin}{nm}"
+    return nm
+
 
 
 def _war_end_clause(f, ev, sl, d0):
