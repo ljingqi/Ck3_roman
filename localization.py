@@ -1164,6 +1164,23 @@ def _cond_block(items, groups, op="all", religions=None, split_inline=False):
             children.append({"any_held_title": _cond_block(
                 _items(val), groups, "all", religions, split_inline)})
             continue
+        # v89 (问题2-B): `tier = tier_duchy` (在 any_held_title 内) 与
+        # `is_landless_type_title` 两个叶子 —— 旧解析器把前者记成 `unknown`(恒不命中),
+        # 于是 `duke_theocracy_*_clerical_region*` 一族 (「总主教」/「都主教」/「牧首」)
+        # **永远不可能命中** (实测 logs/v89_probe_fix.txt)。
+        if key == "tier":
+            _t = _TIER_NUM.get(str(val).replace("tier_", "").lower())
+            if _t is None:
+                children.append({"unknown": key})
+            else:
+                # 两个叶子必须分开记: cond_match 命中首个键即返回 (同 highest_held_title_tier)
+                children.append({"tier_min": _t})
+                children.append({"tier_max": _t})
+            continue
+        if key == "is_landless_type_title":
+            children.append({"landless":
+                             str(val).strip().lower() in ("yes", "true")})
+            continue
         if key == "has_clerical_region":
             children.append({"clerical_region":
                              str(val).strip().lower() in ("yes", "true")})
@@ -1253,7 +1270,12 @@ def cond_match(cond, scope):
     if "unknown" in cond:
         return False
     if "exists" in cond:
-        return scope.get(str(cond["exists"])) not in (None, "")
+        # v89 (问题2-B): 原来写 `not in (None, "")` —— 于是 False/0/[] 这些"存在但为假"
+        # 的值也算"存在", `exists = clerical_elector_title` 遂对所有公国级神权统治者
+        # 判真 ⇒ 一律命中 cardinal 臂 (「枢机」)。改为真值语义 (与游戏 exists 一致)。
+        return bool(scope.get(str(cond["exists"])))
+    if "landless" in cond:
+        return bool(scope.get("landless")) == bool(cond["landless"])
     if "gov_flag" in cond:
         return scope.get("gov_flag") == cond["gov_flag"]
     if "independent" in cond:
@@ -1660,7 +1682,10 @@ def build_bishop_titles(cfg):
                         if tr else {}
                     arms.append({"loc_key": lk.group(1) if lk else "",
                                  "when": cond})
-    return {"schema": 3, "arms": arms,
+    # v89 (问题2-B): schema 3 → 4 —— 条件树解析器补 `tier = tier_duchy` 与
+    # `is_landless_type_title` 两个叶子, 且 `exists` 改真值语义; 旧表里这两个叶子是
+    # `unknown` (恒不命中) 且 cardinal 臂恒真, 必须重建。
+    return {"schema": 4, "arms": arms,
             "religions": rel.get("religions") or {},
             "faiths": rel.get("faiths") or {}}
 
@@ -1681,7 +1706,7 @@ def load_bishop_titles(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 3 and data.get("arms"):
+            if data.get("schema") == 4 and data.get("arms"):
                 return data
         except Exception:
             pass
@@ -1862,7 +1887,9 @@ def build_theocracy_titles(cfg):
                                  "when": cond})
                 if arms:
                     blocks[key] = arms
-    return {"schema": 1, "blocks": blocks,
+    # v89 (问题2-B): schema 1 → 2 —— 同 bishop_titles, 条件树解析器补两个叶子 +
+    # `exists` 真值语义, 旧表须重建。
+    return {"schema": 2, "blocks": blocks,
             "religions": rel.get("religions") or {},
             "faiths": rel.get("faiths") or {}}
 
@@ -1883,7 +1910,7 @@ def load_theocracy_titles(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1 and data.get("blocks"):
+            if data.get("schema") == 2 and data.get("blocks"):
                 return data
         except Exception:
             pass

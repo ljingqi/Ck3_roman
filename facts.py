@@ -6347,6 +6347,100 @@ class Facts:
             return best[2]
         return f"前{best[2]}" if include_former else ""
 
+    # ---- v89 (问题2): 教省 (圣职区) 首座的官称 ----
+    # 存档事实 (实测 洪氏2 904 档): 教省头衔是 `landed_titles.19634`
+    #   = key `x_script_2632` / `landless = true` /
+    #     `clerical_region = {clerical_region: 51, domicile: 1740}` /
+    #     `title_name_data.name = '江宁'` / `history = {901.8.7: created}`,
+    # 游戏侧它是**公国级**神权头衔 —— `common\landed_titles\00_landed_titles.txt` 的
+    # `@never_primary_score`(仅影响 AI 择首要头衔) 与
+    # `common\flavorization\20_pam_flavorization.txt:2-17` 的
+    # `special_title = clerical_region` + `tier = duchy` 共同给出层级与措辞。
+    # 项目旧稿按**键前缀**算层级 (`_TT_RANK["x_"] = 0`) ⇒ 该头衔不算真领地,
+    # `official_title` 遂落到「前朝廷职司」兜底, 把「江宁总主教」写成「前礼部尚书」
+    # (实测 logs/v89_probe_live.txt)。此处按游戏口径单独出词。
+    _HOLY_SEAT_KEYS = ("d_et_alexandria", "d_et_antioch", "d_et_aquileia",
+                       "d_et_armenia", "d_et_jerusalem")     # 宗主教区 (牧首座)
+    _METROPOLITANATE_KEYS = ("d_et_axum",)                  # 都主教区
+    _CR_WORD_TRIM = "区"        # 「总主教区」→「总主教」/「牧首区」→「牧首」
+
+    def _clerical_region_title(self, cid, date=None):
+        """date 时点仍持有的**教省**头衔 id (无则 None)。"""
+        if cid is None:
+            return None
+        ao = cl.date_key(date) if date else None
+        for tid, ivs in (self._hold_intervals(cid, date) or {}).items():
+            t = self._lt.get(str(tid)) or {}
+            if not t.get("clerical_region"):
+                continue
+            held = False
+            for iv in ivs or []:
+                g, l = iv[0], (iv[1] if len(iv) > 1 else None)
+                if ao is not None and g and cl.date_key(g) > ao:
+                    continue
+                if l and ao is not None and cl.date_key(l) <= ao:
+                    continue
+                held = True
+            if held:
+                return tid
+        return None
+
+    def _clerical_holder_word(self, cid, tid, date=None):
+        """教省首座的官称词 (由游戏 `clerical_region_duchy_*` 措辞去掉末字「区」得来)。
+
+        变体选择 (游戏 `common\flavorization\20_pam_flavorization.txt:2-122`):
+        · 基督教 · 正教/东方礼 ⇒ `clerical_region_duchy_orthodox`=「牧首区」→「牧首」;
+        · 基督教 · 其余      ⇒ `clerical_region_duchy_west_christian`→`…_catholic`=「总主教区」→「总主教」;
+        · 非基督教            ⇒ `clerical_region_duchy_fallback`→`…_catholic`=「总主教区」→「总主教」。
+        先命中先取, 键缺整词作废 (调用方回退到教省名或空串)。"""
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        if key in self._HOLY_SEAT_KEYS:
+            lk = "clerical_region_duchy_patriarchate"
+        elif key in self._METROPOLITANATE_KEYS:
+            lk = "clerical_region_duchy_metropolitanate"
+        else:
+            _ftag, rtag = self._faith_tags(cid, date)
+            if rtag == "christianity_religion":
+                docs = []
+                try:
+                    docs = list(cl.rite_data(
+                        self.melt, self._rite_id(cid, date)).get("doctrine") or [])
+                except Exception:
+                    docs = []
+                east = ("special_doctrine_is_eastern_christian_faith" in docs
+                        or _ftag == "orthodox")
+                lk = "clerical_region_duchy_orthodox" if east \
+                    else "clerical_region_duchy_west_christian"
+            else:
+                lk = "clerical_region_duchy_fallback"
+        v = ""
+        try:
+            v = L.loc(self.table, lk) or ""
+        except Exception:
+            v = ""
+        if not v or v.startswith(("$", "[")):
+            return ""
+        return v[:-1] if v.endswith(self._CR_WORD_TRIM) else v
+
+    def clerical_region_word(self, cid, date=None):
+        """教省 (圣职区) 首座官称「江宁总主教」(v89 问题2, 用户 2026-10-02 拍板)。
+
+        判据: date 时点持有 `clerical_region` 非空的头衔。地名取项目唯一头衔出词口
+        `title()`; 官称取 `_clerical_holder_word`。非教省首座返回 ''。"""
+        tid = self._clerical_region_title(cid, date)
+        if tid is None:
+            return ""
+        place = ""
+        try:
+            place = self.title(tid, date) or self._name_at_date(tid, date) \
+                or self.title_base_name(tid) or ""
+        except Exception:
+            place = ""
+        word = self._clerical_holder_word(cid, tid, date)
+        if not word:
+            return ""
+        return f"{place}{word}" if place else word
+
     def _title_flags(self, tid, date=None):
         """头衔**自身**的旗标集 (v81): 开府 (`shogun_flag`) 就是这样落在 e_japan 上的
         (实测 melt_1007: `landed_titles.13279.variables.data[0]`)。
@@ -6445,6 +6539,13 @@ class Facts:
         mo = self._ministry_office_at(cid, anchor)
         if mo:
             return mo
+        # v89 (问题2, 用户 2026-10-02 拍板): 教省 (圣职区) 首座先行于「前职司」兜底 ——
+        # 教省头衔是无地神权头衔 (键前缀不成层级), `_has_current_landed_title` 判它
+        # 不是真领地, 旧稿于是把「江宁总主教」写成「前礼部尚书」(实测洪氏2 904 档)。
+        # 位置: 现任朝廷职司之后 (在任官衔优先)、「前职司」兜底之前。
+        cr = self.clerical_region_word(cid, anchor)
+        if cr:
+            return cr
         if not self._has_current_landed_title(cid, anchor):
             mo = self._ministry_office_at(cid, anchor, include_former=True)
             if mo:
@@ -13613,12 +13714,27 @@ class Facts:
                 continue
             t = self._lt.get(str(tid)) or {}
             out.append({
-                "tier": self._eff_rank(tid),
+                "tier": self._scope_tier(tid),
                 "clerical_region": bool(t.get("clerical_region")),
                 "clerical_elector": t.get("clerical_elector"),
+                "landless": bool(t.get("landless")),
                 "key": str(t.get("key") or ""),
             })
         return out
+
+    def _scope_tier(self, tid):
+        """臂表求值域里的头衔层级 (v89 问题2-B): **教省 (圣职区) 按公国级**。
+
+        游戏侧依据: `common\\flavorization\\20_pam_flavorization.txt:2-17` 的
+        `clerical_region_duchy_*` 一族写明 `tier = duchy` + `special_title =
+        clerical_region`; 这些头衔在存档里是**无地**神权头衔 (`landless = true`),
+        键前缀是 `x_script_*`/`d_et_*`, 按前缀算层级会得 0。
+        只作用于**臂表求值域**, 不动 `_eff_rank`/首要头衔口径 (教省不参与首要头衔择取,
+        与游戏的 `@never_primary_score` 同向)。"""
+        t = self._lt.get(str(tid)) or {}
+        if t.get("clerical_region"):
+            return 3
+        return self._eff_rank(tid)
 
     def _theocracy_scope(self, cid, tid=None, date=None):
         """神权官称臂表的求值域 (v87 问题1) —— 对应
@@ -13660,7 +13776,7 @@ class Facts:
         s["held_titles"] = titles
         s["title_keys"] = [t["key"] for t in titles if t["key"]]
         s["clerical_elector_title"] = any(t["clerical_elector"] for t in titles)
-        rank = self._eff_rank(tid) if tid is not None else 0
+        rank = self._scope_tier(tid) if tid is not None else 0
         s["tier"] = rank
         s["clerical_region"] = any(t["clerical_region"] for t in titles
                                    if rank and t["tier"] == rank)
