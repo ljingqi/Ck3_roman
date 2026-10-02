@@ -17607,8 +17607,10 @@ def _war_cb_word(f, cb):
     v95 (问题1): 入参有两种形态 ——
       ① 记忆里的本地化键 `war_memory_cb_*` (查游戏本地化表);
       ② `war_history` 回查出的**真 CB 键** (如 `pam_challenge_hof_cb`) —— 游戏从不为
-         未列入白名单的 CB 写记忆键, 故这类键在本地化表里查不到, 走项目措辞表
-         `style.WAR_CB_ZH`。
+         未列入白名单的 CB 写记忆键, 但**本地化表里另有以 CB 键为名的战名**
+         (本档实测 `chinese_reunification_cb` = 「逐鹿中原」, `claim_the_mandate_cb`
+         = 「夺取天命」), 故仍先查本地化表 (只认**干净**值), 不中再走项目措辞表
+         `style.WAR_CB_ZH`。带动态参数的模板值 (`[xxx|E]`) 一律弃用。
     `war_memory_cb_fallback` 的正文是通用词「战争」, 按项目约定丢弃 (它只说明
     「游戏没为这个 CB 写专用键」)。"""
     cb = str(cb or "")
@@ -17618,9 +17620,14 @@ def _war_cb_word(f, cb):
         w = L.loc(getattr(f, "table", None) or {}, cb)
     except Exception:
         w = ""
-    if w and w != cb and w != "战争":          # 命中记忆键 (或已是中文)
+    # 取值守卫 (v95): 见不得 **模板串** —— 游戏的 CB 名里有一批带动态参数
+    # (本档实测 `admin_barbarian_conquest_cb` → `[seize_peripheral_duchy|E]`、
+    # `pam_challenge_hof_cb` → `挑战[head_of_faith|E]`), 直出会把裸模板写进正文
+    # (项目既有口径: `$`/`[` 开头的取词一律弃用, 见 `_regnal_name_zh` 等处)。
+    if w and w != cb and w != "战争" and "[" not in w and "$" not in w:
         return w
-    return _style.WAR_CB_ZH.get(cb) or ""
+    w2 = _style.WAR_CB_ZH.get(cb) or ""
+    return "" if ("[" in w2 or "$" in w2) else w2
 
 
 def _war_cb_from_history(f, atk, dfd, date):
@@ -23780,9 +23787,11 @@ def _day_ord(date):
 def _dedupe_education_memories(cache):
     """把「同一次受学被留两条」的教育记忆折成一条 (v95 问题4) —— 原地归一。
 
-    判据 (全部数据可判, 与 `participants` 无关 —— 第二条的业师常是宫廷太傅,
-    照 `participants` 比就永远抓不到):
-      ① 同型 (`_EDU_DUP_TYPES`); ② `participants` 与 `vars` 的签名逐项相同;
+    判据 (全部数据可判, 与 `participants` **无关** —— 第二条的业师常是宫廷太傅
+    (子代理实测 583 组里 475 组两条的 guardian 不是同一人), 照 `participants` 比
+    就永远抓不到):
+      ① 同型 (`_EDU_DUP_TYPES`); ② `vars` 的签名逐项相同 (受学之地/宫廷信仰/文化等
+      五条 —— 同一次受学的两条逐项一致);
       ③ 日差 ≤ `_EDU_DUP_MAX_DAYS` 天 (同日重复也只留最先一条);
       ④ 保留**最早**那条 (真监护人)。
     更远的两条视为两次受学, 都留。返回被折掉的条数 (供日志与断言)。"""
@@ -23795,9 +23804,18 @@ def _dedupe_education_memories(cache):
             continue
 
         def _sig(m):
-            return (str(m.get("type") or ""),
-                    json.dumps(m.get("participants") or {}, sort_keys=True),
-                    json.dumps(m.get("vars") or [], sort_keys=True))
+            # v95: 签名按**记忆持有人**的语义定 ——
+            #   · 学生侧的 `childhood_education_guardian`: **只按 vars**
+            #     (受学之地/宫廷信仰/文化等五条), **不含 participants** —— 同一次受学的
+            #     第二条常被重解析为宫廷太傅 (子代理实测 583 组里 475 组 guardian 不同),
+            #     含它就永远抓不到重复;
+            #   · 业师侧的 `ward_education_completed`: participants 里的 `ward` 正是
+            #     **哪名学生** (一位业师同窗口内可能同时受业数人, vars 完全相同), 故必须带上,
+            #     否则会把不同学生的两条误折成一条。
+            t = str(m.get("type") or "")
+            parts = (json.dumps(m.get("participants") or {}, sort_keys=True)
+                     if t == "ward_education_completed" else "")
+            return (t, parts, json.dumps(m.get("vars") or [], sort_keys=True))
 
         best = {}
         for m in mems:
