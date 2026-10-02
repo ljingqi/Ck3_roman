@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
-"""用 git HEAD 版源码落一份快照 (对照用)，用完恢复工作树。
+"""用 git 某个 ref（缺省 HEAD）的源码落一份快照 (对照用)，用完恢复工作树。
 
-用途：验证「本轮改动是否改变了事实面」——把 HEAD（改动前）的 facts/biography/
+用途：验证「本轮改动是否改变了事实面」——把该 ref（改动前）的 facts/biography/
 style/cache_lib/localization/llm/flavorization 取到临时目录，临时替换工作树文件，
 跑 tools/tests/snap.py 落一份快照，再原样恢复工作树（含未提交改动）。
 
 用法：
-    & tools\\py.ps1 tools\\tests\\snap_at_head.py <家族> <玩家id> <as_of> [十年] [输出名]
+    & tools\\py.ps1 tools\\tests\\snap_at_head.py <家族> <玩家id> <as_of> [十年] [输出名] [--name=] [--melt=] [--ref=<commit>]
     输出落在 output/<家族>/data/<输出名>.json（默认 snap_head_<as_of>.json）
+
+v95: 新增 `--ref=<commit>` —— 本轮改动已分多次提交后，HEAD 已含改动，取对照基线要
+指到开工前的检查点（如 `--ref=9059c82`），否则「HEAD 对照」会拿改动后的代码当基线。
 """
 import os
 import shutil
@@ -37,6 +40,9 @@ def main():
     out_name = (_nf.split("=", 1)[1] if _nf
                 else (argv[4] if len(argv) > 4
                       else f"snap_head_{as_of.replace('.', '_')}"))
+    # v95: --ref=<commit> 指定对照源码的那次提交 (缺省 HEAD)
+    _rf = next((a for a in flags if a.startswith("--ref=")), "")
+    ref = _rf.split("=", 1)[1] if _rf else "HEAD"
     data = os.path.join(ROOT, "output", folder, "data")
 
     # 1) 备份工作树当前版本
@@ -50,23 +56,24 @@ def main():
             shutil.copy2(p, os.path.join(tmp, fn))
     print(f"已备份工作树 {len(_CODE)} 个源文件 → {tmp}")
 
-    # 2) 用 HEAD 版覆盖
+    # 2) 用该 ref 版覆盖
     try:
         for fn in _CODE:
-            r = git("show", f"HEAD:{fn}")
+            r = git("show", f"{ref}:{fn}")
             if r.returncode != 0:
                 continue
             with open(os.path.join(ROOT, fn), "w", encoding="utf-8",
                       newline="") as fp:
                 fp.write(r.stdout)
-        print("已用 HEAD 版源码覆盖工作树，开始落快照 …")
+        print(f"已用 {ref} 版源码覆盖工作树，开始落快照 …")
         # v80: snap.py 已在 v77 迁到 tools/tests/; 其余 --x=y 参数原样转发
         # (尤其 --melt=<文件名> —— 默认取末档熔件, 与「该篇生成时用的那一份」常不同)
         cmd = [sys.executable, os.path.join(ROOT, "tools", "tests", "snap.py"),
                folder, pid, as_of, "--name=" + out_name]
         if decade:
             cmd.append(decade)
-        cmd += [a for a in flags if not a.startswith("--name=")]
+        cmd += [a for a in flags
+                if not a.startswith("--name=") and not a.startswith("--ref=")]
         rc = subprocess.call(cmd, cwd=ROOT)
     finally:
         # 3) 无论如何恢复工作树
