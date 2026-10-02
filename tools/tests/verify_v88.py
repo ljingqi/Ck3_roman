@@ -99,11 +99,13 @@ def unit_checks():
           bio._liyi_has_material(dict(base, personal_tenets=["a", "b"])))
     check("U5d 有亲立修会 ⇒ 出篇",
           bio._liyi_has_material(dict(base, holy_orders=["880年，他立x。"])))
-    check("U5e 纪事门槛: 只有修会时不出纪事 (开篇/纪事两块料不相交)",
-          not bio._liyi_has_mid(dict(base, holy_orders=["x"]))
+    check("U5e 纪事门槛: 修会/个人教义沿革/改礼/教义更替/禁忌任一即成立 (v90)",
+          bio._liyi_has_mid(dict(base, holy_orders=["x"]))
+          and bio._liyi_has_mid(dict(base, personal_tenets=["a", "b"]))
           and bio._liyi_has_mid(dict(base, rite_history=["a", "b"]))
           and bio._liyi_has_mid(dict(base, rite_tenet_changes=["x"]))
-          and bio._liyi_has_mid(dict(base, forbidden_tenets=["x"])))
+          and bio._liyi_has_mid(dict(base, forbidden_tenets=["x"]))
+          and not bio._liyi_has_mid(dict(base)))
     # [3] style 文本
     # v89 (问题4/5): 修会整块移入开篇、门下教众删除 ⇒ 纪事改名「纪事·礼仪与教义沿革」
     check("U6 纪事板块名已改「纪事·礼仪与教义沿革」",
@@ -173,7 +175,13 @@ def snap_checks(path):
     lead = blocks.get("liyi_lead") or {}
     mid = blocks.get("liyi_mid") or {}
     if lead or mid:
-        if _v89:
+        if int(snap.get("schema") or 1) >= 5:
+            # v90 (问题5, 用户 2026-10-02 拍板): 开篇只留「礼仪档案」;
+            # 「个人教义沿革」与「修会」移入纪事 ⇒ 本志恒有两个板块
+            _lead_ok = {"传主档案", "礼仪档案"}
+            _mid_ok = {"传主档案", "个人教义沿革", "修会", "礼仪沿革",
+                       "禁忌个人信条", "本礼教义沿革"}
+        elif _v89:
             # v89 (问题4/5): 修会块改「修会」并留在开篇; 纪事加「本礼教义沿革」、删「门下教众」
             _lead_ok = {"传主档案", "礼仪档案", "个人教义沿革", "修会"}
             _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "本礼教义沿革"}
@@ -181,8 +189,15 @@ def snap_checks(path):
             _lead_ok = {"传主档案", "礼仪档案", "个人教义沿革", "所立修会"}
             _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "门下教众"}
         check("S6a 开篇只含开篇类块", set(lead) <= _lead_ok, str(list(lead)))
-        check("S6b 纪事只含纪事类块 (无礼仪档案/修会)",
+        check("S6b 纪事只含纪事类块 (无礼仪档案)",
               set(mid) <= _mid_ok, str(list(mid)))
+        if int(snap.get("schema") or 1) >= 5:
+            check("S6c 礼仪志必有两个板块 (修会与个人教义沿革在纪事)",
+                  bool(mid) and
+                  (not (facts.get("holy_orders") or []) or "修会" in mid)
+                  and (not (facts.get("personal_tenets") or [])
+                       or "个人教义沿革" in mid)
+                  and "修会" not in lead, str(list(mid)))
     # [3] 门下教众 (v88 基线) / 修会行 (v89)
     if _v89:
         ho = facts.get("holy_orders") or []

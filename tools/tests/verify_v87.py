@@ -120,9 +120,12 @@ def snap_checks(path):
     pt = " ".join(facts.get("personal_tenets") or [])
     prof = " ".join(facts.get("rite_profile") or [])
     if pid == "38948":
-        # v89 (问题3): 教义名不再加〈〉 —— 断言同步去括号
+        # v89 (问题3): 教义名不再加〈〉 —— 断言同步去括号 (旧快照仍带括号, 故先去符号
+        # 再判「放弃…改奉…」这一语义; 符号面由 verify_fast 的〈〉铁律与
+        # tools/tests/verify_v90.py 的成稿断言承担)
+        _pt = pt.replace("〈", "").replace("〉", "")
         check("6a 沿革写「放弃…改奉…」",
-              "放弃买卖圣职" in pt and "改奉战争狂人" in pt, pt)
+              "放弃买卖圣职" in _pt and "改奉战争狂人" in _pt, pt)
         check("6b 档案行只出当时所奉 (个人教义：战争狂人)",
               "个人教义：" in prof and "买卖圣职" not in prof,
               prof)
@@ -169,8 +172,9 @@ def snap_checks(path):
         else:
             # v88: 纪事只许纪事类块 (礼仪沿革 / 禁忌个人信条 / 门下教众) + 传主档案
             # v89 (问题4/5): 「门下教众」删、「本礼教义沿革」入纪事(修会移入开篇)
+            # v90 (问题5): 「个人教义沿革」与「修会」移入纪事 (开篇只留礼仪档案)
             _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "门下教众",
-                       "本礼教义沿革"}
+                       "本礼教义沿革", "个人教义沿革", "修会"}
             check("附2 v88 纪事只含纪事类块、无礼仪档案/礼仪教义",
                   set(mid) <= _mid_ok
                   and ("礼仪档案" not in mid) and ("礼仪教义" not in mid),

@@ -178,12 +178,21 @@ def snap_checks(path):
     lead = blocks.get("liyi_lead") or {}
     mid = blocks.get("liyi_mid") or {}
     if lead or mid:
-        check("S6a 修会块在开篇", "修会" in lead, str(list(lead)))
-        check("S6b 本礼教义沿革在纪事",
-              tcs == [] or "本礼教义沿革" in mid, str(list(mid)))
-        check("S6c 纪事只含纪事类块",
-              set(mid) <= {"传主档案", "礼仪沿革", "禁忌个人信条",
-                           "本礼教义沿革"}, str(list(mid)))
+        if int(snap.get("schema") or 1) >= 5:
+            # v90 (问题5): 开篇只留礼仪档案, 修会与个人教义沿革移入纪事
+            check("S6a 修会块在纪事 (v90 问题5)", "修会" in mid, str(list(mid)))
+            check("S6b 本礼教义沿革在纪事",
+                  tcs == [] or "本礼教义沿革" in mid, str(list(mid)))
+            check("S6c 纪事只含纪事类块",
+                  set(mid) <= {"传主档案", "个人教义沿革", "修会", "礼仪沿革",
+                               "禁忌个人信条", "本礼教义沿革"}, str(list(mid)))
+        else:
+            check("S6a 修会块在开篇 (v89 口径)", "修会" in lead, str(list(lead)))
+            check("S6b 本礼教义沿革在纪事",
+                  tcs == [] or "本礼教义沿革" in mid, str(list(mid)))
+            check("S6c 纪事只含纪事类块",
+                  set(mid) <= {"传主档案", "礼仪沿革", "禁忌个人信条",
+                               "本礼教义沿革"}, str(list(mid)))
 
 
 def main():
