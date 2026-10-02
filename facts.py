@@ -10822,9 +10822,13 @@ class Facts:
             #    (逐字重复与信息更全的节点并存没有意义); 无据可依者保留原文。
             #    v78: `_node_keys` 里的 victim 两端都可能是「被囚者」, 而 `_raw_ids`
             #    已收两端 id, 故反向 (他族囚我方) 的原文行同样被节点取代。
+            #    v95-6b: **处决句一并纳入** —— 单人「当日处决」节点与同日原文
+            #    「处决了X」是同一件事的两种写法; 判据仍是「该人有**同日**节点」,
+            #    故 935.7.30 大和怀子等 (节点在 7.26) 的逐人处决句照旧保留。
             _hist_events = [
                 (ed, et) for ed, et in _hist_events
-                if not (any(k in et for k in _PRISON_KIND_WORDS)
+                if not (any(k in et for k in
+                            _PRISON_KIND_WORDS + _EXEC_KIND_WORDS)
                         and _raw_ids.get((ed, et))
                         and any((str(ed), _v) in _node_keys
                                 for _v in _raw_ids[(ed, et)]))]
@@ -22443,6 +22447,11 @@ _WAR_KIND_WORDS = ("宣战", "开战", "应战", "战胜", "战败", "赢得战�
 
 # v34 (问题7): 囚禁类措辞 — 同日的旧「囚禁了X」由带出狱情形的节点取代
 _PRISON_KIND_WORDS = ("囚禁了", "囚禁")
+
+# v95-6b (问题6 收窄的副效应): 处决类措辞 —— 与**同日同人**囚禁节点重复的原文处决句
+# 由节点取代 (节点措辞更全: 含被囚与被处决两端)。实测 943.11.3 隐岐业行, 人级收窄后
+# 该节点不再被族级行吸收, 与原文「处决了隐岐业行」并存 ⇒ 成稿读成「处决X并囚之当日处决」。
+_EXEC_KIND_WORDS = ("处决了",)
 
 # v79 (用户 2026-09-27): 《家族恩怨录》与仇人列传的数据源是 house_relations 流水原文,
 # 同一件事有**两种句式、id 次序相反**, 且缘由式的日期是**结仇升级日** ——

@@ -266,6 +266,28 @@ def final_checks(path):
     check("S6d 943.11.3 只诛纪氏一族",
           any("943年11月3日诛灭纪氏 1 族" in x for x in fam),
           [x for x in fam if "943年11月3日" in x][:1])
+    # v95-6b: 同日同人的「囚禁…当日处决」节点与原文「处决了X」不得并存
+    # (人级收窄后 943.11.3 隐岐业行一度两行同现, 成稿读成「处决X并囚之当日处决」)
+    dup = []
+    for h in (facts.get("house_feuds") or []):
+        by_day = {}
+        for ln in h.get("events") or []:
+            m = re.match(r"(\d+年\d+月\d+日)(.*)", str(ln))
+            if not m:
+                continue
+            by_day.setdefault(m.group(1), []).append(m.group(2))
+        for _d, rows in by_day.items():
+            killed = set()
+            for r in rows:
+                mm = re.search(r"处决了(.+)$", r)
+                if mm:
+                    killed.add(mm.group(1).strip())
+            for r in rows:
+                if "当日处决" in r and "囚禁" in r:
+                    for nm in killed:
+                        if nm and nm in r:
+                            dup.append(f"{h.get('house_label')} {_d} {nm}")
+    check("S6e 囚禁节点不与同日处决句重复 (v95-6b)", not dup, dup[:3])
 
 
 def d3_checks(path):
