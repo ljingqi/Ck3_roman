@@ -1245,27 +1245,33 @@ def is_unknown(word):
 _SUBJ_DATE_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
 
 
-def _strip_subject_prefix(text, label, alt_labels=None):
+def _strip_subject_prefix(text, label, alt_labels=None, own_names=None):
     """删去句首传主称谓 (含其后的「的」); 无可删处原样返回。
 
     v32 (问题3): 夭折句形如「<传主>之妻<生母>产下死婴。」, 只删传主名会留下悬空的
     「之妻…」; 故配偶称谓一并删去, 让生母自己作主语 (「<生母>产下死婴。」)。
     v64 (问题5): `alt_labels` = 备选剥离键 (按序试) —— 勋号随时点变化, 档案称谓
-    与事件当日的主语形态可能只差一个勋号前缀, 备选键使那句仍能省主语。"""
-    if not text or not label:
+    与事件当日的主语形态可能只差一个勋号前缀, 备选键使那句仍能省主语。
+    v90 (问题3): `own_names` = **本人名** (档案名的裸形) —— 句首常是**当日官称**
+    (「南诏乡绅洪天曾」「桂郡主洪天姣」「岭南皇女洪天姣」), 与档案称谓 (篇末取,
+    「冀观察使洪天曾」) 不同形, 只按称谓逐字比对剥不掉, 逐人条目里于是通篇重复
+    姓名; 以本人名为锚即可连同前面的短称谓串一并剥去。"""
+    if not text:
         return text
-    cands = [label] + [x for x in (alt_labels or []) if x]
+    cands = [x for x in ([label] if label else []) + list(alt_labels or []) if x]
     m = _SUBJ_DATE_RE.match(text)
     head = m.group(0) if m else ""
     rest = text[len(head):]
-    hit = None
+    tail = None
     for cand in cands:
         if rest.startswith(cand):
-            hit = cand
+            tail = rest[len(cand):]
             break
-    if hit is None:
+    if tail is None:
+        tail = _strip_own_prefix(rest, own_names)
+    if tail is None:
         return text
-    rest = rest[len(hit):]
+    rest = tail
     if rest.startswith("的"):
         rest = rest[1:]
     else:
@@ -1273,6 +1279,34 @@ def _strip_subject_prefix(text, label, alt_labels=None):
         if rm:
             rest = rest[rm.end():]
     return head + rest
+
+
+# v90 (问题3): 本人名之前那段「短称谓串」的判据 —— 出现下列任一字即判为不是称谓
+# (「的」= 已进入正文; 「与/和/被/为/把/将」= 名字是宾语或从句主语; 标点 = 已断句)。
+_SUBJ_TITLE_BAD = "的与和及被为把将又并而则、，。：；！？「」『』（）()《》"
+
+
+def _strip_own_prefix(rest, own_names):
+    """以**本人名**为锚剥句首「短称谓串 + 本人名」; 无可剥处返回 None (v90 问题3)。
+
+    起因 (用户 2026-10-02): 《家室列传》逐人条目形如「892年12月2日，南诏乡绅洪天曾
+    夺得兰溪。」—— 上头那句档案已经写明此人是谁, 这里再挂一遍官称全名没有信息。
+    判据: 本人名须出现在句首 12 字内, 且其前缀是纯粹的称谓串 (无谓词、无标点)。"""
+    for nm in (own_names or []):
+        if not nm:
+            continue
+        i = rest.find(nm)
+        if i < 0 or i > 12:
+            continue
+        # 名字直接顶格时 (无称谓前缀) 要求本人名 ≥2 字 —— 单字名 (「云」) 会与
+        # 同字开头的地名 (「云州…」) 撞车, 那时宁可不剥 (留全名无害)。
+        if i == 0 and len(nm) < 2:
+            continue
+        pre = rest[:i]
+        if any(c in pre for c in _SUBJ_TITLE_BAD):
+            continue
+        return rest[i + len(nm):]
+    return None
 
 
 # v52 (问题6, 用户拍板): 原 `_LEVEL_WORDS`（"一阶/二阶…"）已删 —— 游戏没有这套
@@ -7069,6 +7103,19 @@ class Facts:
                 except (TypeError, ValueError):
                     pass
         return text
+
+    def alias_line(self, old, new):
+        """v90 (问题3): 把一行的称谓登记复制到它的**改写形**上。
+
+        逐人条目省主语后句面已变 (「892年12月2日，南诏乡绅洪天曾夺得兰溪。」
+        →「892年12月2日，夺得兰溪。」), 而 `name_index` / `line_owner` /
+        `line_stated` 三表都以句本体为键 —— 不复制别名, 板块期
+        (`biography._kin_tag_line`) 就查不到这一行, 亲缘定语随之丢失。"""
+        if not old or not new or old == new:
+            return
+        for tbl in (self.name_index, self.line_owner, self.line_stated):
+            if old in tbl and new not in tbl:
+                tbl[new] = tbl[old]
 
     def _log_label(self, cid, label):
         """`person_label` 出词时向所有生效的登记器各记一条 (v45 档 B)。"""
@@ -15358,6 +15405,18 @@ def _mem_sentence_body(f, owner_id, mem):
     other = ""
     if other_id is not None:
         other = f.event_name(other_id, date=f.as_of)
+    # v90 (追加问题, 用户 2026-10-02): 逐人档案的**出狱行**也要带出狱缘由。
+    # 旧稿只有年表侧 (`_pair_imprisonments` → `_fold_prison_clusters`) 调
+    # `release_manner`, 逐人档案行恒是模板的裸「获释」—— 同一件事于是两处说法不一
+    # (《本纪》年表写「一年后改信获释」, 《家室列传》同一人写「获释」; 用户:
+    # 「释放后改信的判断消失了，全部退化成了直接释放」)。判据、措辞、回退
+    # (熔件 → cache["prison_manners"] 闩存) 全部沿用 `release_manner`, 两处同源。
+    if mtype == "released_from_prison_memory" and owner \
+            and isinstance(other_id, int) and other_id != owner_id:
+        _mk, _mw = f.release_manner(owner_id, other_id,
+                                   mem.get("creation_date"))
+        if _mw and _mk != "released":
+            return f"{owner}{_mw}。"
     # v58 (问题8): 关系亡故句 —— 关系词按**句内主语**（记忆持有人）相对死者算，
     # 并把关系直接写进句面。旧稿一律「{name}的亲属{other}去世。」, 再由板块期
     # 按**板块传主**插亲缘定语: 驼背戈特弗里德档案里的「父亲去世」因此被写成
@@ -16471,7 +16530,13 @@ _IDENT_TYPES = frozenset(
        "hostage_created_hostage", "hostage_created_warden",
        "hostage_created_home_court", "hostage_returned_hostage",
        "hostage_returned_warden", "hostage_returned_home_court",
-       "hostage_died"}
+       "hostage_died",
+       # v90 (追加问题1): 加冕见证 —— 一条记忆一个**宾客**, 句面却是「<宾客>见证
+       # <受冕者>的加冕。」。受冕者的加冕礼上每位宾客都留一条, 主角恰是受冕者时
+       # 这些句子的句中都含主角名, 「主角名在句中」这条概览判据会把它们全计成
+       # 主角「见证加冕N次」(实测 180 位宾客 → 「见证加冕180次」)。带 owner 槽后
+       # 统计按**持有人**判方向 (与「被囚」同一手法), 见 `_timeline` 的概览统计。
+       "witnessed_a_coronation_memory"}
 )
 
 _DATE_PREFIX_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
@@ -18149,6 +18214,14 @@ def _timeline(f):
         if t == "imprisoned" and pid is not None:
             if (idents.get((_d, t, s)) or {}).get("owner") != pid:
                 continue
+        # v90 (问题1): 「见证加冕」同法判方向 —— 句面主语恒是**宾客**, 受冕者在句中
+        # 只作「的加冕」的定语。旧判据「主角名在句中」于是把主角自己加冕礼上 180 位
+        # 宾客的记忆全计成他的「见证加冕180次」(概览取前 6 → 进了【概览】, 模型据此
+        # 写出「加冕百八十次」; 年表那一行由合并器折成一行, 数值本身没受影响)。
+        # 主角自己的受冕由 held_a_coronation_memory 计「受冕」, 不靠这一档。
+        if t == "witnessed_a_coronation_memory" and pid is not None:
+            if (idents.get((_d, t, s)) or {}).get("owner") != pid:
+                continue
         if t == "imprisoned_other":
             # v78: 「囚禁他人」改在**双视角合一 + 同日簇折叠之后**统一计 (见下方) ——
             # 旧口径在折叠前逐行计, 再全额扣掉 `_fold_saved`, 而折叠面放宽到含处决/
@@ -19547,8 +19620,27 @@ def _character_profiles(f):
         _acc = f.accolade_word_at(cid, f.as_of)
         if _acc and _acc in _subj:
             _alts.append(_subj.replace(_acc, "", 1))
-        prof["events_subjectless"] = [
-            _strip_subject_prefix(x, _subj, _alts) for x in mems]
+        # v90 (问题3): 再以**本人名**兜底 —— 句首是当日官称时 (「南诏乡绅洪天曾」
+        # 「桂郡主洪天姣」) 只有本人名是共同锚点。
+        _own = [name]
+        _raw = f.name(cid)
+        if _raw and _raw != name:
+            _own.append(_raw)
+        _subs, _aliases = [], []
+        for x in mems:
+            y = _strip_subject_prefix(x, _subj, _alts, own_names=_own)
+            _subs.append(y)
+            # v90: 省主语后句面已变, 三张以句本体为键的登记表 (name_index /
+            # line_owner / line_stated) 要跟着复制别名, 否则亲缘定语插不进这一行。
+            if y != x:
+                _m2 = _SUBJ_DATE_RE.match(x)
+                _hd = _m2.group(0) if _m2 else ""
+                _ob, _nb = x[len(_hd):], y[len(_hd):]
+                if _ob and _nb != _ob:
+                    _aliases.append((_ob, _nb))
+        prof["events_subjectless"] = _subs
+        for _ob, _nb in _aliases:
+            f.alias_line(_ob, _nb)
         # v31: 死亡句按 as_of 截断 — 十年传记不写十年末之后的死 (旧文本把 878.3.17
         # 的死写进截至 878.01.01 的十年传; 时间线本有截断, 只有档案漏了)
         _dd = (rec.get("death") or {}).get("date")

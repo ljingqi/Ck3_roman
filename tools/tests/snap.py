@@ -192,7 +192,11 @@ def main():
         # holy_orders / forbidden_tenets / vassal_tenets, 个人教义进各角色档案行,
         # 礼仪志纪事块改「纪事·修会与教众」); verify_v87 的 [7]/[附] 两组对
         # schema>=4 SKIP, 改由 tools/tests/verify_v88.py 断言。
-        "schema": 4,
+        # v90: schema 5 = 含 v90 传输面 (概览「见证加冕」按记忆持有人判方向;
+        # 档案生卒地出词改「生于/死于」; 逐人档案去「兄弟姊妹」栏、条目改省主语版;
+        # 礼仪志「个人教义沿革」与「修会」移入纪事 ⇒ 本事恒有两个板块);
+        # verify_v88/v89 的礼仪志块面断言按 schema>=5 分支, 见 tools/tests/verify_v90.py。
+        "schema": 5,
         "meta": {
             "folder": folder, "player_id": pid, "as_of": as_of, "decade": decade,
             "melt": melt_name,
