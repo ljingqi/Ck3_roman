@@ -942,6 +942,11 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         fam_bits.append(f"子女{p['children']}")
     if fam_bits:
         lines.append("，".join(fam_bits) + "。")
+    # v92 (问题1, 用户 2026-10-02): 位分行 —— 该人为本篇传主所纳, 而本人档案
+    # 只有家世 (妾的反向指针记在对方名下), 旧稿于是写「终生未嫁」, 与传主档案
+    # 的妾行自相矛盾。兼为血亲者血缘优先 (「本为X之外甥女，入侍为其妾」)。
+    if cid is not None and p.get("consort_of"):
+        lines.append(f"{p['consort_of']}。")
     # v34 (问题8, 用户拍板): 配偶与他人所出、本人不是其父/母的孩子 —
     # 不进「子/女」行, 单列一句, 供《家室列传》作「配偶的子女」交代
     # (《本纪》不收这条)。写成完整句, 不用括注同位语。

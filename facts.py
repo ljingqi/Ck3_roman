@@ -510,6 +510,55 @@ KIN_WORDS = {
 
 _KIN_TEXT_CACHE = {}
 
+# v92 (问题1, 用户 2026-10-02): **非血亲** (姻亲/继亲/配偶) 键集 —— 判「双重亲属」
+# 时以它取反, 得出血缘那一档。用户拍板: 同一人既以血缘又以婚姻系于传主时,
+# **用血缘上最优先的那一条** (洪天美既是天贵福之甥女, 又是其妾 —— 事实面只写
+# 「妾」, 模型于是自造「贵福之姊妹行」「外姐姐」并把她说成「终生未嫁」)。
+_KIN_NONBLOOD_KEYS = frozenset({
+    "wife", "husband", "spouse", "step_son", "step_daughter",
+    "father_in_law", "mother_in_law", "son_in_law", "daughter_in_law",
+    "husband_father", "husband_mother",
+    "brother_in_law", "sister_in_law",
+    "sister_in_law_older", "sister_in_law_younger",
+    "brother_in_law_older", "brother_in_law_younger",
+})
+
+
+def kin_key_is_blood(key):
+    """该亲缘键是否血亲 (v92): 判得出键且不在非血亲表内即为血亲。"""
+    return bool(key) and key not in _KIN_NONBLOOD_KEYS
+
+
+# v92 (问题1): 摘除配偶边时要清掉的键
+_KIN_SPOUSE_KEYS = ("primary_spouse", "spouse", "concubine",
+                    "former_spouses", "former_concubines")
+
+
+def mask_spouse_edges(chars, ids):
+    """把 ids 两人的**配偶键**从 chars 视图里摘掉 (v92, 问题1); 其余键原样。
+
+    `kin_key` 按「度」判定, 配偶 (度 4) 排在同胞之子女 (度 7) 之前 —— 于是
+    「既为妾又是甥女」的人恒判成 `wife` (实测洪天美 `kin_key` = 'wife'/「妻子」),
+    血缘那一档永远读不到。用户 2026-10-02 拍板: 双重亲属取血缘那一条。
+    只摘当事人两人, 不动其余亲属边 —— 判据与 `kin_key` 完全同源。"""
+    out = dict(chars or {})
+    for x in (ids or ()):
+        try:
+            x = int(x)
+        except (TypeError, ValueError):
+            continue
+        rec = out.get(str(x))
+        if not isinstance(rec, dict):
+            continue
+        fam = rec.get("family") or {}
+        if not any(fam.get(k) for k in _KIN_SPOUSE_KEYS):
+            continue
+        rec2 = dict(rec)
+        rec2["family"] = {k: v for k, v in fam.items()
+                          if k not in _KIN_SPOUSE_KEYS}
+        out[str(x)] = rec2
+    return out
+
 # 史传单字对照 (供「其父/其兄」这类旁称; 定语词形另走 kin_text 的双音节口径)
 KIN_SHORT = {
     "father": "父", "mother": "母", "son": "子", "daughter": "女",
@@ -4482,6 +4531,68 @@ class Facts:
                         spouse_back=self._spouse_back_index(),
                         rev=self._kin_rev_index())
 
+    def blood_kin_word_for(self, cid, subject):
+        """subject 相对 cid 的**血亲**称谓词 (v92, 问题1); 姻亲/继亲/配偶一律返回 ''。
+
+        与 `kin_word_for` 同一套判据, 但**先摘掉两人的配偶边**再判 —— 双重亲属
+        (既是妾又是甥) 时取血缘那一条。用途: 事实面在妾/妻名单里标出血缘称谓,
+        否则模型只能自造 (天贵福之妾洪天美实为其外甥女, 成稿曾写成
+        「贵福之姊妹行」「外姐姐」并附一句「终生未嫁」)。"""
+        chars = mask_spouse_edges(self.cache.get("characters") or {}, (subject, cid))
+        key = kin_key(self.cache, subject, cid, chars=chars,
+                      spouse_back={}, rev=self._kin_rev_index())
+        if not kin_key_is_blood(key):
+            return ""
+        return kin_text(key)
+
+    def consort_of_line(self, cid):
+        """本人档案的**位分行** (v92, 问题1): cid 为本篇传主所纳, 而本人档案里
+        查不到这层关系时, 由程序直陈位分。兼为血亲者血缘优先。
+
+        为什么需要: 妾的 `concubinist` 反向指针被记进**对方**名下 (己方
+        `family` 只剩父/母/同胞), 于是「洪天美」的档案通篇没有夫婿行, 模型写成
+        「天美终生未嫁」—— 而同篇的传主档案又列她为妾, 两处自相矛盾
+        (用户 2026-10-02 报「洪天美的亲属关系乱了」)。
+
+        返回 '本为<传主>之<血亲词>，入侍为其妾' / '为<传主>之妾' 这类短语
+        (不含句号), 判不出或本人档案已写明时返回 ''。"""
+        pid = self.cache.get("player_id")
+        if pid is None or cid is None or int(cid) == int(pid):
+            return ""
+        pfam_raw = ((self.cache.get("characters") or {}).get(str(pid)) or {}).get("family") or {}
+        # `merge_spouse_latch` 是**就地补** — 这里必须喂副本: 直接喂缓存记录会把
+        # 闩存的婚配行写回缓存, 于是同一次生成里**后读**到的亲属集与旧行为不同
+        # (实测: 主角配偶行被写进诸人缓存 → 12 处 `mother_note`、`kin_ids` 自指
+        # 等 180 处非预期差异)。
+        pfam = dict(pfam_raw)
+        for _k in ("primary_spouse", "spouse", "concubine",
+                   "former_spouses", "former_concubines"):
+            if _k in pfam:
+                pfam[_k] = list(pfam[_k] or [])
+        pfam = self.merge_spouse_latch(pfam, self.as_of)
+        kind = ""
+        if cid in (pfam.get("primary_spouse") or []):
+            kind = "妻"
+        elif cid in (pfam.get("spouse") or []):
+            kind = "妻"
+        elif cid in (pfam.get("concubine") or []):
+            # 位分词按**传主**性别取 (与 biography 的「妾/男宠」标签同口径)
+            kind = "男宠" if self._is_female(pid) else "妾"
+        if not kind:
+            return ""
+        # 本人的配偶/妾行已经写明时不重复 (只读, 同样不并闩存 —— 否则这条判据恒真)
+        own = ((self.cache.get("characters") or {}).get(str(cid)) or {}).get("family") or {}
+        for k in ("primary_spouse", "spouse", "concubine"):
+            if pid in (own.get(k) or []):
+                return ""
+        who = self.kin_label(pid, self.as_of)
+        if not who:
+            return ""
+        bk = self.blood_kin_word_for(cid, pid)
+        if bk:
+            return f"本为{who}之{bk}，入侍为其{kind}"
+        return f"为{who}之{kind}"
+
     def _kin_rev_index(self):
         """反向同胞/子女索引 (v45b; 惰性建一次, 供 `kin_key` 双向并集)。"""
         if getattr(self, "_kin_rev", None) is None:
@@ -5630,7 +5741,7 @@ class Facts:
         return None
 
     def marriage_lineality_note(self, a, b, wedding=None, before=None):
-        """成婚句/配偶行的程序补注 (v43 起, v51 简化, v55 去括注): 母系婚补「，是入赘婚」。
+        """配偶**行** (无动词的并列名单: 妻室/夫婿/世系表) 的母系婚补注 (v43→v92)。
 
         只标异常那一档 (母系婚) —— 与游戏 UI 只对母系婚给出
         `MATRILINEAL_WARNING`「该婚姻所生子将属于X的家族」同一口径; 普通婚与判不
@@ -5640,7 +5751,10 @@ class Facts:
         「（入赘婚：所生子女随母方，属X氏）」太长, 且把母方家族名重复进每一处;
         「入赘婚」一词本身即含「所生子女随母方」之义 (CK3 简中同用此词),
         故不再另附家族名, 也不再依赖母方家族名解析成功。
-        v55 (问题2): 括注改分句 —— 句面成「X与Y成婚，是入赘婚。」(旧稿「…（入赘婚）。」)
+        v55 (问题2): 括注改分句 —— 句面成「X与Y成婚，是入赘婚。」
+        v92 (问题2, 用户 2026-10-02 拍板): 不再用「是入赘婚」这个短语 ——
+        有动词处一律走 `marriage_verb` 直作动词 (「X与Y结入赘婚。」);
+        本方法只服务**无动词的名单行**, 故补注压到最短的「，入赘」。
 
         `wedding` = 成婚日 (传日历记忆的日期; 缺省由 `wedding_date` 回查),
         `before` = 本篇截止日 (十年传记不把尚未出生的子女算进判据)。"""
@@ -5652,7 +5766,23 @@ class Facts:
             wedding = self.wedding_date(a, b)
         if not self.is_matrilineal(a, b, after=wedding or None, before=before):
             return ""
-        return "，是入赘婚"
+        return "，入赘"
+
+    def marriage_verb(self, a, b, wedding=None, before=None):
+        """成婚句的**动词** (v92, 用户 2026-10-02 拍板): 母系婚写「结入赘婚」,
+        其余写「成婚」—— 与普通结婚同形, 不再另起「，是入赘婚」的分句。
+
+        判据与 `marriage_lineality_note` 同 (只看母系婚这一档; 判不出按普通婚)。
+        句面: 「885年6月21日，洪天姣与崔舣结入赘婚。」/「…与崔舣成婚。」"""
+        try:
+            a, b = int(a), int(b)
+        except (TypeError, ValueError):
+            return "成婚"
+        if not wedding:
+            wedding = self.wedding_date(a, b)
+        if self.is_matrilineal(a, b, after=wedding or None, before=before):
+            return "结入赘婚"
+        return "成婚"
 
     def _office_word(self, tier, government, independent=False, female=False, tid=None,
                      cid=None, date=None):
@@ -11692,11 +11822,11 @@ class Facts:
             y0 = self._year_only(fs)
             la = rec.get("lost_at")
             if la and (ck is None or cl.date_key(la) <= ck):
-                rows.append(f"{y0}，他采纳本礼禁忌的{names}为个人信条，"
+                rows.append(f"{y0}，他采纳礼仪禁忌的{names}为个人信条，"
                             f"此事只能藏着；{self._year_only(la)}他改奉他条，"
                             f"此事随之了结。")
             else:
-                rows.append(f"{y0}，他采纳本礼禁忌的{names}为个人信条，"
+                rows.append(f"{y0}，他采纳礼仪禁忌的{names}为个人信条，"
                             f"此事至今只能藏着。")
         return rows
 
@@ -11743,13 +11873,13 @@ class Facts:
                 # 当前三条已由开篇的「核心教义」行给出, 此处不重复。
                 if out and inn:
                     rows.append(f"{year}年起，{self._leader_clause(h, d)}"
-                                f"改本礼核心教义：{'、'.join(out)}换成"
+                                f"改礼仪核心教义：{'、'.join(out)}换成"
                                 f"{'、'.join(inn)}。")
                 elif inn:
                     rows.append(f"{year}年起，{self._leader_clause(h, d)}"
-                                f"为本礼增定{'、'.join(inn)}。")
+                                f"为礼仪增定{'、'.join(inn)}。")
                 else:
-                    rows.append(f"{year}年起，本礼核心教义去{'、'.join(out)}。")
+                    rows.append(f"{year}年起，礼仪核心教义去{'、'.join(out)}。")
             prev = core
         return rows
 
@@ -15726,14 +15856,16 @@ def _mem_sentence_body(f, owner_id, mem):
     # 未补出父亲时不留空分句 (v55: 补注已由括注改为「，生父X」)
     if not extra_fname:
         s = s.replace("，生父。", "。").replace("，生父", "")
-    # v43: 成婚句补婚姻线系 —— 母系婚补「，是入赘婚」,
+    # v43: 成婚句标婚姻线系 —— 母系婚把动词改作「结入赘婚」,
     # 普通婚与判不出者句面不变 (与游戏 UI 只标母系那一档同口径; v51 简化见
-    # marriage_lineality_note; v55 去括注)。
+    # marriage_lineality_note)。
+    # v92 (问题2, 用户 2026-10-02 拍板): 不再另起「，是入赘婚」的分句 ——
+    # 与普通结婚同形, 只是动词不同: 「885年6月21日，洪天姣与崔舣结入赘婚。」
     if mem.get("type") == "married" and other_id is not None:
-        note = f.marriage_lineality_note(owner_id, other_id,
-                                         wedding=mem.get("creation_date"))
-        if note:
-            s = s.rstrip("。") + note + "。"
+        _mv = f.marriage_verb(owner_id, other_id,
+                              wedding=mem.get("creation_date"))
+        if _mv != "成婚":
+            s = re.sub(r"成婚。$", _mv + "。", s)
     return s
 
 
@@ -18246,7 +18378,32 @@ def _timeline(f):
             # 十年主题计数里都不会再出现性事。
             if is_sex_event(ev_type):
                 continue
-            events.append((_md, ev_type, s,
+            # v92 (问题4, 用户 2026-10-02 报): 结仇/结怨/死敌的**游戏缘由**
+            # (`opinions.active_opinions.scripted_relations.reason`, 经本地化)
+            # 并进结仇行的句面。旧稿只在《列传》里读它 (`relation_reasons`),
+            # 年表只有「X与Y结仇」一句 —— 模型遂写「结仇之由，本传不详」
+            # (奄美思锅 907.2.17 那条实为「强烈抵制加冕礼」
+            # `rival_opposed_coronation_openly`, 存档里一直有, 只是没人读)。
+            # 缘由**并入本行**而不另起一行: 年表有条数上限, 另起行会挤掉别的行
+            # (实测 +3 条缘由行顶掉了「洪天珠战死」等 3 条); 句面改写后, 该型的
+            # 同月聚合 (`_AGG_SPEC`) 自然不再命中这两行 —— 缘由各不相同, 本不该并。
+            # 双方各持一条镜像记忆 → 缘由句恒按 (非主角方, 主角) 渲染, 两侧逐字
+            # 相同, 由 `out` 末道的 (日, 句) 去重合成一行。
+            _text = s
+            if ev_type in _FEUD_MEM_TYPES and pid is not None and pid in pset:
+                _others = [v for v in sorted(pset) if v not in (pid, cid)]
+                if cid != pid:
+                    _others.append(cid)
+                for _o in _others[:1]:
+                    try:
+                        _rs = f.relation_reason_for_pair(
+                            _o, pid, _FEUD_RIVAL_KINDS, styled=True)
+                    except Exception:                       # noqa: BLE001
+                        _rs = []
+                    if _rs:
+                        _text = _rs[0].rstrip("。") + "，二人由此结仇。"
+                        break
+            events.append((_md, ev_type, _text,
                            _TYPE2MODULE.get(ev_type, "")))
     # v40: 性病传播 —— 无性事行动可挂的边单独成行 (本体按期在 lover/consort
     # 之间传播、卖淫、先天; 不并入任何性行为句)。只收当事人属相关集者。
@@ -18764,6 +18921,12 @@ def _merge_same_day_events(events, f=None):
 
 
 
+
+# v92 (问题4, 用户 2026-10-02): 结怨/结仇/死敌的记忆型 ↔ 游戏关系类型。
+# 年表据此补一行「结仇之由」(游戏 `scripted_relations.reason` 的本地化句),
+# 不再让《本纪》只能写「结仇之由，本传不详」。
+_FEUD_MEM_TYPES = ("became_rivals", "became_grudge", "became_nemesis")
+_FEUD_RIVAL_KINDS = ("rival", "grudge", "nemesis")
 
 # v15: 同月同型流水事件聚合 — 只合并单槽可变、结构一致的流水 (结怨/结仇/助战等)。
 # style: duo = 「A与B结怨。」双槽; solo = 「A助盟友作战。」单槽。
@@ -19294,14 +19457,21 @@ def _protagonist(f):
             if not nm:
                 continue
             note = ""
+            # v92 (问题1, 用户 2026-10-02 拍板「双重亲属用血缘上最优先的那一条」):
+            # 妻/妾若同时是传主的**血亲** (甥/侄/堂表姊妹…), 血缘称谓写在最前 ——
+            # 事实面只写位分时, 模型只能自造 (天贵福之妾洪天美实为其外甥女,
+            # 成稿曾写成「贵福之姊妹行」「外姐姐」并附一句「终生未嫁」)。
+            _bk = f.blood_kin_word_for(sid, pid)
+            if _bk:
+                note = f"，本为其{_bk}"
             if father_id is not None and sid != father_id:
                 for k, label in (("primary_spouse", "妻"), ("spouse", "妻"),
                                  ("concubine", "妾"), ("former_spouses", "前妻"),
                                  ("former_concubines", "前妾")):
                     if sid in (fd_fam.get(k) or []):
                         # v55 (问题2): 去括注 —— 补注作同句分句, 故并列改用「；」
-                        note = (f"，原为父{f.kin_label(father_id, f.as_of)}"
-                                f"之{label}")
+                        note += (f"，原为父{f.kin_label(father_id, f.as_of)}"
+                                 f"之{label}")
                         break
             # v43: 母系婚 (入赘) 的配偶行补线系与子女归属
             if lineality:
@@ -19604,6 +19774,11 @@ def _character_profiles(f):
             for s in spouse_ids if f.name(s))
         prof["concubines"] = "、".join(
             f.kin_label(s) for s in _asof_ids(f, fam.get("concubine") or []) if f.name(s))
+        # v92 (问题1, 用户 2026-10-02): 位分行 —— 本人档案查不到「为谁所纳」时
+        # 由程序补出 (否则同一篇里传主档案列其为妾、本人档案却「终生未嫁」)。
+        _co = f.consort_of_line(cid)
+        if _co:
+            prof["consort_of"] = _co
         _conc_ids = list(_asof_ids(f, fam.get("concubine") or []))
         child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
         prof["children"] = "、".join(f.kin_label(c) for c in child_ids)
