@@ -970,13 +970,20 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # v30: 自定义开局曾下发「先世资料未载」一行, 模型逐字照抄成满篇考据按语;
     # 现整行撤除 — 无父母谱系即无料, 无料不下发, 家世写法由《本纪》板块要求
     # 与 custom_note 的正向指引承担 (修复方案_菲利普4.md 问题4)。
-    if p.get("siblings"):
+    # v90 (问题4, 用户 2026-10-02 拍板): 逐人档案 (家室列传/列传) 不再列「兄弟姊妹」
+    # —— 那一栏是与该节各人姓名逐字重复的一份名单 (各家室节的标题就是这些名字),
+    # 在「此人是谁」已由名号句写明的档案里没有信息量。主角自己的档案 (cid 为 None,
+    # 即各篇共享前缀里的【传主档案】) 仍保留一行 —— 那是他本人的家世, 别处不重复。
+    if cid is None and p.get("siblings"):
         kin_bits.append(f"兄弟姊妹{p['siblings']}")
     if kin_bits:
         lines.append("，".join(kin_bits) + "。")
     # ---- v81 (问题6, 用户 2026-09-29): 生卒之地 (男爵领) ----
     # 与《刺客列传》的 victim_place 同一出口; 无料不写, 且 `with_death=False`
     # 的篇目 (《刺客列传》讲主角自己的卒年) 连卒地一并省去。
+    # v90 (问题2, 用户 2026-10-02 拍板): 出词改「生于X」「死于X」—— 旧词「生地」
+    # 「卒地」是史书档案体, 模型照抄进散文 (「地曰南海」「长安为其卒地」), 与
+    # 名号句的「生于<日期>」同式后读来才是一句话。
     _bp = p.get("birth_place") or ""
     _dp = (p.get("death_place") or "") if with_death else ""
     # 死亡句在「凶手为主角」时已自带「，死于X」(见 facts._death_sentence_body),
@@ -986,9 +993,9 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     if _bp or _dp:
         _place_bits = []
         if _bp:
-            _place_bits.append(f"生地{_bp}")
+            _place_bits.append(f"生于{_bp}")
         if _dp:
-            _place_bits.append(f"卒地{_dp}")
+            _place_bits.append(f"死于{_dp}")
         lines.append("；".join(_place_bits) + "。")
     # ---- v74 (问题3 C4): 生母另有婚配时, 内宅档补一句「生母为X之妻。」 ----
     # 只讲生母的身份, 不讲孩子的来历 (公开私生不专门写); 独立成句以免与亲缘
@@ -1753,7 +1760,10 @@ def _article_facts(facts, cache, key, section=None):
             fam_lines.append("\n".join(
                 _profile_lines(facts, cid, with_real_parentage=True,
                                scope=scope)))
-            ev = p.get("events") or []
+            # v90 (问题3, 用户 2026-10-02): 逐人条目改用**省主语版** —— 上面那句
+            # 档案名号句已写明此人是谁, 条目里再挂一遍当日官称全名只是重复
+            # (「892年12月2日，南诏乡绅洪天曾夺得兰溪。」→「892年12月2日，夺得兰溪。」)。
+            ev = p.get("events_subjectless") or p.get("events") or []
             if ev:
                 fam_lines.append("  " + "\n  ".join(ev))
         _set_block(blocks, section.get("block_title") or "家室档案",
@@ -1933,13 +1943,17 @@ def _article_facts(facts, cache, key, section=None):
         tcs = list(facts.get("rite_tenet_changes") or [])
         if _sec_key(section) == "lead":
             _set_block(blocks, "礼仪档案", "\n".join(prof) if prof else "")
+        else:
+            # v89 (问题5): 「门下教众」块删除 (廷臣的个人教义与各人档案行重复, 无收录意义);
+            # v89 (问题4): 补「本礼教义沿革」—— 那三条核心教义自身的更替。
+            # v90 (问题5, 用户 2026-10-02 拍板): 「个人教义沿革」与「修会」移入纪事 ——
+            # 开篇只讲「他是谁」(所奉礼仪的档案面), 凡带年月的沿革与修会全归纪事;
+            # 两块料不相交 (v27 口径), 于是本志必有两个板块 (旧稿两者挤在开篇,
+            # 又因 `_liyi_has_mid` 不认它们, 天贵福 915 档整篇只剩一个板块)。
             if pt:
                 _set_block(blocks, "个人教义沿革", "\n".join(pt))
             if hos:
                 _set_block(blocks, "修会", "\n".join(hos))
-        else:
-            # v89 (问题5): 「门下教众」块删除 (廷臣的个人教义与各人档案行重复, 无收录意义);
-            # v89 (问题4): 补「本礼教义沿革」—— 那三条核心教义自身的更替。
             if hist:
                 _set_block(blocks, "礼仪沿革", "\n".join(hist))
             if tcs:
@@ -3290,13 +3304,17 @@ def _liyi_has_material(facts):
 
 
 def _liyi_has_mid(facts):
-    """《礼仪志》纪事 (mid) 是否有料: 礼仪沿革 / 本礼教义沿革 / 禁忌个人信条三者任一。
+    """《礼仪志》纪事 (mid) 是否有料: 个人教义沿革 / 修会 / 礼仪沿革 / 本礼教义沿革 /
+    禁忌个人信条, 五者任一。
 
-    开篇与纪事按模块切片、**两块料不相交** (v27 口径): 开篇给「他是谁」(礼仪档案 +
-    个人教义沿革 + 修会), 纪事给「发生了什么事」(礼仪沿革 + 本礼教义沿革 +
-    禁忌信条)。纪事无料时该篇只出开篇。
-    v89 (问题4/5): 加「本礼教义沿革」, 删「门下教众」(廷臣个人教义无收录意义)。"""
-    return bool(facts.get("rite_history")) \
+    开篇与纪事按模块切片、**两块料不相交** (v27 口径): 开篇给「他是谁」(礼仪档案),
+    纪事给「发生了什么事」(个人教义沿革 + 修会 + 礼仪沿革 + 本礼教义沿革 + 禁忌信条)。
+    v89 (问题4/5): 加「本礼教义沿革」, 删「门下教众」(廷臣个人教义无收录意义)。
+    v90 (问题5, 用户 2026-10-02 拍板): 「个人教义沿革」与「修会」移入纪事, 门槛同步
+    —— 出篇门槛 (`_liyi_has_material`) 的任一条件都落在纪事里, 故本事恒有纪事板块。"""
+    return bool(facts.get("personal_tenets")) \
+        or bool(facts.get("holy_orders")) \
+        or bool(facts.get("rite_history")) \
         or bool(facts.get("rite_tenet_changes")) \
         or bool(facts.get("forbidden_tenets"))
 
