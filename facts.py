@@ -11762,42 +11762,49 @@ class Facts:
         return f"礼仪领袖{nm}" if nm else ""
 
     def rite_history_lines(self, cid, date=None):
-        """礼仪沿革句 (《礼仪志》): 逐档差分 ``rite_history`` 得来。
+        """礼仪沿革句 (《礼仪志》): 礼仪轴的沿革点出句 (v91 走 `faith_rite_history`)。
 
-        游戏侧 `converted_rite_memory` (1.20 新增, 带 old_rite/new_rite +
-        creation_date) 是更准的来源, 但它只覆盖「记忆尚在」的时点; 缓存差分是
-        全期可用的主干, 两者句面同式, 故此处以差分为准 (见调研_v86 报告 §2)。
-        as_of 截断; 单点/无沿革返回 []。
+        v86: 与 `faith_history` 同构的逐档差分 ``rite_history``;
+        v91 (用户 2026-10-02 报「主角的宗教改了好几次, 《本纪》里却没写」): 并入
+        游戏自己的 `converted_rite_memory` (带 old_rite/new_rite + creation_date)
+        —— 旧稿只靠差分, 而**缓存只覆盖该传主在位的那几档**, 早于首档的改礼整段
+        丢失 (天贵福 885.6.4 改奉拜上帝会, 在 905–922 那份缓存里差分不出来)。
+        礼仪轴只取礼仪值, 相邻同礼合并 (信仰变了而礼未变不算改礼)。
+        as_of 截断 (按传入 date, 缺省不截); 单点/无沿革返回 []。
 
         v88: **首条的措辞**按「是不是改奉」区分 —— 旧稿在 as_of 早于下一次改礼时,
         对第 0 条也写「自868年起改奉罗马礼」, 把「一开始就奉的礼」说成了改礼
         (洪氏2 第 1 个十年 as_of=878 实测: 他 886 才改礼, 868 年并无改奉之事)。
-        i==0 写「自{年}年起奉{礼}」(若本窗口内已改礼, 仍走「{起}年至{止}年奉{礼}」)。"""
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        hist = [h for h in (rec.get("rite_history") or [])
-                if h.get("from") and h.get("rite") is not None]
+        i==0 写「自{年}年起奉{礼}」(若本窗口内已改礼, 仍走「{起}年至{止}年奉{礼}」)。
+        v91: 记忆点精确到日, 同年改两次时旧稿会写「894年至894年」—— 同年退化为
+        「894年奉{礼}」。"""
+        hist = []
+        for d, _fid, rid in self.faith_rite_history(cid):
+            if rid is None:
+                continue
+            if hist and hist[-1][1] == rid:
+                continue
+            hist.append((d, rid))
         if len(hist) < 2:
             return []
         ao = cl.date_key(date) if date else None
         rows = []
-        for i, h in enumerate(hist):
-            dk = cl.date_key(h["from"])
+        for i, (d, rid) in enumerate(hist):
+            dk = cl.date_key(d)
             if ao is not None and dk > ao:
                 break
-            nm = cl.rite_name_of(self.melt, h["rite"])
+            nm = cl.rite_name_of(self.melt, rid)
             if not nm:
                 continue
-            start = int(str(h["from"]).split(".")[0])
-            if i + 1 < len(hist):
-                nxt = cl.date_key(hist[i + 1]["from"])
-                if ao is not None and nxt > ao:
-                    rows.append(f"自{start}年起奉{nm}" if i == 0
-                                else f"自{start}年起改奉{nm}")
-                else:
-                    end = int(str(hist[i + 1]["from"]).split(".")[0]) - 1
-                    rows.append(f"{start}年至{end}年奉{nm}")
+            start = int(str(d).split(".")[0])
+            nxt = hist[i + 1][0] if i + 1 < len(hist) else None
+            if nxt is not None and (ao is None or cl.date_key(nxt) <= ao):
+                end = int(str(nxt).split(".")[0]) - 1
+                rows.append(f"{start}年奉{nm}" if end <= start
+                            else f"{start}年至{end}年奉{nm}")
             else:
-                rows.append(f"自{start}年起改奉{nm}" if i else f"自{start}年起奉{nm}")
+                rows.append(f"自{start}年起奉{nm}" if i == 0
+                            else f"自{start}年起改奉{nm}")
         return rows
 
     def personal_tenet_lines(self, cid, date=None):
@@ -13202,42 +13209,148 @@ class Facts:
         ft = (cl.faith_entry(self.melt, fid) or {}).get("faith_type") or ""
         return L.loc(self.table, ft) or FAITH_TYPE_ZH.get(ft) or ""
 
-    def faith(self, cid):
-        """角色信仰 (v7 缓存优先): 同 culture, id → religion.faiths → 本地化。
-        v30: 无据返回 '' (曾返回「信仰不详」)。"""
+    # =====================================================================
+    # v91: 改信 / 改礼的**精确**变更点 (用户 2026-10-02 报「主角的宗教改了好几次,
+    # 《本纪》里却没写」)
+    # =====================================================================
+    # 根因: 信仰/礼仪沿革旧稿只走缓存逐档差分 (`faith_history` / `rite_history`),
+    # 而**每份缓存只覆盖该传主在位的那几档** —— 玩家 44503 的缓存 sources 只有
+    # 905.1.1–922.1.1, 于是天贵福 885 年改礼、894 年改信、895 年复归全落在窗口
+    # 之外, `faith_history_lines` 恒返回 [], 《本纪》的【传主档案】里既没有
+    # 「信仰履历」也没有「礼仪沿革」; 而 868–904 那份缓存 (玩家 38957) 里同样的
+    # 三点是在的 (旧稿《洪秀全·终传》因此写到了 895 年改信)。
+    # 游戏其实留有记忆 (存档 memory_manager, 逐条带 creation_date 与 vars):
+    #   · converted_faith_memory: new_faith / old_faith / new_rite
+    #   · converted_rite_memory:  new_rite / old_rite
+    # 缓存 `characters.<id>.memories` 连 vars 一并存着, 故**不必重熔**即可取到
+    # 精确到日的变更点 (实测 44503: 885.6.4 改礼 / 894.7.21 改信 / 895.5.27 复归;
+    # 逐档差分只能在后一档的 1月1日发现, 实测晚一年)。
+    _CONV_MEM_TYPES = ("converted_faith_memory", "converted_rite_memory")
+
+    def conversion_points(self, cid):
+        """改信/改礼的**精确**变更点 (v91): {日期: (信仰id|None, 礼仪id|None)}。
+
+        数据源 = 该角色记忆里的 `converted_faith_memory` / `converted_rite_memory`
+        (见本段注释)。同日两条 (既改信又改礼) 合成一对值, 缺项互补; 只给
+        `new_rite` 时信仰由礼仪反查。无记忆或无此类记忆返回 {}。"""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        out = {}
+        for m in (rec.get("memories") or []):
+            if not isinstance(m, dict) or m.get("type") not in self._CONV_MEM_TYPES:
+                continue
+            d = str(m.get("creation_date") or "")
+            if not d:
+                continue
+            v = {}
+            for x in (m.get("vars") or []):
+                if isinstance(x, dict) and x.get("flag"):
+                    v[str(x["flag"])] = x.get("identity")
+            fid, rid = v.get("new_faith"), v.get("new_rite")
+            fid = fid if isinstance(fid, int) else None
+            rid = rid if isinstance(rid, int) else None
+            if fid is None and rid is not None:
+                fid = cl.faith_id_of_rite(self.melt, rid)
+            if fid is None and rid is None:
+                continue
+            prev = out.get(d) or (None, None)
+            out[d] = (fid if fid is not None else prev[0],
+                      rid if rid is not None else prev[1])
+        return out
+
+    def faith_rite_history(self, cid):
+        """信仰+礼仪的沿革点 (v91): [(日期, 信仰id, 礼仪id)], 按日升序、相邻同值合并。
+
+        三源合一: 缓存 `faith_history` / `rite_history` (逐档差分, 记在发现变化的那
+        个快照日 1月1日) + `conversion_points` (记忆, 精确到日)。同一日两者都有时
+        取记忆的精确值; 另两轴各自取值用 `_hist_value_at` 在同一日取, 故「宗教+礼仪」
+        是**同一时点的一对** (礼仪归属的信仰会随游戏新立信仰而改, 不同档的同名礼仪
+        未必同宗教 —— 实测达里娅 910 年所奉为 大乘佛教 + 华严宗)。"""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        fh = [h for h in (rec.get("faith_history") or []) if h.get("from")]
+        rh = [h for h in (rec.get("rite_history") or []) if h.get("from")]
+        mem = self.conversion_points(cid)
+        dates = set(mem)
+        dates.update(str(h["from"]) for h in fh)
+        dates.update(str(h["from"]) for h in rh)
+        pts = []
+        for d in sorted(dates, key=cl.date_key):
+            if d in mem:
+                fid, rid = mem[d]
+            else:
+                fid = _hist_value_at(fh, d, "faith")
+                rid = _hist_value_at(rh, d, "rite")
+            if pts and pts[-1][1] == fid and pts[-1][2] == rid:
+                continue
+            pts.append((d, fid, rid))
+        return pts
+
+    def _faith_rite_label(self, fid, rid):
+        """信仰的**完整称法** (v91, 用户 2026-10-02 拍板): 宗教 + 礼仪, 如
+        「迦克墩基督教拜上帝会」。CK3 1.20 的信仰 (faith) 只是宗教族名, 礼仪
+        (rite) 才是他所奉的教门 —— 单写宗教分不出同宗教下的不同教门。
+        两者同名或只有其一时写该名; 都无据返回 ''。"""
+        nm = self._faith_name(fid)
+        rn = cl.rite_name_of(self.melt, rid) if rid is not None else ""
+        if rn and rn != nm:
+            return f"{nm}{rn}" if nm else rn
+        return nm
+
+    def faith(self, cid, date=None):
+        """角色**当前信仰的完整称法** (v91): 宗教 + 礼仪 (「迦克墩基督教拜上帝会」)。
+
+        v7: 缓存优先 (同 culture); v30: 无据返回 '' (曾返回「信仰不详」);
+        v91: 礼仪与信仰一并取 (礼仪缺失的旧档只写信仰, 口径与旧稿一致), 且**按日期取**
+        —— 缺省取本篇截止日 `self.as_of` (与「信仰履历」同一口径; 旧稿取缓存末档现值,
+        于是 915 年截稿的传记会写他 916 年才改奉的教门)。`_faith_id`/`_rite_id`
+        自带日期语义 (沿革 → 现值 → 熔件 → 家族缺省), 故此处直接复用。"""
+        d = date or self.as_of
+        if d:
+            return self._faith_rite_label(self._faith_id(cid, d),
+                                          self._rite_id(cid, d))
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        c = self._chars.get(str(cid)) or {}
         fid = rec.get("faith")
         if fid is None:
-            c = self._chars.get(str(cid)) or {}
             fid = c.get("faith")
-        return self._faith_name(fid) or ""
+        if fid is None:
+            fid = cl.faith_id_of_char(self.melt, c)
+        rid = rec.get("rite")
+        if rid is None:
+            rid = cl.rite_id_of_char(c)
+        return self._faith_rite_label(fid, rid)
 
     def faith_history_lines(self, cid):
-        """信仰履历 (v26): [{'from','faith'}] → ['法华宗（880–895年）',
-        '艾什尔里派（自896年起）']。as_of 截断; 单条/无历史返回 []。
-        日期只取年 (快照日一律 1月1日, 改信实际发生在上一档与下一档之间)。"""
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        hist = [h for h in (rec.get("faith_history") or []) if h.get("from")]
-        if len(hist) < 2:
+        """信仰履历 (v26; v91 走三源合一的 `faith_rite_history`):
+        ['885年至893年信迦克墩基督教拜上帝会', '894年信儒家经学',
+        '自895年起改信迦克墩基督教拜上帝会']。as_of 截断; 单点/无沿革返回 []。
+        日期只取年 (差分点记在快照日 1月1日, 改信实际发生在上一档与下一档之间;
+        记忆点精确到日, 同样只出年)。"""
+        pts = self.faith_rite_history(cid)
+        if len(pts) < 2:
             return []
         ao = cl.date_key(self.as_of) if self.as_of else None
         rows = []
-        for i, h in enumerate(hist):
-            dk = cl.date_key(h["from"])
-            if ao is not None and dk > ao:
+        for i, (d, fid, rid) in enumerate(pts):
+            if ao is not None and cl.date_key(d) > ao:
                 break
-            nm = self._faith_name(h.get("faith"))
+            nm = self._faith_rite_label(fid, rid)
             if not nm:
                 continue
-            start = int(str(h["from"]).split(".")[0])
+            start = int(str(d).split(".")[0])
             # v55 (问题2): 去括注 —— 履历改主谓句 (旧稿「法华宗（880–895年）、
             # 艾什尔里派（自896年起）」), 由调用方以「；」相连
-            if i + 1 < len(hist):
-                end = int(str(hist[i + 1]["from"]).split(".")[0]) - 1
-                rows.append(f"{start}年至{end}年信{nm}")
+            nxt = pts[i + 1][0] if i + 1 < len(pts) else None
+            if nxt is not None and (ao is None or cl.date_key(nxt) <= ao):
+                end = int(str(nxt).split(".")[0]) - 1
+                # v91: 同年改两次 (记忆点精确到日, 如 894 改信、895 复归) 时
+                # 旧稿会写「894年至894年」 —— 同年退化为「894年」
+                rows.append(f"{start}年信{nm}" if end <= start
+                            else f"{start}年至{end}年信{nm}")
             else:
                 rows.append(f"自{start}年起改信{nm}" if i else f"自{start}年起信{nm}")
-        return rows
+        # v91: 只有一格 (as_of 之前查不到第二次变更) 时不出句 —— 名号句已写当前
+        # 信仰, 单格的「自N年起信X」是与它重复的考语; 有变更才有履历可言。
+        return rows if len(rows) >= 2 else []
 
     def _culture_name_of_id(self, cul):
         """文化 id → 「X人」(不经角色记录; 供族属变迁句用)。"""
@@ -18160,23 +18273,29 @@ def _timeline(f):
     for _prio, _d, t, s, _kid in births.values():
         events.append((_d, t, s, "添丁进口" if t in ("child_born", "first_born", "twins_born") else "夭折",
                        {"own_birth": (_kid is None or _kid in own_birth_kids)}))
-    # v26: 改信事件 (游戏不留改信记忆 — 缓存逐档 faith 差分得来)。
+    # v26: 改信事件 (缓存逐档 faith 差分得来)。
     # 只给相关角色 (主角/直系); 首个变化点之前无事件, 从第 2 条起写。
-    for cid, rec in (cache.get("characters") or {}).items():
-        cid = int(cid)
+    # v91: 改走 `f.faith_rite_history` —— 与【档案】的「信仰履历」**同源**
+    # (缓存差分 ∪ 游戏自己的 converted_faith/rite_memory 精确日期)。旧稿只读
+    # 缓存差分, 差分点晚一档 (孙攸 910 年的改信记在 911.1.1), 于是同篇里
+    # 履历写「自910年起改信」而年表写「911年改信」, 自相矛盾。
+    # 本行只记**宗教**变更: 礼仪变更 (converted_rite_memory) 归《礼仪志》的
+    # 「礼仪沿革」, 故按 faith id 是否真的变了来判, 且句面用完整称法 (宗教+礼仪)。
+    for _cid_s in list(cache.get("characters") or {}):
+        cid = int(_cid_s)
         if cid not in related:
             continue
-        for ch in (rec.get("faith_history") or [])[1:]:
-            d = ch.get("from")
-            if not d:
-                continue
+        _pts = f.faith_rite_history(cid)
+        for _i, (_d, _fid, _rid) in enumerate(_pts):
+            if _i == 0 or _fid == _pts[_i - 1][1] or not _d:
+                continue      # 首点不是变更; 信仰未变 (只改礼) 不写「改信」
             # v77 (问题1): 同受「传主时代」闸 (他人的改信若在前任时代, 不进本篇)
-            if _pre_era(d, cid == pid):
+            if _pre_era(_d, cid == pid):
                 continue
-            nm = f.event_name(cid, date=d)
-            fn = f._faith_name(ch.get("faith"))
+            nm = f.event_name(cid, date=_d)
+            fn = f._faith_rite_label(_fid, _rid)
             if nm and fn:
-                events.append((d, "faith_changed", f"{nm}改信{fn}。", "信仰皈依"))
+                events.append((_d, "faith_changed", f"{nm}改信{fn}。", "信仰皈依"))
     # v54 (问题3): 诛灭世族的族级事实行 —— 整件事一行 (被驱逐者不列名),
     # 取代被丢掉的逐人监禁行; 日期由下方 out 组装统一加句首 (与其余事件同式)。
     for _pe in (f.family_purge_events(pid) if pid is not None else []):
