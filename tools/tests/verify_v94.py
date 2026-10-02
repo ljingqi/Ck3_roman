@@ -252,6 +252,9 @@ def _antipope_melt():
             "158": {"faith": 12, "head_of_rite": 4294967295,
                     "data": {"name": "迦克墩基督教"}},
         }},
+        # 角色表: 昵称取自熔件 `nickname_text` (存档直出中文), 洪地保的昵称 = 「书吏」
+        "living": {"33611550": {"first_name": "地保",
+                                "nickname_text": "书吏"}},
     }
 
 
@@ -260,7 +263,8 @@ _ANT_CACHE = {"player_id": 44503, "characters": {
               "faith_history": [{"from": "905.1.1", "faith": 12},
                                 {"from": "929.1.1", "faith": 13}],
               "rite_history": [{"from": "905.1.1", "rite": 154}]},
-    "33611550": {"faith": 13, "rite": 154, "name_zh": "地保"},
+    "33611550": {"faith": 13, "rite": 154, "name_zh": "地保", "nickname": "书吏",
+                 "nickname_history": [{"from": "900.1.1", "nickname": "书吏"}]},
     "16847791": {"faith": 13, "rite": 154},
 }}
 
@@ -309,8 +313,9 @@ def antipope_checks():
           f.official_title(33611550, "933.9.16") == "对立教宗",
           f.official_title(33611550, "933.9.16"))
     # 索取宣称者名 (年表用: 完整称谓带定位前缀)
-    check("U3j event_name 出「京兆对立教宗」",
-          f.event_name(33611550, "933.9.16") == "京兆对立教宗地保",
+    # 索取宣称者名 (年表用: 完整称谓带定位前缀; 昵称排在宗教称谓之后, 不夹在中间)
+    check("U3j event_name 出「京兆对立教宗书吏地保」",
+          f.event_name(33611550, "933.9.16") == "京兆对立教宗书吏地保",
           f.event_name(33611550, "933.9.16"))
     # 《礼仪志》对立方之首
     lines = f.antipope_lines(44503, "935.1.1")
@@ -328,10 +333,57 @@ def antipope_checks():
           any(x.startswith("对立教宗：") for x in prof), prof)
 
 
+def snap_checks(path):
+    """快照断言: 本轮四问在**实跑面** (934 熔件 / as_of 935.1.1) 的落点。"""
+    print(f"\n[四] 快照 {os.path.basename(path)}")
+    d = json.load(open(path, encoding="utf-8"))
+    facts = d.get("facts") or {}
+    prot = facts.get("protagonist") or {}
+    blob = json.dumps(facts, ensure_ascii=False)
+    tl = [x if isinstance(x, str) else json.dumps(x, ensure_ascii=False)
+          for x in (facts.get("timeline") or [])]
+
+    # 问2: 885-893 的宗教名是迦克墩基督教, 不是天主教
+    fh = prot.get("faith_history") or ""
+    check("S1 信仰履历首段 = 迦克墩基督教拜上帝会 (不是天主教)",
+          fh.startswith("885年至893年信迦克墩基督教拜上帝会"), fh)
+    check("S2 929 年那次改信仍写天主教 (晚期正确口径)",
+          "自929年起改信天主教拜上帝会" in fh, fh)
+
+    # 问1: 句面
+    check("S3 防御战句为「兴兵…兵锋向X」",
+          any("以民粹叛乱兴兵" in x and "兵锋向" in x for x in tl),
+          [x for x in tl if "兵锋向" in x][:1])
+    check("S4 全篇事实无「来攻」「目标为」(病灶词)",
+          "来攻" not in blob and "目标为" not in blob,
+          (blob.count("来攻"), blob.count("目标为")))
+
+    # 问3: 索取宣称者带对立教宗称谓 + 亲缘定语
+    ap = [x for x in tl if "索取日本帝国的宣称" in x]
+    check("S5 索取宣称句含「对立教宗」与「外甥」",
+          bool(ap) and all("对立教宗" in x and "外甥" in x for x in ap), ap[:1])
+    check("S6 索取宣称句不再写「前礼部尚书」",
+          bool(ap) and all("前礼部尚书" not in x for x in ap), ap[:1])
+
+    # 问4: 礼仪档案有对立方之首
+    prof = facts.get("rite_profile") or []
+    check("S7 礼仪档案仍有「礼仪领袖」(正统之首)",
+          any(str(x).startswith("礼仪领袖：") for x in prof), prof)
+    check("S8 礼仪档案补出「对立教宗：」行 (含起始日与扶立者)",
+          any(str(x).startswith("对立教宗：") and "起" in str(x)
+              and "扶立" in str(x) for x in prof), prof)
+
+
 def main():
     war_checks()
     faith_checks()
     antipope_checks()
+    paths = sys.argv[1:]
+    if not paths:
+        p = os.path.join(ROOT, "output", "洪氏2", "data", "snap_v94_gf_d3.json")
+        paths = [p] if os.path.exists(p) else []
+    for p in paths:
+        snap_checks(p)
     print("\n" + ("全部通过" if _OK else "**有 FAIL**"))
     return 0 if _OK else 1
 
