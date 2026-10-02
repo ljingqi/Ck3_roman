@@ -19558,12 +19558,13 @@ def _protagonist(f):
     fhl = f.faith_history_lines(pid)
     if fhl:
         p["faith_history"] = "；".join(fhl)
-    # v88 (问题3/P3-A-⑤, 用户 2026-10-01 拍板): 个人教义写进**主角档案行** ——
-    # 用户原话「把最新快照中的个人教义映射到每个人物档案中」; 三段式由
-    # `personal_tenet_lines` 给 (始奉/放弃/改奉), 无据整句不发。
-    ptl = f.personal_tenet_lines(pid, f.as_of)
-    if ptl:
-        p["personal_tenets"] = f._join_sentences(ptl)
+    # v95 (问题3, 用户 2026-10-02 拍板「整行删去」): 主角档案**不再**写个人教义 ——
+    # 旧稿 (v88 问题3/P3-A-⑤) 把 `personal_tenet_lines` 的三段式沿革 (「905年起，
+    # 奉转世、圣洁自然为个人教义。908年起，放弃…改奉…」) 塞进主角档案行, 而《礼仪志》
+    # 已有同一件事两块 (开篇《礼仪档案》的「个人教义：当前所奉」+ 纪事「个人教义沿革」)
+    # ⇒ 本纪与总纲里那一行是纯重复 (终传总纲写成「个人教义更迭尤繁：转世、圣洁自然…
+    # 至940年而定于猎首」)。其余角色的档案行不动 (见 `_profile_facts` 同名字段) ——
+    # 他们没有礼仪志, 那一行是唯一出处。
     # v30: 族属变迁 (问题1 — 游戏不为改宗留记忆, 逐档 culture 差分)
     chl = f.culture_history_lines(pid)
     if chl:

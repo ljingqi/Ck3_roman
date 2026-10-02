@@ -196,7 +196,14 @@ def main():
         # 档案生卒地出词改「生于/死于」; 逐人档案去「兄弟姊妹」栏、条目改省主语版;
         # 礼仪志「个人教义沿革」与「修会」移入纪事 ⇒ 本事恒有两个板块);
         # verify_v88/v89 的礼仪志块面断言按 schema>=5 分支, 见 tools/tests/verify_v90.py。
-        "schema": 5,
+        # v95: schema 6 = 含 v95 传输面 (六问) —— ①战事句在记忆 `war_cb` 落 fallback 时
+        # 由缓存 `war_history` 回查真 CB (对立教宗那战写「以扶立对立教宗为名」);
+        # ②《礼仪志》第三板块「纪事·枢机团与教宗选举」+ facts 新键 `papal_election`;
+        # ③主角档案不再写「个人教义」(与《礼仪志》重复, 见 facts.py 该字段注释);
+        # ④教育记忆隔日重复折一 (同一次受学不再出两条);
+        # ⑤承继句补死法 (「于当日溺死」); ⑥连坐处死由日级改人级判据。
+        # verify_v88 S8b / verify_v90 S5 的档案与板块断言按 schema>=6 分支。
+        "schema": 6,
         "meta": {
             "folder": folder, "player_id": pid, "as_of": as_of, "decade": decade,
             "melt": melt_name,

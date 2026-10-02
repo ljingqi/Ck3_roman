@@ -215,8 +215,19 @@ def snap_checks(path):
     n_pt = sum(1 for v in profs.values()
                if isinstance(v, dict) and v.get("personal_tenets"))
     check("S8 个人教义已进角色档案 (≥1 人)", n_pt >= 1, f"{n_pt} 人")
-    check("S8b 主角档案含个人教义",
-          bool((facts.get("protagonist") or {}).get("personal_tenets")))
+    # v95 (问题3, 用户 2026-10-02 拍板「整行删去」): 主角档案不再写「个人教义」——
+    # 那一行是 `personal_tenet_lines` 的**沿革**，与《礼仪志》开篇的当前所奉 +
+    # 纪事的「个人教义沿革」重复 (终传总纲据此写出「个人教义更迭尤繁…」)。
+    # v95 之前的快照 (schema<6) 仍是旧口径, 故按 schema 分支。
+    if int(snap.get("schema") or 0) >= 6:
+        check("S8b 主角档案不再写个人教义 (v95 问题3: 与《礼仪志》重复)",
+              not (facts.get("protagonist") or {}).get("personal_tenets"))
+        check("S8c 主角的个人教义仍由《礼仪志》承担 (facts.personal_tenets 未删)",
+              bool(facts.get("personal_tenets"))
+              or not (facts.get("rite_profile") or []))
+    else:
+        check("S8b 主角档案含个人教义 (v95 前口径)",
+              bool((facts.get("protagonist") or {}).get("personal_tenets")))
     # [2] 宝物 (洪氏2 专项): v88 判据修好后的**跨十年分配**
     # —— 十字架 871 年得, 归第 1 个十年; 秘法直指 880 年得, 归第 2 个十年;
     #    用户在 P2 拍板「先前十年写过的后续不写, 只有终传重新进池」, 故第 2 个十年
