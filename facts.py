@@ -2160,9 +2160,11 @@ class Facts:
         """称谓 + 本名注 (v95 问题7, 用户 2026-10-02 拍板「本名与圣名并写」)。
 
         仅**标识性栏目**用 (礼仪领袖 / 现任教宗 / 人物档案行), 年表逐行不加 ——
-        免得同一篇里「教宗克肋孟（本名阿斯卡尼奥）」重复几十次。"""
+        免得同一篇里「教宗克肋孟，本名阿斯卡尼奥」重复几十次。
+        **不用括注**: 事实层括注按 v55 用户拍板一律自然语言化 (verify_fast 有断言),
+        故本名注与其余补注同式, 用逗号承接。"""
         b = self.regnal_birth_name(cid, date)
-        return f"{label}（本名{b}）" if b else label
+        return f"{label}，本名{b}" if b else label
 
     # ---- v17: 世系编号 (II/III 二世标记) ----    # 游戏不把编号存进存档, 显示时按「首要头衔 title history 中同名前任数 + 1」
     # 动态计算 (修复方案_汤利五问题.md 问题7, 实测: c_braila 860 年 Ciprian →
@@ -11697,7 +11699,8 @@ class Facts:
         head = cl.head_of_rite(self.melt, rid)
         if head is not None:
             # v95 (问题7): 继位改名者 (教宗圣名) 在此附本名 —— 「礼仪领袖：教宗
-            # 亚纳大削（本名恂）。」; 非改名者逐字不变。
+            # 亚纳大削，本名恂。」; 非改名者逐字不变。注式用逗号 (v55 事实层
+            # 括注一律自然语言化, verify_fast 有断言)。
             _hl = "本人。" if head == cid else f"{self.event_name(head, date=date)}。"
             if head != cid:
                 _hl = self.label_with_birth_name(head, _hl.rstrip("。"), date) + "。"
@@ -12631,9 +12634,11 @@ class Facts:
                 seg = f"{seat}{word}{nm}" if seat else f"{word}{nm}"
                 sc = self._papal_score(h)
                 if sc is not None:
-                    seg += f"（教宗候选声望 {_num_word(sc)}）"
+                    # v95 收尾: 候选声望不用括注 (v55 事实层括注一律自然语言化)
+                    seg += f"，教宗候选声望 {_num_word(sc)}"
                 parts.append(seg)
-            rows.append(f"本朝封臣入枢机者 {len(mine)} 人：" + "、".join(parts) + "。")
+            rows.append(f"本朝封臣入枢机者 {len(mine)} 人："
+                        + "；".join(parts) + "。")
         pap = self._papal_seat_tid()
         holder = (self._lt.get(str(pap)) or {}).get("holder") if pap is not None else None
         if isinstance(holder, int):
@@ -12645,7 +12650,7 @@ class Facts:
             _tail = (f"自{self.date(since)}起" if since else "")
             _b = self.regnal_birth_name(holder, date)
             _note = "，".join(x for x in ((f"本名{_b}" if _b else ""), _tail) if x)
-            rows.append(f"现任教宗：{nm}" + (f"（{_note}）" if _note else "") + "。")
+            rows.append(f"现任教宗：{nm}" + (f"，{_note}" if _note else "") + "。")
         else:
             rows.append("现任教宗：宗座出缺。")
         n_el, tally, fac = self._papal_vote_tally(pap)

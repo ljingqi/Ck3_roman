@@ -144,7 +144,7 @@ def unit_checks():
     r1 = bio._liyi_req({"rite_profile": ["所奉礼仪：拜上帝会。"],
                         "papal_election": ["枢机团：在位枢机 33 席，虚悬 19 席。",
                                            "本朝封臣入枢机者 6 人：阿尔巴诺枢机洪思忠。",
-                                           "现任教宗：亚纳大削三世（本名恂，自946年2月24日起）。",
+                                           "现任教宗：亚纳大削三世，本名恂，自946年2月24日起。",
                                            "下届选举：33 位枢机推举 3 人 —— 甲 12 票；第一顺位为甲。",
                                            "派别：甲属虔诚派。",
                                            "奔走：26 位枢机在替甲奔走。"]})
@@ -229,10 +229,13 @@ def final_checks(path):
     check("S2c 封臣枢机逐人给出席位名与候选声望",
           "阿尔巴诺枢机洪思忠" in pe and "教宗候选声望" in pe, pe[:200])
     check("S2d 现任教宗并写本名 (v95 问题7)",
-          "现任教宗：亚纳大削三世（本名恂" in pe, pe[:200])
+          "现任教宗：亚纳大削三世，本名恂" in pe, pe[:200])
     check("S2e 礼仪领袖并写本名",
-          "礼仪领袖：教宗亚纳大削三世（本名恂）" in _block_text(blocks, "liyi_lead"),
+          "礼仪领袖：教宗亚纳大削三世，本名恂" in _block_text(blocks, "liyi_lead"),
           _lines_with(_block_text(blocks, "liyi_lead"), "礼仪领袖")[:1])
+    check("S2g 第三板块无括注 (v55 括注自然语言化)",
+          "（本名" not in pe and "（教宗候选声望" not in pe
+          and "，本名恂" in pe and "教宗候选声望" in pe, pe[:200])
     check("S2f 转正后不再误标对立教宗 (终传无「罗马对立教宗」)",
           "罗马对立教宗" not in blob)
 
