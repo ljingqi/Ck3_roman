@@ -796,6 +796,12 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         bits.append(p["court_service"])
     if p.get("motto"):
         bits.append(f"家训「{p['motto']}」")
+    # v92 (问题1, 用户 2026-10-02): 位分与血缘 (「本为X之外甥女，入侍为其妾」) ——
+    # 该人为本篇传主所纳、而本人档案只有家世时, 由 facts.consort_of_line 直出。
+    # 写在**名号句**里: 模型对「同族 + 同辈字」的名字极易判成同胞 (两轮成稿都把
+    # 传主之甥女写成「传主之姐姐」), 故把这层关系放在最先读到的一行。
+    if cid is not None and p.get("consort_rel"):
+        bits.append(p["consort_rel"])
     lines.append(f"{head}，{'，'.join(bits)}。" if bits else f"{head}。")
     # ---- v41 (问题6): 共治者身份 (游戏 co_ruler 规则) ----
     # 单列一句: 「共治巴西琉斯，君主神圣罗马帝国巴西琉斯。」——
@@ -942,11 +948,6 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         fam_bits.append(f"子女{p['children']}")
     if fam_bits:
         lines.append("，".join(fam_bits) + "。")
-    # v92 (问题1, 用户 2026-10-02): 位分行 —— 该人为本篇传主所纳, 而本人档案
-    # 只有家世 (妾的反向指针记在对方名下), 旧稿于是写「终生未嫁」, 与传主档案
-    # 的妾行自相矛盾。兼为血亲者血缘优先 (「本为X之外甥女，入侍为其妾」)。
-    if cid is not None and p.get("consort_of"):
-        lines.append(f"{p['consort_of']}。")
     # v34 (问题8, 用户拍板): 配偶与他人所出、本人不是其父/母的孩子 —
     # 不进「子/女」行, 单列一句, 供《家室列传》作「配偶的子女」交代
     # (《本纪》不收这条)。写成完整句, 不用括注同位语。

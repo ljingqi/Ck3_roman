@@ -1221,7 +1221,12 @@ def group_v43(snap_path):
                     "名单式" if _LIST.search(ln) else
                     "分句式" if _NOW.search(ln) else
                     "短式" if _SHORT.search(ln) else "长式" for ln in matri})
-    check("[1] 同一快照只用一种入赘婚形态", len(kinds) <= 1, kinds)
+    # v92: 现行两种形态**并存**（成婚句作动词「结入赘婚」、无动词名单行补「，入赘」）
+    # —— 只禁「新形态与历史形态混用」（旧账未清）。
+    _NEW = {"动词式", "名单式"}
+    _OLD = {"分句式", "短式", "长式"}
+    check("[1] 同一快照只用一种入赘婚形态",
+          not (set(kinds) & _NEW and set(kinds) & _OLD), kinds)
 
     class _MatriStub:
         """marriage_lineality_note / marriage_verb 只用到这两个方法 →

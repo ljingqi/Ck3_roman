@@ -19774,11 +19774,14 @@ def _character_profiles(f):
             for s in spouse_ids if f.name(s))
         prof["concubines"] = "、".join(
             f.kin_label(s) for s in _asof_ids(f, fam.get("concubine") or []) if f.name(s))
-        # v92 (问题1, 用户 2026-10-02): 位分行 —— 本人档案查不到「为谁所纳」时
+        # v92 (问题1, 用户 2026-10-02): 位分/血缘行 —— 本人档案查不到「为谁所纳」时
         # 由程序补出 (否则同一篇里传主档案列其为妾、本人档案却「终生未嫁」)。
+        # 落在**名号句**里 (见 biography._profile_lines): 模型对「洪氏 + 天X 辈」的
+        # 名字极易判成同胞 —— 两轮成稿都把传主之甥女写成「传主之姐姐」, 故把这层
+        # 关系放在最先读到的一行, 而不是排在特质履历之后。
         _co = f.consort_of_line(cid)
         if _co:
-            prof["consort_of"] = _co
+            prof["consort_rel"] = _co
         _conc_ids = list(_asof_ids(f, fam.get("concubine") or []))
         child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
         prof["children"] = "、".join(f.kin_label(c) for c in child_ids)

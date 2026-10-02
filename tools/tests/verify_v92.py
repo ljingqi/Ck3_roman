@@ -142,18 +142,22 @@ def snap_checks(path):
             for sk, sv in (bv or {}).items():
                 if sub and sub not in sk:
                     continue
-                out.extend(sv if isinstance(sv, list) else [sv])
-        return out
+                for s in (sv if isinstance(sv, list) else [sv]):
+                    out.extend(str(s).splitlines())
+        return [ln for ln in out if ln.strip()]
 
-    # 1 洪天美: 传主档案的妾行补血缘; 本人档案补位分行
+    # 1 洪天美: 传主档案的妾行补血缘; 本人名号句带位分与血缘
     lead = "\n".join(_lines("jiashi_lead"))
     check("S3a 传主档案妾行标出洪天美的血缘",
           "洪天美，本为其外甥女" in lead,
           [x for x in _lines("jiashi_lead") if "洪天美" in x][:1])
-    check("S3b 家室档案有洪天美位分行 (血缘优先)",
-          any("洪天美" in x and "外甥女" in x and "妾" in x
+    check("S3b 本人名号句带出位分与血缘 (血缘优先)",
+          any(x.startswith("洪天美，") and "外甥女" in x and "妾" in x
               for x in _lines("jiashi_lead") + _lines("jiashi_mid1")),
-          [x for x in _lines("jiashi_lead") if "洪天美" in x][:1])
+          [x for x in _lines("jiashi_lead") if x.startswith("洪天美")][:1])
+    check("S3c 名号句在前 (先于特质履历行)",
+          any(x.startswith("洪天美，") and "外甥女" in x
+              for x in _lines("jiashi_mid1")))
 
     # 3 隐事谓语句
     secl = "\n".join(_lines("secrets_lead") + _lines("secrets_mid"))
