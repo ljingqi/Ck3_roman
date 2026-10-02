@@ -10678,12 +10678,7 @@ class Facts:
     # (帝国皇冠、宋御玺这类) 全挤出去 —— 两档的性质完全不同 (甲档是高稀重宝,
     # 乙档是人物遗骸), 该各自节流。乙档按成物日升序收, 每篇收满为止。
     ARTIFACT_PART_MAX = 30
-    # v88 (问题3/P5, 用户 2026-10-01 拍板): 《礼仪志》纪事「门下教众」的**行数上限**。
-    # 传主直属封臣里带个人教义者本档 178 人里 129 人 (72.5%), 全列会把提示词灌满;
-    # 只取排序靠前的若干人 (排序见 `vassal_tenet_lines`)。用户拍板「可以」= 采纳
-    # 方案里的建议值 12 行。
-    VASSAL_TENET_MAX = 12
-    # v39: 流转条目 → 「本条之后宝物在谁手里」的角色槽 (逐条语义实测:
+        # v39: 流转条目 → 「本条之后宝物在谁手里」的角色槽 (逐条语义实测:
     # 诺兰 1093 档 1773 件宝物的 4256 条流转全类型核对)。
     # conquest 的 actor 是失主、recipient 是新主 (128 荆棘冠冕 1086.1.1
     # 海因里希→克里斯托弗); inherited/given/purchased/prize_*/stolen 的新主在
@@ -11413,9 +11408,11 @@ class Facts:
         v88 (问题3/P3-A, 用户 2026-10-01 拍板): 「允许/禁止教义」逐条点名**整块删除** ——
         那 38 条是礼仪级的静态池 (引擎算、教会首脑才能改、同宗教内成批复制), 与传主
         本人所奉只 19% 重叠 (见 `docs/调研_v88_个人教义与修会.md` §1.6), 模型却把它
-        逐条写成传主亲自裁定的教规; 纪事改用「亲立修会 / 禁忌个人信条 / 门下教众的
-        个人教义」(见 `holy_order_lines` / `forbidden_tenet_lines` /
-        `vassal_tenet_lines`)。此处**只留**开篇要用的七行。"""
+        逐条写成传主亲自裁定的教规; 纪事改用「本礼教义沿革 / 礼仪沿革 / 禁忌个人信条」
+        (见 `rite_tenet_changes` / `rite_history_lines` / `forbidden_tenet_lines`)。
+        v89 (问题5, 用户 2026-10-02 拍板): 「门下教众」整块删除 (廷臣的个人教义与各人
+        档案行重复), 修会改由 `holy_order_lines` 按「亲立 / 领地内同信仰」收录。
+        此处**只留**开篇要用的七行。"""
         rid = self._rite_id(cid, date)
         if rid is None:
             return []
@@ -11463,19 +11460,60 @@ class Facts:
         parts = [str(x).strip().rstrip("。") for x in (lines or []) if str(x).strip()]
         return "；".join(parts) + "。" if parts else ""
 
+    def _holy_order_chain(self, tid):
+        """修会头衔**首府县**沿 `de_facto_liege` 上溯的链 [(tid, holder, key)]。
+
+        首府 = `landed_titles[<修会头衔>].capital`, 即游戏 `leader.capital_county`
+        (`common\\scripted_effects\\00_holy_order_effects.txt:5833,5898`); 链上的持有者
+        与层级用来判「这个修会落在谁的领地内」与「谁是庇护者」。"""
+        cur = ((self._lt.get(str(tid)) or {}).get("capital"))
+        out, seen = [], set()
+        while isinstance(cur, int) and cur not in seen:
+            seen.add(cur)
+            t = self._lt.get(str(cur)) or {}
+            out.append((cur, t.get("holder"), str(t.get("key") or "")))
+            cur = t.get("de_facto_liege")
+        return out
+
+    def _title_holder_since(self, tid, holder, date=None):
+        """该头衔在 as_of 之前**最后一次**由 holder 获得的日期 (取不到 '')。"""
+        hist = ((self._lt.get(str(tid)) or {}).get("history"))
+        if not isinstance(hist, dict):
+            return ""
+        ao = cl.date_key(date) if date else None
+        best = ""
+        for d, hv in hist.items():
+            if not isinstance(hv, dict) or hv.get("holder") != holder:
+                continue
+            if ao is not None and cl.date_key(d) > ao:
+                continue
+            if not best or cl.date_key(d) > cl.date_key(best):
+                best = str(d)
+        return best
+
     def holy_order_lines(self, cid, date=None):
-        """传主**所立修会**句 (《礼仪志》, v88 问题3/P3-A)。
+        """传主**亲立 / 庇护 / 领地内**的修会句 (《礼仪志》开篇; v88 问题3-P3A、v89 问题5)。
 
         数据源: 熔件顶层 `holy_orders.holy_orders[<id>]`
         = `{rite, title, titles[], founder, worldliness, holy_order_type, tenet}`。
-        截断日期取该修会**头衔的创立日** (`landed_titles[<title>].date`, 缺则取
-        `history` 最早一键) —— 有日期才能按 as_of 截断: 洪氏2 实测
-        丅形十字骑士团头衔 880.10.6 立、南岭隐修院 891.4.16 立, 故第 2 个十年
-        (as_of=888) 只写前者、第 3 个十年 (898) 两个都写。
 
-        **不写成员层**: 全档在世 `order_member` 仅 39 人 (0.11%,
-        见 `docs/调研_v88_个人教义与修会.md` §2.2), 写「麾下修会成员」必失真;
-        此处只写机构、会规、所属礼仪与承租的教堂领地 (来源 `holy_orders[].titles[]`)。
+        收录口径 (v89 问题5, 用户 2026-10-02 拍板「领地内同信仰修会」) 二者任一:
+        · **亲立**: `founder == cid` (入档、永不变);
+        · **领地内同信仰**: 该修会与传主同信仰, 且其首府县沿 `de_facto_liege` 上溯的
+          链上出现 cid —— 等价于「庇护者是 cid 本人或他的(次级)封臣」。
+          游戏侧 `holy_order_patron` 是**引擎实时算的派生关系、不落存档** (原始 217MB
+          存档字节扫描 0 命中; 见 docs/调研_v89_修会庇护者.md §3), 判据 = 与修会同信仰、
+          层级 ≥ 公爵、realm 含其首府, **就近**取链上第一个公爵以上的持有者
+          (`common\\defines\\00_defines.txt:1312 PATRON_MIN_TIER = 3`)。
+
+        截断: 取该修会**头衔的创立日** (`landed_titles[<title>].date`, 缺则取 `history`
+        最早一键) —— 洪氏2 实测 丅形十字骑士团头衔 880.10.6 立、南岭隐修院 891.4.16 立,
+        故第 2 个十年 (as_of=888) 只写前者、第 3 个十年 (898) 两个都写。
+
+        **不写成员层** (全档在世 `order_member` 仅 0.11%, 见调研_v88 §2.2), 也**不写**
+        `worldliness` (世俗度; 本档 29 个修会全为 0, 且 `MAX_WORLDLINESS` 不在随包
+        defines 里 —— 不可作素材)。v89 补「现任之长」(修会头衔当档持有者 + 其取得日;
+        旧稿风格要求写了却不给, 模型遂编出「殿中监善德为之副」)。
 
         名称走 `self.title()` (项目唯一头衔出词口; 存档烘焙名 `title_name_data.name`
         为备选, 同一个修会两者可能是「桂林骑士团教团」/「丅形十字骑士团」)。"""
@@ -11486,27 +11524,51 @@ class Facts:
             return []
         ao = cl.date_key(date) if date else None
         my_rite = self._rite_id(cid, date)
+        my_faith = self._faith_id(cid, date)
         rows = []
-        for hid, h in ho.items():
-            if not isinstance(h, dict) or h.get("founder") != cid:
+        for _hid, h in ho.items():
+            if not isinstance(h, dict):
                 continue
             tid = h.get("title")
             if not isinstance(tid, int):
                 continue
+            is_founder = h.get("founder") == cid
+            rid = h.get("rite")
+            ofaith = cl.faith_id_of_rite(self.melt, rid) \
+                if isinstance(rid, int) else None
+            chain = self._holy_order_chain(tid)
+            holders = [x[1] for x in chain]
+            in_realm = cid in holders
+            patron = None
+            for _t2, _hold, _key in chain:
+                if isinstance(_hold, int) and self._TT_RANK.get(_key[:2], 0) >= 3:
+                    patron = _hold
+                    break
+            same_faith = (my_faith is not None and ofaith is not None
+                          and my_faith == ofaith)
+            if not (is_founder or (same_faith and in_realm)):
+                continue
             lt = self._lt.get(str(tid)) or {}
             fdate = lt.get("date")
             if not fdate:
-                hist = lt.get("history")
-                if isinstance(hist, dict) and hist:
-                    fdate = min(hist, key=cl.date_key)
+                _hist = lt.get("history")
+                if isinstance(_hist, dict) and _hist:
+                    fdate = min(_hist, key=cl.date_key)
             if ao is not None and (not fdate or cl.date_key(fdate) > ao):
                 continue          # 尚未创立 (十年传记不穿越)
             name = self.title(tid, date) or ""
             if not name:
                 continue
             year = self._year_only(fdate) if fdate else ""
+            if is_founder:
+                head = f"{year}，他立{name}" if year else f"他立{name}"
+            elif patron == cid:
+                head = f"{year}，他是{name}的庇护者" if year \
+                    else f"他是{name}的庇护者"
+            else:
+                head = f"{year}，{name}在其领地之内" if year \
+                    else f"{name}在其领地之内"
             bits = []
-            rid = h.get("rite")
             rname = cl.rite_name_of(self.melt, rid) if isinstance(rid, int) else ""
             if rname and (my_rite is None or rid != my_rite):
                 bits.append(f"其礼为{rname}")
@@ -11522,7 +11584,17 @@ class Facts:
                 shown = "、".join(lands[:2])
                 bits.append(f"领{shown}等{len(lands)}处教堂领地"
                             if len(lands) > 2 else f"领{'、'.join(lands)}")
-            head = f"{year}，他立{name}" if year else f"他立{name}"
+            if patron is not None and patron != cid:
+                pn = self.event_name(patron, date=date)
+                if pn:
+                    bits.append(f"庇护者是{pn}")
+            cur = lt.get("holder")
+            if isinstance(cur, int):
+                cn = self.event_name(cur, date=date)
+                hd = self._title_holder_since(tid, cur, date)
+                if cn:
+                    bits.append("现任之长" + cn
+                                + (f"（自{self._year_only(hd)}年起）" if hd else ""))
             rows.append(head + ("，" + "，".join(bits) if bits else "") + "。")
         return rows
 
@@ -11574,60 +11646,65 @@ class Facts:
                             f"此事至今只能藏着。")
         return rows
 
-    def vassal_tenet_lines(self, cid, date=None, limit=None):
-        """传主**直属封臣**中带个人教义者 (《礼仪志》纪事, v88 问题3/P3-A、P5)。
+    def rite_tenet_changes(self, cid, date=None):
+        """**本礼核心教义自身的更替**句 (《礼仪志》纪事, v89 问题4, 用户拍板)。
 
-        封臣口径 (调研_v88 §2.1 的权威口径): 缓存 `char_vassal_history[<v>]` ——
-        由 `cache_lib._vassal_snapshot` 从 `vassal_contracts.database` 的
-        `{vassal, liege}` 逐档差分而来; 取 date 时点所在的那条 (date ≤ as_of)
-        且 `liege == cid`。**按缓存 `landed` 字段找封臣会整批漏检** (封臣的
-        `landed` 多为 `{}`), 故不用那条路。
+        数据源 = 缓存 `rite_tenets_history[<rid>]`(逐档锁存, 见 `cache_lib.extract_snapshot`),
+        按 as_of 截断后逐档差分核心教义集合。游戏只留当前状态、不留变更史, 故精确日期
+        只能夹逼到快照区间 (本项目所有 `*_history` 同此口径)。
+        谁改的: 机制上只有本礼 `head_of_rite` 能改 (或他受人操控而改), 故按该档
+        `head_of_rite` 写出当时的礼仪领袖 (`person_label`, 取不到则略去该分句)。
 
-        排序 (P5): 有信条更替者 → 所奉与传主不同者 → 其余; 每人一行, 上限 `limit`。
-        行面 = 称谓 + 个人教义的始奉/放弃/改奉三段式 (复用 `personal_tenet_lines`)。
-        **不写「（礼仪）」括注** —— 项目 `verify_fast` 明令传输面无「名词（名词）」
-        式括注同位语; 各人所属礼仪由其自己的档案行 (「信X」) 承担。"""
-        if cid is None:
+        输出两式 (v89 问题3 起教义名不加〈〉):
+          · 首个已知档: `886年起，礼仪领袖X定本礼核心教义为宗徒继承、圣人敬礼、华夏综摄主义。`
+          · 有更替  : `890年起，礼仪领袖X改本礼核心教义：圣人敬礼换成圣洁自然
+                      （今为宗徒继承、圣洁自然、华夏综摄主义）。`"""
+        rid = self._rite_id(cid, date)
+        if rid is None:
             return []
-        cvh = self.cache.get("char_vassal_history") or {}
-        if not cvh:
+        hist = ((self.cache.get("rite_tenets_history") or {}).get(str(rid)) or [])
+        if not hist:
             return []
-        cut = date or self.cache.get("last_date")
-        ck = cl.date_key(cut) if cut else None
-        own = set(self._personal_tenets(cid, date))
-        rows = []
-        for vid, hist in cvh.items():
-            liege = None
-            for h in hist or []:
-                if not isinstance(h, dict):
-                    continue
-                d = h.get("date")
-                if ck is not None and (not d or cl.date_key(d) > ck):
-                    continue
-                liege = h.get("liege")
-            if liege != cid:
+        ao = cl.date_key(date) if date else None
+        rows, prev = [], None
+        for h in hist:
+            d = h.get("from")
+            if not d:
                 continue
-            try:
-                v = int(vid)
-            except (TypeError, ValueError):
+            if ao is not None and cl.date_key(d) > ao:
+                break
+            core = sorted(str(x) for x in
+                          ((h.get("tenets") or {}).get("core") or []))
+            if not core:
                 continue
-            pts = self._tenet_change_points(v, date)
-            if not pts or not pts[-1][1]:
-                continue
-            cur = set(pts[-1][1])
-            rank = 0 if len(pts) >= 2 else (1 if not (cur & own) else 2)
-            lines = self.personal_tenet_lines(v, date)
-            if not lines:
-                continue
-            label = self.person_label(v, date=date, style="brief") or self.name_or(v, "")
-            if not label:
-                continue
-            rows.append((rank, cl.date_key(pts[0][0]), v,
-                         label + "：" + self._join_sentences(lines)))
-        rows.sort(key=lambda r: (r[0], r[1], r[2]))
-        if limit is not None:
-            rows = rows[:int(limit)]
-        return [r[3] for r in rows]
+            names = [self.tenet_name(k, rid) or k for k in core]
+            year = self._year_only(d)
+            if prev is None:
+                rows.append(f"{year}年起，{self._leader_clause(h, d)}"
+                            f"定本礼核心教义为{'、'.join(names)}。")
+            elif set(core) != set(prev):
+                out = [self.tenet_name(k, rid) or k for k in prev if k not in core]
+                inn = [self.tenet_name(k, rid) or k for k in core if k not in prev]
+                if out and inn:
+                    rows.append(f"{year}年起，{self._leader_clause(h, d)}"
+                                f"改本礼核心教义：{'、'.join(out)}换成"
+                                f"{'、'.join(inn)}（今为{'、'.join(names)}）。")
+                elif inn:
+                    rows.append(f"{year}年起，{self._leader_clause(h, d)}"
+                                f"为本礼增定{'、'.join(inn)}（今为{'、'.join(names)}）。")
+                else:
+                    rows.append(f"{year}年起，本礼核心教义去{'、'.join(out)}"
+                                f"（今为{'、'.join(names)}）。")
+            prev = core
+        return rows
+
+    def _leader_clause(self, h, d):
+        """「礼仪领袖X」分句 (该档的 `head_of_rite`); 取不到名字时返回 ''。"""
+        head = h.get("head")
+        if not isinstance(head, int):
+            return ""
+        nm = self.event_name(head, date=d)
+        return f"礼仪领袖{nm}" if nm else ""
 
     def rite_history_lines(self, cid, date=None):
         """礼仪沿革句 (《礼仪志》): 逐档差分 ``rite_history`` 得来。
@@ -22601,8 +22678,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "personal_tenets": f.personal_tenet_lines(cache.get("player_id"), as_of),
         "holy_orders": f.holy_order_lines(cache.get("player_id"), as_of),
         "forbidden_tenets": f.forbidden_tenet_lines(cache.get("player_id"), as_of),
-        "vassal_tenets": f.vassal_tenet_lines(cache.get("player_id"), as_of,
-                                             limit=f.VASSAL_TENET_MAX),
+        # v89 (问题4): 本礼**核心教义自身**的更替 (缓存逐档锁存 + 差分;
+        # 键名与 v88 删掉的 `rite_tenets`(允许/禁止清单) 有意区分)。
+        "rite_tenet_changes": f.rite_tenet_changes(cache.get("player_id"), as_of),
         # v13: Facts 实例引用 (biography 的关系缘由渲染等需要实例方法)
         "_facts": f,
     }

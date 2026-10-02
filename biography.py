@@ -1930,19 +1930,22 @@ def _article_facts(facts, cache, key, section=None):
         pt = list(facts.get("personal_tenets") or [])
         hos = list(facts.get("holy_orders") or [])
         fbs = list(facts.get("forbidden_tenets") or [])
-        vts = list(facts.get("vassal_tenets") or [])
+        tcs = list(facts.get("rite_tenet_changes") or [])
         if _sec_key(section) == "lead":
             _set_block(blocks, "礼仪档案", "\n".join(prof) if prof else "")
             if pt:
                 _set_block(blocks, "个人教义沿革", "\n".join(pt))
             if hos:
-                _set_block(blocks, "所立修会", "\n".join(hos))
+                _set_block(blocks, "修会", "\n".join(hos))
         else:
-            _set_block(blocks, "礼仪沿革", "\n".join(hist) if hist else "")
+            # v89 (问题5): 「门下教众」块删除 (廷臣的个人教义与各人档案行重复, 无收录意义);
+            # v89 (问题4): 补「本礼教义沿革」—— 那三条核心教义自身的更替。
+            if hist:
+                _set_block(blocks, "礼仪沿革", "\n".join(hist))
+            if tcs:
+                _set_block(blocks, "本礼教义沿革", "\n".join(tcs))
             if fbs:
                 _set_block(blocks, "禁忌个人信条", "\n".join(fbs))
-            if vts:
-                _set_block(blocks, "门下教众", "\n".join(vts))
     elif key == "secrets":
         # v28《阴私录·隐事秘辛》: 主角隐事归开篇, 家人近臣隐事与把柄归纪事
         sec = facts.get("secrets") or {}
@@ -3267,10 +3270,11 @@ def _subject_has_material(facts, cid):
 def _liyi_has_material(facts):
     """《礼仪志》出篇门槛 (v88 问题3/P3-A, 用户「没有礼仪写就不写礼仪」)。
 
-    要求宗教面有**可系年的事**, 四者任一:
+    要求宗教面有**可系年的事**, 五者任一:
       · 礼仪沿革 ≥2 段 (改礼/立礼 —— 1 段只是「他一直奉某礼」, 不构成事件);
       · 个人教义的变更点 ≥2 (始奉之外还有放弃/改奉);
-      · 亲立修会 (已按 as_of 截断, 见 `facts.holy_order_lines`);
+      · 修会 (亲立/庇护/领地内同信仰者, 已按 as_of 截断, 见 `facts.holy_order_lines`);
+      · 本礼核心教义自身的更替 (见 `facts.rite_tenet_changes`);
       · 禁忌个人信条 (见 `facts.forbidden_tenet_lines`)。
     全无者不出该篇 —— 他的个人教义仍会写进自己的档案行 (P3-A-⑤), 信息不丢。"""
     if not (facts.get("rite") or facts.get("rite_profile")):
@@ -3278,18 +3282,20 @@ def _liyi_has_material(facts):
     return len(facts.get("rite_history") or []) >= 2 \
         or len(facts.get("personal_tenets") or []) >= 2 \
         or bool(facts.get("holy_orders")) \
+        or bool(facts.get("rite_tenet_changes")) \
         or bool(facts.get("forbidden_tenets"))
 
 
 def _liyi_has_mid(facts):
-    """《礼仪志》纪事 (mid) 是否有料: 礼仪沿革 / 禁忌个人信条 / 门下教众三者任一。
+    """《礼仪志》纪事 (mid) 是否有料: 礼仪沿革 / 本礼教义沿革 / 禁忌个人信条三者任一。
 
     开篇与纪事按模块切片、**两块料不相交** (v27 口径): 开篇给「他是谁」(礼仪档案 +
-    个人教义沿革 + 亲立修会), 纪事给「发生了什么事、他人如何」(礼仪沿革 + 禁忌信条 +
-    门下教众)。纪事无料时该篇只出开篇。"""
+    个人教义沿革 + 修会), 纪事给「发生了什么事」(礼仪沿革 + 本礼教义沿革 +
+    禁忌信条)。纪事无料时该篇只出开篇。
+    v89 (问题4/5): 加「本礼教义沿革」, 删「门下教众」(廷臣个人教义无收录意义)。"""
     return bool(facts.get("rite_history")) \
-        or bool(facts.get("forbidden_tenets")) \
-        or bool(facts.get("vassal_tenets"))
+        or bool(facts.get("rite_tenet_changes")) \
+        or bool(facts.get("forbidden_tenets"))
 
 
 def _apply_article_cap(articles):
@@ -3598,8 +3604,8 @@ def build_articles(facts, cache, cfg):
                                   "subject": None,
                                   "theme": "传主所受之礼与个人教义的演变",
                                   "focus": "写礼仪的沿革与教门中的作为：受礼、改礼、"
-                                           "立礼、个人教义之更替、所立修会、"
-                                           "门下诸人所奉的个人信条",
+                                           "立礼、个人教义之更替、本礼核心教义之更替、"
+                                           "他所亲立或庇护的修会",
                                   "sections": _secs})
     elif facts.get("rite_profile"):
         llm.log("[篇目] 宗教面无实据 (无改礼、无信条更替、无所立修会、无禁忌信条)，"

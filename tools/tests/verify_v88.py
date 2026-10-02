@@ -7,7 +7,8 @@
         好友/仇人列传按行迹条数出篇 (`SUBJECT_ART_MIN_EVENTS`);
     [2] 宝物甲档「曾入外族之手」**未知宗族按外族计** (`Facts._artifact_cross_dyn`);
         跨十年去重口径不变 (先前十年写过的后续不写, 终传重新进池);
-    [3] 《礼仪志》删「允许/禁止教义」, 纪事改「礼仪沿革 + 禁忌个人信条 + 门下教众」;
+    [3] 《礼仪志》删「允许/禁止教义」, 纪事改「礼仪沿革 + 禁忌个人信条 + 本礼教义沿革」
+    (v89 问题4/5: 修会移入开篇「修会」块, 门下教众删除);
         开篇加「所立修会」; 个人教义进各角色档案行; 宗教面无实据则整篇不出。
 
 用法:
@@ -97,11 +98,12 @@ def unit_checks():
     check("U5e 纪事门槛: 只有修会时不出纪事 (开篇/纪事两块料不相交)",
           not bio._liyi_has_mid(dict(base, holy_orders=["x"]))
           and bio._liyi_has_mid(dict(base, rite_history=["a", "b"]))
-          and bio._liyi_has_mid(dict(base, vassal_tenets=["x"]))
+          and bio._liyi_has_mid(dict(base, rite_tenet_changes=["x"]))
           and bio._liyi_has_mid(dict(base, forbidden_tenets=["x"])))
     # [3] style 文本
-    check("U6 纪事板块名已改「纪事·修会与教众」",
-          style.SECTION_TITLES.get("liyi", {}).get("mid") == "纪事·修会与教众")
+    # v89 (问题4/5): 修会整块移入开篇、门下教众删除 ⇒ 纪事改名「纪事·礼仪与教义沿革」
+    check("U6 纪事板块名已改「纪事·礼仪与教义沿革」",
+          style.SECTION_TITLES.get("liyi", {}).get("mid") == "纪事·礼仪与教义沿革")
     req = style.SECTION_REQ.get("liyi", {}).get("mid") or ""
     check("U6b 纪事要求句已无「允许什么、禁止什么」",
           "允许什么" not in req and "禁止什么" not in req)
@@ -137,9 +139,11 @@ def snap_checks(path):
     check("S2 无「允许教义：」「禁止教义：」", "允许教义" not in txt and "禁止教义" not in txt)
     check("S3 新素材键齐备",
           all(k in facts for k in ("holy_orders", "forbidden_tenets",
-                                   "vassal_tenets", "personal_tenets")),
-          str([k for k in ("holy_orders", "forbidden_tenets", "vassal_tenets",
-                           "personal_tenets") if k not in facts]))
+                                   "rite_tenet_changes", "personal_tenets")),
+          str([k for k in ("holy_orders", "forbidden_tenets",
+                           "rite_tenet_changes", "personal_tenets")
+               if k not in facts]))
+    check("S3b 门下教众键已删 (v89 问题5)", "vassal_tenets" not in facts)
     # [1] 篇目
     check("S4 篇目数 ≤ ARTICLE_MAX", len(keys) <= bio.ARTICLE_MAX,
           f"{len(keys)} 篇: {keys}")
@@ -156,19 +160,19 @@ def snap_checks(path):
     lead = blocks.get("liyi_lead") or {}
     mid = blocks.get("liyi_mid") or {}
     if lead or mid:
-        _lead_ok = {"传主档案", "礼仪档案", "个人教义沿革", "所立修会"}
-        _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "门下教众"}
+        # v89 (问题4/5): 修会块改「修会」并留在开篇; 纪事加「本礼教义沿革」、删「门下教众」
+        _lead_ok = {"传主档案", "礼仪档案", "个人教义沿革", "修会"}
+        _mid_ok = {"传主档案", "礼仪沿革", "禁忌个人信条", "本礼教义沿革"}
         check("S6a 开篇只含开篇类块", set(lead) <= _lead_ok, str(list(lead)))
-        check("S6b 纪事只含纪事类块 (无礼仪档案/礼仪教义)",
+        check("S6b 纪事只含纪事类块 (无礼仪档案/修会)",
               set(mid) <= _mid_ok, str(list(mid)))
-    # [3] 门下教众
-    vt = facts.get("vassal_tenets") or []
-    check(f"S7 门下教众 ≤ {F.Facts.VASSAL_TENET_MAX} 行",
-          len(vt) <= F.Facts.VASSAL_TENET_MAX, str(len(vt)))
-    if vt:
-        check("S7b 每行含人名与「：」且带年份",
-              all("：" in x and re.search(r"\d{3,4}年", x) for x in vt),
-              vt[0][:80] if vt else "")
+    # [3] 修会行 (v89: 旧「门下教众 ≤12 行」断言作废)
+    ho = facts.get("holy_orders") or []
+    check("S7 修会行 ≤ 6 行", len(ho) <= 6, str(len(ho)))
+    if ho:
+        check("S7b 每行含「他立」或「在其领地之内」或「庇护者」",
+              all(("他立" in x or "在其领地之内" in x or "庇护者" in x)
+                  for x in ho), ho[0][:80])
     # [3] 个人教义进档案
     profs = facts.get("characters") or {}
     n_pt = sum(1 for v in profs.values()
@@ -199,7 +203,8 @@ def snap_checks(path):
             check("S9c2 898 年两所修会都在 (880 立 / 891 立)",
                   len(facts.get("holy_orders") or []) == 2,
                   str(facts.get("holy_orders")))
-            check("S9c3 898 年《礼仪志》纪事有门下教众块", "门下教众" in mid)
+            check("S9c3 898 年本礼核心教义尚无更替 (902 才换) ⇒ 无该块",
+                  "本礼教义沿革" not in mid, str(list(mid)))
 
 
 def main():

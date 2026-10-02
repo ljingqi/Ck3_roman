@@ -302,6 +302,49 @@ def _usage_line(usage, messages, finish=None):
 # 超出预算即停止重试, 把失败尽快交回流水线。
 CALL_BUDGET_SECONDS = 360
 
+# v89 (问题1, 用户 2026-10-02 拍板): **单次尝试的墙钟上限**。
+# 起因: 2026-10-01 21:32:59 洪氏2 洪天贵福第 1 个十年传记的总纲请求 (全文仅 56 行)
+# 被上游排队, 连接挂满 **901 秒**后才回 200 + `{"error":{"message":"We were unable to
+# start processing your request within the 900-second timeout limit…"}}`; 而
+# `requests` 的 `timeout` 只约束**连接**与**单次 socket 读静默**, 管不住"上游持续
+# 涓流/保持连接"这种情形 —— 于是一次尝试白耗 15 分钟, `CALL_BUDGET_SECONDS` 又是
+# 失败**之后**才检查, 整篇传记就此卡死 (logs/journal.log:19078)。
+# 现改为**流式读取 + 自建总时限**: 无论静默还是涓流, 到点即断。
+ATTEMPT_DEADLINE_SECONDS = 240
+# (连接超时, 单次 socket 读静默超时) —— socket 层兜底; 总时限由上面那条把关。
+_SOCKET_TIMEOUT = (15, 120)
+# 上游**排队超时**的官方文案 (瞬时容量事件, 应退避重试而非判死)。
+_QUEUE_TIMEOUT_RE = re.compile(r"timeout limit|unable to start processing", re.I)
+
+
+def _body_head(body_bytes, limit=500):
+    """响应体 bytes → 单行摘要 (供日志; 与 `_resp_head` 同形)。"""
+    try:
+        txt = (body_bytes or b"").decode("utf-8", "replace")
+    except Exception:
+        txt = ""
+    return " ".join(txt.split())[:limit]
+
+
+def _read_body(resp, t_try, deadline=None):
+    """流式读完响应体, 超过**单次尝试墙钟上限**即断连接并抛出 (v89 问题1)。
+
+    返回 bytes。上游只回错误体时同样走这条路 (200 + error 体)。"""
+    dl = ATTEMPT_DEADLINE_SECONDS if deadline is None else deadline
+    chunks = []
+    for chunk in resp.iter_content(65536):
+        if not chunk:
+            continue
+        chunks.append(chunk)
+        if time.monotonic() - t_try > dl:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"单次尝试超过墙钟上限 {dl}s (上游未在时限内回完响应体), 已断开")
+    return b"".join(chunks)
+
 
 def _resp_head(resp, limit=500):
     """响应体摘要 (单行, 截断) — 上游返回非 OpenAI 形状时留证用。"""
@@ -379,51 +422,69 @@ def call_deepseek(messages, cfg, retries=3):
           if cfg.get("llm_thinking_disabled", True):
               payload["thinking"] = {"type": "disabled"}
           try:
-              resp = requests.post(url, json=payload, headers=headers, timeout=180)
+              resp = requests.post(url, json=payload, headers=headers,
+                                   timeout=_SOCKET_TIMEOUT, stream=True)
               resp.raise_for_status()
+              body_bytes = _read_body(resp, t_try)
               try:
-                  data = resp.json()
+                  data = json.loads(body_bytes.decode("utf-8", "replace"))
               except Exception as e:
-                  body = _resp_head(resp)
+                  body = _body_head(body_bytes)
                   log(f"上游响应非 JSON (status={resp.status_code}, "
                       f"耗时{time.monotonic() - t_try:.0f}s): {body}")
                   raise RuntimeError(
                       f"上游响应非 JSON (status={resp.status_code}, {e}): {body[:200]}")
               if not isinstance(data, dict) or not data.get("choices"):
-                  body = _resp_head(resp)
-                  log(f"上游返回非 OpenAI 形状 (status={resp.status_code}, "
-                      f"耗时{time.monotonic() - t_try:.0f}s): {body}")
-                  raise RuntimeError(
-                      f"上游返回非 OpenAI 形状 (status={resp.status_code}): "
-                      f"{body[:200]}")
-              choice = data["choices"][0]
-              content = (choice.get("message") or {}).get("content") or ""
-              finish = choice.get("finish_reason")
-              log(_usage_line(data.get("usage"), messages, finish))
-              if finish == "length":
-                  if max_tokens >= 16000:
-                      log("输出仍被 max_tokens 截断(已达 16000 上限), 返回截断文本")
-                      if content.strip():
-                          return content
+                  body = _body_head(body_bytes)
+                  msg = ""
+                  if isinstance(data, dict):
+                      _err = data.get("error")
+                      msg = str(_err.get("message") or "") if isinstance(_err, dict) \
+                          else (str(_err) if _err else "")
+                  if _QUEUE_TIMEOUT_RE.search(msg or body):
+                      # v89 (问题1): 上游排队超时 = 瞬时容量事件 (排队 900s 未开始处理),
+                      # 官方文案就是 "Please try again later" —— 退避重试, 不判死。
+                      last_err = RuntimeError(
+                          f"上游排队超时 (status={resp.status_code}, "
+                          f"耗时{time.monotonic() - t_try:.0f}s): "
+                          f"{(msg or body)[:200]}")
+                      log(f"上游排队超时, 退避重试 (耗时"
+                          f"{time.monotonic() - t_try:.0f}s): {(msg or body)[:200]}")
                   else:
-                      max_tokens = min(max_tokens * 2, 16000)
-                      log(f"输出因 max_tokens 不足被截断, 提高预算至 {max_tokens} 重试")
-                      continue
-              elif finish and finish != "stop":
-                  # v71: 上游中断 (content_filter / insufficient_system_resource /
-                  # aborted 都会返回**部分内容**) —— 旧代码只防 length, 这几种一律
-                  # 当成功收下, 半截正文于是写进成稿 (板块末尾落在开括号上, 见
-                  # docs/调研_v71_姓名倒置与孤立括号.md)。此处按未完成处理: 重试;
-                  # 三次都中断则抛出, 由流水线把该板块标成「生成失败」等待重跑。
-                  raise RuntimeError(
-                      f"生成被上游中断 (finish_reason={finish}, "
-                      f"输出{(data.get('usage') or {}).get('completion_tokens')} token) "
-                      f"— 内容不完整, 按未完成处理")
-              if content.strip():
-                  return content
-              if finish == "stop":
-                  return content
-              last_err = Exception(f"模型返回空内容 (finish_reason={finish})")
+                      log(f"上游返回非 OpenAI 形状 (status={resp.status_code}, "
+                          f"耗时{time.monotonic() - t_try:.0f}s): {body}")
+                      raise RuntimeError(
+                          f"上游返回非 OpenAI 形状 (status={resp.status_code}): "
+                          f"{body[:200]}")
+              else:
+                  choice = data["choices"][0]
+                  content = (choice.get("message") or {}).get("content") or ""
+                  finish = choice.get("finish_reason")
+                  log(_usage_line(data.get("usage"), messages, finish))
+                  if finish == "length":
+                      if max_tokens >= 16000:
+                          log("输出仍被 max_tokens 截断(已达 16000 上限), 返回截断文本")
+                          if content.strip():
+                              return content
+                      else:
+                          max_tokens = min(max_tokens * 2, 16000)
+                          log(f"输出因 max_tokens 不足被截断, 提高预算至 {max_tokens} 重试")
+                          continue
+                  elif finish and finish != "stop":
+                      # v71: 上游中断 (content_filter / insufficient_system_resource /
+                      # aborted 都会返回**部分内容**) —— 旧代码只防 length, 这几种一律
+                      # 当成功收下, 半截正文于是写进成稿 (板块末尾落在开括号上, 见
+                      # docs/调研_v71_姓名倒置与孤立括号.md)。此处按未完成处理: 重试;
+                      # 三次都中断则抛出, 由流水线把该板块标成「生成失败」等待重跑。
+                      raise RuntimeError(
+                          f"生成被上游中断 (finish_reason={finish}, "
+                          f"输出{(data.get('usage') or {}).get('completion_tokens')} token) "
+                          f"— 内容不完整, 按未完成处理")
+                  if content.strip():
+                      return content
+                  if finish == "stop":
+                      return content
+                  last_err = Exception(f"模型返回空内容 (finish_reason={finish})")
           except Exception as e:
               last_err = e
               if isinstance(e, requests.HTTPError) and e.response is not None \

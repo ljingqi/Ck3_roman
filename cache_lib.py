@@ -2568,6 +2568,30 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             if not _gh or _gh[-1].get("government") != _gov:
                 _gh.append({"date": date_label, "government": _gov})
 
+    # v89 (问题4): **礼仪本身的教义沿革** —— 游戏不存档「某条教义何时被换掉」
+    # (调研_v89_礼仪教义变更留痕: `rites.database[rid].data.tenets[]` 每条只有
+    # `{tenet, status}`, 无日期/无历史/无 on_action 记忆; 只有本礼 `head_of_rite`
+    # 能改, 且一生一次)。故按**传主当档所奉礼仪**逐档锁存教义分档与当时的礼仪领袖,
+    # 渲染端 (facts.rite_tenet_changes) 差分出「何时换出、换入, 谁改的」。
+    # 只锁传主一人: 教义是**礼仪级**对象, 与谁持有无关, 其余角色共享同一份 (省体积)。
+    if player_id is not None:
+        _prid = rite_id_of_char(chars.get(str(player_id)))
+        if _prid is not None:
+            _ten = {}
+            for _e in (rite_data(melt, _prid).get("tenets") or []):
+                if type(_e) is dict and _e.get("tenet"):
+                    _ten.setdefault(str(_e.get("status") or "known"), []).append(
+                        str(_e["tenet"]))
+            if _ten:
+                for _v in _ten.values():
+                    _v.sort()
+                _th = cache.setdefault("rite_tenets_history", {}) \
+                    .setdefault(str(_prid), [])
+                _head = head_of_rite(melt, _prid)
+                if not _th or _th[-1].get("tenets") != _ten:
+                    _th.append({"from": date_label, "tenets": _ten,
+                                "head": _head})
+
     # v8: 击杀受害者入目标集 (保证刺客列传能取到姓名/档案)
     for _cid in list(targets):
         _c = chars.get(str(_cid))
