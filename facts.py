@@ -11682,13 +11682,25 @@ class Facts:
         """该头衔在 date 当日的持有者 (取不到 None)。
 
         对立教宗条目的 `sponsor` 是**赞助者的头衔 id** (取证见
-        `docs/调研_v94_对立教宗.md` §1), 要写「谁扶立」必须再查持有者。"""
+        `docs/调研_v94_对立教宗.md` §1), 要写「谁扶立」必须再查持有者。
+
+        v94 修正: `landed_titles[].history` 的值**两种形态都有** —— 部分事件
+        直写角色 id (实测 h_china 的 `904.11.30: 44503`), 其余是
+        `{type, holder}` 字典。初版只认字典形, 于是 h_china 在 935 年取到的是
+        上一任 (38957 洪秀全), 扶立者被写成传主之父而非传主本人
+        (实测快照 `由天皇帝穿刺者洪秀全扶立`); 两形态一并认。"""
         hist = ((self._lt.get(str(tid)) or {}).get("history"))
         ao = cl.date_key(date) if date else None
         best, best_dk = None, None
         if isinstance(hist, dict):
             for d, hv in hist.items():
-                if not isinstance(hv, dict):
+                if isinstance(hv, dict):
+                    h = hv.get("holder")
+                elif isinstance(hv, int):
+                    h = hv
+                else:
+                    continue
+                if not isinstance(h, int):
                     continue
                 try:
                     dk = cl.date_key(d)
@@ -11697,7 +11709,7 @@ class Facts:
                 if ao is not None and dk > ao:
                     continue
                 if best_dk is None or dk >= best_dk:
-                    best, best_dk = hv.get("holder"), dk
+                    best, best_dk = h, dk
         if isinstance(best, int):
             return best
         t = self._lt.get(str(tid)) or {}

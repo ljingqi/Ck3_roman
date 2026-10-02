@@ -237,8 +237,10 @@ def _antipope_melt():
                       "history": {"935.8.1": {"type": "conquest_claim",
                                               "holder": 33611550}}},
             "14022": {"key": "h_china", "holder": 44503,
+                      # 两形态并存: 897 建号给 38957 (字典形), 904 易主给 44503 (裸 id 形)
                       "history": {"897.6.5": {"type": "created",
-                                              "holder": 44503}}},
+                                              "holder": 38957},
+                                  "904.11.30": 44503}},
             "15261": {"key": "c_zangke", "holder": 2},
         }},
         "faiths": {"database": {
@@ -322,6 +324,10 @@ def antipope_checks():
     check("U4a 礼仪志补出对立教宗行 (含在位日与扶立者)",
           len(lines) == 1 and lines[0].startswith("对立教宗：京兆对立教宗")
           and "929.4.23起" in lines[0] and "扶立" in lines[0], lines)
+    # 赞助者头衔在 as_of 之前**最后一次**易主给本人 ⇒ 扶立者写本人 (天贵福),
+    # 不是上一任 洪秀全 —— h_china 的 `history` 两形态混用 (裸 id + 字典), 一并认
+    check("U4a2 赞助者取当期持有者 (925 年那次易主给本人, 不写上一任)",
+          "天贵福扶立" in "".join(lines), lines)
     check("U4b as_of 早于对立教宗在任日时不出行",
           f.antipope_lines(44503, "929.4.22") == [],
           f.antipope_lines(44503, "929.4.22"))
