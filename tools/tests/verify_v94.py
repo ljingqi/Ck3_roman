@@ -213,9 +213,125 @@ def faith_checks():
           f._faith_id(900, "930.1.1") == 13, f._faith_id(900, "930.1.1"))
 
 
+# ---------------------------------------------------------------------------
+# 三、对立教宗识别 (熔件桩, 不载熔件)
+# ---------------------------------------------------------------------------
+def _antipope_melt():
+    """最小熔件: 头衔 20392 = 对立教宗职位 (变量 pam_antipope_office), 名「京兆教廷」;
+    33611550 自 929.4.23 在位, 935.8.1 另获 e_japan (「日本帝国」); 赞助者头衔
+    h_china (14022) 的持有者是主角 44503。"""
+    return {
+        "landed_titles": {"landed_titles": {
+            "20392": {"key": "x_script_3930", "landless": True, "capital": 14426,
+                      "title_name_data": {"name": "京兆教廷"},
+                      "variables": {"data": [{"flag": "pam_antipope_office"}]},
+                      "history": {"929.4.23": {"type": "created",
+                                               "holder": 33611550}}},
+            "14426": {"key": "c_jingzhao",
+                      "title_name_data": {"name": "京兆"}},
+            "13265": {"key": "e_japan", "holder": 33611550,
+                      "title_name_data": {"name": "日本",
+                                          "title_history_names": [
+                                              {"date": "500.1.1",
+                                               "name": "e_japan"}]},
+                      "history": {"935.8.1": {"type": "conquest_claim",
+                                              "holder": 33611550}}},
+            "14022": {"key": "h_china", "holder": 44503,
+                      "history": {"897.6.5": {"type": "created",
+                                              "holder": 44503}}},
+            "15261": {"key": "c_zangke", "holder": 2},
+        }},
+        "faiths": {"database": {
+            "13": {"name": "天主教", "religious_head_challengers": [
+                {"religious_head_challenger": 20392, "sponsor": 14022}]},
+            "12": {"name": "迦克墩基督教"},
+        }},
+        "rites": {"database": {
+            "154": {"faith": 13, "head_of_rite": 16847791,
+                    "data": {"name": "拜上帝会"}},
+            "158": {"faith": 12, "head_of_rite": 4294967295,
+                    "data": {"name": "迦克墩基督教"}},
+        }},
+    }
+
+
+_ANT_CACHE = {"player_id": 44503, "characters": {
+    "44503": {"faith": 13, "rite": 154, "name_zh": "天贵福",
+              "faith_history": [{"from": "905.1.1", "faith": 12},
+                                {"from": "929.1.1", "faith": 13}],
+              "rite_history": [{"from": "905.1.1", "rite": 154}]},
+    "33611550": {"faith": 13, "rite": 154, "name_zh": "地保"},
+    "16847791": {"faith": 13, "rite": 154},
+}}
+
+
+def antipope_checks():
+    print("\n[三] 对立教宗 (v94 问题3/4)")
+    f = F.Facts(_ANT_CACHE, _antipope_melt(), None, as_of="935.1.1", decade=3)
+    # 职位集合与在位判定 (含 as_of 截断)
+    check("U3a 头衔变量认出对立教宗职位",
+          20392 in f._antipope_office_ids(), f._antipope_office_ids())
+    check("U3b 在任判定: 933 在位, 929.4.22 未立",
+          f.antipope_office_at(33611550, "933.9.16") == 20392
+          and f.antipope_office_at(33611550, "929.4.22") is None,
+          (f.antipope_office_at(33611550, "933.9.16"),
+           f.antipope_office_at(33611550, "929.4.22")))
+    check("U3c 非对立教宗者为 None",
+          f.antipope_office_at(44503, "933.9.16") is None
+          and f.antipope_office_at(16847791, "933.9.16") is None)
+    # 称谓: 无更高头衔时取职位所在地 (京兆), 获 e_japan 后取日本
+    check("U3d 无更高头衔时定位词取职位所在地 (京兆对立教宗)",
+          f.antipope_label(33611550, "933.9.16") == "京兆对立教宗",
+          f.antipope_label(33611550, "933.9.16"))
+    # 高头衔裸名取词: e_japan 的静态名带层级词 (「日本帝国」), 定位词要裸名 (「日本」);
+    # as_of 截断后 (本篇 935.1.1) 该头衔是**篇后**所得, 不进本篇 —— 故此处只证取词口
+    check("U3e 高头衔定位词取裸名 (e_japan → 日本)",
+          f._title_short_name(13265, "936.1.1") == "日本",
+          f._title_short_name(13265, "936.1.1"))
+    check("U3e2 as_of 之后的头衔不进本篇 (_hold_intervals 已截断)",
+          13265 not in f._hold_intervals(33611550, "933.9.16"),
+          sorted(f._hold_intervals(33611550, "933.9.16")))
+    check("U3e3 对立教宗职位头衔裸名去掉「教廷」尾词 (京兆教廷 → 京兆)",
+          f._title_short_name(20392, "933.9.16") == "京兆",
+          f._title_short_name(20392, "933.9.16"))
+    check("U3f 非对立教宗者无比称谓",
+          f.antipope_label(44503, "933.9.16") == "",
+          f.antipope_label(44503, "933.9.16"))
+    # 官称出口: 通用口只给概念原词 (不带定位前缀)
+    check("U3g religious_head_word 认对立教宗 (概念原词)",
+          f.religious_head_word(33611550) == "对立教宗",
+          f.religious_head_word(33611550))
+    check("U3h 非对立教宗者 religious_head_word 仍为 ''",
+          f.religious_head_word(44503) == ""
+          and f.religious_head_word(16847791) == "",
+          (f.religious_head_word(44503), f.religious_head_word(16847791)))
+    check("U3i official_title 走对立教宗, 不再落到「前朝廷职司」",
+          f.official_title(33611550, "933.9.16") == "对立教宗",
+          f.official_title(33611550, "933.9.16"))
+    # 索取宣称者名 (年表用: 完整称谓带定位前缀)
+    check("U3j event_name 出「京兆对立教宗」",
+          f.event_name(33611550, "933.9.16") == "京兆对立教宗地保",
+          f.event_name(33611550, "933.9.16"))
+    # 《礼仪志》对立方之首
+    lines = f.antipope_lines(44503, "935.1.1")
+    check("U4a 礼仪志补出对立教宗行 (含在位日与扶立者)",
+          len(lines) == 1 and lines[0].startswith("对立教宗：京兆对立教宗")
+          and "929.4.23起" in lines[0] and "扶立" in lines[0], lines)
+    check("U4b as_of 早于对立教宗在任日时不出行",
+          f.antipope_lines(44503, "929.4.22") == [],
+          f.antipope_lines(44503, "929.4.22"))
+    # 反向: 礼仪档案仍写正统之首 (对立行只是补出, 不顶替)
+    prof = f.rite_profile_lines(44503, "935.1.1")
+    check("U4c 礼仪档案仍有「礼仪领袖」行 (正统之首不被顶替)",
+          any(x.startswith("礼仪领袖：") for x in prof), prof)
+    check("U4d 礼仪档案含「对立教宗」行",
+          any(x.startswith("对立教宗：") for x in prof), prof)
+
+
 def main():
     war_checks()
     faith_checks()
+    antipope_checks()
     print("\n" + ("全部通过" if _OK else "**有 FAIL**"))
     return 0 if _OK else 1
 

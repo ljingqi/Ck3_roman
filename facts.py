@@ -7366,6 +7366,12 @@ class Facts:
         # 与官职/称号并列而不互相顶替; 主角的年表行仍只出名字 (v42 口径)。
         acc = self.accolade_word_at(cid, date)
         pn = f"{acc}{nm}" if acc else nm
+        # v94: 对立教宗 —— 年表/事实行的完整称谓 (「日本对立教宗洪地保」);
+        # 排在 `official_title` 之前, 否则会落到「前朝廷职司」兜底
+        # (`religious_head_word` 是**通用**口, 只给概念原词, 不带定位前缀)。
+        apw = self.antipope_label(cid, date)
+        if apw:
+            return f"{apw}{pn}"
         rhw = self.religious_head_word(cid)
         if rhw:
             return f"{rhw}{pn}"
@@ -11608,6 +11614,10 @@ class Facts:
         if head is not None:
             rows.append("礼仪领袖：" + ("本人。" if head == cid
                                        else f"{self.event_name(head, date=date)}。"))
+        # v94 (问题4): 本信仰的**对立方之首** (对立教宗) —— 只认 `head_of_rite`
+        # 会把玩家自己扶立的那一位整条漏掉 (用户 2026-10-02 报「礼仪志里没有
+        # 宗教领袖」)。行面与行首词见 `antipope_lines`。
+        rows.extend(self.antipope_lines(cid, date))
         st = self.rite_tenets(rid)
         core = st.get("core") or []
         cnames = [self.tenet_name(k, rid) for k in core]
@@ -11667,6 +11677,74 @@ class Facts:
             if not best or cl.date_key(d) > cl.date_key(best):
                 best = str(d)
         return best
+
+    def _title_holder_at(self, tid, date=None):
+        """该头衔在 date 当日的持有者 (取不到 None)。
+
+        对立教宗条目的 `sponsor` 是**赞助者的头衔 id** (取证见
+        `docs/调研_v94_对立教宗.md` §1), 要写「谁扶立」必须再查持有者。"""
+        hist = ((self._lt.get(str(tid)) or {}).get("history"))
+        ao = cl.date_key(date) if date else None
+        best, best_dk = None, None
+        if isinstance(hist, dict):
+            for d, hv in hist.items():
+                if not isinstance(hv, dict):
+                    continue
+                try:
+                    dk = cl.date_key(d)
+                except Exception:                             # noqa: BLE001
+                    continue
+                if ao is not None and dk > ao:
+                    continue
+                if best_dk is None or dk >= best_dk:
+                    best, best_dk = hv.get("holder"), dk
+        if isinstance(best, int):
+            return best
+        t = self._lt.get(str(tid)) or {}
+        h = t.get("holder")
+        return h if isinstance(h, int) else None
+
+    def antipope_lines(self, cid, date=None):
+        """《礼仪志》开篇的**对立教宗**行 (v94 问题4; 用户 2026-10-02 拍板)。
+
+        本传主所奉信仰若有「对立之首」(religious head challenger) 在 as_of 时点
+        在位, 逐位写出一行 —— 旧稿只认 `rites.database[rite].head_of_rite` (正统
+        之首), 玩家自己在决议里扶立的那一位整条不进事实面, 用户遂报「礼仪志里
+        没有宗教领袖」。称谓走 `antipope_label` (「京兆对立教宗X」/「日本对立教宗X」),
+        并写明扶立者 (条目的 `sponsor` 是头衔 → 反查持有者) 与起始日。
+
+        本礼无对立方、或对立方尚未立/已终结时返回 [] (不写考语)。"""
+        if cid is None:
+            return []
+        fid = self._faith_id(cid, date)
+        if fid is None:
+            return []
+        want = self._antipope_challenger_ids(fid)
+        if not want:
+            return []                       # 该信仰未登记对立方 (列表可能被 code 丢掉)
+        rows, seen = [], set()
+        for tid in sorted(want):
+            holder = self._title_holder_at(tid, date)
+            if not isinstance(holder, int) or holder in seen:
+                continue
+            seen.add(holder)
+            lbl = self.antipope_label(holder, date) or self._ANTIPOPE_WORD
+            since = self._title_holder_since(tid, holder, date)
+            seg = f"{lbl}，{since}起" if since else lbl
+            sponsor = None
+            for row in (cl.faith_entry(self.melt, fid)
+                        .get("religious_head_challengers") or []):
+                if isinstance(row, dict) and row.get("religious_head_challenger") == tid:
+                    s_tid = row.get("sponsor")
+                    if isinstance(s_tid, int):
+                        sponsor = self._title_holder_at(s_tid, date)
+                    break
+            if isinstance(sponsor, int):
+                snm = self.event_name(sponsor, date=date) or ""
+                if snm:
+                    seg += f"，由{snm}扶立"
+            rows.append("对立教宗：" + seg + "。")
+        return rows
 
     def holy_order_lines(self, cid, date=None):
         """传主**亲立 / 庇护 / 领地内**的修会句 (《礼仪志》开篇; v88 问题3-P3A、v89 问题5)。
@@ -12046,6 +12124,164 @@ class Facts:
                 return True
         return False
 
+    # =====================================================================
+    # v94: 对立教宗 (religious head challenger / antipope)
+    # =====================================================================
+    # 机制取证见 `docs/调研_v94_对立教宗.md` (子代理, 带 game/ 文件:行 引用):
+    #   · 职位 = 一顶**动态创建的无地头衔** (`create_dynamic_title` + `set_landless_title`),
+    #     头衔变量带 `pam_antipope_office`, 头衔名 = `<首都男爵领名>` + 本信仰的
+    #     `ReligiousHeadTitleName` (本档 = 「教廷」: religion_l_simp_chinese.yml:40);
+    #   · 登记处 = `faiths.database[<fid>].religious_head_challengers` 的
+    #     `{religious_head_challenger: <头衔id>, sponsor: <赞助者头衔id>}` ——
+    #     **两个字段都是头衔 id**, 要落到人须查 `landed_titles[<id>].holder`;
+    #   · 该列表**可能为空** (仪式脱离信仰时被 code 丢掉, pam_antipope_effects.txt:130),
+    #     故主判据取**头衔变量**, 列表只作交叉校验;
+    #   · **不可**用 `antipope_flag` (继承时补 flag 仅限王国级, title_on_actions.txt:336)
+    #     或 `head_of_rite` (立对立教宗全程不碰它) 当判据;
+    #   · 角色称谓 = flavorization `antipope_male/female` (20_pam_flavorization.txt:125)
+    #     ⇒ 中文「对立教宗」(divinity_custom_loc_l_simp_chinese.yml:106), 取词键即
+    #     `game_concept_antipope` (pam_game_concepts_l_simp_chinese.yml:242)。
+    _ANTIPOPE_FLAG = "pam_antipope_office"
+    _ANTIPOPE_WORD = "对立教宗"        # 本地化表缺键时的兜底 (游戏概念原词)
+
+    def _antipope_office_ids(self):
+        """全档「对立教宗职位」头衔 id 集 (惰性扫一次; 头衔变量为准)。"""
+        if getattr(self, "_antipope_ids", None) is None:
+            ids = set()
+            for tid, t in (self._lt or {}).items():
+                if not isinstance(t, dict):
+                    continue
+                for v in ((t.get("variables") or {}).get("data") or []):
+                    if isinstance(v, dict) and str(v.get("flag") or "") == self._ANTIPOPE_FLAG:
+                        try:
+                            ids.add(int(tid))
+                        except (TypeError, ValueError):
+                            pass
+                        break
+            self._antipope_ids = ids
+        return self._antipope_ids
+
+    def antipope_office_at(self, cid, date=None):
+        """本人在 date 时点**在任**的对立教宗头衔 id (无则 None)。
+
+        「在任」走 `_hold_intervals` (按 as_of 截断; `abdication` 是受禅换人,
+        与项目既有口径一致 —— 该位 `always_follows_primary_heir`, 家族世袭)。"""
+        if cid is None:
+            return None
+        pos = self._antipope_office_ids()
+        if not pos:
+            return None
+        ivs = self._hold_intervals(cid, date) or {}
+        best = None
+        for tid in sorted(pos):
+            rng = ivs.get(tid)
+            if not rng:
+                continue
+            if best is None:
+                best = tid
+        return best
+
+    def _antipope_challenger_ids(self, fid):
+        """该信仰登记的对立教宗**头衔 id** 集 (存档可能为空; 空即空集)。"""
+        e = cl.faith_entry(self.melt, fid) if fid is not None else {}
+        out = set()
+        for row in (e.get("religious_head_challengers") or []):
+            if not isinstance(row, dict):
+                continue
+            tid = row.get("religious_head_challenger")
+            if isinstance(tid, int):
+                out.add(tid)
+        return out
+
+    # 宗教「座」名尾词 (本档 faith 13 的 `ReligiousHeadTitleName` = 「教廷」,
+    # christianity 层为「教廷」/「教宗国」) —— 只用于**动态宗教头衔**的定位词
+    _SEAT_TAILS = ("教廷", "教宗国")
+
+    def _title_short_name(self, tid, date=None):
+        """头衔的**裸名** (定位词用): 取该头衔的**所在地/基础名**, 不叠层级词。
+
+        v94 取词链 (按可靠性排序):
+          ① 首府男爵领/伯爵领名 (`capital` → `title_name_data.name`) —— 与游戏
+             `PAM_ANTIPOPE_TITLE_NAME` 取 `pam_antipope_capital` 的口径同源,
+             故本档对立教宗头衔 (首府 `c_jingzhao`) 定位词 = 「京兆」;
+          ② 本头衔基础名 `title_name_data.name` (存档烘焙名, 如 e_japan = 「日本」);
+          ③ `_name_at_date`(date) —— 动态国号/生成名 (对**更名史**头衔是当期显示名,
+             如 e_japan 的「日本帝国」), 故再去掉宗教座名尾词;
+          ④ 头衔键 → 尾部数字 (最后手段: 「x_script_3930」→「3930」)。"""
+        t = self._lt.get(str(tid)) or {}
+        cap = t.get("capital")
+        if isinstance(cap, int):
+            ct = self._lt.get(str(cap)) or {}
+            nm = ((ct.get("title_name_data") or {}).get("name") or "").strip()
+            if nm:
+                return nm
+        base = ((t.get("title_name_data") or {}).get("name") or "").strip()
+        if base:
+            return base
+        nm = ""
+        try:
+            nm = self._name_at_date(tid, date) or ""
+        except Exception:                                     # noqa: BLE001
+            nm = ""
+        if not nm:
+            try:
+                nm = self.title(tid, date) or ""
+            except Exception:                                 # noqa: BLE001
+                nm = ""
+        for tail in self._SEAT_TAILS:
+            if nm.endswith(tail) and len(nm) > len(tail):
+                nm = nm[:-len(tail)]
+                break
+        if not nm:
+            key = str(t.get("key") or "")
+            m = re.match(r"^[a-z]+_(?:script|d_laamp)_(\d+)$", key)
+            if m:
+                nm = m.group(1)
+        return nm
+
+    def _antipope_location_word(self, tid, date=None):
+        """对立教宗头衔的**所在地定位词**: 头衔裸名 (「京兆教廷」→「京兆」)。"""
+        return self._title_short_name(tid, date)
+
+    def _highest_held_title(self, cid, date=None):
+        """该人当期**最高层级**的持有头衔 id (无则 None); 同级取最晚获得者。
+
+        对立教宗职位本身是 `x_` 无地头衔 (层级 0), 故一旦他另获真头衔
+        (本档 935.8.1 得 `e_japan`), 定位词自然改用那个头衔。"""
+        best, best_rank, best_key = None, -1, None
+        for tid, ivs in (self._hold_intervals(cid, date) or {}).items():
+            key = (self._lt.get(str(tid)) or {}).get("key") or ""
+            rank = self._TT_RANK.get(key[:2], 0)
+            gains = [cl.date_key(iv[0]) for iv in (ivs or []) if iv and iv[0]]
+            gk = max(gains) if gains else (0, 0, 0)
+            if rank > best_rank or (rank == best_rank and best_key is not None
+                                    and gk > best_key):
+                best, best_rank, best_key = tid, rank, gk
+        return best
+
+    def antipope_label(self, cid, date=None):
+        """对立教宗的**角色称谓** (v94, 用户 2026-10-02 拍板「按最高头衔」):
+        `对立教宗` 前加定位词 —— 本人另有更高头衔时取该头衔裸名 (「日本」),
+        否则取该职位头衔的所在地名 (「京兆」); 合起来「日本对立教宗」「京兆对立教宗」。
+        非对立教宗返回 ''。"""
+        off = self.antipope_office_at(cid, date)
+        if off is None:
+            return ""
+        concept = ""
+        try:
+            concept = L.loc(self.table, "game_concept_antipope") or ""
+        except Exception:                                     # noqa: BLE001
+            concept = ""
+        if not concept or concept.startswith(("$", "[")):
+            concept = self._ANTIPOPE_WORD
+        top = self._highest_held_title(cid, date)
+        loc = ""
+        if top is not None and top != off:
+            loc = self._title_short_name(top, date)
+        if not loc:
+            loc = self._antipope_location_word(off, date)
+        return f"{loc}{concept}" if loc else concept
+
     def religious_head_word(self, cid):
         """宗教领袖称谓 (v15): 角色为其信仰的宗教领袖 (持有 faith.religious_head
         头衔, 如教宗国/教皇座) 时返回称谓 — 教宗; 否则 ''。
@@ -12054,11 +12290,16 @@ class Facts:
         只对持有宗教领袖头衔者生效, 不影响普通神权领主。
 
         v86: 1.20 的 `faith.religious_head` 空 ⇒ 先走「本人即本礼之首」的
-        `rites.head_of_rite` 判据, 再沿用教皇座头衔检查。"""
+        `rites.head_of_rite` 判据, 再沿用教皇座头衔检查。
+        v94: 两条判据都不认**对立教宗** (立对立教宗不碰 `head_of_rite`),
+        故最后补一条该判据 —— 否则他会落到 `official_title` 的「前朝廷职司」
+        兜底, 被写成「前礼部尚书书吏X」(用户 2026-10-02 报)。"""
+        rid0 = self._rite_id(cid)
         fid = self._faith_id(cid)
-        if fid is None:
+        if fid is None and rid0 is None:
             return ""
-        rh = cl.faith_entry(self.melt, fid).get("religious_head")
+        rh = cl.faith_entry(self.melt, fid).get("religious_head") \
+            if fid is not None else None
         if isinstance(rh, int) and rh != self._NO_RELIGIOUS_HEAD:
             t = self._lt.get(str(rh)) or {}
             # 任职区间 (title history, 已按 as_of 截断 — 死者/前教宗亦算);
@@ -12074,17 +12315,21 @@ class Facts:
             tkey = t.get("key") or ""
             if "papal" not in tkey and "papacy" not in tkey:
                 return ""
-        else:
-            # v86 (1.20): 领袖记在礼仪上 —— 本人为本礼之首且持有教宗座类头衔
-            rid = self._rite_id(cid)
-            if rid is None or cl.head_of_rite(self.melt, rid) != cid:
-                return ""
-            if not self._holds_head_seat(cid):
-                return ""
-        v = L.loc(self.table, "religiousheadname_pope")
-        if v and not v.startswith("$") and not v.startswith("["):
-            return v
-        return ""
+            v = L.loc(self.table, "religiousheadname_pope")
+            if v and not v.startswith("$") and not v.startswith("["):
+                return v
+            return ""
+        # v86 (1.20): 领袖记在礼仪上 —— 本人为本礼之首且持有教宗座类头衔
+        rid = rid0
+        if rid is not None and cl.head_of_rite(self.melt, rid) == cid \
+                and self._holds_head_seat(cid):
+            v = L.loc(self.table, "religiousheadname_pope")
+            if v and not v.startswith("$") and not v.startswith("["):
+                return v
+        # v94: 对立教宗 (赞助者对立方之首) —— 本函数是**通用**宗教领袖称谓口
+        # (其他地方按它的返回值再补场面/国号), 故只给概念原词, 不加定位前缀
+        # (带前缀的完整称谓走 `antipope_label`, 供年表与《礼仪志》用)。
+        return self._ANTIPOPE_WORD if self.antipope_office_at(cid) is not None else ""
 
     # ---- v22: 处决方式 (近似复现 execute_prisoner_interaction 的 send_option) ----
 
