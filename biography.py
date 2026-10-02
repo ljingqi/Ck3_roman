@@ -1954,6 +1954,11 @@ def _article_facts(facts, cache, key, section=None):
         tcs = list(facts.get("rite_tenet_changes") or [])
         if _sec_key(section) == "lead":
             _set_block(blocks, "礼仪档案", "\n".join(prof) if prof else "")
+        elif _sec_key(section) == "tail":
+            # v95 (问题2): 第三板块 —— 枢机团与教宗选举 (板块名与 facts 键同名)。
+            # 行由 `facts.papal_election_lines` 直出 (程序可判), 无料即不下发该块。
+            pe = list(facts.get("papal_election") or [])
+            _set_block(blocks, "枢机团与教宗选举", "\n".join(pe) if pe else "")
         else:
             # v89 (问题5): 「门下教众」块删除 (廷臣的个人教义与各人档案行重复, 无收录意义);
             # v89 (问题4): 补「本礼教义沿革」—— 那三条核心教义自身的更替。
@@ -3330,6 +3335,14 @@ def _liyi_has_mid(facts):
         or bool(facts.get("forbidden_tenets"))
 
 
+def _liyi_has_tail(facts):
+    """《礼仪志》第三板块「枢机团与教宗选举」是否有料 (v95 问题2)。
+
+    素材由 `facts.papal_election_lines` 给 (当前态 + 本文主角的封臣有人入枢机团 +
+    同信仰, 见该函数门槛); 无料即整节不出 (`mk_sections` 的 liyi 分支据此追加)。"""
+    return bool(facts.get("papal_election"))
+
+
 def _liyi_req(facts):
     """《礼仪志》的题面与两板块要求 —— **只写本篇真有料的那几条** (v93)。
 
@@ -3395,12 +3408,43 @@ def _liyi_req(facts):
         mid_bits.append("他建立或庇护的修会，逐所写出立会之年、会规、"
                         "所领教堂领地与现任之长")
     src = style.SECTION_REQ.get("liyi", {})
+    # ---- 第三板块: 枢机团与教宗选举 (v95 问题2, 用户 2026-10-02) ----
+    # 与开篇/纪事同一条纪律: 只索本篇真下发的那几行 (席次/封臣枢机/现任教宗/推举与
+    # 票数/派别/奔走) —— 由 `facts.papal_election_lines` 的行首逐条对齐。
+    pe = [str(x) for x in (facts.get("papal_election") or [])]
+
+    def _pe_has(prefix):
+        return any(x.startswith(prefix) for x in pe)
+
+    tail_bits, tail_focus = [], []
+    if pe:
+        tail_bits.append("枢机团的席次与虚悬之数")
+        if _pe_has("本朝封臣入枢机者"):
+            tail_bits.append("本朝封臣入枢机者逐人点名（席位名与教宗候选声望照抄）")
+            tail_focus.append("本朝封臣入枢机者")
+        if _pe_has("现任教宗"):
+            tail_bits.append("现任教宗及其即位之年")
+        if _pe_has("下届选举"):
+            tail_bits.append("下届推举的人选、票数与票序第一")
+            tail_focus.append("下届推举与票数")
+        if _pe_has("派别"):
+            tail_bits.append("各候选所属派别")
+        if _pe_has("奔走"):
+            tail_bits.append("为候选奔走的枢机之数")
+        tail_focus.append("枢机团席次")
     return {
         "lead": lead or (src.get("lead") or ""),
         "mid": (("写礼仪与教义的沿革、传主在教门中的作为：" + "；".join(mid_bits) + "。")
                 if mid_bits else (src.get("mid") or "")),
+        "tail": (("写本朝枢机在下届教宗选举中的形势：" + "；".join(tail_bits) + "。"
+                  "席次、票数与人名一律照本篇给出的事实行写来。")
+                 if tail_bits else (src.get("tail") or "")),
         "focus": ("写礼仪的沿革与教门中的作为：" + "、".join(focus_bits)
-                  if focus_bits else "写传主所受之礼与其教门中的作为"),
+                  + ("；并写枢机团与下届教宗选举：" + "、".join(tail_focus)
+                     if tail_bits else "")
+                  if focus_bits else
+                  ("写传主所受之礼、本朝枢机与下届教宗选举"
+                   if tail_bits else "写传主所受之礼与其教门中的作为")),
     }
 
 
@@ -3567,6 +3611,28 @@ def build_articles(facts, cache, cfg):
                     secs.append(_sec)
                     _prev_cut = _p.get("end") or _prev_cut
             return secs
+        if key == "liyi":
+            # v95 (问题2, 用户 2026-10-02): 《礼仪志》第三个板块「枢机团与教宗选举」——
+            # 只在本文主角的封臣有人入枢机团、且本篇为当前态时出现
+            # (素材门槛在 facts.papal_election_lines 里, 此处只看有无行)。
+            # 一并与「纪事无料时只出开篇」的老口径合并: 板块清单在此一次定齐
+            # (旧稿在调用处用 `_secs[:1]` 截断, 那样会把第三板块一并砍掉)。
+            _src = style.SECTION_REQ.get(key, {})
+            secs = [{"key": "lead",
+                     "title": titles.get("lead") or defaults["lead"],
+                     "req": _section_req(_dyn.get("lead") or _src.get("lead")
+                                         or "按传记笔法写作。", facts)}]
+            if _liyi_has_mid(facts):
+                secs.append({"key": "mid",
+                             "title": titles.get("mid") or defaults["mid"],
+                             "req": _section_req(_dyn.get("mid") or _src.get("mid")
+                                                 or "按传记笔法写作。", facts)})
+            if _liyi_has_tail(facts):
+                secs.append({"key": "tail",
+                             "title": titles.get("tail") or "纪事·枢机团与教宗选举",
+                             "req": _section_req(_dyn.get("tail") or _src.get("tail")
+                                                 or "按传记笔法写作。", facts)})
+            return secs
         return [{
             "key": sk,
             "title": titles.get(sk) or defaults[sk],
@@ -3711,13 +3777,14 @@ def build_articles(facts, cache, cfg):
         for _i, _a in enumerate(articles):
             if _a.get("key") in ("jiashi", "feuds", "artifacts"):
                 _anchor = _i + 1
-        # 纪事无料时只出开篇 (开篇/纪事两块料不相交, 见 `_liyi_has_mid`)
+        # 纪事无料时只出开篇 (v95: 板块清单改由 `mk_sections` 的 liyi 分支一次定齐,
+        # 含第三板块「枢机团与教宗选举」; 此处不再截断)
         _secs = mk_sections("liyi")
-        if not _liyi_has_mid(facts):
-            _secs = _secs[:1]
         articles.insert(_anchor, {"key": "liyi", "title": "礼仪志·礼仪与教义",
                                   "subject": None,
-                                  "theme": "传主所受之礼与个人教义的演变",
+                                  "theme": "传主所受之礼与个人教义的演变"
+                                           + ("、本朝枢机与下届教宗选举"
+                                              if _lq.get("tail") else ""),
                                   "focus": _lq["focus"],
                                   "sections": _secs})
     elif facts.get("rite_profile"):
