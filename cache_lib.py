@@ -696,62 +696,76 @@ def load_melt_section(path, key):
     `object_pairs_hook=_merge_dup_pairs`** (Clausewitz 会把同一键渲染多遍, 默认的
     last-wins 会丢数据) —— 故结果与 `load_melt(path)[key]` **逐键相同** (调用方可用
     load_melt 复核, 见 tools/backfill_title_dyn_names.py 的 `--check`)。取不到该段
-    返回 None。"""
+    返回 None。
+
+    v95: 同名键未必是顶层段 —— 角色段里也有 `"wars": [1,1,0,0]` (军事技能) 这类**数组**
+    字段, 旧稿取第一个同名出现即撞上它 (于是 `load_melt_section(path,"wars")` 恒返回
+    None)。现在逐候选查验: 值不是**对象**（跳过空白后首字符非 `{`）就继续找下一个同名
+    候选, 直到取到对象段或读尽。故本函数只服务「顶层是对象的那一段」。"""
     pat = ('"%s":' % key).encode("utf-8")
     buf = b""
-    off = -1
+    eof = False
     with _melt_binary(path) as fp:
-        while off < 0:
+
+        def _fill():
+            nonlocal buf, eof
             chunk = fp.read(1 << 20)
             if not chunk:
-                return None
+                eof = True
+                return False
             buf += chunk
-            i = buf.find(pat)
-            if i >= 0:
-                off = i + len(pat)
-        i, start, depth = off, -1, 0
+            return True
+
+        pos = 0                       # buf 内的搜索起点 (已判定非对象段的候选之后)
         while True:
-            while i >= len(buf):
-                chunk = fp.read(1 << 20)
-                if not chunk:
-                    return None
-                buf += chunk
-            c = buf[i:i + 1]
-            if start < 0:
-                if c in (b" ", b"\r", b"\n", b"\t"):
-                    i += 1
+            i = buf.find(pat, pos)
+            if i < 0:
+                if _fill():
                     continue
-                if c != b"{":
+                return None
+            j = i + len(pat)
+            # 跳过空白, 看值的首字符
+            while True:
+                k = j
+                while k < len(buf) and buf[k:k + 1] in (b" ", b"\r", b"\n", b"\t"):
+                    k += 1
+                if k < len(buf):
+                    break
+                if not _fill():
                     return None
-                start, depth = i, 1
-                i += 1
+            if buf[k:k + 1] != b"{":
+                pos = i + 1           # 同名但是数组/标量 (角色技能等): 换下一个候选
                 continue
-            if c == b'"':
-                i += 1
-                while True:
-                    while i >= len(buf):
-                        chunk = fp.read(1 << 20)
-                        if not chunk:
-                            return None
-                        buf += chunk
-                    ch = buf[i:i + 1]
-                    if ch == b"\\":
-                        i += 2
-                        continue
-                    if ch == b'"':
+            start, depth, i = k, 0, k
+            while True:
+                while i >= len(buf):
+                    if not _fill():
+                        return None
+                c = buf[i:i + 1]
+                if c == b'"':
+                    i += 1
+                    while True:
+                        while i >= len(buf):
+                            if not _fill():
+                                return None
+                        ch = buf[i:i + 1]
+                        if ch == b"\\":
+                            i += 2
+                            continue
+                        if ch == b'"':
+                            i += 1
+                            break
+                        i += 1
+                    continue
+                if c == b"{":
+                    depth += 1
+                elif c == b"}":
+                    depth -= 1
+                    if depth == 0:
                         i += 1
                         break
-                    i += 1
-                continue
-            if c == b"{":
-                depth += 1
-            elif c == b"}":
-                depth -= 1
-                if depth == 0:
-                    i += 1
-                    break
-            i += 1
-    return json.loads(buf[start:i], object_pairs_hook=_merge_dup_pairs)
+                i += 1
+            return json.loads(buf[start:i], object_pairs_hook=_merge_dup_pairs)
 
 
 def load_melt_landed_titles(path):
@@ -1134,6 +1148,11 @@ EMPTY_CACHE = {
     "output_folder": None,    # 会话输出文件夹名 (watch/continue 绑定, 见 pipeline)
     "player_title_history": [],  # [{date, name}] 玩家主头衔名变化 (复兴党流亡委员会等)
     "realm_history": [],         # [{date, holders:{title_id: holder_id}}] 关键头衔持有者逐年
+    # v95 (问题1): 玩家参与的战争逐档闩存 —— 存档只为 126 个 CB 中的一部分写
+    # `war_memory_cb_*` (硬编码白名单), 其余落 `war_memory_cb_fallback`(正文「战争」,
+    # 项目按约定丢弃); 真 CB 只在 `wars.active_wars[].casus_belli.type`, 而**战争一结束
+    # 就从存档移除** ⇒ 必须像 realm_history 一样在合并期落盘 (见 `_latch_war_history`)。
+    "war_history": [],           # [{id, seen, start_date, cb, attacker, defender, claimant, titles, atk_parts, dfd_parts, name}]
     # v66: 头衔动态名沿革 {tid: [{from, name}]} —— `specific_title_name` 是"只有该
     # 日期那一档才有的现值" (v48 §4B 同类), 逐档只记变化点 (实测 84 档 ≈ 215 KB)。
     # 供 facts._dyn_name_at / _site_name 按日期取「用地名」用 (游牧迁移改名)。
@@ -2127,6 +2146,100 @@ def player_domicile(melt, domain, cid):
     return None
 
 
+def _war_side_id(side):
+    """war 的 attacker/defender 段 → 主战方角色 id (取不到返回 None)。
+
+    946 档实测两段都是 `{participants:[{character:…, date:…}], casualties:[…]}` 的 dict
+    (主战方 = 第一个 participant); 兼容少数档把该段写成裸 id 的形态。"""
+    if isinstance(side, int):
+        return side
+    if isinstance(side, dict):
+        for p in (side.get("participants") or []):
+            if isinstance(p, dict) and isinstance(p.get("character"), int):
+                return p["character"]
+    return None
+
+
+def _war_side_parts(side, cap=32):
+    """war 的 attacker/defender 段 → 参与角色 id 升序列表 (含盟友; 截断 cap)。"""
+    out = []
+    if isinstance(side, dict):
+        for p in (side.get("participants") or []):
+            if isinstance(p, dict) and isinstance(p.get("character"), int):
+                out.append(int(p["character"]))
+    elif isinstance(side, int):
+        out.append(int(side))
+    return sorted(set(out))[:cap]
+
+
+def _latch_war_history(cache, wars, date_label, player_id=None):
+    """v95 (问题1): 玩家参与的战争**宣战理由**逐档闩存 —— `cache["war_history"]`。
+
+    为什么必须落盘: 游戏只为 126 个 CB 中的一部分写记忆键 `war_memory_cb_*`
+    (`03_bp1_scripted_effects.txt:877-996` 的硬编码白名单), 未列出的 CB —— 含全部
+    4 个 pam 系与多数 tgp 中国系 —— 一律落 `war_memory_cb_fallback` (正文「战争」,
+    项目按约定丢弃, 见 `facts._war_cb_word`)。**真 CB 只在
+    `melt["wars"]["active_wars"][<id>].casus_belli.type`, 而战争一结束就从 active_wars
+    移除** (本档对立教宗那战 946.2.24 结束, 947 档起无踪) ⇒ 只有在「该场战争仍进行」
+    的那几档把它闩下来, 事实层才可能补出「以…开战」。
+
+    形状: `[{id, seen, start_date, cb, attacker, defender, claimant, titles,
+    atk_parts, dfd_parts, name}]` —— 按 war id 去重 (同一场战争跨多档只留一行,
+    后来档只**合并**参与人名单); 只收攻守任一方**含玩家**的战争 (含玩家加盟的盟友战)。
+    `attacker/defender/claimant` 取 `casus_belli` 段 (war 段的同名键是 participant
+    dict, 不是 id); `claimant` 的 4294967295 = 无宣称者哨兵, 归一为 None。
+    `name` 是存档已本地化的战名 (含 0x15 内联标记), 只作取证参考。
+    幂等: 同一档重复并入不会重复追加。"""
+    if not isinstance(wars, dict) or player_id is None:
+        return 0
+    aw = wars.get("active_wars") or {}
+    if not isinstance(aw, dict) or not aw:
+        return 0
+    hist = cache.setdefault("war_history", [])
+    by_id = {}
+    for row in hist:
+        if isinstance(row, dict) and row.get("id") is not None:
+            by_id[str(row["id"])] = row
+    added = 0
+    for wid, w in aw.items():
+        if not isinstance(w, dict):
+            continue
+        cb = w.get("casus_belli") if isinstance(w.get("casus_belli"), dict) else {}
+        atk_id = cb.get("attacker") if isinstance(cb.get("attacker"), int) \
+            else _war_side_id(w.get("attacker"))
+        dfd_id = cb.get("defender") if isinstance(cb.get("defender"), int) \
+            else _war_side_id(w.get("defender"))
+        atk_parts = _war_side_parts(w.get("attacker"))
+        dfd_parts = _war_side_parts(w.get("defender"))
+        if player_id not in (atk_parts + dfd_parts + [atk_id, dfd_id]):
+            continue
+        cl_claim = cb.get("claimant")
+        if cl_claim in (4294967295, 0):
+            cl_claim = None
+        row = by_id.get(str(wid))
+        if row is None:
+            row = {
+                "id": str(wid), "seen": date_label,
+                "start_date": w.get("start_date"),
+                "cb": str(cb.get("type") or ""),
+                "attacker": atk_id, "defender": dfd_id,
+                "claimant": cl_claim,
+                "titles": cb.get("targeted_titles") or None,
+                "atk_parts": atk_parts, "dfd_parts": dfd_parts,
+                "name": w.get("name"),
+            }
+            hist.append(row)
+            by_id[str(wid)] = row
+            added += 1
+        else:
+            # 同一场战争的后档: 主战方与 CB 首见即定, 只补后来加入的参与人
+            row["atk_parts"] = sorted(set((row.get("atk_parts") or []) + atk_parts))
+            row["dfd_parts"] = sorted(set((row.get("dfd_parts") or []) + dfd_parts))
+            if not row.get("cb") and cb.get("type"):
+                row["cb"] = str(cb["type"])
+    return added
+
+
 def _latch_title_dyn_names(cache, lt, date_label):
     """v66: 头衔**动态名**逐档闩存 (只记变化点) —— `cache["title_dyn_names"]`。
 
@@ -2255,6 +2368,10 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         # `find_player` 已换成继位者, 本传主这一侧永远看不到 (崔佛 881/882 档
         # 的 find_player 是 15179, 他的缓存只到 880 档)。
         _latch_prison_succession(cache, melt, date_label)
+        # v95 (问题1): 同战役后继玩家的档里仍可能带着**本缓存传主**参与的战争
+        # (战争跨任), 故按本缓存的玩家 id 也闩一道 (见 `_latch_war_history`)。
+        _latch_war_history(cache, melt.get("wars"), date_label,
+                           cache.get("player_id"))
         return False
     if cache["player_id"] is None:
         cache["player_id"] = player_id
@@ -2414,6 +2531,9 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # v66: 头衔动态名逐档闩存 (与 realm_history 同位 —— 同属"只有该日期那一档才有
     # 的现值"; 见 _latch_title_dyn_names docstring)
     _latch_title_dyn_names(cache, lt, date_label)
+
+    # v95 (问题1): 玩家参与的战争**宣战理由**逐档闩存 —— 见 `_latch_war_history`。
+    _latch_war_history(cache, melt.get("wars"), date_label, player_id)
 
     # 玩家营/廷内僚属任职 (v7): court_positions.database 中 employer == 玩家,
     # 逐年记录 (含营地军官与宫廷职位 — 这些岗位由玩家麾下僚属担任, **不是玩家
