@@ -11728,7 +11728,7 @@ class Facts:
             if not (is_founder or (same_faith and in_realm)):
                 continue
             lt = self._lt.get(str(tid)) or {}
-            # v93 (用户 2026-10-03 报「修会少了一所」): **创立日取 `history` 最早一键**,
+            # v93 (用户 2026-10-02 报「修会少了一所」): **创立日取 `history` 最早一键**,
             # 不取 `landed_titles[].date` —— 后者是「该头衔最后一次变更之日」(持有人
             # 一换就前移), 拿它当「尚未创立」的判据会把老修会按 as_of 整个截掉。
             # 洪氏2 实测: 南岭隐修院 `date`=918.7.7 (918 年换持有人)、`history` 最早
