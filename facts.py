@@ -4786,14 +4786,32 @@ class Facts:
             lead = f"{kin}、" if kin else ""
             # v76 (问题1): 前代传主**在位终结但未死亡** (让位/剃发退位) 时不能说「崩」
             re_date = re_end.get("date") or ""
+
+            def _death_fate(when):
+                """前代传主卒句 (v95 问题5, 用户 2026-10-02 拍板案 A)。
+
+                旧稿只写「崩于当日／崩于X」, 读不出怎么死的 (用户: 「只知道上一任传主
+                死了，却不知道怎么死的」)。死因本就在数据里 (`death_clause` 读该任缓存
+                的 `death`; 本档 `death_clause(38957)` = 「溺死」), 故改为
+                「于当日溺死」; 取不到**具体**死因 (空或通用词「去世」) 时回退旧句
+                「崩于当日」—— 保住「崩」的史传腔, 且不把无料写成有料。"""
+                why = ""
+                try:
+                    why = self.death_clause(pcid, date=death) or ""
+                except Exception:                                 # noqa: BLE001
+                    why = ""
+                if why and why != "去世":
+                    return f"于{when}{why}"
+                return f"崩于{when}"
+
             if re_date and start and cl.date_key(re_date) == cl.date_key(start):
                 fate = "于是日让位"
             elif re_date:
                 fate = f"让位于{self.date(re_date)}"
             elif death and start and cl.date_key(death) == cl.date_key(start):
-                fate = "崩于当日"
+                fate = _death_fate("当日")
             elif death:
-                fate = f"崩于{self.date(death)}"
+                fate = _death_fate(self.date(death))
             else:
                 fate = ""
             if nm and start:
