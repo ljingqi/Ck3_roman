@@ -17301,8 +17301,19 @@ def _war_mem_meta(mem):
     return out
 
 
+_WAR_CB_FALLBACK = "war_memory_cb_fallback"
+
+
 def _war_cb_word(f, cb):
-    """`war_memory_cb_*` → 中文战名 (查本地化表); 查不到返回 '' (宁缺不直出裸键)。"""
+    """宣战理由 → 中文战名; 查不到返回 '' (宁缺不直出裸键)。
+
+    v95 (问题1): 入参有两种形态 ——
+      ① 记忆里的本地化键 `war_memory_cb_*` (查游戏本地化表);
+      ② `war_history` 回查出的**真 CB 键** (如 `pam_challenge_hof_cb`) —— 游戏从不为
+         未列入白名单的 CB 写记忆键, 故这类键在本地化表里查不到, 走项目措辞表
+         `style.WAR_CB_ZH`。
+    `war_memory_cb_fallback` 的正文是通用词「战争」, 按项目约定丢弃 (它只说明
+    「游戏没为这个 CB 写专用键」)。"""
     cb = str(cb or "")
     if not cb:
         return ""
@@ -17310,15 +17321,67 @@ def _war_cb_word(f, cb):
         w = L.loc(getattr(f, "table", None) or {}, cb)
     except Exception:
         w = ""
-    if not w or w == "战争":          # `war_memory_cb_fallback` 的正文就是「战争」
+    if w and w != cb and w != "战争":          # 命中记忆键 (或已是中文)
+        return w
+    return _style.WAR_CB_ZH.get(cb) or ""
+
+
+def _war_cb_from_history(f, atk, dfd, date):
+    """记忆 `war_cb` 为 fallback/空时, 从缓存 `war_history` 回查**真 CB 键** (v95 问题1)。
+
+    为什么要在缓存里回查: 游戏只为 126 个 CB 中的一部分写记忆键
+    (`03_bp1_scripted_effects.txt:877-996` 的硬编码白名单), 其余一律落
+    `war_memory_cb_fallback`; 真 CB 只在 `wars.active_wars[].casus_belli.type`,
+    而**战争一结束就从存档移除** ⇒ 只能靠 `cache_lib._latch_war_history` 的逐档闩存。
+
+    匹配: 交战双方 (记忆槽的 atk/dfd) 与存档 `attacker/defender` 的参与人名单**成对**
+    命中 (方向不拘 —— `joined_allys_war` 的记忆槽是「盟友/敌人」, 与存档攻守方向可能相反);
+    日期容差 ±2 天 (本档实测: 记忆 945.12.28 vs 存档 `start_date` 945.12.27)。
+    多行命中取 `start_date` 最接近者; 取不到返回 ''。"""
+    if not isinstance(atk, int) or not isinstance(dfd, int):
         return ""
-    return w
+    rows = f.cache.get("war_history") or []
+    if not rows:
+        return ""
+    o1 = _day_ord(date)
+    best, best_gap = "", None
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("cb"):
+            continue
+        a_parts = row.get("atk_parts") or []
+        d_parts = row.get("dfd_parts") or []
+        if not ((atk in a_parts and dfd in d_parts)
+                or (dfd in a_parts and atk in d_parts)):
+            # 参与人名单可能只闩到主战方 —— 再按存档记录的攻守主方兜一道
+            if not ((row.get("attacker") == atk and row.get("defender") == dfd)
+                    or (row.get("attacker") == dfd and row.get("defender") == atk)):
+                continue
+        gap = None
+        if o1 is not None:
+            o2 = _day_ord(row.get("start_date"))
+            if o2 is not None:
+                gap = abs(o1 - o2)
+                if gap > 2:
+                    continue
+        if best_gap is None or (gap is not None and gap < best_gap):
+            best, best_gap = str(row["cb"]), gap
+    return best
+
+
+def _war_cb_resolved(f, cb, atk, dfd, date):
+    """槽位里的 `war_cb` → **可用键**: 已映射的原样返回, fallback/空则回查真 CB。"""
+    cb = str(cb or "")
+    if cb and cb != _WAR_CB_FALLBACK:
+        return cb
+    return _war_cb_from_history(f, atk, dfd, date) or cb
 
 
 def _war_slots(f, ev):
     """战事事件 → {"sides", "atk", "dfd", "cb", …} 或 None (v78-3)。
 
-    `sides` = 交战双方 id 集 (配对键的第一段), `cb` = 宣战理由 (第二段)。"""
+    `sides` = 交战双方 id 集 (配对键的第一段), `cb` = 宣战理由 (第二段)。
+    v95 (问题1): 末段统一过 `_war_cb_resolved` —— 记忆里 `war_cb` 落 `fallback` 时,
+    用交战双方 + 日期回查 `cache["war_history"]` 取真 CB (对立教宗那战即此路)。"""
     ident = ev.get("ident") or {}
     if not ident:
         return None
@@ -17329,30 +17392,31 @@ def _war_slots(f, ev):
     t = ev.get("type")
     cb = str(meta.get("cb") or "")
     atk_v = meta.get("attacker")
+    out = None
     if t == "offensive_war":
         opp = parts.get("other_party")
         if not isinstance(owner, int) or not isinstance(opp, int):
             return None
-        return {"sides": frozenset({owner, opp}), "atk": owner, "dfd": opp,
-                "cb": cb, "title": meta.get("title"),
-                "claimant": meta.get("claimant")}
-    if t == "defensive_war":
+        out = {"sides": frozenset({owner, opp}), "atk": owner, "dfd": opp,
+               "cb": cb, "title": meta.get("title"),
+               "claimant": meta.get("claimant")}
+    elif t == "defensive_war":
         opp = parts.get("other_party")
         if not isinstance(owner, int) or not isinstance(opp, int):
             return None
         atk = atk_v if isinstance(atk_v, int) else opp
-        return {"sides": frozenset({owner, opp}), "atk": atk, "dfd": owner,
-                "cb": cb, "title": meta.get("title"),
-                "claimant": meta.get("claimant")}
-    if t == "joined_allys_war":
+        out = {"sides": frozenset({owner, opp}), "atk": atk, "dfd": owner,
+               "cb": cb, "title": meta.get("title"),
+               "claimant": meta.get("claimant")}
+    elif t == "joined_allys_war":
         ally, enemy = parts.get("ally"), parts.get("enemy")
         if not isinstance(ally, int) or not isinstance(enemy, int):
             return None
         atk = atk_v if isinstance(atk_v, int) else enemy
-        return {"sides": frozenset({ally, enemy}), "ally": ally, "enemy": enemy,
-                "atk": atk, "dfd": enemy if atk == ally else ally, "cb": cb,
-                "title": meta.get("title")}
-    if t in ("war_won", "war_lost"):
+        out = {"sides": frozenset({ally, enemy}), "ally": ally, "enemy": enemy,
+               "atk": atk, "dfd": enemy if atk == ally else ally, "cb": cb,
+               "title": meta.get("title")}
+    elif t in ("war_won", "war_lost"):
         w, l = parts.get("winner"), parts.get("loser")
         if not isinstance(w, int):
             w = owner if t == "war_won" and isinstance(owner, int) else None
@@ -17360,10 +17424,10 @@ def _war_slots(f, ev):
             l = owner if t == "war_lost" and isinstance(owner, int) else None
         if not isinstance(w, int) or not isinstance(l, int):
             return None
-        return {"sides": frozenset({w, l}), "winner": w, "loser": l,
-                "atk": atk_v if isinstance(atk_v, int) else w, "dfd": l, "cb": cb,
-                "title": meta.get("title")}
-    if t in ("war_white_peace_attacker", "war_white_peace_defender"):
+        out = {"sides": frozenset({w, l}), "winner": w, "loser": l,
+               "atk": atk_v if isinstance(atk_v, int) else w, "dfd": l, "cb": cb,
+               "title": meta.get("title")}
+    elif t in ("war_white_peace_attacker", "war_white_peace_defender"):
         a, d = parts.get("attacker"), parts.get("defender")
         if not isinstance(a, int):
             a = owner if t == "war_white_peace_attacker" else None
@@ -17371,9 +17435,13 @@ def _war_slots(f, ev):
             d = owner if t == "war_white_peace_defender" else None
         if not isinstance(a, int) or not isinstance(d, int):
             return None
-        return {"sides": frozenset({a, d}), "atk": a, "dfd": d, "white": True,
-                "cb": cb, "title": meta.get("title")}
-    return None
+        out = {"sides": frozenset({a, d}), "atk": a, "dfd": d, "white": True,
+               "cb": cb, "title": meta.get("title")}
+    if not isinstance(out, dict):
+        return None
+    out["cb"] = _war_cb_resolved(f, out.get("cb"), out.get("atk"),
+                                 out.get("dfd"), ev.get("date"))
+    return out
 
 
 def _war_title_gain(f, winner, loser, d0, d1):
@@ -17418,12 +17486,35 @@ def _war_start_clause(f, ev, sl):
     t = ev.get("type")
     d = ev.get("date")
     owner = (ev.get("ident") or {}).get("owner")
-    cb = _war_cb_word(f, sl.get("cb"))
+    cb_key = str(sl.get("cb") or "")
+    cb = _war_cb_word(f, cb_key)
+    # v95 (问题1): 对立教宗之战说清**为什么打** —— 判据全在程序侧:
+    #   CB = `pam_challenge_hof_cb` + 攻方**不是**对立教宗本人 ⇒ 攻方是该对立教宗的
+    #   扶立者 (该 CB 的效果: 扶立者赢则把自己扶立的对立教宗扶上信仰领袖之位并把原
+    #   教宗收为附庸, `pam_antipope_effects.txt:434-497`)。用户 2026-10-02 报的正是
+    #   「终传没写对教宗宣战是为了扶持对立教宗」。
+    _manner = ""
+    if cb_key == "pam_challenge_hof_cb":
+        _atk = sl.get("atk")
+        _mine = None
+        try:
+            _mine = f.antipope_office_at(_atk, d)
+        except Exception:                                     # noqa: BLE001
+            _mine = None
+        cb = "挑战信仰领袖" if _mine is not None else "扶立对立教宗"
+        _manner = "为名"
     me = f.event_name(owner, date=d) or ""
     tname = f.title(sl.get("title")) if sl.get("title") else ""
+
+    def _cb_phrase(subject):
+        """`{主语}以{cb}…` 分句 —— 「为名」类 (扶立对立教宗) 带逗号收束。"""
+        if not cb:
+            return subject
+        return f"{subject}以{cb}为名，" if _manner else f"{subject}以{cb}"
+
     if t == "offensive_war":
         opp = f.event_name(sl["dfd"], date=d) or ""
-        s = f"{me}以{cb}向{opp}开战" if cb else f"{me}向{opp}开战"
+        s = f"{_cb_phrase(me)}向{opp}开战" if cb else f"{me}向{opp}开战"
         cl = sl.get("claimant")
         if isinstance(cl, int) and cl != owner:
             cn = _claimant_name(f, cl, d, owner)
@@ -17437,7 +17528,7 @@ def _war_start_clause(f, ev, sl):
         return s
     if t == "defensive_war":
         atk = f.event_name(sl["atk"], date=d) or ""
-        s = f"{atk}以{cb}兴兵，{me}应战" if cb else f"{atk}兴兵，{me}应战"
+        s = f"{_cb_phrase(atk)}兴兵，{me}应战" if cb else f"{atk}兴兵，{me}应战"
         if tname:
             s += f"，兵锋向{tname}"
         return s
@@ -23354,8 +23445,10 @@ _EDU_DUP_TYPES = ("childhood_education_guardian", "ward_education_completed")
 _EDU_DUP_MAX_DAYS = 3          # 实测只 0/1/2 天; 留一天余量, 更远者视为另一次受学
 
 
-def _edu_day_ord(date):
-    """CK3 日期 → 序数 (年×360 + 月×30 + 日); 只用于**同日/相邻**比较。"""
+def _day_ord(date):
+    """CK3 日期 → 序数 (年×360 + 月×30 + 日); 用于**同日/相邻**比较 (v95)。
+
+    v95 问题4 的教育记忆去重与问题1 的战争回查 (日期容差 ±2 天) 共用。取不到返回 None。"""
     y, m, d = cl.date_key(date)
     if y == 9999:
         return None
@@ -23402,7 +23495,7 @@ def _dedupe_education_memories(cache):
                 d = str(m.get("creation_date") or "")
                 base = best.get(sig)
                 if base is not None:
-                    o1, o2 = _edu_day_ord(d), _edu_day_ord(base)
+                    o1, o2 = _day_ord(d), _day_ord(base)
                     if o1 is not None and o2 is not None and o1 == o2:
                         # 同日同签名的退化成对: 只留最先遇到的一条
                         if sig in kept_same_day:

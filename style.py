@@ -704,6 +704,78 @@ FLAVOR_DEATH_ZH = {
 }
 
 
+# v95 (问题1): **宣战理由 (Casus Belli) 键 → 史传腔短语**。
+#
+# 游戏只为 126 个 CB 中的一部分写记忆本地化键 `war_memory_cb_*`
+# (`game/common/scripted_effects/03_bp1_scripted_effects.txt:877-996` 的硬编码白名单,
+# 中文见 `localization/simp_chinese/memories_l_simp_chinese.yml:981-1009`); 其余
+# **56 个 CB 一律落 `war_memory_cb_fallback`**(正文「战争」, 项目按约定丢弃)。
+# v95 起事实层改从缓存 `war_history` 回查真 CB 键 (该战进行时从存档闩下), 故这里补
+# 一张项目措辞表 —— 键即 `casus_belli_types` 里的 CB 键 (见
+# `docs/调研_v95_对立教宗战争理由.md` §5.3 的完整清单)。查不到的键仍按原口径省略
+# 「以…」分句 (宁缺不错); `war_memory_cb_*` 键不在此表、仍走游戏本地化表。
+WAR_CB_ZH = {
+    # ---- By God Alone (pam_*) ----
+    "pam_challenge_hof_cb": "扶立对立教宗",     # 扶立者代其对立方挑战信仰领袖 (攻方是对立教宗本人时改「挑战信仰领袖」, 见 facts._war_start_clause)
+    "pam_antiking_cb": "废黜对立教宗",
+    "pam_humiliation_cb": "折辱之战",
+    "pam_investiture_conflict_cb": "叙任权之争",
+    # ---- 天命/中国 (tgp_*) ----
+    "claim_the_mandate_cb": "争夺天命",
+    "chinese_reunification_cb": "统一天下",
+    "chinese_consolidation_cb": "一统之战",
+    "china_seize_county_cb": "夺取州县",
+    "china_seize_duchy_cb": "夺取州郡",
+    "china_hegemon_seize_county_cb": "霸主夺地",
+    "china_hegemon_seize_duchy_cb": "霸主夺郡",
+    "grand_campaign_kingdom_invasion_cb": "大征伐",
+    "silk_road_vassalization_cb": "丝路臣服",
+    "ceremonial_claimant_faction_war": "拥立之争",
+    "imperial_policy_faction_war": "朝政之争",
+    "restore_ceremonial_liege_faction_war": "复礼之争",
+    "eradicate_house_cb": "灭族之战",
+    "mandala_plunder_cb": "掠地之战",
+    "mandala_raze_capital_structure_cb": "焚都之战",
+    "admin_barbarian_conquest_cb": "征讨蛮夷",
+    # ---- 日本/东亚其余 ----
+    "raiktor_claim_cb": "夺位之战",
+    "raiktor_conquest_cb": "征服之战",
+    "mythical_ancestor_war": "先祖之仇",
+    "azariqa_rebellion_cb": "阿扎里加叛乱",
+    "fp3_zanj_rebellion_war": "桑给叛乱",
+    "greek_anarchy_cb": "希腊之乱",
+    "ep3_hasan_assassin_war": "讨伐阿萨辛",
+    # ---- 通用/行政/游牧/fp3 ----
+    "expansion_cb": "拓土之战",
+    "duchy_expansion_cb": "拓郡之战",
+    "naval_expansion_cb": "海疆拓土",
+    "naval_duchy_expansion_cb": "海疆拓郡",
+    "influence_war_cb": "权势之战",
+    "imperial_expedition_cb": "帝国远征",
+    "dissolve_empire_war": "解体帝国",
+    "pax_romana_invasion_war": "罗马和平之征",
+    "humiliation_cb": "折辱之战",
+    "migration_cb": "举族迁徙",
+    "nomadic_war": "游牧之战",
+    "mpo_nomad_duchy_invasion_cb": "游牧夺郡",
+    "mpo_great_war_of_defiance_cb": "抗命之战",
+    "ep3_laamp_peasant_war": "镇压民变",
+    "ep3_laamp_apprehend_adventurer_cb": "讨伐冒险者",
+    "ep3_laamp_raid_contract_cb": "劫掠之约",
+    "ep3_pillaging_foray": "劫掠出征",
+    "ep3_roman_empire_border_war": "边境之战",
+    "legendary_adventure": "传奇远征",
+    "leg_demand_fealty_cb": "索求臣服",
+    "fp3_free_house_member_cb": "解救族人",
+    "fp3_install_loyalist_cb": "扶立忠臣",
+    "fp3_unify_house_cb": "统一宗族",
+    "fp3_seljuk_invasion_cb": "塞尔柱入侵",
+    "fp3_turkic_invasion_cb": "突厥入侵",
+    "crusading_claim_cb": "十字军索取",
+    "ireland_laudabiliter_conquest_cb": "敕许征服",
+}
+
+
 # v28: 头衔得失动词 — 按 memory vars.reason (游戏给的缘由) 出词。
 # 旧口径一律「登位，得X」/「让出X」, 使天朝制/行政制的**官职任命轮转**
 # (reason=appointment_succession / stepped_down) 被读成「被人打败、又夺人领地」
