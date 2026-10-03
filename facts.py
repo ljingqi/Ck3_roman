@@ -6985,8 +6985,12 @@ class Facts:
     # `acclaimed` the current knight, `history` the [{acclaimed, date}] tenure list; always
     # taken at `date`, so a later accolade never lands on an earlier person.
     def _accolade_index(self):
-        """{character id: [(start date or None, accolade name), …]} — accolade tenure history,
-        built once and cached."""
+        """{character id: [(start date or None, end date or None, accolade name), …]} — accolade
+        tenure history, built once and cached.
+
+        An accolade has one knight at a time, so a tenure ends the day the next `history` entry of
+        the same accolade begins. Reading only the start dates left a knight wearing the accolade
+        for the rest of the campaign after it had passed to someone else."""
         if getattr(self, "_acc_idx", None) is not None:
             return self._acc_idx
         idx = {}
@@ -7009,11 +7013,12 @@ class Facts:
                     # no tenure history (old save / script grant): use `acclaimed` undated
                     c = a.get("acclaimed")
                     if isinstance(c, int):
-                        idx.setdefault(c, []).append((None, nm))
+                        idx.setdefault(c, []).append((None, None, nm))
                     continue
                 hist.sort(key=lambda x: cl.date_key(x[0]))
-                for dd, c in hist:
-                    idx.setdefault(c, []).append((dd, nm))
+                for i, (dd, c) in enumerate(hist):
+                    end = hist[i + 1][0] if i + 1 < len(hist) else None
+                    idx.setdefault(c, []).append((dd, end, nm))
         self._acc_idx = idx
         return idx
 
@@ -7030,13 +7035,13 @@ class Facts:
         cut = date or self.as_of or self.cache.get("last_date")
         lim = cl.date_key(cut) if cut else None
         best, best_dk = "", None
-        for dd, nm in rows:
+        for dd, ed, nm in rows:
             if dd is None:            # undated fallback row: only used if no dated row exists
                 if best_dk is None:
                     best, best_dk = nm, (0, 0, 0)
                 continue
             dk = cl.date_key(dd)
-            if lim is not None and dk > lim:
+            if lim is not None and (dk > lim or (ed and cl.date_key(ed) <= lim)):
                 continue
             if best_dk is None or dk >= best_dk:
                 best, best_dk = nm, dk
@@ -7082,10 +7087,10 @@ class Facts:
         # (`religious_head_word` is a generic word with no locating prefix).
         apw = self.antipope_label(cid, date)
         if apw:
-            return self._join_office(cid, apw, pn)
+            return self._join_office(cid, apw, pn, acc)
         rhw = self.religious_head_word(cid)
         if rhw:
-            return self._join_office(cid, rhw, pn)
+            return self._join_office(cid, rhw, pn, acc)
         off = self._event_office(cid, date) if style == "event" \
             else self.official_title(cid, date)
         if not off:
@@ -7098,8 +7103,8 @@ class Facts:
             if word:
                 off = f"{word}领袖"
         if style == "full":
-            return self._full_label(cid, date, off, pn)
-        return self._join_office(cid, off, pn)
+            return self._full_label(cid, date, off, pn, acc)
+        return self._join_office(cid, off, pn, acc)
 
     def event_name(self, cid, date=None):
         """Subject name for timeline/fact lines: the name only for the player, a brief label
@@ -7129,20 +7134,24 @@ class Facts:
                                  date=date)
         return f"{tname}{word}" if word else tname
 
-    def _join_office(self, cid, off, nm):
+    def _join_office(self, cid, off, nm, acc=""):
         """Office word + display name, comma-separated when the name opens with a nickname.
 
         The game always separates the two (`CHARACTER_NAME_NICKNAMED: "$TITLE$$TIER$，$NAME$“$NICK$”"`,
         character_l_simp_chinese.yml:51, and every titled variant at :45-56). This project keeps the
         nickname ahead of the name and unquoted, so the comma is what stops the office from reading as
         one word with the nickname: 前礼部尚书 + 书吏洪地保 glued together looks like a single office
-        「前礼部尚书书吏」."""
+        「前礼部尚书书吏」.
+
+        `acc` is the accolade already prefixed to `nm`; the nickname test runs on what follows it, so
+        one roster reads alike whether or not its members wear an accolade."""
         if not off:
             return nm
         nick = self.nickname(cid)
-        return f"{off}，{nm}" if (nick and nm.startswith(nick)) else f"{off}{nm}"
+        body = nm[len(acc):] if acc and nm.startswith(acc) else nm
+        return f"{off}，{nm}" if (nick and body.startswith(nick)) else f"{off}{nm}"
 
-    def _full_label(self, cid, date, cur, nm):
+    def _full_label(self, cid, date, cur, nm, acc=""):
         """full-style label: a former title is prefixed only when its tier is higher than the
         current one; the same tid held now and then is not a former title.
 
@@ -7165,17 +7174,17 @@ class Facts:
         if cur and former_tid is not None and f_rank > cur_rank:
             ft = self._former_title_text(cid, former_tid, anchor)
             if ft and ft != cur:
-                return f"前{ft}，{self._join_office(cid, cur, nm)}"
-            return self._join_office(cid, cur, nm)
+                return f"前{ft}，{self._join_office(cid, cur, nm, acc)}"
+            return self._join_office(cid, cur, nm, acc)
         if cur:
-            return self._join_office(cid, cur, nm)
+            return self._join_office(cid, cur, nm, acc)
         if former_tid is not None:
             ft = self._former_title_text(cid, former_tid, anchor)
             if ft:
-                return self._join_office(cid, f"前{ft}", nm)
+                return self._join_office(cid, f"前{ft}", nm, acc)
         pw = self.prince_title(cid, anchor)
         if pw:
-            return self._join_office(cid, pw, nm)
+            return self._join_office(cid, pw, nm, acc)
         return nm
 
     def kin_label(self, cid, date=None):
@@ -20879,42 +20888,74 @@ def _chrono_prev_for(accs, idx):
     return None
 
 
+def _chrono_next_player(f, pid):
+    """The campaign chain's next 传主 after `pid`, house word first — 「其后传主之位归于洪氏山南王子洪审礼」.
+
+    Reached only when the melt was cut before the seat changed hands, so the chronicle's own title
+    history stops with the biographee. 传主档案 already states the succession through `succession_lines`;
+    what this adds is the house word, which is what tells a closing section the seat stayed in the
+    family."""
+    chain = [e for e in (f.cache.get("played_legacy") or [])
+             if isinstance(e, dict) and isinstance(e.get("cid"), int)]
+    idx = next((i for i, e in enumerate(chain) if e["cid"] == int(pid)), None)
+    if idx is None or idx + 1 >= len(chain):
+        return ""
+    nxt = chain[idx + 1]
+    ncid, nd = int(nxt["cid"]), nxt.get("date")
+    nm = f._chain_person(ncid, date=nd)
+    if not nm:
+        return ""
+    try:
+        house = f._house_label_at(ncid, nd)
+    except Exception:
+        house = ""
+    return "；其后传主之位归于%s%s" % (house, nm)
+
+
 def _chrono_holder_now(f, tid, pid, accs):
-    """One line naming the title's holder at the close of this volume, with his office and house —
-    e.g. 「本朝现任（1000年1月1日）：教宗洪审礼（洪氏）」.
+    """One line naming the title's holder at the close of this volume, house word first —
+    e.g. 「本朝现任：截至999年7月7日，在位者为洪氏教宗尼各老，即传主」.
 
     The chronicle's rows stop at the last accession the volume covers, so without this line nothing
     in the material says who sits on the seat afterwards, and a closing section that lost its rows
-    had only that silence to go on. A final volume is cut at the biographee's death day and the seat
-    usually passes that same day, so once the biographee is dead by `as_of` the next recorded holder
-    is named instead of him."""
+    had only that silence to go on. The cutoff is the volume's own close: `as_of` for a decade volume,
+    the biographee's death day for a final one. A final volume usually sees the seat pass on that same
+    day, so a successor the melt does record is named in his place, and one it does not is named from
+    the campaign chain."""
     if not accs:
         return ""
-    as_of = f.as_of or f.cache.get("last_date") or ""
+    dead = f._char_death_date(pid) or ""
+    ref = f.as_of or dead or f.cache.get("last_date") or ""
     when, cid = accs[-1][0], accs[-1][1]
-    if isinstance(cid, int) and cid == pid and f._char_death_date(pid):
-        nxt = next(((d, h) for d, h, _ty, _e, _v in _chrono_accs(f, tid, None)
-                    if isinstance(h, int) and h != cid and d
-                    and (not as_of or cl.date_key(d) >= cl.date_key(as_of))), None)
-        if nxt:
-            when, cid = nxt
+    tail = ""
+    if isinstance(cid, int) and cid == pid and dead:
+        # The next holder in the uncut sequence, not merely the first one who is not the biographee:
+        # every earlier holder of the seat also satisfies that, and the oldest of them would win.
+        _all = _chrono_accs(f, tid, None)
+        _i = next((i for i, (_d, _h, _t, _e, _v) in enumerate(_all)
+                   if _d == when and isinstance(_h, int) and _h == cid), len(accs) - 1)
+        for _d, _h, _t, _e, _v in _all[_i + 1:]:
+            if isinstance(_h, int) and _d \
+                    and (not ref or cl.date_key(_d) <= cl.date_key(ref)):
+                when, cid = _d, _h
+                break
+        else:
+            tail = _chrono_next_player(f, pid)
     if not isinstance(cid, int):
         return ""
     nm = _chrono_nm(f, cid, when)
     if not nm:
         return ""
     off = _chrono_office(f, cid, when)
-    house = ""
     try:
         house = f._house_label_at(cid, when)
     except Exception:
         house = ""
-    who = f"{off}{nm}" if off else nm
-    if house:
-        who += f"（{house}）"
+    who = f"{house}{off}{nm}" if off else f"{house}{nm}"
     if cid == pid:
         who += "，即传主"
-    return "本朝现任（%s）：%s" % (f.date(when) if when else "本卷之末", who)
+    return "本朝现任：截至%s，在位者为%s%s" % (f.date(ref) if ref else "本卷之末",
+                                            who, tail)
 
 
 def _chrono_build(f, tid, pid, is_h, own, periods, tname):
