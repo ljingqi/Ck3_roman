@@ -45,17 +45,59 @@ _DYN_RE = re.compile(r"\[[^\]]*\]")            # dynamic refs: [concept|E] / [Ge
 _REF_RE = re.compile(r"\$([A-Za-z0-9_]+)\$")
 
 # Dynamic tags kept inside relationship-reason templates (the `reason` keys such as rival_murderer)
-# so facts._sub_relation_loc can substitute real names; every other dynamic reference is stripped.
-# Recognised accessors: GetShortUIName / GetShortUINamePossessive / GetHerHis(Your) /
-# GetDynastyHouseName (each optionally NoTooltip, optionally with a |variant suffix) and
-# PROVINCE.GetName. Stripping them loses the subject or object of the sentence.
-# GetName / GetFirstName / GetPossessive are still unrecognised.
+# so facts._sub_relation_loc can substitute real values; every other dynamic reference is stripped.
+# A tag is `[<role>.<accessor>]`, role optionally with a `|U`-style variant suffix. Roles are the
+# three character slots plus PROVINCE, and the game's own misspellings TARGT_CHARACTER /
+# TCHARACTER are accepted as the counterpart slot.
+#
+# Kept accessors (each resolvable from the save or from a table this project already holds):
+#   · names        GetShortUIName(Possessive)(NoTooltip), GetUIName, GetName, GetPossessive,
+#                  GetFirstName(Possessive), GetTitledFirstName, GetDynastyHouseName(NoTooltip),
+#                  GetHouse.GetName, plus the game's misspelled GetShortUI_Name / GetShortUINAME
+#                  (best_friend_childhood_ritual, rival_regent_denied_access_to_family)
+#   · gender/kin   GetHerHis(Your), GetHerHim, GetSheHe, GetHerselfHimself, GetWomanMan,
+#                  GetMotherFather, GetWifeHusband, Custom('GetDaughterSon'),
+#                  Custom('child_favorite_toy') (rendered as the generic 「玩具」, as before)
+#   · faith/文化    GetFaith.GetName, GetDeathReason, GetCulture.GetLanguage.GetName,
+#                  GetCulture.GetCollectiveNoun
+#   · province     GetName
+#   · activity/trait/title  GetActivityType('X').GetName, GetTrait('X').GetName(scope),
+#                  GetTitleByKey('X').GetName (no role prefix — the game calls them on the default
+#                  scope)
+#   · concepts     [house|E] / [rivalry|E] / [strong_hook|E] … (lowercase refs, resolved through
+#                  game_concept_<key>)
+#
+# Deliberately NOT kept (their values need tables this project does not hold, so they stay stripped
+# rather than risk a raw tag reaching a prompt): GetFaith.ReligiousText / HighGodName /
+# random_HighGodName / HouseOfWorship, GetLiege.*, GetPrimaryTitle.GetAdjective,
+# PROVINCE.Custom('TerrainTypeProvince'), Select_CString(...) and the script custom locs other than
+# the two kept above.
+_ROLE_RE = (r"(?:TARGET_CHARACTER_2|TARGET_CHARACTER|TARGT_CHARACTER|TCHARACTER"
+            r"|CHARACTER|PROVINCE)")
+_ACC_RE = (r"(?:"
+           r"GetShortUI_?[Nn][Aa][Mm][Ee](?:Possessive)?(?:NoTooltip)?"
+           r"|GetUIName|GetName|GetPossessive"
+           r"|GetFirstName(?:Possessive)?|GetTitledFirstName"
+           r"|GetDynastyHouseName(?:NoTooltip)?"
+           r"|GetHouse\.GetName"
+           r"|GetHerHis(?:Your)?|GetHerHim|GetSheHe|GetHerselfHimself"
+           r"|GetWomanMan|GetMotherFather|GetWifeHusband"
+           r"|GetFaith\.GetName|GetDeathReason"
+           r"|GetCulture\.GetLanguage\.GetName|GetCulture\.GetCollectiveNoun"
+           r"|Custom\('GetDaughterSon'\)"
+           r"|Custom\('child_favorite_toy'\)"
+           r")")
+# Tags that carry no role prefix (the game calls a function on the default scope): an activity
+# type's name, a trait's name, and a title looked up by key.
+_STANDALONE_RE = (r"(?:"
+                  r"GetActivityType\('[A-Za-z0-9_]+'\)\.GetName"
+                  r"|GetTrait\('[A-Za-z0-9_]+'\)\.GetName\([^)]*\)"
+                  r"|GetTitleByKey\('[A-Za-z0-9_]+'\)\.GetName"
+                  r")")
 _KEEP_DYN_RE = re.compile(
-    r"\[(?:(?:TARGET_CHARACTER_2|TARGET_CHARACTER|CHARACTER)\."
-    r"(?:GetShortUIName(?:Possessive)?(?:NoTooltip)?|GetHerHis(?:Your)?"
-    r"|GetDynastyHouseName(?:NoTooltip)?)"
-    r"|PROVINCE\.GetName)"
-    r"(?:\|[A-Za-z0-9_]+)?\]")
+    r"\[(?:" + _ROLE_RE + r"\." + _ACC_RE + r"(?:\|[A-Za-z0-9_]+)?"
+    r"|" + _STANDALONE_RE + r"(?:\|[A-Za-z0-9_]+)?"
+    r"|[a-z][a-z0-9_]*(?:\|[A-Za-z0-9_]+)?)\]")
 
 
 def strip_ck3_format(text):

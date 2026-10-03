@@ -2825,7 +2825,7 @@ def _liyi_req(facts):
 
     tail_bits, tail_focus = [], []
     if pe:
-        tail_bits.append("枢机团的席次与空缺数")
+        tail_bits.append("在位枢机的席数")
         if _pe_has("本朝封臣入枢机者"):
             tail_bits.append("本朝封臣入枢机者逐人点名（席位名与教宗候选声望照原样抄写）")
             tail_focus.append("本朝封臣入枢机者")
@@ -2838,13 +2838,13 @@ def _liyi_req(facts):
             tail_bits.append("各候选所属派别")
         if _pe_has("奔走"):
             tail_bits.append("为候选人奔走的枢机人数")
-        tail_focus.append("枢机团席次")
+        tail_focus.append("在位枢机席数")
     return {
         "lead": lead or (src.get("lead") or ""),
         "mid": (("写礼仪与教义的沿革、传主在教门中的作为：" + "；".join(mid_bits) + "。")
                 if mid_bits else (src.get("mid") or "")),
         "tail": (("写本朝枢机在下届教宗选举中的形势：" + "；".join(tail_bits) + "。"
-                  "席次、票数与人名一律照本篇给出的事实写出。")
+                  "席数、票数与人名一律照本篇给出的事实写出。")
                  if tail_bits else (src.get("tail") or "")),
         "focus": ("写礼仪的沿革与教门中的作为：" + "、".join(focus_bits)
                   + ("；并写枢机团与下届教宗选举：" + "、".join(tail_focus)

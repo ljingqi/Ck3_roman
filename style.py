@@ -245,7 +245,7 @@ SECTION_REQ = {
                "年月、缘由与涉及的人事照本篇给出的写法书写。",
         # Fallback wording only: biography._liyi_req builds the real requirement
         # per board from the blocks that are actually sent.
-        "tail": "写本朝枢机在下届教宗选举中的形势：枢机团席次、本朝封臣入枢机者、"
+        "tail": "写本朝枢机在下届教宗选举中的形势：在位枢机席数、本朝封臣入枢机者、"
                 "现任教宗、下届推举的人选与票数、派别与奔走，"
                 "皆照本篇给出的事实行写出。",
     },

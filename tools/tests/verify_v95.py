@@ -142,14 +142,14 @@ def unit_checks():
           "tail" in r0 and "枢机" in (r0["tail"] or "")
           and "枢机" not in (r0["focus"] or ""), r0["focus"])
     r1 = bio._liyi_req({"rite_profile": ["所奉礼仪：拜上帝会。"],
-                        "papal_election": ["枢机团：在位枢机 33 席，虚悬 19 席。",
+                        "papal_election": ["枢机团：在位枢机 33 席。",
                                            "本朝封臣入枢机者 6 人：阿尔巴诺枢机洪思忠。",
                                            "现任教宗：亚纳大削三世，本名恂，自946年2月24日起。",
                                            "下届选举：33 位枢机推举 3 人 —— 甲 12 票；第一顺位为甲。",
                                            "派别：甲属虔诚派。",
                                            "奔走：26 位枢机在替甲奔走。"]})
     check("U4b 有枢机素材时 tail 逐条索要",
-          all(t in r1["tail"] for t in ("席次与空缺", "入枢机者", "现任教宗",
+          all(t in r1["tail"] for t in ("在位枢机的席数", "入枢机者", "现任教宗",
                                        "下届推举", "派别", "奔走")), r1["tail"])
     check("U4c 题面点出枢机团与下届教宗选举",
           "枢机" in r1["focus"] and "教宗选举" in r1["focus"], r1["focus"])

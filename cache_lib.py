@@ -1681,7 +1681,7 @@ def _culture_id_at_rec(rec, date):
 
 
 def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
-                 date=None):
+                 date=None, ignore_regnal=False):
     """The game-rule display name used project-wide.
 
     A patronymic culture gives "given·patronymic", which replaces the house name;
@@ -1694,7 +1694,12 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
     Name lookup chain: cache, then the melt character, then names.json (dropped when the
     playthrough differs). date selects the house name of that day and, through the culture
     at that date, which surname is used. chars is the prebuilt full-character index, memo
-    the inference cache shared across one build_facts run."""
+    the inference cache shared across one build_facts run.
+
+    ignore_regnal=True skips the regnal-name substitution so the BIRTH name is assembled
+    with its surname (a pope's "思忠" becomes "洪思忠"): the note beside a regnal name has
+    to keep the clan surname, or the biographee looks unrelated to his own house. The
+    ordinary call keeps the game's own display rule (the regnal name alone)."""
     if cid is None:
         return ""
     key = str(cid)
@@ -1726,10 +1731,11 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
         return rec.get("name_full") or ""
     # A regnal name (papal or monastic) replaces the personal name and drops surname and
     # patronymic, as the game shows it; a key with no wording falls back to the personal name.
+    # ignore_regnal keeps the birth name and therefore the surname (see the docstring).
     _rn = rec.get("regnal_name")
     if not _rn:
         _rn = ((chars or {}).get(key) or {}).get("regnal_name")
-    if _rn:
+    if _rn and not ignore_regnal:
         _rz = localization.loc(localization.table(), str(_rn)) or ""
         if _rz and not _rz.startswith("$") and not _rz.startswith("["):
             return _rz

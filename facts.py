@@ -1983,17 +1983,31 @@ class Facts:
         `regnal_name` is the authoritative display-name field (granted on accession and
         driven by title definitions), while `first_name` disappears from every game display
         surface after accession, so the regnal name leads and the birth name is a note.
+
+        The note carries the SURNAME: it is assembled through `display_name(ignore_regnal=True)`,
+        the same name-order outlet as every other name, so a noble's note reads "洪思忠" rather
+        than the bare given name "思忠" (without it the reader cannot tell which house the
+        biographee belongs to). A character with no house keeps the bare given name, and the
+        note is dropped only when it adds nothing over the regnal name.
         """
         rn = self._regnal_name_zh(cid, date)
         if not rn:
             return ""
-        c = self._chars.get(str(cid)) or {}
         birth = ""
-        if c:
-            try:
-                birth = cl.name_zh(c) or ""
-            except Exception:                                     # noqa: BLE001
-                birth = ""
+        try:
+            birth = cl.display_name(self.cache, cid, melt=self.melt,
+                                    names_path=self.names_path, chars=self._chars,
+                                    memo=self._tpl_memo, date=date,
+                                    ignore_regnal=True) or ""
+        except Exception:                                         # noqa: BLE001
+            birth = ""
+        if not birth:
+            c = self._chars.get(str(cid)) or {}
+            if c:
+                try:
+                    birth = cl.name_zh(c) or ""
+                except Exception:                                 # noqa: BLE001
+                    birth = ""
         if not birth:
             birth = (((self.cache.get("characters") or {}).get(str(cid)) or {})
                      .get("name_zh")) or ""
@@ -3521,11 +3535,11 @@ class Facts:
         return ((self._lt.get(str(tid)) or {}).get("key") or "") \
             .startswith("x_c_nomad_")
 
-    # Three kinds of landless/house title: house estates (_nf_), landless adventurer camps
-    # (_laamp_ and similar) and nomadic yurts (x_c_nomad_). An x_ prefix alone does not make a
-    # title an adventurer camp.
+    # Landless/house titles come in four kinds: house estates (_nf_), landless adventurer camps
+    # (_laamp_), landless non-camp titles (mercenary companies x_mc_, holy orders x_ho_, script
+    # titles x_script_) and nomadic yurts (x_c_nomad_). An x_ prefix alone makes none of them an
+    # adventurer camp: only _laamp_ does.
     _ESTATE_KEY_MARK = "_nf_"
-    _CAMP_KEY_PREFIXES = ("x_mc_", "x_script_", "x_ho_")
 
     def _is_estate_title(self, tid):
         """True for a house-estate title (x_nf_/c_nf_/d_nf_: clans, warrior houses, family land)."""
@@ -3549,14 +3563,53 @@ class Facts:
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         return self._TT_RANK.get(key[:2], 0)
 
+    def _is_clerical_title(self, tid):
+        """True for an ecclesiastical province (archbishopric) title: the save marks it with a
+        `clerical_region = {clerical_region:<n>, domicile:<n>}` block.
+
+        Those titles are `landless = true` and their key carries no tier (`x_script_*` for the 13
+        provinces script creates, `d_et_*` for the 46 historical ones), so a prefix test reads them
+        as "no real land" and mislabels the holder; the game in turn calls him 总主教 / 都主教 /
+        宗主教 (`clerical_region_duchy_*`, `docs/调研_v89_教省与总主教.md`).
+        """
+        if tid is None:
+            return False
+        return bool((self._lt.get(str(tid)) or {}).get("clerical_region"))
+
     def _is_adventurer_camp(self, tid):
-        """True for a landless adventurer camp title (x_d_laamp_* and similar), not a yurt/estate."""
+        """True for a landless adventurer camp title, and only for one.
+
+        The camp marker is `_laamp_` in the key: every title held by a
+        `landless_adventurer_government` character in this playthrough either carries it or is an
+        ecclesiastical province with a stale government field (checked against the whole save,
+        `logs/v97_probe_camps.txt`). Mercenary companies (`x_mc_*`, `mercenary_government`), holy
+        orders (`x_ho_*`, `holy_order_government` / `monastic_holy_order_government`) and script
+        titles (`x_script_*`) are landless too but are not camps, so they must not take camp
+        wording or the adventurer itinerary.
+        """
         if tid is None:
             return False
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
-        if self._is_nomad_camp(tid) or self._is_estate_title(tid):
+        if self._is_nomad_camp(tid) or self._is_estate_title(tid) \
+                or self._is_clerical_title(tid):
             return False
-        return "_laamp_" in key or key.startswith(self._CAMP_KEY_PREFIXES)
+        return "_laamp_" in key
+
+    def _is_landless_title(self, tid):
+        """True for a landless title that is neither a camp, an estate, a yurt nor a clerical
+        province: mercenary companies (`x_mc_*`), holy orders (`x_ho_*`), script titles such as
+        peasant revolts and curias (`x_script_*`).
+
+        The holder is unlanded but is not a landless adventurer: the game words him from the
+        title's own government (校官 / 大团长 / 总修院长, see `_landless_holder_word`).
+        """
+        if tid is None:
+            return False
+        key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        if not key.startswith("x_"):
+            return False
+        return not (self._is_nomad_camp(tid) or self._is_estate_title(tid)
+                    or self._is_clerical_title(tid) or self._is_adventurer_camp(tid))
 
     # Adventurer (camp) period intervals: the adventurer itinerary section covers only these.
     def camp_intervals(self, cid=None, kind="camp"):
@@ -3591,16 +3644,27 @@ class Facts:
         return False
 
     def title_kind(self, tid):
-        """Semantic kind of a title: 'estate' house estate, 'nomad' yurt, 'camp' adventurer camp,
-        '' for a landed title (including counties and baronies)."""
+        """Semantic kind of a title — the single classifier every land/landless decision reads:
+
+        - 'estate'   house estate (family property);
+        - 'nomad'    nomadic yurt (a dwelling);
+        - 'clerical' ecclesiastical province (archbishopric: landless, but an office, not a camp);
+        - 'camp'     landless adventurer camp;
+        - 'landless' other unlanded office title (mercenary company, holy order, script title);
+        - ''         a landed title (including counties and baronies).
+        """
         if tid is None:
             return ""
         if self._is_nomad_camp(tid):
             return "nomad"
         if self._is_estate_title(tid):
             return "estate"
+        if self._is_clerical_title(tid):
+            return "clerical"
         if self._is_adventurer_camp(tid):
             return "camp"
+        if self._is_landless_title(tid):
+            return "landless"
         return ""
 
     _EAST_ASIAN_ESTATE_TPL = {"han", "chinese", "bai", "yi"}
@@ -3627,9 +3691,10 @@ class Facts:
         """Primary title group for a holding set {tid: gain_date} -> [(gain_date, tid)].
 
         Counties and baronies never enter; at duchy level or above, kingdom rank keeps only the primary
-        while duchy/camp level keeps the primary plus every camp. Court offices are posts, not land,
-        and nomadic yurts are dwellings (`landless: true`), so neither occupies the slot and [] means
-        the land lost that day is reported by `held_titles`.
+        while duchy level keeps the primary plus every unlanded title (adventurer camp, ecclesiastical
+        province, mercenary company, holy order, script title). Court offices are posts, not land, and
+        nomadic yurts are dwellings (`landless: true`), so neither occupies the slot and [] means the
+        land lost that day is reported by `held_titles`.
         """
         if not held:
             return []
@@ -3665,8 +3730,11 @@ class Facts:
         if max_tier >= 4:  # kingdom and above: primary title only
             t0 = tops[0]
             return [(t0[2], t0[0])]
-        camps = [it for it in majors if self.title_kind(it[0]) == "camp"]
-        picked = tops[:1] + [c for c in camps if c != tops[0]]
+        # Unlanded titles held alongside the primary one are listed with it, so an archbishopric
+        # next to a cardinal title (or a camp next to land) is not dropped from the tenure line.
+        extra = [it for it in majors
+                 if self.title_kind(it[0]) in ("camp", "clerical", "landless")]
+        picked = tops[:1] + [c for c in extra if c != tops[0]]
         return [(g, t) for t, _r, g in sorted(picked, key=lambda it: cl.date_key(it[2]))]
 
     def _domain_order(self, cid):
@@ -3928,45 +3996,57 @@ class Facts:
             parts = []
             for t in ids:
                 key = (self._lt.get(str(t)) or {}).get("key") or ""
-                if key.startswith("x_") or self.title_kind(t) in ("camp", "estate"):
-                    # Camp phases use the game's camp-purpose word (chief/leader/captain…) and
-                    # fall back to "lord of X". Yurts get no camp word, only the yurt name; house
-                    # estates use a holder word (squire/head of house) plus their category. The
-                    # decision goes through `title_kind`, because landless adventurer camps and
-                    # estates do not use an x_ prefix. Holder lines show the base name only.
-                    # Camps, yurts and estates never use the [place name] mode: their names come
-                    # from camp-purpose and family-estate words, and a camp's dynamic name is
-                    # often fixed before its holder acquires it, so no history anchor exists.
+                tk = self.title_kind(t)
+                if tk in ("camp", "estate", "nomad", "clerical", "landless"):
+                    # Unlanded titles (and yurts) show the base name only: they never use the
+                    # [place name] mode, because a camp's dynamic name is often fixed before its
+                    # holder acquires it and an unlanded office is not a place. Their holder word
+                    # comes from the kind: camp-purpose (chief/leader/captain), family-estate
+                    # (squire/head of house) plus its category, the ecclesiastical office word
+                    # (archbishop), or the title's own government word (mercenary 校官 / holy order
+                    # 大团长). Yurts take no holder word at all.
                     nm = self._name_at_date(t, d) or self.title_base_name(t)
-                    if self._is_nomad_camp(t):
+                    if tk == "nomad":
                         parts.append(nm)
                         continue
-                    if self._is_estate_title(t):
+                    if tk == "estate":
                         ew = self.estate_kind_word(t, cid)
                         w = self._estate_holder_word(cid)
                         base = f"{nm}{w}" if nm and w else (nm or "")
                         # the category word follows as a comma appositive
                         parts.append(f"{base}，{ew}" if base else "")
                         continue
+                    if tk == "clerical":
+                        w = self._clerical_holder_word(cid, t, d)
+                        parts.append(f"{nm}{w}" if nm and w else (nm or ""))
+                        continue
+                    if tk == "landless":
+                        w = self._landless_holder_word(cid, t, d)
+                        parts.append(f"{nm}{w}" if nm and w else (nm or ""))
+                        continue
                     w = self._camp_holder_word(cid, d)
                     base = f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else "")
                     parts.append(f"{base}，无地冒险者营地" if base else "")
+                    continue
+                if key.startswith("x_"):
+                    # Unknown script title: the name alone, never a claim of land or a camp.
+                    parts.append(self._name_at_date(t, d) or self.title_base_name(t))
+                    continue
+                # Land phases use the title's place name plus the game's ruler address word
+                # (culture- and government-aware). The place name comes from the [place name]
+                # mode, sampled at the phase midpoint so a mid-tenure rename does not split
+                # one tenure into two names; its anchor is the subject's earliest acquisition
+                # and is independent of the midpoint. An inherited phase uses the name of the
+                # day instead, because the inherited realm name (a house-named khanate or
+                # sultanate) is exactly what that line reports.
+                mid = self._span_mid(d, end)
+                if self.gain_reason(cid, t, d) == "inheritance":
+                    nm = self._name_at_date(t, mid) or self.title_base_name(t)
                 else:
-                    # Land phases use the title's place name plus the game's ruler address word
-                    # (culture- and government-aware). The place name comes from the [place name]
-                    # mode, sampled at the phase midpoint so a mid-tenure rename does not split
-                    # one tenure into two names; its anchor is the subject's earliest acquisition
-                    # and is independent of the midpoint. An inherited phase uses the name of the
-                    # day instead, because the inherited realm name (a house-named khanate or
-                    # sultanate) is exactly what that line reports.
-                    mid = self._span_mid(d, end)
-                    if self.gain_reason(cid, t, d) == "inheritance":
-                        nm = self._name_at_date(t, mid) or self.title_base_name(t)
-                    else:
-                        nm = self._site_name(t, cid=cid, date=mid) \
-                            or self.title_base_name(t)
-                    w = self._ruler_word_at(cid, t, d)
-                    parts.append(f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else ""))
+                    nm = self._site_name(t, cid=cid, date=mid) \
+                        or self.title_base_name(t)
+                w = self._ruler_word_at(cid, t, d)
+                parts.append(f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else ""))
             parts = [p for p in parts if p]
             # titles genuinely lost (absent from the held set) that were in the group before
             lost_names = []
@@ -6265,6 +6345,34 @@ class Facts:
         if not word:
             return ""
         return f"{place}{word}" if place else word
+
+    # Holder words of the unlanded offices that are NOT adventurer camps: a mercenary company
+    # (`mercenary_government`) and a holy order (`holy_order_government`, or
+    # `monastic_holy_order_government` for a monastic one). The game words these holders through
+    # the same flavorization table at duchy tier — `duke_mercenary_male` 校官, `duke_holy_order_male`
+    # 大团长, `duke_holy_order_monastic_male` 总修院长 (`common/flavorization/00_flavorization.txt`,
+    # each arm gated on `governments = { … }`) — so the word is read from there rather than guessed.
+    # Other governments never take this route: a script title (a peasant revolt, a curia) falls back
+    # to its bare name in `held_titles`.
+    _LANDLESS_WORD_GOVS = ("mercenary_government", "holy_order_government",
+                           "monastic_holy_order_government")
+
+    def _landless_holder_word(self, cid, tid, date=None):
+        """Office word of an unlanded non-camp title's holder from the game's flavorization, else ''."""
+        if cid is None or tid is None:
+            return ""
+        gov = self._gov_for_word(cid, tid, date) or ""
+        if gov not in self._LANDLESS_WORD_GOVS:
+            return ""
+        fk = self._flavor_key("character", "duchy", cid, tid=tid,
+                              gender=("female" if self._is_female(cid) else "male"),
+                              gov=gov, date=date)
+        if not fk or not re.search(r"mercenary|holy_order", fk):
+            return ""
+        v = L.loc(self.table, fk)
+        if v and not v.startswith(("$", "[")):
+            return v
+        return ""
 
     def _title_flags(self, tid, date=None):
         """Flag set of the title itself; the shogunate flag lands on e_japan this way.
@@ -9910,7 +10018,13 @@ class Facts:
         return out
 
     def _title_kind_landless(self, cid, date):
-        """Whether the character holds no landed title on `date` (a landless adventurer)."""
+        """Whether the character is left without real land on `date` — the test behind the
+        "自此沦为无地冒险者" clause.
+
+        Only a camp (or a family estate, or no title at all) counts: a holder of an ecclesiastical
+        province, a mercenary company or a holy order is unlanded too, but he holds an OFFICE, so
+        calling him a landless adventurer would be a different claim than the save supports.
+        """
         try:
             tier, tid = self._primary_title_at(cid, as_of=date)
         except Exception:
@@ -11607,8 +11721,9 @@ class Facts:
     # Save fields used:
     #   · Seats = titles carrying `clerical_elector = <fid>`; the seat name comes from
     #     `title_name_data.name` (already localized in the save) and holders from `.holder`.
-    #   · Filled vs vacant = `faiths.database[<fid>].active_clerical_electors` /
-    #     `inactive_clerical_electors`.
+    #   · Seated cardinals = `faiths.database[<fid>].active_clerical_electors` (the college's
+    #     `inactive_clerical_electors` list is deliberately not read: vacancy is the normal
+    #     state and its count belongs in no fact line).
     #   · Papabile score = character variable `pam_papabile_score` (fixed point ×100000, and the
     #     variable keeps no history).
     #   · Next-election nominees and votes = the papal-seat title's
@@ -11764,11 +11879,13 @@ class Facts:
         rows = []
         entry = cl.faith_entry(self.melt, fid)
         act = [x for x in (entry.get("active_clerical_electors") or [])]
-        ina = [x for x in (entry.get("inactive_clerical_electors") or [])]
         n_act = len(act) or len([s for s in seats.values()
                                  if isinstance(s.get("holder"), int)])
-        rows.append(f"枢机团：在位枢机 {n_act} 席"
-                    + (f"，虚悬 {len(ina)} 席。" if ina else "。"))
+        # Seated cardinals only: a vacant cardinal seat is the normal state of the college and
+        # says nothing about the election, so the vacancy count stays out of the fact layer
+        # (the model read it as a decline narrative and inflated it). The seated count is what
+        # the election rows below are built on.
+        rows.append(f"枢机团：在位枢机 {n_act} 席。")
         if mine:
             word = self._cardinal_word()
             parts = []
@@ -12694,6 +12811,129 @@ class Facts:
                     best = d
         return best
 
+    # ---- the victim behind a "killed a close one" feud ----
+    # The game's own wording for `rival_murderer` names the two parties only ("X杀害了Y的亲近之人")
+    # and the save stores no `involved_character` for it, so the sentence would stay anonymous and
+    # the model invents the dead man. The victim is derivable: the killer's kill list, a kinship tie
+    # to the grieving side, and a death date at or before the feud. Verified on this playthrough —
+    # 阮处恭's only kill is 洪翊, the protagonist's younger brother, murdered 956.9.17, fifteen days
+    # before the feud of 956.10.2 (logs/v97_probe_murderer.txt, logs/v97_probe_kills.txt).
+    #
+    # Which side is the killer is decided by the reason key: the template's sentence subject is
+    # `[TARGET_CHARACTER]` in the base key and `[CHARACTER]` (= the opinion's owner) in the
+    # `_corresponding` one, and `_sub_relation_loc` maps those tags to (owner, target).
+    _MURDER_REASONS = {
+        "rival_murderer": ("target", "owner"),
+        "rival_murderer_corresponding": ("owner", "target"),
+    }
+    # A feud is created when the death is learned of, so the murder cannot postdate it; it also
+    # cannot be arbitrarily older than the feud, or the "latest kin victim" pick would be matching
+    # a different killing. Outside the window the anonymous game sentence is kept (fail closed).
+    _MURDER_WINDOW_DAYS = 400
+
+    def _death_date(self, cid):
+        """Death date of a character from the cache's latched record, else from the melt."""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        d = (rec.get("death") or {}).get("date")
+        if d:
+            return d
+        c = self._chars.get(str(cid)) or {}
+        dd = c.get("dead_data") or {}
+        return dd.get("date") or ((c.get("death") or {}) or {}).get("date") or ""
+
+    def _killer_victims(self, killer):
+        """{victim id: death date} for one character's kills (memoized).
+
+        Both sources are merged: the cache's latched `kills` list, which survives the victim being
+        pruned from the newest save, and the melt's own alive/dead kill lists. A victim with no
+        death record is skipped, because the date is what ranks the candidates."""
+        memo = getattr(self, "_killer_victims_memo", None)
+        if memo is None:
+            memo = self._killer_victims_memo = {}
+        if killer in memo:
+            return memo[killer]
+        ids = []
+        rec = (self.cache.get("characters") or {}).get(str(killer)) or {}
+        ids.extend(rec.get("kills") or [])
+        ids.extend(cl.kills_of(self._chars.get(str(killer)) or {}))
+        out = {}
+        for v in dict.fromkeys(int(x) for x in ids if str(x).isdigit()):
+            d = self._death_date(v)
+            if d:
+                out[v] = d
+        memo[killer] = out
+        return out
+
+    def _same_house(self, a, b):
+        """Whether two characters share a house (the tie-break when two kin died the same day)."""
+        ca = (self.cache.get("characters") or {}).get(str(a)) or {}
+        cb = (self.cache.get("characters") or {}).get(str(b)) or {}
+        ha, hb = ca.get("dynasty_house"), cb.get("dynasty_house")
+        return isinstance(ha, int) and ha == hb
+
+    def murder_victim(self, griever, killer, rel_date):
+        """(victim id, kinship word) behind a murder feud, or None when it cannot be pinned.
+
+        Candidates are the killer's victims who are kin of the grieving side — the kinship word
+        comes from `kin_word_for`, the same outlet every other kin word uses — and who died at or
+        before the feud within `_MURDER_WINDOW_DAYS`. The latest such death wins, so a killer with
+        several kin victims is matched to the feud that death actually caused; ties break on a
+        shared house and then on the victim id, so the choice is deterministic."""
+        if griever is None or killer is None or int(griever) == int(killer):
+            return None
+        ao = cl.date_key(rel_date) if rel_date else None
+        best = None
+        for v, dd in self._killer_victims(int(killer)).items():
+            if v == int(griever):
+                continue
+            kin = self.kin_word_for(griever, v)
+            if not kin:
+                continue
+            dk = cl.date_key(dd)
+            if ao is not None:
+                if dk > ao:
+                    continue
+                if (ao[0] * 365 + ao[1] * 30 + ao[2]) \
+                        - (dk[0] * 365 + dk[1] * 30 + dk[2]) > self._MURDER_WINDOW_DAYS:
+                    continue
+            cand = (dk, 1 if self._same_house(griever, v) else 0, -v)
+            if best is None or cand > best[0]:
+                best = (cand, v, kin)
+        if best is None:
+            return None
+        return best[1], best[2]
+
+    def murder_relation_sentence(self, reason, owner, target, rel_date, names=None):
+        """Program-authored sentence for a murder feud, naming the victim and the kinship, or ''.
+
+        Shape: "<killer>谋杀了<griever>的<kin><victim>，" — the caller adds the period, exactly as
+        it does for `_sub_relation_loc`. Falls back to '' (the game's anonymous wording) whenever
+        the victim cannot be pinned, so a line is never lost and nothing is invented."""
+        roles = self._MURDER_REASONS.get(str(reason))
+        if not roles:
+            return ""
+        who = {"owner": owner, "target": target}
+        killer, griever = who.get(roles[0]), who.get(roles[1])
+        if not isinstance(killer, int) or not isinstance(griever, int):
+            return ""
+        mv = self.murder_victim(griever, killer, rel_date)
+        if not mv:
+            return ""
+        victim, kin = mv
+        if names:
+            _names = (list(names) + ["", "", ""])[:3]
+            kname = _names[1] if roles[0] == "target" else _names[0]
+            gname = _names[0] if roles[0] == "target" else _names[1]
+        else:
+            kname = self.name_or(killer)
+            gname = self.name_or(griever)
+        if not kname or not gname:
+            return ""
+        vname = self.name_or(victim) or ""
+        if not vname:
+            return ""
+        return f"{kname}谋杀了{gname}的{kin}{vname}"
+
     def relation_reasons(self, cid, kinds):
         """Game reason sentences: `scripted_relations.reason` for the subject and `cid`, localized with name
         placeholders substituted. `kinds` is the set of relation kinds (rival/grudge/nemesis/friend/
@@ -12726,7 +12966,8 @@ class Facts:
                 if not reason:
                     continue
                 mtypes = self._REL_REASON_KINDS.get(kind)
-                if mtypes and not self._rel_mem_date(cid, mtypes):
+                rel_d = self._rel_mem_date(cid, mtypes) if mtypes else None
+                if mtypes and not rel_d:
                     continue  # relation did not exist before as_of → not rendered
                 tpl = L.relation_templates().get(reason)
                 if not tpl:
@@ -12734,8 +12975,11 @@ class Facts:
                 extra = v.get("involved_character")
                 if not isinstance(extra, int):
                     extra = None
-                s = _sub_relation_loc(self, tpl, pair[0], pair[1], extra,
-                                      province=v.get("province"))
+                # A murder feud names its victim from the kill lists; the game's own template is
+                # anonymous there, so it is only the fallback (see `murder_relation_sentence`).
+                s = self.murder_relation_sentence(reason, pair[0], pair[1], rel_d) \
+                    or _sub_relation_loc(self, tpl, pair[0], pair[1], extra,
+                                         province=v.get("province"))
                 s = s.strip("。") + "。" if s else ""
                 if s and s not in seen:
                     seen.add(s)
@@ -12769,7 +13013,8 @@ class Facts:
                 if not reason:
                     continue
                 mtypes = self._REL_REASON_KINDS.get(kind)
-                if mtypes and not self._rel_mem_date(b, mtypes, base=a):
+                rel_d = self._rel_mem_date(b, mtypes, base=a) if mtypes else None
+                if mtypes and not rel_d:
                     continue      # relation did not exist before as_of → not rendered
                 tpl = L.relation_templates().get(reason)
                 if not tpl:
@@ -12785,8 +13030,10 @@ class Facts:
                         (self.event_name(extra, date=self.as_of) or self.name_or(extra))
                         if isinstance(extra, int) else "",
                     ]
-                s = _sub_relation_loc(self, tpl, pair[0], pair[1], extra,
-                                      province=v.get("province"), names=_names)
+                s = self.murder_relation_sentence(
+                    reason, pair[0], pair[1], rel_d, names=_names) \
+                    or _sub_relation_loc(self, tpl, pair[0], pair[1], extra,
+                                         province=v.get("province"), names=_names)
                 s = s.strip("。") + "。" if s else ""
                 if s and s not in seen:
                     seen.add(s)
@@ -21276,8 +21523,20 @@ _AGENT_ZH = {
 
 
 _REL_LOC_TAG_RE = re.compile(
-    r"\[(CHARACTER|TARGET_CHARACTER|TARGET_CHARACTER_2|PROVINCE)\."
-    r"([A-Za-z_]+?)(?:\|[A-Za-z0-9_]+)?\]")
+    r"\[(TARGT_CHARACTER|TCHARACTER|TARGET_CHARACTER_2|TARGET_CHARACTER|CHARACTER|PROVINCE)\."
+    r"([A-Za-z_][^\]]*?)(?:\|[A-Za-z0-9_]+)?\]")
+# Tags with no role prefix: the game calls these on the default scope (an activity type's name, a
+# trait's name, a title looked up by key).
+_REL_STANDALONE_TAG_RE = re.compile(
+    r"\[(GetActivityType\('[A-Za-z0-9_]+'\)\.GetName"
+    r"|GetTrait\('[A-Za-z0-9_]+'\)\.GetName\([^)]*\)"
+    r"|GetTitleByKey\('[A-Za-z0-9_]+'\)\.GetName)(?:\|[A-Za-z0-9_]+)?\]")
+# Lowercase concept refs inside reason templates ([house|E] 家族, [rivalry|E] 仇恨, [strong_hook|E] 强牵制);
+# resolved through the localization table's game_concept_<key> entries.
+_REL_CONCEPT_RE = re.compile(r"\[([a-z][a-z0-9_]*)(?:\|[A-Za-z0-9_]+)?\]")
+# The game misspells the counterpart slot in a few templates (TARGT_CHARACTER in
+# friend_token_reward_corresponding, TCHARACTER in two 1.20 reasons); both mean TARGET_CHARACTER.
+_REL_ROLE_ALIAS = {"TARGT_CHARACTER": "TARGET_CHARACTER", "TCHARACTER": "TARGET_CHARACTER"}
 
 
 def _province_label(f, province):
@@ -21301,16 +21560,22 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
 
     Tags: [CHARACTER.*] record owner, [TARGET_CHARACTER.*] counterpart,
     [TARGET_CHARACTER_2.*] third party (involved_character, e.g. a dungeon owner),
-    [PROVINCE.GetName] event province. `|U` is the English uppercase variant and is
-    ignored in Chinese; Possessive takes the bare name (no Chinese inflection). `names`
-    optionally supplies the (owner, target, third party) appellations for callers that
-    need the `event_name` wording. Substitution is dispatched per role/place, because an
-    enumerated replacement table misses `|U` and NoTooltip combinations and the trailing
-    clearing regex then eats the subject/object. If a template needs the third slot and
-    `extra` is missing, the whole sentence is dropped ('') instead of attributing the
-    counterpart to the wrong person. [PROVINCE.GetName] resolves through `province` to the
-    real county name ("当地" if none); [X.GetDynastyHouseName] to the real house name
-    (the localization layer keeps that tag, see `localization._KEEP_DYN_RE`).
+    [PROVINCE.*] event province — plus the game's own misspellings of the counterpart slot. `|U`
+    is the English uppercase variant and is ignored in Chinese; Possessive takes the bare name (no
+    Chinese inflection). `names` optionally supplies the (owner, target, third party) appellations
+    for callers that need the `event_name` wording.
+
+    Accessors are dispatched per role/place rather than through an enumerated replacement table,
+    because that table misses `|U` and NoTooltip combinations and the trailing clearing regex then
+    eats the subject/object. Values come from the same outlets the rest of the fact layer uses:
+    `name_or`/`person_label` for names, `_house_of_cid` for houses, `faith` for a faith name,
+    `_culture_language_id` for a culture's language, `_trait_name` for a trait, the localization
+    table for concepts, activities and kin words. The kept-tag list lives in
+    `localization._KEEP_DYN_RE` and the two must stay in step.
+
+    A tag whose value cannot be produced (or a template that needs the third slot while `extra` is
+    missing) drops the WHOLE sentence and returns '' — a hole in a sentence reads as if the game
+    had said it, and a raw tag would leak a key into the prompt.
     """
     if names is not None:
         oname, tname, xname = (list(names) + ["", "", ""])[:3]
@@ -21319,8 +21584,32 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
         tname = f.name_or(target)
         xname = f.name_or(extra) if isinstance(extra, int) else ""
     pname = _province_label(f, province) if province is not None else ""
-    need_x = [False]
+    need = [False]
     _hcache = {}
+    _ccache = {}
+
+    def _cid(role):
+        return {"CHARACTER": owner, "TARGET_CHARACTER": target,
+                "TARGET_CHARACTER_2": extra}.get(role)
+
+    def _appellation(role):
+        """The role's appellation: the caller-supplied wording when it has one, else `name_or`."""
+        if names is not None:
+            return {"CHARACTER": oname, "TARGET_CHARACTER": tname,
+                    "TARGET_CHARACTER_2": xname}.get(role) or ""
+        cid = _cid(role)
+        return f.name_or(cid) if isinstance(cid, int) else ""
+
+    def _given_name(cid):
+        """The character's given name (as opposed to the surname-carrying display name)."""
+        if not isinstance(cid, int):
+            return ""
+        rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
+        v = rec.get("name_zh") or ""
+        if not v:
+            c = f._chars.get(str(cid)) or {}
+            v = (cl.name_zh(c) if c else "") or ""
+        return v
 
     def _hname(cid):
         """House name of a character ('' if none; memoized per id)."""
@@ -21339,32 +21628,180 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
         _hcache[cid] = nm
         return nm
 
+    def _concept(key):
+        """`game_concept_<key>` wording ([house|E] -> 家族), '' when the table lacks it."""
+        if key in _ccache:
+            return _ccache[key]
+        v = L.loc(f.table, "game_concept_" + key) or ""
+        if v.startswith(("$", "[")):
+            v = ""
+        _ccache[key] = v
+        return v
+
     def _rep(m):
-        role, acc = m.group(1), m.group(2)
+        role, acc = _REL_ROLE_ALIAS.get(m.group(1), m.group(1)), m.group(2)
+        cid = _cid(role)
         if role == "PROVINCE":
-            return pname or "当地"
-        if acc.startswith("GetDynastyHouseName"):
-            return _hname({"CHARACTER": owner, "TARGET_CHARACTER": target,
-                           "TARGET_CHARACTER_2": extra}.get(role))
+            if acc.startswith("GetName"):
+                return pname or "当地"
+            need[0] = True
+            return ""
+        # The third slot has no value when the save gave no involved_character: emit no sentence
+        # rather than attribute the deed to the placeholder name.
+        if role == "TARGET_CHARACTER_2" and not isinstance(extra, int):
+            need[0] = True
+            return ""
+        # names
+        if acc.startswith(("GetShortUI", "GetUIName", "GetName", "GetPossessive")):
+            return _appellation(role)
+        if acc.startswith("GetTitledFirstName"):
+            if not isinstance(cid, int):
+                need[0] = True
+                return ""
+            return f.person_label(cid, date=f.as_of, style="brief") or f.name_or(cid)
+        if acc.startswith("GetFirstName"):
+            v = _given_name(cid)
+            if not v:
+                need[0] = True
+            return v
+        if acc.startswith(("GetDynastyHouseName", "GetHouse.GetName")):
+            v = _hname(cid)
+            if not v:
+                need[0] = True
+            return v
+        # gender / kin words
+        fem = bool(isinstance(cid, int) and f._is_female(cid))
         if acc.startswith("GetHerHis"):
             return "其"
-        if role == "CHARACTER":
-            return oname
-        if role == "TARGET_CHARACTER":
-            return tname
-        if not xname:            # no TARGET_CHARACTER_2 -> emit no sentence
-            need_x[0] = True
-            return ""
-        return xname
+        if acc.startswith(("GetHerHim", "GetSheHe")):
+            return "她" if fem else "他"
+        if acc.startswith("GetHerselfHimself"):
+            return "她自己" if fem else "他自己"
+        if acc.startswith("GetWomanMan"):
+            return "女" if fem else "男"
+        if acc.startswith("GetMotherFather"):
+            return "母" if fem else "父"
+        if acc.startswith("GetWifeHusband"):
+            return "妻" if fem else "夫"
+        if "GetDaughterSon" in acc:
+            return "女儿" if fem else "儿子"
+        if "child_favorite_toy" in acc:
+            return "玩具"
+        # faith / culture
+        if acc.startswith("GetFaith.GetName"):
+            try:
+                v = f.faith(cid) or ""
+            except Exception:                             # noqa: BLE001
+                v = ""
+            if not v:
+                need[0] = True
+            return v
+        if acc.startswith("GetDeathReason"):
+            # The third party's death reason (rival_killed_heir: "发誓要为<死法>的<某人>复仇")
+            try:
+                rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
+                rk = (rec.get("death") or {}).get("reason") \
+                    or ((f._chars.get(str(cid)) or {}).get("dead_data") or {}).get("reason")
+            except Exception:                             # noqa: BLE001
+                rk = None
+            v = _death_reason(f.table, rk) if rk else ""
+            if not v:
+                need[0] = True
+            return v
+        if acc.startswith("GetCulture.GetLanguage.GetName"):
+            v = ""
+            try:
+                lg = f._culture_language_id(cid) if isinstance(cid, int) else None
+                if lg:
+                    v = L.loc(f.table, f"{lg}_name") or L.loc(f.table, lg) or ""
+            except Exception:                             # noqa: BLE001
+                v = ""
+            if not v or v.startswith(("$", "[")):
+                need[0] = True
+                return ""
+            return v
+        if acc.startswith("GetCulture.GetCollectiveNoun"):
+            # e.g. han -> 汉 (the game's <culture>_collective_noun keys)
+            v = ""
+            try:
+                tpl = f.culture_template(cid) if isinstance(cid, int) else ""
+                if tpl:
+                    v = L.loc(f.table, f"{tpl}_collective_noun") or ""
+            except Exception:                             # noqa: BLE001
+                v = ""
+            if not v or v.startswith(("$", "[")):
+                need[0] = True
+                return ""
+            return v
+        # activity / trait
+        mm = re.match(r"GetActivityType\('([^']+)'\)\.GetName", acc)
+        if mm:
+            v = L.loc(f.table, mm.group(1)) or ""
+            if not v or v.startswith(("$", "[")):
+                need[0] = True
+                return ""
+            return v
+        mm = re.match(r"GetTrait\('([^']+)'\)\.GetName", acc)
+        if mm:
+            v = _trait_name(f.table, mm.group(1)) or ""
+            if not v:
+                need[0] = True
+            return v
+        if acc.startswith("GetTitleByKey("):
+            mm = re.match(r"GetTitleByKey\('([^']+)'\)", acc)
+            v = ""
+            if mm:
+                tid = f.title_by_key(mm.group(1))
+                if tid is not None:
+                    v = f.title(tid) or ""
+            if not v:
+                need[0] = True
+            return v
+        # A tag this build cannot resolve must not appear (see localization._KEEP_DYN_RE); drop the
+        # sentence rather than leave a hole where the game named someone.
+        need[0] = True
+        return ""
+
+    def _srep(m):
+        """Role-less tags (activity / trait / title-by-key); a missing value drops the sentence."""
+        acc = m.group(1)
+        mm = re.match(r"GetActivityType\('([^']+)'\)\.GetName", acc)
+        if mm:
+            v = L.loc(f.table, mm.group(1)) or ""
+            if v and not v.startswith(("$", "[")):
+                return v
+        mm = re.match(r"GetTrait\('([^']+)'\)\.GetName", acc)
+        if mm:
+            v = _trait_name(f.table, mm.group(1)) or ""
+            if v:
+                return v
+        mm = re.match(r"GetTitleByKey\('([^']+)'\)\.GetName", acc)
+        if mm:
+            tid = f.title_by_key(mm.group(1))
+            v = (f.title(tid) or "") if tid is not None else ""
+            if v:
+                return v
+        need[0] = True
+        return ""
+
+    def _crep(m):
+        v = _concept(m.group(1))
+        if not v:
+            need[0] = True
+        return v
 
     s = _REL_LOC_TAG_RE.sub(_rep, s)
-    if need_x[0]:
+    if need[0]:
         return ""
-    # Named tags still unrecognized here (Custom(...) etc.) are replaced/cleared as before
-    s = s.replace("[PROVINCE.Custom('TerrainTypeProvince')]", "")
-    s = s.replace("[TARGET_CHARACTER.Custom('child_favorite_toy')]", "玩具")
+    s = _REL_STANDALONE_TAG_RE.sub(_srep, s)
+    if need[0]:
+        return ""
+    s = _REL_CONCEPT_RE.sub(_crep, s)
+    if need[0]:
+        return ""
+    # Named tags still unrecognized (Select_CString(...) and the stripped custom locs) are cleared
     s = re.sub(r"\[[^\]]*\]", "", s)
-    s = s.replace("  ", " ").strip()
+    s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
