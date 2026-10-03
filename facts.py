@@ -1617,11 +1617,11 @@ def _date_ord(d):
 
 
 class Facts:
-    """一次 build_facts 的上下文: 缓存 + melt + 名字/头衔/本地化解析。
-    as_of: 传记数据截止日期 (十年传记 = 十年末; 终传/在世 = 最后档期)。
-    非空时 官职/称号/历任/时间线/朝局 均只取该日期之前的事实 (v11)。
-    decade (v17): 十年传记序号 (1,2,3…), 非空时时间线/概览/摘要/刺客列传
-    只收本十年 (as_of−10年, as_of] 的事件 (修复方案_汤利五问题.md 决策 1/2)。"""
+    """Context of one build_facts run: cache + melt + name/title/localization resolution.
+
+    as_of caps every fact (offices, nicknames, holder history, timeline, court) at that
+    date; decade (1, 2, 3…) restricts timeline/overview/summary to (as_of−10y, as_of].
+    """
 
     def __init__(self, cache, melt, names_path, as_of=None, decade=None,
                  nickname_override=None, cfg=None, campaign=None):
@@ -1630,50 +1630,52 @@ class Facts:
         self.names_path = names_path
         self.as_of = as_of
         self.decade = decade
-        # v44 (问题2): 同战役全部传主缓存 {player_id: cache} — 传主链的前任/后任
-        # 亲缘与名号由此取; 缺省只有本传主自己 (不影响其余事实)。
+        # All subject caches of the same campaign {player_id: cache}, used to resolve
+        # kinship and labels against a subject chain's predecessors/successors.
         self.campaign = dict(campaign or {})
         if cache.get("player_id") is not None:
             self.campaign.setdefault(cache.get("player_id"), cache)
-        # v41: 配置 (开关类口径的唯一来源; 缺省读 config.json)
+        # Config: single source of truth for switches (defaults to config.json).
         self.cfg = cfg if cfg is not None else llm.load_config()
-        # v41: Carnalitas 事件好感族是否进事实面 (默认关, 见 llm.DEFAULT_CONFIG)
+        # Whether Carnalitas event opinion families reach the facts (off by default).
         self._show_carnal_opinions = bool(
             (self.cfg or {}).get("carnal_opinions"))
-        # v20: 按时代绰号覆盖 {cid: 绰号} — 十年传记重跑时绰号取该十年末熔件,
-        # 不随最新档漂移 (878 时代「嗜血者」不会被 888 档的「屠狼者」覆盖)
+        # Per-era nickname overrides {cid: nickname}: a decade rebuild reads that
+        # decade's melt, so its nicknames do not drift to the latest save.
         self._nick_override = dict(nickname_override or {})
         self._lt = ((melt.get("landed_titles") or {}).get("landed_titles") or {})
         self._tl = melt.get("traits_lookup") or []
         self._chars = cl.all_characters(melt)
         self.table = L.table()
         self.provmap = L.province_map()
-        # v29: 数值档位表 (虔诚/威望/影响力/功勋的 defines 阈值) 与职位显示名变体表
+        # Currency band table (defines thresholds for piety/prestige/influence/merit)
+        # and court-position display-name variants.
         self._bands = (L.currency_levels() or {}).get("bands") or {}
         self._cp_variants = L.court_positions()
-        # v30: 游戏 flavorization 条目表 (统治者称呼/头衔名后缀的权威来源)
+        # Game flavorization table: authority for ruler address forms and title suffixes.
         self._flavor = FZ.table()
-        # v30: 授予人祭的教义键集 (处决方式「献祭」的可用门, 见 execution_method)
+        # Doctrines granting human sacrifice; the gate for the "sacrifice" execution
+        # method (see execution_method).
         try:
             self._sacrifice_doctrines = L.doctrines_granting("human_sacrifice_active")
         except Exception:
             self._sacrifice_doctrines = set()
         self._council_tasks = L.council_tasks()
-        # v80 (点5): 主教称谓保序臂表 + 议会席位名链 (游戏 GetActualBishopTitle /
-        # `council_positions.name` 的解析结果) —— 宫廷司祭的教会词与席位名的权威来源。
+        # Ordered bishop-title arms and council seat name chain (game GetActualBishopTitle /
+        # `council_positions.name`): authority for court chaplain church words and seat names.
         try:
             self._bishop_titles = L.bishop_titles()
         except Exception:
             self._bishop_titles = {"arms": []}
-        # v87 (问题1): 神权官称的自定义本地化臂表 (GetActualDukeTheocracyTitle /
-        # GetActualCountTheocracyTitle) —— 基督教神权统治者的官称整个委托给它们,
-        # 取值见 `_office_word` → `_loc_or_custom_word`。
+        # Custom-localization arms for theocracy office titles (GetActualDukeTheocracyTitle /
+        # GetActualCountTheocracyTitle); Christian theocratic rulers delegate their office
+        # word entirely to them (see `_office_word` → `_loc_or_custom_word`).
         try:
             self._theocracy_titles = L.theocracy_titles()
         except Exception:
             self._theocracy_titles = {"blocks": {}}
-        # v89 (问题6): 灵性满足分档表 (游戏 `common/spiritual_fulfillment/*.txt`) ——
-        # 档位词用游戏自带的等级名 (christian_fulfillment_level_N / default_…), 不再自造。
+        # Spiritual fulfillment bands (game `common/spiritual_fulfillment/*.txt`); level
+        # words reuse the game's own level names (christian_fulfillment_level_N / default_…).
         try:
             self._sf_types = L.spiritual_fulfillment()
         except Exception:
@@ -1684,40 +1686,41 @@ class Facts:
             self._council_names = {"positions": {}}
         self._title_by_key = {}
         for tid, t in self._lt.items():
-            if not isinstance(t, dict):  # v7: none 条目防护
+            if not isinstance(t, dict):  # guard against none entries
                 continue
             k = t.get("key")
             if k:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
-        self._regnal_cache = {}  # v17: 世系编号 (cid, tid, date) -> 序号
-        self._mem_date_cache = {}  # v34b: 头衔记忆事实日 (tid, cid, d, reason, type)
-        self._dyn_hist_cache = {}  # v66: 逐档动态名沿革 (本缓存 + 同战役其它传主)
-        self._label_cache = {}   # v28b: 人物称谓 (cid, date, style) -> 文本
-        # v45 (档 B): 事件句构造期的称谓出词登记 (见 log_names/index_names)
-        # 登记栈**按线程**分份 —— 板块期并发调用 (`biography.py` 的 ThreadPool)
-        # 时, 别人的出词不得混进本行 (混进就会把定语插错地方)。
+        self._regnal_cache = {}  # regnal number (cid, tid, date) -> ordinal
+        self._mem_date_cache = {}  # title memory fact date (tid, cid, d, reason, type)
+        self._dyn_hist_cache = {}  # per-save dynamic name evolution (this cache + campaign peers)
+        self._label_cache = {}   # person label (cid, date, style) -> text
+        # Label registry filled while building event sentences (see log_names/index_names).
+        # The stack is per-thread: biography.py's ThreadPool runs blocks concurrently and
+        # another block's labels must not leak into this line's attributives.
         self._tls = threading.local()
-        self.name_index = {}     # 行文本 -> [[cid, label], …] (按出词顺序)
-        # v63 (行内定语基准): 行文本 -> **本行主语** cid (句子讲的是谁)。
-        # 板块期插亲缘定语时, 句中第三方人名按它算词 —— 否则会把「主角的岳父」
-        # 插进讲妻子的句子里, 读成「她的岳父」(菲利普2: 于尔莎受业于岳父乱发哈拉尔,
-        # 而乱发哈拉尔正是她的生父)。无主语的行 (年表外的多方言情句等) 不登记,
-        # 板块期回落旧口径 (按本篇传主算词)。
+        self.name_index = {}     # line text -> [[cid, label], …] in emission order
+        # line text -> this line's subject cid (who the sentence is about). Third-party
+        # names in a line take their kinship word from it, otherwise the protagonist's
+        # in-law word lands in a sentence about someone else. Lines without a subject
+        # (multi-dialect asides outside the timeline) are absent and fall back to the
+        # subject of the biography.
         self.line_owner = {}
-        # v63: 行文本 -> [已写明关系的对手方 cid, …] —— 句面自带的亲缘 (成婚/添子/
-        # 丧偶/夭折), 板块期不再给这些人插定语 (见 `_REL_STATED_TYPES`)。
+        # line text -> counterparty cids whose relation the sentence already states
+        # (marriage/birth/bereavement); see `_REL_STATED_TYPES`.
         self.line_stated = {}
-        # v16: 游戏关系原因 (opinions.active_opinions 索引, 惰性构建)
+        # game opinion reasons (index over opinions.active_opinions, built lazily)
         self._opinion_index = None
-        # v50: 缓存里的关系缘由 (cache["relation_reasons"], 惰性构建) —— 熔件里
-        # 该关系条目已随一方死亡/关系解除消失时, 用它回退 (见 relation_reasons)
+        # Relation reasons from the cache (cache["relation_reasons"], built lazily):
+        # fallback when the melt entry vanished with a death or a broken relation
+        # (see relation_reasons).
         self._cached_opinion_idx = None
-        # v56 (§10): 熔件 opinions 的**全对**索引 (不过滤主角, 第三方对的缘由用)
+        # Index over all pairs in the melt's opinions (no subject filter), for third-party pairs
         self._any_opinion_idx = None
         self._rel_reason_cache = {}
-        # v11: 语言 → 文化模板列表 反查索引 (同一语言多文化共享, 如 language_norse
-        # 同时被 norman/norse 持有; 推断时优先有父名规则的模板)
+        # language -> culture templates (one language is shared by several cultures,
+        # e.g. language_norse held by norman/norse and others)
         self._lang_to_tpl = {}
         for _cid, _e in ((melt.get("culture_manager") or {}).get("cultures") or {}).items():
             if not isinstance(_e, dict):
@@ -1725,7 +1728,8 @@ class Facts:
             _lg = _e.get("language")
             if _lg:
                 self._lang_to_tpl.setdefault(_lg, []).append(_e.get("culture_template") or "")
-        # v27: 文化模板 → 语言 反查 (角色 culture id 被清空时, 由模板回推母语)
+        # culture template -> language, used to infer a mother tongue when a character's
+        # culture id has been cleared
         self._tpl_to_lang = {}
         for _cid, _e in ((melt.get("culture_manager") or {}).get("cultures") or {}).items():
             if not isinstance(_e, dict):
@@ -1734,8 +1738,8 @@ class Facts:
             _lg = _e.get("language")
             if _tpl and _lg:
                 self._tpl_to_lang.setdefault(_tpl, _lg)
-        # v11: 独立性 O(1): 全量封臣 id 集 + 每角色缓存 (历任/官职大量调用)
-        # v53: 日期感知后缓存键改为 (cid, date)
+        # O(1) independence: full vassal id set plus a per-character cache
+        # keyed by (cid, date) (holder/office code calls this heavily).
         self._vassal_ids = set()
         for _k, _c in ((melt.get("vassal_contracts") or {}).get("database") or {}).items():
             if isinstance(_c, dict) and _c.get("vassal") is not None:
@@ -1744,10 +1748,11 @@ class Facts:
                 except Exception:
                     pass
         self._indep_cache = {}
-        # v95 (问题6): **人级**判据 —— {行刑者: {日期: frozenset(被诛族)}}, 见 `purged_houses`
+        # Per-executioner criterion {executioner: {date: frozenset(purged houses)}},
+        # see `purged_houses`.
         self._purge_houses_map = {}
-        self._hold_cache = {}  # (cid, as_of) -> 持有区间 (历任/官职/称号复用)
-        # v11: 头衔 holder 序列预计算 (历任/朝局多次全表扫描用)
+        self._hold_cache = {}  # (cid, as_of) -> holding intervals, reused by offices/nicknames
+        # Precomputed title holder sequences, reused by several full-table scans.
         self._title_seqs = {}
         for _tid, _t in self._lt.items():
             if not isinstance(_t, dict):
@@ -1756,18 +1761,16 @@ class Facts:
             if isinstance(_h, dict) and _h:
                 self._title_seqs[int(_tid)] = sorted(
                     _h.items(), key=lambda x: cl.date_key(x[0]))
-        # v11: 持有者索引 {cid: {tid: [(gain, loss|None, loss_type), ...]}} —
-        # 一次遍历全部 title history 建好, 历任/官职/称号按角色 O(1) 取。
-        # 同一 (tid) 同 holder 跨多段 (失而复得) 保留多段; 已按 as_of 截断
-        # (事件 > as_of 的丢弃, 开区间自然延伸到 as_of)。
+        # Holder index {cid: {tid: [(gain, loss|None, loss_type), ...]}}, built in one pass
+        # over all title history so holder/office/nickname lookups are O(1) per character.
+        # A regained title keeps one segment per holding; events after as_of are dropped
+        # and open intervals extend to as_of.
         self._holder_intervals = {}
-        # v41 (问题1/2): 头衔**取得方式**与前一持有人 —— 历任阶段行要写
-        # 「1086年1月1日自海因里希·萨利安手中夺得神圣罗马帝国巴西琉斯」,
-        # 而 _holder_intervals 只保留 (gain, loss, loss_type), gain 的事件类型
-        # (conquest/created/inheritance/appointment…) 与失主被丢掉, 于是历任
-        # 只剩「1086年任X」, 模型只能自己编登位经过。
+        # How a title was gained and from whom: _holder_intervals keeps only
+        # (gain, loss, loss_type), so the gain event type (conquest/created/
+        # inheritance/appointment…) and the previous holder are stored separately.
         self._gain_reason = {}     # (cid, tid, gain_date) -> reason
-        self._gain_prev = {}       # (cid, tid, gain_date) -> 前一持有人 id
+        self._gain_prev = {}       # (cid, tid, gain_date) -> previous holder id
         _ao = cl.date_key(as_of) if as_of else None
         for _tid, _seq in self._title_seqs.items():
             cur = None
@@ -1776,7 +1779,8 @@ class Facts:
             for _d, _ev in _seq:
                 if _ao is not None and cl.date_key(_d) > _ao:
                     break
-                # v15: 同日多事件 (destroyed+created 同日期等, 重复键被合并为列表)
+                # Several events can share one date (e.g. destroyed+created): duplicate
+                # keys are merged into a list.
                 entries = _ev if isinstance(_ev, list) else [_ev]
                 for _e in entries:
                     _h = _e.get("holder") if isinstance(_e, dict) else _e
@@ -1809,10 +1813,10 @@ class Facts:
             if cur is not None and gain is not None:
                 self._holder_intervals.setdefault(cur, {}).setdefault(
                     _tid, []).append((gain, None, ""))
-        # v41 (问题6): 共治者 (co-ruler) —— 存档 diarchies.database 的
-        # co_* 条目 + 角色变量 use_co_ruler_title。两者缺一, 游戏就不把
-        # 「共治」加进该人称谓 (common/flavorization/00_title_holders.txt
-        # 的 co_ruler_male: flag = use_co_ruler_title)。
+        # Co-rulers: co_* entries in the save's diarchies.database plus the character
+        # variable use_co_ruler_title. Both are required for the game to add the co-ruler
+        # form to that person's label (common/flavorization/00_title_holders.txt,
+        # co_ruler_male: flag = use_co_ruler_title).
         self._diarchies = []
         for _v in ((melt.get("diarchies") or {}).get("database") or {}).values():
             if not isinstance(_v, dict):
@@ -1828,7 +1832,7 @@ class Facts:
                 "start": str(_v.get("start_date") or ""),
             })
         self._diarchies.sort(key=lambda x: cl.date_key(x["start"] or "9999.9.9"))
-        self._co_ruler_flag = set()   # 带 use_co_ruler_title 的角色 id
+        self._co_ruler_flag = set()   # character ids carrying use_co_ruler_title
         for _cid, _c in self._chars.items():
             if not isinstance(_c, dict):
                 continue
@@ -1843,8 +1847,9 @@ class Facts:
                     except (TypeError, ValueError):
                         pass
                 break
-        # v41 (问题5): 宗族主支索引 {dynasty_id: house_id} —— **只用于判断
-        # 「该角色的分家是否与宗族同名」**(初始家族必与宗族同名), 不写进事实面。
+        # Main-branch index {dynasty_id: house_id}: the founding house shares the dynasty
+        # name. Used only to test whether a branch house shares the dynasty name; never
+        # written into the facts.
         self._dyn_first_house = {}
         _dyn_house = (melt.get("dynasties") or {}).get("dynasty_house") or {}
         for _h, _e in _dyn_house.items():
@@ -1861,18 +1866,19 @@ class Facts:
             _hit = self._dyn_first_house.get(_did)
             if _hit is None or cl.date_key(_fd) < cl.date_key(_hit[1]):
                 self._dyn_first_house[_did] = (int(_h), _fd)
-        # v11: realm_history 快照持有者索引 {cid: {tid: [快照下标...]}} —
-        # 只补 title history 未覆盖的头衔 (被剪除的王国等)。
+        # Index over realm_history snapshots {cid: {tid: [snapshot indices]}}, covering
+        # titles that title history does not (kingdoms cut from the record).
         self._realm_snaps = [h for h in (cache.get("realm_history") or [])
                              if not as_of or cl.date_key(h.get("date")) <= cl.date_key(as_of)]
         self._realm_snaps.sort(key=lambda h: cl.date_key(h.get("date")))
-        self._realm_holder_titles = {}  # cid -> {tid: set(下标)}
+        self._realm_holder_titles = {}  # cid -> {tid: set(index)}
         for _i, _h in enumerate(self._realm_snaps):
             for _tid, _holder in (_h.get("holders") or {}).items():
                 if _holder is not None and int(_tid) not in self._holder_intervals.get(int(_holder), {}):
                     self._realm_holder_titles.setdefault(int(_holder), {}).setdefault(
                         int(_tid), set()).add(_i)
-        # v8: 全部层级词并集 (通用 + 各政体 + 伊斯兰国名后缀), 用于「名字已含层级词不追加」
+        # Union of every tier word (generic + per-government + Islamic name suffixes), so a
+        # name that already contains a tier word is not given another one.
         self._rank_words = set(L.GENERIC_TIER_ZH.values()) | {"哈里发国", "苏丹国"}
         for _g in ("celestial", "administrative", "feudal", "clan",
                    "tribal", "theocracy", "republic"):
@@ -1881,18 +1887,16 @@ class Facts:
                 w = L.tier_word(self.table, _g + "_government", _tier)
                 if w and not w.startswith("$"):
                     self._rank_words.add(w)
-        # v5: 自定义角色 (ruler_designer_characters) — 出身自定, 无谱系
+        # custom characters (ruler_designer_characters) have a designed origin, no genealogy
         self._custom_starts = set()
         for x in (melt.get("ruler_designer_characters") or []):
             try:
                 self._custom_starts.add(int(x))
             except Exception:
                 pass
-        # v52 (问题1): 无谱系判据扩展 —— 「自定义开局」之外还有**脚本化无地冒险者**:
-        # 斯卡利茨档 15403 既不在 ruler_designer_characters 里, 存档也没有父/母记录,
-        # 但 `alive_data.variables` 带 do_not_generate_starting_family / special_laamp_char
-        # / has_scripted_appearance 三个 flag。旧判据漏掉这一档, 于是本纪开篇的
-        # 「家族渊源」位无料可写 —— 模型把总纲里「孩子的母亲」当成了他的母亲。
+        # Beyond ruler_designer_characters, scripted landless adventurers also have no
+        # genealogy: no parents in the save, but alive_data.variables carries
+        # do_not_generate_starting_family / special_laamp_char / has_scripted_appearance.
         for _cid, _c in self._chars.items():
             if not isinstance(_c, dict):
                 continue
@@ -1914,18 +1918,17 @@ class Facts:
                     _flags.add(str(_e["flag"]))
             if _flags & _NO_GENEALOGY_FLAGS:
                 self._custom_starts.add(_i)
-        # v13: 姓名渲染缓存 (一次 build_facts 内缓存不可变)
+        # Name rendering cache: the underlying cache is immutable within one build_facts.
         self._name_cache = {}
         self._tpl_memo = {}
 
-    # ---- 名字 ----
+    # ---- names ----
     def name(self, cid, date=None):
-        """角色 id → 显示名 (v13 统一出口): 父名制文化 → 名·父名
-        (崔佛·富兰克林松, 父名替代家族名); 其余文化按名序 (东方姓在前, 西方名·姓)。
-        文化缺失 (玩家/死者) 时经亲属链推断, 详见 cache_lib.display_name。
-        v44 (问题1): date 传本篇截止日 → 家族名取该日沿革之值 (私生女另立家族 /
-        家族改名后, 早年篇用当年之名, 末档篇用今名); 缺省取熔件现值。
-        结果按 (cid, date) 缓存 (同一次 build_facts 内缓存不可变)。"""
+        """Character id -> display name; patronymic cultures render name+patronymic (the
+        patronymic replaces the house name), others follow the culture's name order
+        (eastern family name first, western name+family name). `date` selects the family
+        name of that date, so an early decade uses the name of its time; results are cached
+        per (cid, date)."""
         if cid is None:
             return ""
         ck = (cid, date or "")
@@ -1939,24 +1942,21 @@ class Facts:
         return c
 
     def name_or(self, cid, fallback="某人", date=None):
-        """角色显示名 (取不到时用史书式的「某人」占位 — v28b: 原「一位人物」口语且
-        偏现代; 称谓出口 person_label 对占位一律返回 '', 不把占位写进称谓)。"""
+        """Display name, or the chronicle-style placeholder when unavailable (the code's fallback
+        literal); the label outlet person_label returns '' for placeholders."""
         n = self.name(cid, date=date)
         return n or fallback
 
     def _regnal_name_zh(self, cid, date=None):
-        """角色的**继位改名** (教宗圣名/出家法名) 中文名; 无则 '' (v87 问题1/P2)。
+        """Regnal name (papal name / monastic name) in Chinese, '' when there is none.
 
-        取值: 缓存现值 (`characters.<id>.regnal_name`, 由 cache_lib 逐档同步) →
-        熔件角色对象 (旧缓存无该字段时的兜底)。中文走本地化表
-        (`Sergius_regnal` = 色尔爵 / `Nicolaus_regnal` = 尼各老); 取不到中文
-        (裸键/占位) 返回 ''。
-
-        **刻意不按 date 截断** —— 游戏把继位改名用于该角色的整个显示面
-        (`REGNAL_NAME_ONE_NAME: "$NAME$$NUMBER$"`, character_l_simp_chinese.yml:18),
-        存档里也没有「改名沿革」。按 date 截断反而会让同一篇传记里同一人出现两个
-        名字: 教宗尼各老 858 年当选, 而本档数据起于 870, 866 年的事件会退回本名
-        「尼科洛」。"""
+        Taken from the cache (`characters.<id>.regnal_name`, synced per save by cache_lib)
+        and falling back to the melt character; the Chinese text comes from localization
+        keys such as `Sergius_regnal` / `Nicolaus_regnal`. Deliberately not truncated by
+        `date`: the game uses the regnal name across the character's whole display surface
+        and the save stores no rename history, so truncating would give one person two
+        names inside a single biography.
+        """
         if cid is None:
             return ""
         memo = getattr(self, "_regnal_zh_memo", None)
@@ -1977,12 +1977,13 @@ class Facts:
         return out
 
     def regnal_birth_name(self, cid, date=None):
-        """继位改名者 (教宗圣名) 的**本名**中文; 无改名 / 与本名同 → '' (v95 问题7)。
+        """Birth name in Chinese of a character who took a regnal name, '' when absent or
+        identical to the regnal name.
 
-        数据方向 (见 `docs/调研_v95_教皇教名.md`): `regnal_name` 是**权威显示名字段**
-        (即位当档由引擎授予, 头衔定义驱动), `first_name` 即位后不再出现在任何游戏显示面
-        —— 故「教名为主、本名为辅」。本名取 `first_name` 的中文 (`cl.name_zh`), 与
-        圣名相同 (或圣名含本名) 时返回 '', 不写重复的一句。"""
+        `regnal_name` is the authoritative display-name field (granted on accession and
+        driven by title definitions), while `first_name` disappears from every game display
+        surface after accession, so the regnal name leads and the birth name is a note.
+        """
         rn = self._regnal_name_zh(cid, date)
         if not rn:
             return ""
@@ -2001,27 +2002,25 @@ class Facts:
         return birth
 
     def label_with_birth_name(self, cid, label, date=None):
-        """称谓 + 本名注 (v95 问题7, 用户 2026-10-02 拍板「本名与圣名并写」)。
+        """Label plus a birth-name note.
 
-        仅**标识性栏目**用 (礼仪领袖 / 现任教宗 / 人物档案行), 年表逐行不加 ——
-        免得同一篇里「教宗克肋孟，本名阿斯卡尼奥」重复几十次。
-        **不用括注**: 事实层括注按 v55 用户拍板一律自然语言化 (verify_fast 有断言),
-        故本名注与其余补注同式, 用逗号承接。"""
+        Used for identifying sections only (religious leader, current pope, character file
+        rows), never for every timeline line, so the note does not repeat dozens of times.
+        The note is joined with a comma rather than parentheses, matching the fact layer's
+        natural-language style (verify_fast asserts on it).
+        """
         b = self.regnal_birth_name(cid, date)
         return f"{label}，本名{b}" if b else label
 
-    # ---- v17: 世系编号 (II/III 二世标记) ----    # 游戏不把编号存进存档, 显示时按「首要头衔 title history 中同名前任数 + 1」
-    # 动态计算 (修复方案_汤利五问题.md 问题7, 实测: c_braila 860 年 Ciprian →
-    # 893 年 Ciprian 即「奇普里安II」; k_ruthenia 881 年父子两代 Ruslan →
-    # 子为「鲁斯兰·克里维奇二世」)。I 不显示。
+    # ---- regnal numbers (II/III) ----
+    # The game stores no ordinal: it is computed as the number of same-named predecessors
+    # in the primary title's holder history, plus one. I is not displayed.
 
     def regnal_number(self, cid, tid, date=None):
-        """角色 cid 在头衔 tid 上的世系序号: 1 + (登位前同名前任数)。
-        同名按熔件 raw first_name 比对 (中文 mod 名同码点串一致)。
-        v87 (问题1/P2): **有继位改名者按改名比对** —— 教宗的世系编号数的是同名
-        **圣名**前任 (色尔爵三世 = 前两位色尔爵), 不是出生名 (本档 38941 出生名
-        Giuseppe, 按出生名会算成「一世」; 游戏 `REGNAL_NAME_ONE_NAME` 的 `$NUMBER$`
-        正是按圣名算的)。返回 ≥1 的整数。"""
+        """Regnal ordinal of cid on title tid: 1 + the number of same-named predecessors
+        before accession, compared on the raw first_name. A character who took a regnal name
+        is compared by that name, which is what the game's REGNAL_NAME_ONE_NAME $NUMBER$
+        counts. Returns an integer >= 1."""
         key = (cid, tid, date)
         v = self._regnal_cache.get(key)
         if v is not None:
@@ -2064,17 +2063,19 @@ class Facts:
         self._regnal_cache[key] = n
         return n
 
-    # v34b: 头衔历史「另有其主」判定 — 与游戏 character_memories_1.txt 的
-    # `var:landed_title = { any_past_holder = { this != scope:owner } }` 同义。
-    # 供 reason=created 分档 (首建「创建」/ 废弃后重立「重建」) 与测试断言用。
+    # "Another holder existed" test on title history, same meaning as the game's
+    # `var:landed_title = { any_past_holder = { this != scope:owner } }` in
+    # character_memories_1.txt; feeds reason=created bucketing and test assertions.
     def title_had_other_holder(self, tid, cid, date=None):
-        """头衔 tid 在 date (含) 之前是否另有主人 (holder 存在且 ≠ cid)。
-        history 兼容三种取值: 裸 id / {type, holder} / 同日事件列表;
-        holder 为 None (无主 destroyed 条目) 不计。无 history 时返回 False。"""
+        """True when tid had another holder at or before date.
+
+        history entries come as a bare id, {type, holder} or a list of same-day events;
+        a None holder (holderless destroyed entry) does not count. False without history.
+        """
         return self.title_prev_other_holder(tid, cid, date) is not None
 
     def title_prev_other_holder(self, tid, cid, date=None):
-        """头衔 tid 在 date (含) 之前最后一位 ≠ cid 的持有人 id; 无则 None。"""
+        """Id of the last holder of tid other than cid at or before date, else None."""
         if tid is None or cid is None:
             return None
         hist = (self._lt.get(str(tid)) or {}).get("history")
@@ -2099,11 +2100,13 @@ class Facts:
         return found
 
     def created_verb_kind(self, tid, cid, date=None):
-        """reason=created 的出词分档 (v53): first / restored / founded。
+        """Wording bucket for reason=created: first / restored / founded.
 
-        无前主 → first「创建」; 前主同宗族 → restored「重建」;
-        前主异宗族且 hegemon (h_) → founded「开创」(天朝宣称天命);
-        其余有前主的非霸权头衔仍 restored, 以免波及公国创建。"""
+        No previous holder -> first; previous holder of the same dynasty -> restored;
+        previous holder of another dynasty on a hegemon title (h_ key) -> founded (a
+        celestial claim to the mandate of heaven). Other titles with a previous holder stay
+        restored, so duchy creations are unaffected.
+        """
         prev = self.title_prev_other_holder(tid, cid, date)
         if prev is None:
             return "first"
@@ -2116,26 +2119,26 @@ class Facts:
             return "founded"
         return "restored"
 
-    # v54 (问题4): 年表标题记忆闸的两条判据
-    _TENURE_ZERO_DAY_TOL = 2   # 记忆日与 title history 事件日的容差 (游戏次日才落记忆)
+    # Two criteria for the timeline title-memory gate.
+    _TENURE_ZERO_DAY_TOL = 2   # tolerance between memory date and title history event date
     _MINISTER_KEY_PREFIX = "e_minister_"
 
     def is_landless_office_title(self, tid):
-        """无地官署头衔? (三省六部/御史台/枢密院, v54)
+        """True for a landless office title (Chinese ministries, censorate, privy council).
 
-        游戏定义在 `common/landed_titles/02_china.txt` 写 `landless = yes`，但**存档的
-        landed_titles 条目不落该字段**（实测 melt_924：`e_minister_of_rites` 无 landless/
-        definite_form 键，而 `x_nf_*` 家业有）—— 故按 key 前缀判定，与 v53 戏剧块同判据。"""
+        The game marks these `landless = yes` in `common/landed_titles/02_china.txt`, but the
+        save's landed_titles entries omit that field, so the key prefix decides.
+        """
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         return key.startswith(self._MINISTER_KEY_PREFIX)
 
     def title_rank_since_at(self, cid, date):
-        """角色在 date 的 (最高头衔层级 rank, 该头衔的执政起始日)。
+        """(rank of the highest title, its tenure start) at date; (0, '') without a title.
 
-        v54 (问题3d): 同日囚禁集群折叠后的**取名排序**用 —— 用户规则
-        「只显示头衔最高，按执政时间排序前 5 人」。无头衔返回 (0, '')。
-        v68 (问题5): 层级走 `_eff_rank` —— 仅持世族庄园者按 0 级 (与营地同档),
-        家业不参与与真领地的层级比较。"""
+        Feeds the ordering after a same-day imprisonment cluster collapses (highest title
+        first, earliest tenure first). Rank comes from `_eff_rank`, so a character holding
+        only a house estate counts as level 0 and does not compete with real landholders.
+        """
         if cid is None or not date:
             return 0, ""
         try:
@@ -2152,12 +2155,13 @@ class Facts:
         return rank, since
 
     def title_tenure_zero_day(self, cid, tid, date):
-        """该头衔在 date 这次取得是否为「零日在位」(v54 问题4)。
+        """True when this acquisition was a zero-day tenure (gain date == loss date).
 
-        天朝制天子造衔即封人（`create_title_and_vassal_change` → 同日 `change_title_holder`）
-        与三省六部置官同形：title history 同日 `created/本人` → `appointment/朝臣`，
-        持有区间 gain == loss。这种「在位 0 日」的得衔是**封拜**，不是本人的任期，
-        年表不该写「重建X王国」。记忆日与事件日容差 `_TENURE_ZERO_DAY_TOL` 天。"""
+        A celestial emperor creating a title and granting it the same day
+        (`create_title_and_vassal_change` then `change_title_holder`) looks like a Chinese
+        ministry appointment; such a grant is an investiture, not a tenure, so the timeline
+        must not report it as a creation. Dates match within _TENURE_ZERO_DAY_TOL days.
+        """
         if cid is None or tid is None or not date:
             return False
         for (gain, loss, _lt) in (self._hold_intervals(cid) or {}).get(tid) or []:
@@ -2169,15 +2173,14 @@ class Facts:
                 return True
         return False
 
-    # v34b: 头衔得失句的**事件日** — 游戏在头衔变动次日才落记忆
-    # (title_event.9900 的 cooldown=1 天), 故 creation_date 常晚 0~1 天;
-    # title history 的条目日期才是事件当天 (柳特佩特: d_salerno 历史 874.4.25 /
-    # 记忆 874.4.26)。其余记忆仍以 creation_date 为事实日。
-    _TITLE_DATE_NEAR_DAYS = 31   # 事件日与记忆日相差上限 (宽松天序, 防误配久远旧事)
+    # Event date of a title gain/loss sentence: the game writes the memory one day after the
+    # title change (title_event.9900 has cooldown=1), so creation_date is often 0-1 days late
+    # while the title history entry holds the event day. Other memories keep creation_date.
+    _TITLE_DATE_NEAR_DAYS = 31   # max event-to-memory gap (loose, avoids stale matches)
 
     def mem_date(self, cid, mem):
-        """记忆在事实面出句用的日期 (v34b): 头衔得失记忆取 title history 事件日,
-        取不到时回退 creation_date; 其余记忆一律 creation_date。"""
+        """Date a memory uses in the facts: title gain/loss memories take the title history
+        event date and fall back to creation_date; other memories use creation_date."""
         d = mem.get("creation_date") or ""
         mtype = mem.get("type")
         if not d or mtype not in TITLE_VAR_TYPES:
@@ -2192,8 +2195,8 @@ class Facts:
         if tid is None:
             return d
         if mtype == "lost_title_memory" and reason == "migration":
-            # v66: migration 失衔记忆的 `landed_title` 恒记最初那块郡 → 事件日映射不到
-            # (相差远超 31 天), 年表只能退到记忆日, 与历任行差一天。先归位再取事件日。
+            # A migration lost-title memory always names the original county, so its event
+            # date cannot be mapped directly: recover the real title first.
             _rt = self.migration_lost_title(
                 cid, d, (mem.get("participants") or {}).get("new_holder"))
             if _rt is not None:
@@ -2207,10 +2210,13 @@ class Facts:
         return hit
 
     def _title_event_date(self, tid, cid, mem_date, reason="", lost=False):
-        """头衔 tid 在 mem_date (含) 前的最近一条历史事件日。
-        先认 `type == reason` 的条目 (destroyed 失去条目的 holder 是原主也能命中),
-        无同类条目再按持有侧兜底 (得: holder==cid; 失: holder!=cid);
-        命中日期与记忆日相差超过 `_TITLE_DATE_NEAR_DAYS` 视为误配, 返回 ''。"""
+        """Nearest title history event date at or before mem_date, else ''.
+
+        Entries whose type equals reason win (a destroyed loss entry matches even though its
+        holder is the former owner); otherwise the holder side decides (gain: holder==cid,
+        loss: holder!=cid). A match further than _TITLE_DATE_NEAR_DAYS from the memory date
+        counts as a mismatch.
+        """
         hist = (self._lt.get(str(tid)) or {}).get("history")
         if not isinstance(hist, dict) or not hist:
             return ""
@@ -2241,9 +2247,11 @@ class Facts:
         return ""
 
     def _last_high_title_before(self, cid, date=None):
-        """cid 在 date (含) 前最后持有的最高层级头衔 (v17)。
-        头衔在当日已易手 (死日同日继位) 时, `_primary_title_at` 取不到,
-        世系编号回退到最近一段高位持有。无则返回 None。"""
+        """Highest-tier title cid last held at or before date, else None.
+
+        Fallback for regnal numbering when the title changed hands the same day (death and
+        succession on one date) and `_primary_title_at` finds nothing.
+        """
         ao = cl.date_key(date) if date else \
             (cl.date_key(self.as_of) if self.as_of else None)
         best_tid, best_rank, best_gain = None, -1, None
@@ -2262,8 +2270,10 @@ class Facts:
         return best_tid
 
     def nickname(self, cid):
-        """角色昵称 (v17): 熔件 nickname_text 直接就是中文昵称 (勇敢者/铁腕…),
-        无则 ''。v20: 按时代覆盖优先 (十年传记重跑时绰号取自该十年末熔件)。"""
+        """Character nickname from the melt's nickname_text (already Chinese), else ''.
+
+        An era override wins, so a decade rebuild reads that decade's melt.
+        """
         ov = self._nick_override or {}
         if cid in ov:
             return ov[cid] or ""
@@ -2271,19 +2281,18 @@ class Facts:
         return (c.get("nickname_text") or "").strip()
 
     def _insert_nickname(self, nm, nick):
-        """把昵称并入显示名 (v21, 用户决策 2026-09-02): 一律绰号前置、去引号 —
-        中文史传惯例, 东方人名与西方名序同框架 (欺诈者郭靖 / 秃头仲宣 /
-        秃头查理·加洛林 / 征服者威廉·诺曼底), 不再用 名“绰号” 后缀。
-        有绰号即不再使用世系编号 (编号让位于绰号)。"""
+        """Join a nickname into a display name: the nickname leads, quotes are dropped, and
+        the nickname displaces the regnal number."""
         return f"{nick}{nm}"
 
     def name_with_regnal(self, cid, date=None):
-        """显示名 + 昵称 + 世系编号 (v21): 有绰号 → 绰号前置形式 (欺诈者郭靖 /
-        秃头查理·加洛林), 不追加世系编号 — 编号让位于绰号;
-        无绰号 → 仅西方名序 (名·家名) 标编号, 紧跟名 (史书惯例: 路易十四/查理二世,
-        鲁斯兰二世·克里维奇, 不给姓冠编号); 东方人名 (姓+名 无分隔) 与单段名无编号;
-        十起不带世 (路易十一)。
-        v20: 天皇座非统治者子女先走「名+亲王/内亲王」(利永亲王), 不拼宗族姓。"""
+        """Display name + nickname + regnal number.
+
+        With a nickname the nickname leads and the number is dropped; without one the number
+        goes right after the given name of a western name order (name·house), never on the
+        house name. Eastern single-token names get no number, and non-ruling children of the
+        Japanese throne use the name + prince/princess form with no dynasty name.
+        """
         tn = self._tenno_prince_name(cid, date)
         if tn:
             nick = self.nickname(cid)
@@ -2297,10 +2306,9 @@ class Facts:
         if nick:
             return self._insert_nickname(nm, nick)
         if "·" not in nm:
-            # v18: 东方人名 (姓+名 无分隔) 与单段名没有世系编号
-            # v87 (问题1/P2): 例外 —— **继位改名者** (教宗圣名/法名, 见 `regnal_name`
-            # 通道) 的名字本就是单段, 编号是其身分的一部分 (色尔爵三世 / 若望二十三),
-            # 故继续按下面同一个 `regnal_number` 口径补编号。
+            # Eastern names (family+given with no separator) and single-token names get no
+            # regnal number, except characters who took a regnal name: their name is one
+            # token by nature and the number is part of their identity.
             if not self._regnal_name_zh(cid, date):
                 return nm
         try:
@@ -2308,31 +2316,27 @@ class Facts:
         except Exception:
             return nm
         if tid is None:
-            # v17: 死日头衔同日易手时回退到最后持有的高位头衔
+            # fall back to the last high title when the title changed hands on the death day
             tid = self._last_high_title_before(cid, date)
         if tid is None:
             return nm
         n = self.regnal_number(cid, tid, date)
         if n >= 2:
-            # v18: 编号紧跟名, 家名/父名在后 — 不给姓冠编号 (史书惯例)
+            # number right after the given name, house/patronymic after it; never on the family name
             head, sep, tail = nm.partition("·")
             return f"{head}{_ordinal_zh(n)}{sep}{tail}"
         return nm
 
-    # ---- 头衔 ----
+    # ---- titles ----
     def _title_government(self, tid, date=None):
-        """头衔在 date 的政体: **该日时任持有者**的政体; 缺失沿 de_facto_liege
-        上溯取该日时任领主的政体。
+        """Government of the title at date: that of its then-holder, walking up
+        de_facto_liege for the then-liege's government when the holder's is missing.
 
-        v41 (问题1) 关键修正: 旧实现只取持有者**末档**的
-        `landed_data.government`, 与 date 无关 —— 于是封建期的神罗封臣
-        (1087–1094, 游戏内显示公爵/伯爵) 一律被取成末档的
-        `administrative_government`, 层级词与称谓词全变成军区/分区/将军。
-        实测 (logs/probe_v41_player_gov_hist.txt): 主角 1087–1094 是
-        `feudal_government`, 1095 起才 `administrative_government`;
-        游戏自己缓存的渲染串 (autosave.ck3, date=1096.7.5 / 1101.6.2 /
-        1101.6.17) 对被囚的蒂埃里II 一律写「伯爵」。
-        政体史取自 cache["char_government_history"] (逐档变化点)。"""
+        The holder's government must be the dated one, not the final save's: a fief held
+        under feudalism would otherwise take the last save's administrative_government and
+        turn all tier and address words into military-district ones. Government history comes
+        from cache["char_government_history"] (change points per save).
+        """
         date = date or self.as_of
         ck = (tid, date)
         if ck in self._gov_cache:
@@ -2352,10 +2356,10 @@ class Facts:
                     break
             liege = t.get("de_facto_liege")
             cur = str(liege) if liege is not None else None
-        # v62: 日本最高头衔 (天皇座/日本帝国) 补一层**头衔侧**政体 —— 持有者政体史
-        # 取不到时 (藤原良房 858–879 的 e_japan 任期早于缓存窗口) 由头衔自己的
-        # history_government 定词: japan_administrative_government = 律令制 (关白),
-        # japan_feudal_government = 惣領制 (幕府将军)。**仍是游戏数据的政体值, 不按年代**。
+        # Title-side government fallback for the Japanese top titles: when the holder's
+        # government history is unavailable, the title's own history_government decides
+        # (japan_administrative_government = regency, japan_feudal_government = shogunate).
+        # Still a government value from the game data, never guessed from the era.
         if gov == "" and \
                 ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
             gov = self._title_government_hist(tid, date) \
@@ -2364,12 +2368,12 @@ class Facts:
         return gov
 
     def _title_government_hist(self, tid, date=None):
-        """头衔历史里 date (含) 之前**最后一个显式记录的政体**; 无则 ''。
+        """Last government explicitly recorded in the title history at or before date, else ''.
 
-        v62: 日本最高头衔的政体兜底用它 —— 存档的 title history 条目在政体变更那天会带
-        `government` 字段 (本体 `history/titles/e_japan.txt:68-71` 1167 年即 `japan_feudal_government`),
-        故即便持有者逐档政体史缺失 (早于缓存窗口), 也能按**游戏自己的政体记录**取词,
-        而不是拿末档政体冒充早期、更不是按年代猜。"""
+        Fallback for the Japanese top titles: title history entries carry a `government`
+        field on the day it changes (e.g. history/titles/e_japan.txt), so the wording comes
+        from the game's own record instead of the final save's or a guess from the era.
+        """
         t = self._lt.get(str(tid)) or {}
         hist = t.get("history") or {}
         if not isinstance(hist, dict):
@@ -2390,37 +2394,22 @@ class Facts:
         return best_g
 
     def _gov_for_word(self, cid, tid, date):
-        """称谓取词用的政体 (v80 点4 —— 按**游戏口径**重排, 不再上溯领主)。
+        """Government used for address wording, following the game's own rule.
 
-        游戏侧: 政体是**逐角色**的存档属性 (`landed_data.government` / 逐档
-        `char_government_history` / 卒档 `dead_data.government`); flavorization 的
-        `governments` 在**持有者本人**身上求值 (`common/flavorization/_flavourization
-        .info:210-216`), 日式 `special = holder` 条目一律 `top_liege = no`
-        (`10_tgp_japan_flavorization.txt:226-229`), 全库取词**从不**按领主政体给
-        封臣取词 (依据见 docs/调研_v80_封臣政体判定.md §1/§3)。
-
-        旧稿①先取头衔侧政体, 而 `_title_government` 会沿 `de_facto_liege` 上溯到
-        领主 —— 于是「律令制关白 + 惣領制封臣」组合下, 封臣的称谓按**领主**的律令制
-        取词 (田所定治档: 六角继子 902–921 被写成「下总国司」, 游戏作「下总武士团
-        女士」; 919 与 923+ 因上溯取不到才落回本人政体, 这就是那个非单调分界)。
-
-        新顺序 (保留既有两层救援):
-          ① 本人该日逐档政体 (`_character_government`)
-          ② 本人逐档史**最早一档** (早于史起点者按已知最早称呼 —— 海因里希 1056)
-          ③ 卒档 `dead_data.government` (已死且无逐档史者, 日期不晚于卒日)
-          ④ **仅** 日本最高头衔 (`e_japan` / 高御座) 用头衔自身的政体记录
-             (`_title_government_hist` / `history_government`); 那是**头衔**的开局
-             政体标量, 不是持有者政体, 只在该头衔上作兜底
-          ⑤ 取不到 → '' (调用方退通用层级词)。"""
+        The game evaluates flavorization `governments` on the holder character, and Japanese
+        `special = holder` entries are always `top_liege = no`, so a vassal's wording never
+        comes from the liege's government. Order: the character's dated government, the
+        earliest known entry of that history, dead_data.government for a dead character with
+        no history, then — for the Japanese top titles only — the title's own government
+        record. '' makes the caller fall back to the generic tier word.
+        """
         gov = self._character_government(cid, date) if cid is not None else ""
         if gov:
             return gov
         hist = self._gov_history(cid)
         if hist:
-            # date 早于该角色政体史起点: 按**已知最早**的政体称呼 (与族属沿革
-            # `_hist_value_at` 的「早于首点取首点」同口径)。旧实现此处返回通用词,
-            # 于是海因里希 1056–1073 的神罗任期被写成「前神圣罗马帝国皇帝」,
-            # 而按文化+政体应为 `emperor_feudal_male_german`=凯撒。
+            # date before the history's start: use the earliest known government, the same
+            # "before the first point take the first point" rule as `_hist_value_at`.
             first = hist[0].get("government") or ""
             if first:
                 return first
@@ -2444,7 +2433,7 @@ class Facts:
         return ""
 
     def _holder_at_or_now(self, title, tid, date):
-        """头衔在 date 的持有者; date 晚于末档时用熔件当前 holder。"""
+        """Holder of the title at date; past the last save, the melt's current holder."""
         if date is not None:
             h = self.holder_at(int(tid), date)
             if isinstance(h, int):
@@ -2453,14 +2442,12 @@ class Facts:
         return int(h) if isinstance(h, int) else None
 
     def _gov_history(self, cid):
-        """角色的逐档政体史 (v47; v80 点4 改为**合并**多份缓存的观测)。
+        """Merged per-save government history of a character.
 
-        政体史是逐档观测出来的, 每份缓存只记自己经历过的那些人
-        (docs/研究_v47_统治者头衔动态.md §3)。旧稿「本缓存有就整份返回」会遮蔽
-        **更早**的观测 —— 田所定治档: `player_59838.json` 里六角继子的史起于
-        923.1.1, 而同战役 `player_38649.json` 里她的史起于 **902.1.1**; 于是
-        902–921 取不到本人政体, 退成领主的律令制词「国司」
-        (docs/调研_v80_封臣政体判定.md 额外发现①)。"""
+        Each save's cache records only the characters it lived through, so the observations of
+        every cache in the campaign are merged; this cache alone would hide an earlier start
+        and push early dates onto the liege's government word.
+        """
         if cid is None:
             return []
         merged = {}
@@ -2479,11 +2466,12 @@ class Facts:
                 for d in sorted(merged, key=cl.date_key)]
 
     def _character_government(self, cid, date=None):
-        """角色在 date 的政体 (v41): 逐档政体史优先, 熔件现状兜底。
+        """Government of the character at date: per-save history first, melt state as fallback.
 
-        史由 cache["char_government_history"] 提供 (cache_lib 逐档记变化点);
-        date 早于该角色史起点、且早于末档时, 返回 '' —— 宁可不取词
-        (调用方回退通用词), 也不拿末档政体冒充历史。"""
+        The history comes from cache["char_government_history"] (change points per save). A
+        date earlier than the history's start returns '' rather than passing the final save's
+        government off as history.
+        """
         if cid is None:
             return ""
         hist = self._gov_history(cid)
@@ -2497,10 +2485,10 @@ class Facts:
                     break
             if hit:
                 return hit
-            # date 早于史起点: 视为该角色史起点前的政体不可知
+            # before the history's start the government is unknown
             if hist[0].get("date") and cl.date_key(hist[0]["date"]) > dk:
                 return ""
-        # 兜底: 熔件现状 (date 未给, 或该角色无政体史而熔件确有记录)
+        # fallback: the melt state (no date given, or the character has no government history)
         if date:
             last = self.cache.get("last_date")
             if last and cl.date_key(date) < cl.date_key(last):
@@ -2509,15 +2497,13 @@ class Facts:
         return (c.get("landed_data") or {}).get("government") or ""
 
     def _character_government_or_earliest(self, cid, date):
-        """角色在 date 的政体; 早于逐档政体史起点时, **仅当天朝链政体**取已知最早值。
+        """Government of the character at date; before the history's start only a celestial
+        chain government is backfilled with the earliest known value.
 
-        v54 (问题1b): 斯卡利茨档马丁的 `char_government_history` 起点是 919.1.1，
-        而 910/918 的任期全在起点之前 —— `_character_government` 按 v41 纪律返回 ''
-        （「宁可不取词, 也不拿末档政体冒充历史」），头衔层级词于是退成通用 王国/帝国，
-        与同一天的官职词（`_gov_for_word` 有 v47 兜底，出「节度使/观察使」）自相矛盾。
-        天朝制在 TGP 全期是**同一个制度**（不随时间演化），故这一档按已知最早值回填;
-        封建→行政这类**会变的**政体仍返回 ''，v41 的诺兰反例不动
-        （详见方案 §9 风险处置与 `_dead_flavor_consistent` 的既有纪律）。"""
+        The celestial system is one unchanged institution across the whole period, so
+        backfilling keeps the tier word consistent with the office word of the same day;
+        governments that do change (feudal -> administrative) still return ''.
+        """
         gov = self._character_government(cid, date)
         if gov or not date:
             return gov
@@ -2528,56 +2514,43 @@ class Facts:
         return first if first in self._CELESTIAL_CHAIN_GOVS else ""
 
 
-    # v80 (点4): 政体前缀归一**只对层级前缀键**生效 ——
-    # `count_feudal_male_japanese`(总领) 这类键的政体段与 `japan_feudal_government`
-    # 相差一个 `japan_` 前缀, 归一后才能认下; 而 `spouse_administrative_female_japanese`
-    # (游戏给「关白之妻」烘的键 = 女士) 这类**非官职**键若也被归一认下,
-    # `official_title` 的 flavor 支会返回裸词「女士」(实测 大和忠子 16151 由
-    # 「越中国司」退成「女士」) —— 故这类键仍按旧口径判, 落回头衔侧取词。
+    # Government prefix normalization applies only to tier-prefixed keys: a key such as
+    # `count_feudal_male_japanese` differs from `japan_feudal_government` by the `japan_`
+    # prefix, while non-office keys (spouse keys, for instance) must stay unnormalized or
+    # official_title's flavor branch would return a bare spouse word.
     _GOV_NORM_RANK_PREFIXES = ("count_", "duke_", "king_", "emperor_",
                                "baron_", "hegemon_")
 
     @staticmethod
     def _gov_prefix_norm(p):
-        """政体前缀归一 (v80 点4)。
-
-        日式两政体的键前缀是 `japan_feudal` / `japan_administrative`, 而
-        flavorization 键里的政体段写作 `feudal` / `administrative`
-        (`count_feudal_male_japanese` / `count_administrative_male_japanese`) ——
-        不归一就会把游戏**自己烘死**的日式职称键一律判成「与政体不自洽」而拒收
-        (实测 43829 / 33589170 的 `dead_data.flavor` 全是 `count_feudal_male_japanese`
-        = 总领, 却退成律令制「国司」, 见 logs/v80_gov_probe3.txt)。"""
+        """Strip the `japan_` prefix so a flavorization key's government segment
+        (`feudal` / `administrative`) matches the game's own government names
+        (`japan_feudal` / `japan_administrative`)."""
         s = str(p or "")
         return s[len("japan_"):] if s.startswith("japan_") else s
 
     def _dead_flavor_consistent(self, fkey, cid, date):
-        """存档烘死的职称键 (`dead_data.flavor`) 与该日政体是否自洽 (v41, 问题1)。
+        """Whether a save-baked flavor key (`dead_data.flavor`) agrees with that day's government.
 
-        键形如 `<层级前缀>_<政体前缀>_<性别>[_文化]` (duke_administrative_male_byzantine_group);
-        取键里第一段与第三段之间的政体前缀, 与该日 `_character_government(cid, date)`
-        的政体前缀比对。日期缺失或该日政体不可知时**不采信** (返回 False) ——
-        该键是角色死亡时按末档政体烘死的, 用在早年就是错词。
-
-        v68 (问题2): 逐档政体史取空时补两条**同源**证据, 二者都只在此人政体史沉默时生效:
-        ① **卒时窗口** (anchor 与卒日相差 ≤1 天; `_anchor_date` 把 ≥卒日的日期折到卒前一日)
-           → 用同一时刻烘死的 `dead_data.government`;
-        ② **头衔侧政体** (仅 `h_` 霸权级, 且该日此人正是该头衔的持有者)
-           → 用头衔自己记录的政体 (`_title_government_hist` 或 `history_government`)。
-        死亡窗口与霸权级之外一律仍按逐档政体史, v41 的诺兰反例 (1082 事件 ≪ 卒 1101,
-        其逐档史在 1073 起就有封建政体) 不受影响。"""
+        The key is `<tier prefix>_<government prefix>_<sex>[_culture]`, and its government prefix is
+        compared with `_character_government(cid, date)`; a missing or unknown date is not trusted,
+        since the key was baked from the final save. Two same-source fallbacks exist: the death window
+        (using the dead_data.government baked at that moment) and the title-side government of a
+        hegemon (h_) title held that day.
+        """
         if not fkey or date is None:
             return False
         parts = str(fkey).split("_")
         if len(parts) < 3:
             return True
         gov_prefix = "_".join(parts[1:-1]) if len(parts) > 3 else parts[1]
-        # 键里可能带文化后缀 (…_byzantine_group), 取到 _male/_female 为止
+        # the key may carry a culture suffix (…_byzantine_group): cut at _male/_female
         for anchor_word in ("male", "female"):
             if anchor_word in parts:
                 i = parts.index(anchor_word)
                 gov_prefix = "_".join(parts[1:i])
                 break
-        # v80 (点4): 只对层级前缀键做日式政体前缀归一 (见 `_GOV_NORM_RANK_PREFIXES`)
+        # normalize the Japanese government prefix only for tier-prefixed keys
         _norm = str(fkey).startswith(self._GOV_NORM_RANK_PREFIXES)
 
         def _eq_gov(x, y):
@@ -2588,43 +2561,32 @@ class Facts:
         cur = self._character_government(cid, date)
         dd = (self._chars.get(str(cid)) or {}).get("dead_data") or {}
         ddate = dd.get("date")
-        # v69: 卒时窗口内,**烘死的 flavor 与同一时刻烘死的 `dead_data.government`
-        # 自洽即可认下** (不必等逐档史取空)。为什么: 逐档政体史对非本缓存角色是
-        # 「借用同战役其它传主缓存」的**单份**观测 (`_gov_history`), 若借到的那份
-        # 只覆盖早年, 就会把几十年前的旧值当成卒时政体 —— 奄美珉 (66463) 实测:
-        # 借用的是 38665 缓存里 919.1.1 的 `feudal_government`, 而他 950.6.1 已建
-        # 天命改行天朝制, 卒时键 `hegemon_celestial_male_chinese`(皇帝) 于是被判
-        # 不自洽, `_office_word` 落回无条件兜底 `hegemon`(45) = 霸主 —— 《刺客列传》
-        # 亲缘行写成「夫和霸主青蛙珉·奄美」。本判据只做**单向**放行 (与 flavor 前缀
-        # 相符才 True), 故不会把原本 True 的判成 False; 卒时窗口之外仍只认逐档史。
+        # Inside the death window a baked flavor key may be accepted when it agrees with the
+        # dead_data.government baked at the same moment: `_gov_history` can borrow a single
+        # observation from another subject's cache that covers only early years, which would
+        # make a decades-old value look like the government at death. The check only lets keys
+        # through (it never turns a True into False); outside the death window only the dated
+        # history counts.
         if ddate and abs(_date_ord(date) - _date_ord(ddate)) <= 1 \
                 and (dd.get("government") or ""):
             if _eq_gov(L.government_prefix(dd["government"]), gov_prefix):
                 return True
             if not cur:
                 cur = dd["government"]
-        # 该日政体不可知 (早于逐档政体史起点) 时不采信烘死的键 ——
-        # 它是末档政体算的, 用在早期只会把封建期的公爵写成将军。
+        # An unknown government (before the dated history) does not trust the baked key: it
+        # was computed from the final save's government and would mislabel early years.
         if not cur:
-            # v68 (问题2) ①: **卒时窗口**内改用同源的 `dead_data.government` 自证 ——
-            # 它与 `dead_data.flavor` 是游戏在卒时一起烘死的一对值, anchor 恰为卒时
-            # (或卒前一日) 时用这一对值才是忠实的。奄美珉卒 951.1.14, 本战役缓存的
-            # 逐档政体史自 955.1.1 起 (`char_government_history["66463"]` 为空),
-            # 逐档史取空 ⇒ 旧稿弃用正确的 `hegemon_celestial_male_chinese`(皇帝),
-            # `_office_word` 落到无条件兜底 `hegemon`(45)=霸主; 同期的奄美靖卒 963
-            # 落在窗口内, 本来就走 flavor 出「和皇帝」—— 同一头衔只因卒年而异词。
+            # Fallback 1: inside the death window, dead_data.government is the value baked
+            # together with dead_data.flavor, so that pair is faithful when the anchor is the
+            # death date or the day before it.
             if ddate and abs(_date_ord(date) - _date_ord(ddate)) <= 1:
                 cur = dd.get("government") or ""
         if not cur:
-            # v68 (问题2) ②: **头衔侧政体**自证 —— **仅霸权级 (h_)** 且该日此人确实
-            # 持有那枚霸权头衔时, 用头衔自己记录的政体 (h_china 全程
-            # `history_government = celestial_government`) 认下烘死的键。
-            # 为什么需要它: ① 只覆盖「卒时」, 而生前的事迹行 (奄美靖 954.5.3 任命
-            # 夔州观察使、格尔木噶玛 963.2.22 任命刑部宣抚使) 按事件日取值,
-            # 逐档史同样取空 ⇒ 一律退成「女霸主」, 与游戏显示的「女皇帝」不符。
-            # 为什么只认 h_: 层级词还有专属条目 (封建公爵=公爵/行政公爵=将军) 的分叉,
-            # 那类必须逐档史说了算 (v41 诺兰反例); 霸权级的无条件兜底条目就是霸主,
-            # 故只在 h_ 上补这一层, `title()` 的层级词不受影响 (唐 不会变唐皇朝)。
+            # Fallback 2: the title's own recorded government, only for a hegemon (h_) title
+            # this character held that day (h_china always carries
+            # history_government = celestial_government). Needed because fallback 1 covers only
+            # the moment of death, while lifetime event lines are dated. Hegemon only: tier
+            # words for other levels have their own entries and must follow the dated history.
             want = None
             for pfx, rk in (("hegemon_", 6), ("emperor_", 5), ("king_", 4),
                             ("duke_", 3), ("count_", 2), ("baron_", 1)):
@@ -2647,35 +2609,25 @@ class Facts:
         return _eq_gov(L.government_prefix(cur), gov_prefix)
 
     def title(self, tid, date=None, site=False, site_cid=None):
-        """头衔 id → 中文名 + 动态层级词合并: '复兴党流亡委员会' / '开罗伯爵领' /
-        '埃及王国' / '图伦苏丹国' / '阿拔斯哈里发国' / '宋大路' / '中华天朝'(霸权级)。
-        v41: date 锚点 — 层级词按该日持有者政体取 (封建期「公国」/ 行政期「军区」)。
-        名字取值: **该日动态名**（specific_title_name → title_history_names 国号 →
-        custom → name → 本地化表 → key）; 无地营地 (x_) 只给名字。
-        v54 (问题2): 名字改走 `_name_at_date` —— 旧稿只读静态 `custom/name`，
-        于是天朝国号（h_china/e_lingnan 的 `title_history_names`）永远取不到，
-        918 年该叫「桂」的头衔被写成默认名「岭南」（模型据此写出「受任岭南帝国」）。
-        v54 (问题1b): 持有者取**该日期时任者**（旧稿一律用末档 holder），层级词收口到
-        `_title_tier_word`（天朝链：皇帝兼领=国 / 臣子受任=路）。
-        v8: 头衔名与层级词直接合并 (布列塔尼公国), 名字已含层级词时不追加
-        (神圣罗马帝国); 霸权级 h_ 仅天朝制启用「天朝」词 (罗马帝国等不加后缀)。
-        v8.1: 伊斯兰统治者 (最高领主) 的国名按游戏同规则显示为「家族+层级词」——
-        动态国名不存于存档 (k_egypt 静态名仍为「埃及」, 游戏运行时拼出),
-        按 持有者信仰→伊斯兰 + 家族名 + 层级 (k_→苏丹国, e_/h_→哈里发国/帝国
-        依是否兼任哈里发) 复现。
-        v66 (D1-a/窄口径): `site=True` 时取名口换 `_site_name` (【用地名】, 按档取
-        「主角占领它之前那一档」的动态名), 并跳过两处 `specific` 早退; 层级词与其余
-        分支逐字不变。**默认 False**, 故既有调用点行为不动 (政权名继续跟人走)。"""
+        """Title id -> Chinese name plus the dynamic tier word.
+
+        The tier word follows the then-holder's government at date (feudal duchy vs
+        administrative military district). The name prefers the dynamic name of that date
+        (specific_title_name -> title_history_names -> custom -> name -> localization -> key);
+        landless camps (x_) get the name alone. `site=True` switches the naming outlet to
+        _site_name (the place name as of the save before the subject took it) and skips the two
+        `specific` early returns; the default False leaves existing callers unchanged.
+        """
         if tid is None:
             return ""
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
         tnd = t.get("title_name_data") or {}
-        # v54: 动态国号优先 (title_history_names) —— 静态 custom/name 只作兜底
+        # dynamic realm name first (title_history_names); static custom/name only as fallback
         if site:
             name = self._site_name(tid, cid=site_cid, date=date)
-            # v66: 游戏给过显示名 (游牧/宗族命名领域) → 该名即完整显示名, 不叠层级词
-            # (与 v26 的 `specific` 早退同口径); 否则照旧走层级词链。
+            # A game-provided display name (nomadic or house-named realm) is complete, so no
+            # tier word is appended; otherwise the tier word chain runs as usual.
             if self._dyn_named(tid):
                 return name
         else:
@@ -2683,40 +2635,39 @@ class Facts:
                 or (tnd.get("custom") or "").strip() \
                 or (tnd.get("name") or "").strip() \
                 or L.loc(self.table, key) or key
-        if key.startswith("x_"):  # 无地营地/教团等特殊头衔: 只给名字
+        if key.startswith("x_"):  # landless camps/orders and similar: name only
             return name if site else (self._specific_name(tid) or name)
-        # v87 (问题1): **枢机名 (d_cd_*) 不叠领地层级词** —— 它是无地 titular
-        # (`landless = yes`, `destroy_on_succession = yes`), 叠词会写出
-        # 「萨比娜总主教区」(历任行实测), 读成他治理过一块教省。
+        # Cardinal titles (d_cd_*) take no tier word: they are landless titular titles
+        # (`landless = yes`, `destroy_on_succession = yes`), and a tier word would read as if
+        # the character had governed a province.
         if self._is_cardinal_title(tid):
             return name
-        # v68 (问题5): 世族庄园 (`c_nf_`/`d_nf_`) 同判 —— 家业头衔是无地家业,
-        # 只给名字, 不叠层级词 (旧稿 `title(16851)` = 「张氏州府」, 家业被当州府)。
+        # House estates (`c_nf_`/`d_nf_`) are landless too: name only, no tier word.
         if self._is_estate_title(tid):
             return name
-        # v52 (问题2): 无地冒险者营地 (`d_laamp_*`) 的层级词取游戏键
-        # `<tier>_landless_adventurer_camp` (= 营地), **任何日期**都不落到通用
-        # 「公国」—— 旧稿 866 年取不到政体时写出「私生子大队公国」。
+        # Landless adventurer camps (`d_laamp_*`) take the game's
+        # `<tier>_landless_adventurer_camp` word on every date and never the generic duchy
+        # word.
         if self.title_kind(tid) == "camp":
             w = self._camp_tier_word(tid)
             return f"{name}{w}" if w and not _STATE_SUFFIX_RE.search(name) else name
-        # v13: 朝廷职司 (尚书省六部/御史台/枢密院, e_minister_*) — 官职非诸侯,
-        # 只给名字 (吏部/御史台), 不追加「帝国/行台」层级词。
+        # Court offices (the Chinese ministries, e_minister_*) are posts, not fiefs: name
+        # only, with no empire-level word appended.
         if key.startswith("e_minister_"):
             return name
-        # v75: 虚位御座只给官职词 (名 + 层级词会写出游戏机械串「高御座府」)
+        # An empty throne gets the office word only; name + tier word would be a mechanical string
         _tw = self.throne_word(tid)
         if _tw:
             return _tw
-        # v26: 动态头衔名 (游牧「可萨田所部」/宗族命名「马扎尔」) 即游戏显示名,
-        # 优先于伊斯兰国名与层级词后缀。
-        # v66: `site=True` 且该头衔有过动态名时, `_site_name` 已在上方直接返回 ——
-        # 末档粘滞名不再抢答; 无动态名者照旧落到下列层级词链 (用地名 + 层级词)。
+        # A dynamic title name (nomadic or house-named) is the game's display name and wins
+        # over the Islamic realm name and the tier word. With site=True and a dynamic name,
+        # _site_name already returned above, so the final save's sticky name cannot answer;
+        # titles without one fall through to the tier word chain.
         if not site:
             specific = self._specific_name(tid)
             if specific:
                 return specific
-        rn = self.realm_name(tid)  # v8.1: 伊斯兰统治者动态国名优先
+        rn = self.realm_name(tid)  # Islamic rulers' dynamic realm name takes priority
         if rn and not site:
             return rn
         tier = ""
@@ -2725,37 +2676,37 @@ class Facts:
                 tier = tv
                 break
         if tier:
-            # v54 (问题1b): 层级词按该日**时任持有者**取 (旧稿传末档 holder,
-            # 于是 910 年的任期按 924 年的持有者判独立性/文化/最高领主)
+            # The tier word follows the then-holder, not the final save's holder, which would
+            # judge a 910 tenure by the independence/culture/top liege of 924.
             holder = self._holder_at_or_now(t, tid, date)
-            # v80 (点4): 政体取**持有者本人**的 (游戏的 flavorization `governments`
-            # 在 Context Character 上求值; 旧稿用头衔侧政体会沿 de_facto_liege
-            # 上溯到领主, 把惣領制封臣写成律令制词)
+            # The government is the holder's own: the game evaluates flavorization
+            # `governments` on the Context Character, while a title-side government would walk
+            # de_facto_liege up to the liege.
             gov = self._gov_for_word(holder, tid, date)
             word = ""
             if not (key.startswith("h_") and gov != "celestial_government"):
                 word = self._title_tier_word(tier, holder, tid, gov, date)
-            # 霸权级 (h_): 仅天朝制启用「天朝」; 其它政体 h_ 不加后缀
+            # hegemon titles (h_): the celestial word applies only to celestial_government
             if key.startswith("h_") and gov != "celestial_government":
                 word = ""
-            # v8.2: 行政制帝国词「大督军」仅在其上有霸权头衔时出现
-            # (拜占庭帝国无上位霸权 → 用通用「帝国」, 实测游戏行为)。
+            # The administrative empire word appears only when a hegemon title sits above;
+            # without one the generic empire word is used.
             generic_word = L.tier_word(self.table, "", tier)
             if (gov == "administrative_government" and tier == "empire"
                     and word != generic_word
                     and not self._has_hegemon_above(tid)):
                 word = generic_word
-            # v24: 中文建制地名 (地名以州/府/京/郡/县收尾, 贝州/杭州…) —
-            # 不再叠「伯爵领/州府」层级词, 直用地名本身; 西式地名 (施派尔…) 照旧。
+            # A Chinese administrative place name (ending in a prefecture/commandery suffix)
+            # stays as it is; western place names still take the tier word.
             if key.startswith("c_") and word and _CN_PLACE_SUFFIX_RE.search(name):
                 return name
-            # 名字已含任意国名/层级词后缀 (神圣罗马帝国/黠戛斯汗国/教宗国) 或词为空时不追加
+            # no tier word when the name already carries a state suffix, or the word is empty
             if word and not _STATE_SUFFIX_RE.search(name):
                 return f"{name}{word}"
         return name
 
     def _has_hegemon_above(self, tid):
-        """沿 de_facto_liege 上溯, 是否存在霸权级 (h_) 头衔在上 (v8.2)。"""
+        """True when a hegemon (h_) title sits above along de_facto_liege."""
         seen = set()
         cur = str(tid)
         while cur and cur not in seen:
@@ -2769,25 +2720,27 @@ class Facts:
             cur = str(liege) if liege is not None else None
         return False
 
-    # ---- v11: 按日期头衔名 / 历任 (首要头衔演进) ----
+    # ---- dated title names / holder history (primary title evolution) ----
 
     _TT_RANK = {"h_": 6, "e_": 5, "k_": 4, "d_": 3, "c_": 2, "b_": 1, "x_": 0}
 
-    # v54 (问题1b): 走「天朝层级词链」的政体 —— 与 `*_celestial_chinese_*` 条目
-    # `governments` 列表同集。**不含 administrative_government**：行政制自己有
-    # 军区/分区/行省/督军区等带 governments 条件的条目，不该被天朝词覆盖。
+    # Governments that use the celestial tier word chain, matching the `governments` list of
+    # the `*_celestial_chinese_*` entries. administrative_government is excluded: it has its
+    # own conditional entries (military district, province…) that the celestial word must not
+    # override.
     _CELESTIAL_CHAIN_GOVS = {"celestial_government", "meritocratic_government",
                               "steppe_admin_government"}
 
     def _celestial_chain_word(self, tier, government, independent):
-        """天朝层级词链: 皇帝兼领=国 / 臣子受任=路 (v54)。
+        """Celestial tier word chain: an emperor holding in his own right -> the realm word,
+        a vassal appointed -> the circuit word.
 
-        游戏 `*_celestial_chinese_independent` 条目带 `name_lists = { name_list_han }`，
-        非汉人天子（斯卡利茨档马丁是捷克人）落不进，于是退到无条件通用条目
-        `kingdom`(45)=**王国** / `empire`(100)=**帝国** / `duchy`=公国 —— 与 v38
-        「皇帝兼领=国、臣子受任=路」的定规冲突，也是用户问题 1b 的直接成因。
-        本项目对天朝词早已采「与文化无关」口径（`_office_word`：诺斯伯爵在中国亦为刺史），
-        故此处直接查天朝链键，不经 flavorization 的姓名系门。不适用返回 ''。"""
+        The game's `*_celestial_chinese_independent` entries carry
+        `name_lists = { name_list_han }`, which a non-Han emperor cannot match, so they would
+        fall back to the generic kingdom/empire/duchy words. Celestial wording is
+        culture-independent in this project, so the chain keys are looked up directly instead of
+        passing the flavorization name-list gate. '' when not applicable.
+        """
         if government not in self._CELESTIAL_CHAIN_GOVS:
             return ""
         if tier == "hegemon":
@@ -2803,28 +2756,16 @@ class Facts:
 
     def _title_tier_word(self, tier, cid, tid, government, date,
                          independent=None):
-        """头衔层级词统一收口 (v54)。
+        """Single outlet for a title's tier word.
 
-        顺序:
-          ① flavorization 的**专属**条目（带 `governments` 条件）—— 行政制军区/分区、
-             诺斯雅尔国、天朝观察使/都护府、可汗国等，一律按游戏规则优先；
-          ② 命中**通用条目**（无 governments，如裸 `kingdom`/`empire`/`duchy`）时，
-             政体属天朝链则改用天朝链词（国/路/军/镇/州府/行台/皇朝）—— 见
-             `_celestial_chain_word`；
-          ③ 本地化表的政体层级词（缺失回退通用 王国/帝国/公国/伯爵领/皇朝）。
-
-        v87 (问题4, 用户 2026-09-30 拍板「所有男爵领只用地名，不需要加后缀」):
-        **男爵层一律不出层级词** —— 早退返回 ''。旧稿在此落到
-        `GENERIC_TIER_ZH["barony"] = "堡"` (项目自造; 全 `simp_chinese` 没有任何键的
-        值为「堡」), 治所因此写出「罗马堡」; 游戏自己的男爵层词要么是爵级名词
-        (通用条目 `barony` = 男爵领), 要么是带 `holding = …` 闸门的领地类型词
-        (神殿/主教区/市 — 本项目的 flavorization 解析器对 `holding` 条目一律
-        unsupported), 两者都不该当地名后缀。见 docs/调研_v87_男爵领地名渲染.md。"""
+        Order: the holder-specific flavorization entry with a `governments` condition, otherwise the
+        celestial chain word for a chain government (`_celestial_chain_word`), otherwise the
+        localization tier word. The barony level never emits one, because the game's barony words are
+        either a rank noun or holding-gated land types, neither of which belongs in a place name.
+        """
         if tier == "barony" or self._is_cardinal_title(tid):
-            # v87 (问题4): 男爵层一律不出层级词 (「堡」是项目自造词, 游戏侧男爵层的
-            # 词要么是爵级名词「男爵领」, 要么带 `holding` 闸门; 详见方法文档串)。
-            # v87 (问题1): 枢机名 (`d_cd_*`, 无地 titular) 同判 —— 否则历任行写出
-            # 「萨比娜总主教区」, 读成他治理过一块教省。
+            # Barony level emits no tier word (see the docstring); cardinal titles
+            # (`d_cd_*`, landless titular) are treated the same way.
             return ""
         if independent is None:
             independent = self._is_independent(cid, date) if cid is not None else True
@@ -2845,16 +2786,10 @@ class Facts:
         return L.tier_word(self.table, government, tier)
 
     def _tier_word_at(self, tid, government, independent=False, cid=None, date=None):
-        """头衔层级词 (v11): 天朝制独立王国用「国」(青徐国), 其余沿用政体层级词
-        (皇朝/路/镇/州府…), 缺失回退通用词。
-
-        v41 (问题1): **先走 flavorization 的 `type = title` 条目**（游戏
-        `TITLE_TIERED_NAME = "$NAME$$TIER"` 里的 `$TIER$` 就是它）, 再退
-        天朝制独立王国特例与政体层级词表。行政制的「军区／分区／督军区」、
-        诺斯的「雅尔国」等文化/政体专属层级词由此按游戏规则取到,
-        而不再依赖 `tier_word` 里那张把**封臣契约俸禄档**当层级词的错误回退表
-        (见 logs/research_admin_titles.md)。
-        v54 (问题1b): 三级顺序收口到 `_title_tier_word`（专属条目 → 天朝链 → 政体词）。"""
+        """Tier word of the title: the flavorization `type = title` entry that supplies `$TIER$`
+        in the game's TITLE_TIERED_NAME, then the celestial independent-kingdom case and the
+        per-government tier word table. The three-step order lives in `_title_tier_word`.
+        """
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         tier = ""
         for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
@@ -2863,40 +2798,34 @@ class Facts:
                 break
         if not tier:
             return ""
-        # v52 (问题2): 营地层级词走游戏键 (营地), 不吃 flavorization 的封建层级词
+        # camp tier words come from the game's camp key, not from flavorization's feudal words
         if self.title_kind(tid) == "camp":
             return self._camp_tier_word(tid)
         return self._title_tier_word(tier, cid, tid, government, date,
                                      independent=independent)
 
     def _custom_name(self, tid):
-        """玩家自定义头衔名 (v67): `title_name_data.custom`, 无则 ''。
+        """Player-customized title name (`title_name_data.custom`), else ''.
 
-        游戏口径: 自定义头衔窗口的「名称」栏 (`TITLE_NAME_FIELD` = 名称,
-        `game/localization/simp_chinese/gui/title_view_l_simp_chinese.yml:154`)
-        落在 `custom`, 它就是该头衔的显示名 —— 游戏自己拿它当称名比对
-        (`has_custom_title_name` / `custom_title_name`, 见
-        `game/common/scripted_triggers/10_tgp_triggers.txt:69-81`), 存档信封的
-        `meta_data.meta_title_name` 也认它 (卡尔 932/934 档 = 「葛洛夫帮」)。
-        故 `specific_title_name` / `name` 只是**没被自定义时**的生成名。"""
+        The game's custom title window writes its name field into `custom`, which becomes the
+        title's display name: scripted triggers compare it (`has_custom_title_name` /
+        `custom_title_name`) and the save envelope's `meta_data.meta_title_name` agrees.
+        `specific_title_name` and `name` are therefore generation-time names only.
+        """
         t = self._lt.get(str(tid)) or {}
         return ((t.get("title_name_data") or {}).get("custom") or "").strip()
 
     def _has_reign_history(self, tid):
-        """该头衔的显示名是否由**国号更名史**给出? (v68 问题3)
+        """True when the title's display name comes from a realm-name history.
 
-        游戏 `$NAME$` 取值顺序 (子代理调研 `docs\\调研_头衔动态名与霸主皇帝.md` §1.4,
-        含 `game/` 原文与全档统计) 是:
-        `custom` → `localization_key` → `title_history_names[≤date]` → `specific_title_name`
-        → 静态 `name`。故带 `dynn_title_*` 更名史 / `localization_key` 非空的头衔
-        (h_china 唐→中华→和→毕→越→元、d_ziqing 契丹→元) 的显示名取自国号;
-        其 `specific_title_name` 是引擎按**当前持有者宗族**另算的生成名, 在天朝 `h_china`
-        上已经过期且不再刷新 (975/976/978 三档逐字未变 = 「库曼顿巴斯部」, 而游戏
-        信封 (`meta_title_name`) 显示「元」)。此时生成名整个让位。
-
-        无更名史的游牧毡帐/营地/宗族命名领域 (`k_dzungaria`/`d_chah`/`c_uman`/`x_d_laamp_*`)
-        `localization_key` 为空、更名史里无 `dynn_title_*` → 返回 False, 生成名照旧参战
-        (v26/v66/v67 的口径与验收全不动)。"""
+        The game resolves `$NAME$` as custom -> localization_key -> title_history_names[<=date]
+        -> specific_title_name -> static name, so a title with a `dynn_title_*` rename history or
+        a non-empty `localization_key` takes its name from the realm name, while its
+        `specific_title_name` is a generated name for the current holder's house that goes stale
+        and is no longer refreshed. Such titles yield entirely to the rename history. Titles
+        without one (nomadic yurts, camps, house-named realms) return False and keep using the
+        generated name.
+        """
         tnd = (self._lt.get(str(tid)) or {}).get("title_name_data") or {}
         if (tnd.get("localization_key") or "").strip():
             return True
@@ -2907,15 +2836,13 @@ class Facts:
         return False
 
     def _specific_name(self, tid):
-        """游戏算好的动态头衔名 (v26): 游牧/宗族命名领域的领域名, 如
-        c_khortytsia 的「可萨田所部」、k_croatia 的「马扎尔」。静态 name
-        (也勒克河/克罗地亚) 只是地名, 与游戏内显示不符。无则返回 ''。
+        """The game-computed dynamic title name (a nomadic or house-named realm name), else ''.
 
-        v67: 该头衔**带自定义名**时返回 '' —— 生成名在游戏里本就不显示 (见
-        `_custom_name`), 让调用方回到 custom 与其更名史 (v52「营地本名」口径)。
-        v68 (问题3): 该头衔**有国号更名史**时同样返回 '' (见 `_has_reign_history`) ——
-        天朝 `h_china` 的显示名是国号 (972.10.11 起「元」), 而生成名停在 973 档落盘的
-        「库曼顿巴斯部」不再刷新, 旧稿因此把「元皇帝」写成「库曼顿巴斯部皇帝」。"""
+        The static `name` is only a place name and differs from what the game displays. Returns ''
+        when the title carries a custom name (the generated name is not displayed then) or a
+        realm-name history (see `_has_reign_history`), so callers use custom and the rename
+        history instead.
+        """
         if self._has_reign_history(tid):
             return ""
         t = self._lt.get(str(tid)) or {}
@@ -2925,34 +2852,19 @@ class Facts:
         return (tnd.get("specific_title_name") or "").strip()
 
     def _name_at_date(self, tid, date):
-        """头衔在某日期的名称 (不含层级词), 取值优先级 (v26):
-        ① 动态头衔名 specific_title_name (游戏内显示名, 游牧「可萨田所部」/
-           宗族命名「马扎尔」);
-        ② title_history_names 最近一次更名 (本地化键 dynn_title_zhou / 直写名 青徐);
-        ③ 基础名 (custom → name)。
-        更名史留在 ②: h_china 唐→秦、k_guannei → 秦 这类动态国号只存在于
-        title_history_names (实测无 specific_title_name), 死者按卒日国号取名的
-        v25 口径仍由 ② 承担。
+        """Name of the title on a given date, without the tier word.
 
-        v66 (D2-b, 用户 2026-09-27 拍板): ① 改为**按档取** —— 先查逐档沿革表
-        (`_dyn_reign_name`: 本缓存 + 同战役其它传主缓存, 且**任期感知**), 命中即用;
-        早于首档 / 未覆盖 (未回填的旧缓存) 才退末档 `specific_title_name`。旧稿直接
-        读末档现值、与入参 `date` 无关, 于是 936 年的事件套上 954 年才有的名字
-        (实测 936 年的 c_kherson 读成「马扎尔迈杰希部」)。`date` 为空时逐字同旧稿。
-
-        v67 (用户 2026-09-27 拍板 D1-a): 该头衔带**自定义名**时 ① 整个让位 ——
-        生成名 (逐档动态名 + 末档 specific) 不参战, 落到 ② 自定义名的更名史 /
-        ③ custom。为什么: 卡尔营地 `x_d_laamp_4193` 的 `specific_title_name`
-        (「持剑骑手」) **在营地活着的 931–934 档里根本不存在**, 首见于 934.4.26
-        营毁之后的 935 档; 逐档沿革表又只闩非空值 (`cache_lib._latch_title_dyn_names`),
-        于是 931–934 的每个日期都退回末档 sticky 值, 把玩家自定义名「葛洛夫帮」
-        (931.5.11 更名, 存档信封同认) 顶替掉。详见 docs/方案_v67_营地自定义名.md。"""
+        Order: the dynamic title name (dated through `_dyn_reign_name`, tenure-aware, falling
+        back to the final save's `specific_title_name` when the history does not cover it); the
+        latest title_history_names rename at or before the date (localization key or literal
+        name); then the base name (custom -> name). A custom name disables the first step
+        entirely, because a camp's generated name may not exist during the years it was alive
+        and would otherwise displace the player's own name.
+        """
         t = self._lt.get(str(tid)) or {}
         tnd = t.get("title_name_data") or {}
-        # v67: ① 只在无自定义名时取值 (带 custom 时 `_specific_name` 亦返回 '',
-        # 此处一并闸掉逐档动态名 —— 本档沿革表那一点记的正是营毁后的生成名)
-        # v68 (问题3): 同理闸掉**有国号更名史**的头衔 (`_has_reign_history`) ——
-        # h_china 的显示名是国号 (唐/中华/和/毕/越/元), 生成名「库曼顿巴斯部」不参战。
+        # Step 1 applies only without a custom name, and is gated off as well for titles with a
+        # realm-name history: their generated name must not compete with the realm name.
         specific = "" if ((tnd.get("custom") or "").strip()
                           or self._has_reign_history(tid)) \
             else (self._dyn_reign_name(tid, date) or self._specific_name(tid))
@@ -2966,18 +2878,21 @@ class Facts:
                 return v
             s = str(best)
             if re.search(r"[A-Za-z_]", s):
-                # v21: 本地化表缺该改名键时回退基础名, 不直出裸 key (防 key 泄漏)
+                # when the localization table lacks the rename key, fall back to the base name
+                # instead of emitting a bare key
                 return base
-            return s  # 直写名 (青徐 等) 原样返回
+            return s  # a literal (already Chinese) name is returned as is
         return base
 
     def _site_cid_for(self, tid, default_cid):
-        """【用地名】的锚点角色 (v66): 本篇主角**持有过**该头衔时一律用主角。
+        """Anchor character for the [place name] mode: the biography's subject whenever he ever
+        held the title.
 
-        为什么: 同一件事在年表里有两行 (主角迁离 / 对手迁入), 若各自按自己的取得日
-        取锚点, 同一块地会出现两个名字 (卡尔「迁离阿扎克」而乌松比凯「迁得库曼顿
-        巴斯部」—— 后者是卡尔当时的座位名)。锚到主角后, 一篇之内一块地只有一个
-        地方名, 第三人 (对手方) 的行也随主角的叫法。主角从未持有该头衔时用说话人。"""
+        One event appears as two timeline lines (the subject leaving, a rival moving in); if each
+        used its own acquisition date as anchor, one place would carry two names in a single
+        biography. Anchoring on the subject keeps one name per place, and third-party lines
+        follow it too. The speaker is used when the subject never held the title.
+        """
         pid = self.cache.get("player_id")
         if pid is None or pid == default_cid:
             return default_cid
@@ -2987,19 +2902,13 @@ class Facts:
         return default_cid
 
     def _dyn_hist(self, tid):
-        """该头衔的逐档沿革表 —— **本缓存 + 同战役其它传主缓存**合并后按档排序 (v66)。
+        """Per-save name evolution of a title, merged by date from this cache and the campaign's other
+        subject caches.
 
-        为什么合并: 每份缓存只覆盖自己当玩家的那批档期 (崔佛 868–922 / 卡尔 931–954),
-        只读本缓存时, 落在覆盖范围**之后**的事件会把最早那版名字当成"当时的名" ——
-        实测崔佛篇附录里 938 年的 `c_itil` 读成 922 年的「马扎尔达维德部」、尼克篇
-        读成静态名「阿得」, 而卡尔篇是「马扎尔迈杰希部」: 同一件事在三篇里三个名字。
-        合并后同一个头衔在所有传主篇里同名 (本缓存的值优先, 它是本篇的权威档期)。
-
-        跨战役的缓存不混入 (比对 `playthrough_id`); 结果按 tid 记忆化。
-        v68 (问题3): 有国号更名史的头衔 (`_has_reign_history` —— h_china 等) 返回空表 ——
-        逐档生成名 (库曼顿巴斯部) 与 display 名 (国号) 分属两套, 该头衔归国号一系,
-        调用方 (`_dyn_reign_name`/`_dyn_named`/`_site_name`/`_dyn_name_before`) 随之落到
-        `_history_name_at` 的国号链上。"""
+        Each cache covers only its own subject's saves, so this cache alone would name events after its
+        range with the earliest name and give one event different names in different biographies. This
+        cache's values win; another playthrough's caches are skipped and the result is memoized.
+        """
         if self._has_reign_history(tid):
             return []
         hit = self._dyn_hist_cache.get(tid)
@@ -3026,16 +2935,14 @@ class Facts:
         return out
 
     def _dyn_reign_name(self, tid, date):
-        """按档取动态名 —— **任期感知** (v66 D2-b; `_name_at_date` 的 ①)。
+        """Dated dynamic name, tenure-aware (step 1 of `_name_at_date`).
 
-        年档粒度看不出年中改名: 936.6.23 夺得 `c_azov` 时游戏已把它改成新主的汗国名,
-        下一档却要到 937.1.1 才看得到 —— 照实取「≤date 的最近一点」会把 936 全年写成
-        上一手的「阿扎克」(历任/称谓跟着错)。故: 该点若**早于该日持有者的任期起点**,
-        改用任期起点之后的**第一个非空点** (那次移交的结果); 无持有者 / 无后续点 /
-        该点本就在任期内, 一律照实返回。
-
-        与 `_site_name` 的分工: 这里要的是「当时游戏显示什么」(政权名跟人走), 那里要
-        的是「他占领它之前它叫什么」(用地名跟地走) —— 后者不适用本修正。"""
+        Save granularity hides mid-year renames: a title taken on 936.6.23 already carries its
+        new holder's name, but the next save is not until 937.1.1, so the plain "latest point at
+        or before date" rule would use the previous holder's name for all of 936. When the chosen
+        point precedes the then-holder's tenure start, the first non-empty point after that start
+        is used instead; otherwise the point is returned as is.
+        """
         hist = self._dyn_hist(tid)
         if not hist or not date:
             return ""
@@ -3067,7 +2974,7 @@ class Facts:
         if not gain or cl.date_key(pick_d) >= cl.date_key(gain):
             return pick
         gk = cl.date_key(gain)
-        for h in hist:                      # 任期起点之后的第一处非空改名
+        for h in hist:                      # first non-empty rename after the tenure start
             d = h.get("from")
             if not d:
                 continue
@@ -3082,16 +2989,13 @@ class Facts:
         return pick
 
     def _dyn_name_at(self, tid, date):
-        """该头衔在 date 那一档的**动态名** (v66) —— 查逐档变化点沿革表
-        (`_dyn_hist`: 本缓存 + 同战役其它传主缓存, 由
-        `cache_lib._latch_title_dyn_names` 闩存)。
+        """Dynamic name of the title at the save containing date, from the dated change-point
+        history (`_dyn_hist`, latched by `cache_lib._latch_title_dyn_names`), else ''.
 
-        为什么不能只读熔件: `specific_title_name` 是「只有该日期那一档才有的现值」
-        (《方案 v48》§4 B), 末档只留最后一版 —— 936 年的事件会套上 954 年才有的名字
-        (实测 936 年的 c_kherson 读成「马扎尔迈杰希部」)。详见
-        docs/方案_v66_游牧迁移用地名.md。
-
-        早于首点 / 无表 / 无记录一律返回 '' (三者都只能退到静态名, 故同处理)。"""
+        The melt keeps only the last version of `specific_title_name`, so reading it alone would
+        put a later name on an earlier event. Before the first point, without a table, or without
+        a record, '' is returned so the caller uses the static name.
+        """
         hist = self._dyn_hist(tid)
         if not hist or not date:
             return ""
@@ -3111,10 +3015,12 @@ class Facts:
         return (pick or "").strip()
 
     def _site_ok(self, tid):
-        """该头衔是否适用【用地名】(v66) —— 只认**领地**头衔 (c_/d_/k_/b_/e_/h_…);
-        营地/毡帐/庄园等无地或家业头衔一律照旧: 它们的名字取自营地宗旨词与家业词
-        (v24/v28/v52), 与"那块地当时叫什么"无关, 且冒险者营地的动态名
-        (`specific_title_name` = 持剑骑手) 常在他取得之前就已定下, 沿革表锚点取不到。"""
+        """Whether the [place name] mode applies: land titles only (c_/d_/k_/b_/e_/h_…).
+
+        Camps, yurts and estates keep their own naming (camp-purpose words and house-estate
+        words), since "what the place was called then" does not apply to them and a camp's
+        dynamic name is often fixed before its holder acquires it.
+        """
         if tid is None:
             return False
         if self.title_kind(tid):
@@ -3122,22 +3028,24 @@ class Facts:
         return not ((self._lt.get(str(tid)) or {}).get("key") or "").startswith("x_")
 
     def _dyn_named(self, tid):
-        """该头衔是否有过**非空动态名** (v66) —— 游戏给过显示名 (游牧/宗族命名领域,
-        如「库曼顿巴斯部」) 的头衔, 其显示名就是那个名字本身, 不再叠层级词 (与 v26
-        `_specific_name` 早退同口径); 从未有过动态名的头衔照旧叠层级词。
+        """True when the title ever had a non-empty dynamic name (a nomadic or house-named
+        realm), in which case that name is the whole display name and no tier word is appended.
 
-        两个来源都认: 沿革表 (逐档, 含同战役其它传主缓存) 与末档熔件 —— 后者兜住
-        「沿革表未覆盖」的旧缓存。"""
+        Both sources count: the dated history (including the campaign's other caches) and the
+        melt's current value, the latter covering caches the history does not reach.
+        """
         hist = self._dyn_hist(tid)
         if hist and any((h.get("name") or "").strip() for h in hist):
             return True
         return bool(self._specific_name(tid))
 
     def _dyn_name_before(self, tid, before):
-        """逐档沿革表里 `before` **之前**的最近一个动态名 (v66); 取不到返回 ''。
+        """Latest dynamic name strictly before `before` in the dated history, else ''.
 
-        锚点用「最早一次取得日之前」, 故主角自己执政期内那些档天然落在锚点之后,
-        不会被取到 —— 重取旧地时不会把他自己上一次给的部名取回来。"""
+        The anchor is "before the earliest acquisition", so points inside the subject's own
+        tenure fall after it and taking an old place back does not restore his own last name for
+        it.
+        """
         hist = self._dyn_hist(tid)
         bk = cl.date_key(before)
         pick = ""
@@ -3154,18 +3062,15 @@ class Facts:
         return pick
 
     def _site_name(self, tid, cid=None, date=None):
-        """【用地名】(v66) —— 一块地在本篇里的称呼, 用于迁移/驻地这类**地点**语境。
+        """[Place name] of a title in this biography, for place contexts such as migration or a
+        seat of power.
 
-        用户 2026-09-27 拍板 D1-a:「读取该头衔**被主角占领的前一年**熔化存档中的
-        动态头衔名称」。取法:
-          ① cid 持有过该头衔 → 锚到**最早一次取得日之前**那一档的动态名;
-          ② 从未持有 / 没给锚点 → 取 date (缺省 as_of) 那一档的动态名;
-          ③ ①② 皆空 → 末档动态名 (仅当沿革表完全没覆盖该头衔, 即未回填的旧缓存)
-             → title_history_names 该日更名 → custom/name 静态名 → 本地化表 → key。
-
-        同一块地全篇一名 (锚点取最早一次取得), 故「迁得 X / 迁离 X」成对同名, 模型
-        不会再把四块不同头衔读成同一块地的反复得失。与 `title()` 的分工:
-        **政权名跟人走** (person_label 仍走 `_name_at_date`), **用地名跟地走**。"""
+        The dynamic name is read from the save before the subject's earliest acquisition of the
+        title; a title he never held uses the name at date (default as_of); if both are empty,
+        the melt's value, then the rename history at that date, then the static custom/name, the
+        localization table and finally the key. One place keeps one name across the biography, so
+        "moved to X" and "moved away from X" pair up.
+        """
         t = self._lt.get(str(tid)) or {}
         tnd = t.get("title_name_data") or {}
         base = (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()
@@ -3191,23 +3096,21 @@ class Facts:
                 return v
             s = str(best)
             if not re.search(r"[A-Za-z_]", s):
-                return s      # 直写名 (青徐 等) 原样返回
+                return s      # a literal (already Chinese) name is returned as is
         if base:
             return base
         return L.loc(self.table, t.get("key") or "") or (t.get("key") or "")
 
     def migration_lost_title(self, owner_id, date, new_holder, days=3):
-        """迁移失衔记忆的头衔**归位** (v66)。
+        """Recover the real title behind a migration lost-title memory, else None.
 
-        游戏给 `reason == migration` 的失衔记忆记的 `landed_title` 恒为**最初那块
-        郡** —— 实测卡尔 6 条全指 3993=`c_uman` (他 935 年就丢了的那块), 故年表不论
-        哪一次迁移都渲染成同一句, 连事件日也映射不到 (见 docs/方案_v65_游牧迁离.md §2)。
-        这里改由 title history 反查: 主角在 `date` 前后 `days` 天内、以
-        `type == 'migration'` **转出**给 `new_holder` 的那一块。
-
-        候选只在他当时的持有集里找 (便宜且必然命中); 同日多块迁出时按 `new_holder`
-        精确认领 (title history 里该日的新主), 取不到或撞车返回 None —— 调用方回退
-        记忆自带值, 行为与 v65 前一致。"""
+        The game records the `landed_title` of a `reason == migration` memory as always the
+        original county, so the timeline would render every migration with the same title and
+        could not map the event date. This looks the title up in title history instead: the one
+        the subject handed to `new_holder` with `type == 'migration'` within `days` of date.
+        Candidates come from his holdings at that time; several same-day transfers are matched on
+        `new_holder`, and an ambiguous or missing match returns None.
+        """
         if owner_id is None or not date:
             return None
         dk = _daynum(date)
@@ -3232,10 +3135,11 @@ class Facts:
         return None
 
     def _history_name_at(self, tid, date):
-        """title_history_names 在 date 生效的键/直写名; 无则 None。
+        """Key or literal name in title_history_names in effect at date, else None.
 
-        v53: h_china 宣称天命当日的短暂国号 (桂) 次日即由「国之根基」改定为秦;
-        历任/记忆句用次日选定的国号, 不下发 8.2 的「桂」。"""
+        For h_china the one-day realm name of the mandate-of-heaven proclamation is replaced the
+        next day, so the name chosen the next day is used.
+        """
         t = self._lt.get(str(tid)) or {}
         names = (t.get("title_name_data") or {}).get("title_history_names") or []
         if not date or not names:
@@ -3260,18 +3164,20 @@ class Facts:
         return best
 
     def _name_source_key(self, tid, date):
-        """头衔在某日期所用名的**来源键** (v52): `title_name_data.title_history_names`
-        中该日生效的键 (dynn_title_tang / h_china / 直写名 …); 无更名史返回 ''。
+        """Source key of the name in use at date: the title_history_names entry in effect
+        (dynn_title_* / h_china / a literal name), or '' without a rename history.
 
-        用途: 判「这个国号是不是宗族/王朝名」—— 中华皇朝 (h_china) 的国号在
-        汉/晋/隋/唐/宋… 之间轮转, 只有这类键 (`dynn_title_*`) 才配「大」字前缀。"""
+        Used to tell whether the realm name is a house/dynasty name, which is what the "Great"
+        prefix is reserved for.
+        """
         return str(self._history_name_at(tid, date) or "")
 
     def _is_short_title(self, tid):
-        """游戏「简称」头衔? (landed_titles 的 `definite_form = yes`, v52)
+        """True for a game "short name" title (`definite_form = yes` in landed_titles).
 
-        这类头衔的定位名自带国号/层级词 (神圣罗马帝国/拜占庭帝国/教宗国/达尔·伊斯兰),
-        取词时一律用本名, 不再追加层级词。"""
+        Such a title's own name already carries the state or tier word, so no tier word is
+        appended.
+        """
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         if not key:
             return False
@@ -3281,13 +3187,14 @@ class Facts:
             return False
 
     def throne_word(self, tid, cid=None, date=None):
-        """虚位御座的成稿用词 (v75): 位号不作地名 —— 只给官职词 (天皇 / 国王)。
+        """Wording for an empty throne: a throne name is a title of office, not a place, so only
+        the office word (emperor / king) is returned.
 
-        `k_chrysanthemum_throne` 是 landless + figurehead 的虚位御座, 它的名字
-        「高御座」是**位号**; 游戏自己按 `TITLE_TIERED_NAME` 机械拼出「高御座府」
-        (行文里御座成了一个「府」, 成稿不可用)。故凡成稿要写这个头衔, 一律只用
-        该头衔的官职词。判不出时返回 '' —— 调用方回退原写法 (逐字不变)。
-        cid / date 只作签名兼容 (御座词不分政体、不随年月变)。"""
+        `k_chrysanthemum_throne` is landless and figurehead, and the game's mechanical
+        TITLE_TIERED_NAME would turn it into a place-like string. '' when the throne is not
+        recognized, letting the caller keep its own wording. cid and date exist for signature
+        compatibility only: the throne word does not vary by government or date.
+        """
         if tid is None:
             return ""
         key = ((self._lt.get(str(tid)) or {}).get("key") or "")
@@ -3298,23 +3205,19 @@ class Facts:
         return v if v and not v.startswith(("$", "[")) else ""
 
     def _title_name_at(self, tid, date, cid=None, site=False):
-        """头衔在某日期的完整名 (v11): 按日期名 + 层级词 (独立王国=国)。
-        cid 提供时按该角色当前独立性取词 (历任/朝局用)。
+        """Full name of the title on a date: the dated name plus the tier word (an independent
+        kingdom uses the realm word). cid, when given, supplies the character's independence.
 
-        v38 (问题3): 独立性按该日期**时任持有者**判定 —— 头衔是「国」还是「路」
-        取决于它在那一刻是否自成一国。旧稿按区间中点取名, 又用**当前**持有者的
-        独立性取词, 于是同一个 k_qingxu 在 872 年 (皇帝兼领) 显示「青徐国」、
-        878 年 (臣子受任) 显示「青徐路」, 两条并列读来像两个政权。
-
-        v66: `site=True` 时取名口换 `_site_name` (【用地名】); 该头衔**有过动态名**
-        (游戏给过显示名) 时直接返回该名 (与 v26 的 `specific` 早退同口径, 不叠层级
-        词); 从未有过动态名者照旧叠层级词 —— 故封建/行政档的「阿扎克伯爵领」这类
-        行文逐字不变。默认 False。"""
+        Independence is judged by the then-holder at that date, because whether the title is a
+        realm or a circuit depends on whether it stood alone at that moment. With site=True the
+        naming outlet is `_site_name` ([place name]), and a title that ever had a dynamic name
+        returns that name with no tier word; the default False keeps the existing wording.
+        """
         if tid is None:
             return ""
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
-        # v75: 虚位御座只给官职词 (名 + 层级词会写出游戏机械串「高御座府」)
+        # An empty throne gets the office word only; name + tier word would be a mechanical string
         _tw = self.throne_word(tid)
         if _tw:
             return _tw
@@ -3322,10 +3225,10 @@ class Facts:
             nm = self._site_name(tid, cid=cid, date=date)
             if self._dyn_named(tid) or key.startswith(("x_", "e_minister_")):
                 return nm
-        elif key.startswith("x_"):  # 营地/家族等特殊头衔: 只给名字
+        elif key.startswith("x_"):  # camps/house titles and similar: name only
             return self._name_at_date(tid, date) or L.loc(self.table, key) or key
         else:
-            # v26: 动态头衔名本身就是游戏显示的完整名 (可萨田所部), 不叠层级词
+            # a dynamic title name is already the game's complete display name: no tier word
             specific = self._specific_name(tid)
             if specific:
                 return specific
@@ -3334,20 +3237,20 @@ class Facts:
             nm = L.loc(self.table, key)
         if not nm:
             nm = key
-        if key.startswith("e_minister_"):  # v13: 朝廷职司只给名字
+        if key.startswith("e_minister_"):  # court offices get the name only
             return nm
-        # v38 (问题3): 未显式给出 cid 时, 按该日期的时任持有者判独立性
-        # (title history 里这一条 holder 即当时之主)
+        # without an explicit cid, independence comes from the then-holder at that date
+        # (the holder recorded in title history for that moment)
         if cid is None:
             cid = self.holder_at(tid, date)
-        # v80 (点4): 政体按**持有者本人**取 (见 `_gov_for_word`)
+        # the government is the holder's own (see `_gov_for_word`)
         gov = self._gov_for_word(cid, tid, date)
         independent = self._is_independent(cid, date) if cid is not None else False
         if independent is None:
             independent = False
         word = self._tier_word_at(tid, gov, bool(independent), cid=cid, date=date)
-        # v28: 与 title() 同口径 — 中文建制地名 (州/府/京/郡/县收尾) 不叠层级词
-        # (此前历任写出「阶州州府」「商州州府」这类重复词)
+        # same rule as title(): a Chinese administrative place name takes no tier word, which
+        # avoids duplicated forms
         if key.startswith("c_") and word and _CN_PLACE_SUFFIX_RE.search(nm):
             return nm
         if word and not any(nm.endswith(w) for w in self._rank_words):
@@ -3355,21 +3258,23 @@ class Facts:
         return nm
 
     def _name_in_span(self, tid, start, end, cid=None):
-        """头衔在 [start, end] 区间内的稳定名 (v11)。
+        """Stable name of the title over [start, end].
 
-        取样点取**任期起点** (而非区间中点): 更名只在任期头尾出现 1~2 天的过渡名
-        (鄂路→青徐、青徐→周), 从起点取名正好落在改名之后那一版, 一段任期内
-        只有一个名字。v38 (问题3): 旧稿取区间**中点**, 同一段任期里跨过一次改名
-        就会在同一条里并写出两个名字 (「青徐国：…，青徐路：…」) —— 模型据此把
-        青徐读成两个政权。"""
+        The sample point is the tenure start, not the interval midpoint: renames produce 1-2 day
+        transitional names at the start and end of a tenure, so naming from the start yields the
+        version after the rename and keeps one name per tenure. A midpoint sample would emit two
+        names in a single tenure when a rename falls inside it.
+        """
         if tid is None:
             return ""
         return self._title_name_at(tid, start, cid)
 
     def _hold_intervals(self, cid, as_of=None):
-        """角色持有头衔的时间区间 (v11): {tid: [(gain, loss|None, loss_type), ...]}。
-        title history 精确日期为主 (索引 O(1)); realm_history 快照兜底
-        (title history 被剪除的头衔, 如已毁的王国)。结果按 (cid, as_of) 缓存。"""
+        """Holding intervals of the character {tid: [(gain, loss|None, loss_type), ...]}.
+
+        Title history provides exact dates through an O(1) index, while realm_history snapshots cover
+        titles that title history has pruned (destroyed kingdoms, for instance). Cached per (cid, as_of).
+        """
         as_of = as_of or self.as_of
         cache_key = (cid, as_of)
         if cache_key in self._hold_cache:
@@ -3379,7 +3284,7 @@ class Facts:
         if as_of == self.as_of:
             out = {tid: list(ivs) for tid, ivs in base.items()}
         else:
-            # 不同 as_of: 按日期过滤 (开区间折到 as_of)
+            # different as_of: filter by date, folding open intervals to as_of
             ao = cl.date_key(as_of) if as_of else None
             for tid, ivs in base.items():
                 kept = []
@@ -3392,7 +3297,7 @@ class Facts:
                         kept.append((g, l, lt))
                 if kept:
                     out[tid] = kept
-        # realm 快照兜底: 连续持有段 → 一段区间 (丢头衔日 = 下个快照日)
+        # realm snapshot fallback: consecutive snapshots become one interval (loss = next snapshot date)
         ridx = self._realm_holder_titles.get(cid) or {}
         n_snaps = len(self._realm_snaps)
         for tid, idxs in ridx.items():
@@ -3420,20 +3325,17 @@ class Facts:
         return out
 
     # ------------------------------------------------------------------
-    # v74 (问题1, 用户拍板「腾位置只针对《家室列传》」): 头衔承位链
+    # Title succession chains
     # ------------------------------------------------------------------
-    # 存档 `landed_titles[tid].history` 里**同日多人相继时该日的值是列表**
-    # (Clausewitz 重复键由 `_merge_dup_pairs` 合并), `_title_seqs` 已按日期排好;
-    # 这里把它展开成「谁在何时接谁的位」的序列, 供两条判据使用:
-    #   · `seat_note(cid)`       该角色**现任头衔**的前任们若死于主角之手 → 一句承位句
-    #                            (只进《家室列传》的子女档案);
-    #   · `seat_succession(cid)` 死者之位的后续持有者链 → 顶层事实键 (校验与旁证用)。
-    # 实测 (田所档): 加贺国 891.9.17–12.13 之间经 惟条/惟恒/惟彦/行有/源当时/源当元
-    # 六人, 皆被主角所杀, 其位终归主角之子 田所久保; 日高见国 894.4.19–8.26 同理。
-    # 见 docs/方案_v74_田所三问题.md §1.5/§1.6.1。
+    # In the save's `landed_titles[tid].history` a day with several successive holders holds a
+    # list (Clausewitz duplicate keys merged by `_merge_dup_pairs`), and `_title_seqs` is already
+    # date-sorted. This expands it into a "who took over from whom, when" sequence used by two
+    # tests: `seat_note(cid)`, a succession sentence when the predecessors of a current title
+    # died at the subject's hand (house biography child files only), and `seat_succession(cid)`,
+    # the holder chain after a death, exposed as a top-level fact key for verification.
 
     def _title_holder_seq(self, tid):
-        """头衔的持有者序列 [(date, holder_id, type), …] (同日列表按序展开)。"""
+        """Holder sequence of the title [(date, holder_id, type), …], same-day lists in order."""
         if tid is None:
             return []
         out = []
@@ -3447,13 +3349,13 @@ class Facts:
         return out
 
     def _is_landed_tid(self, tid):
-        """有地头衔 (排除营地/毡帐/世族庄园/朝廷职司)。"""
+        """True for a landed title (excludes camps, yurts, house estates and court offices)."""
         key = ((self._lt.get(str(tid)) or {}).get("key") or "")
         return bool(key) and not key.startswith(("x_", "e_minister_")) \
             and not self._is_estate_title(tid)
 
     def _seat_killed_ids(self):
-        """主角击杀集 (v74): 与 `_killed_by_player` 同源, 但只取 id 集 (轻量、可缓存)。"""
+        """Ids the subject killed, from the same sources as `_killed_by_player` but cacheable."""
         if getattr(self, "_seat_killed_cache", None) is not None:
             return self._seat_killed_cache
         pid = self.cache.get("player_id")
@@ -3484,12 +3386,12 @@ class Facts:
         return out
 
     def _seat_prior_killed(self, cid, tid, gain):
-        """该头衔上**紧邻此人之前、且死于主角之手**的前任链 [(date, id), …]。
+        """Chain of predecessors on this title who immediately precede this person and died at
+        the subject's hand, as [(date, id), …] in chronological order.
 
-        往前走到第一位既不与本人同日、又非主角所杀者即止 (那人是该位的「上一手
-        来处」)。**同日的前任视为过手** (田所档 胆泽国 894.8.26 父子同日受官:
-        主角先受该位、随即转给其子 田所德川 —— 那位当日过手者不该截断承位链)。
-        返回按时间正序。"""
+        Walking back stops at the first predecessor who neither shares the day nor was killed by
+        the subject. A same-day predecessor counts as a pass-through and does not break the chain.
+        """
         seq = self._title_holder_seq(tid)
         if not seq:
             return []
@@ -3509,7 +3411,7 @@ class Facts:
                 j -= 1
                 continue
             if cl.date_key(d) >= cl.date_key(gain):
-                j -= 1                      # 同日过手 (含主角本人) — 越过
+                j -= 1                      # same-day pass-through (including the subject): skip
                 continue
             if h in killed:
                 prev.append((d, h))
@@ -3520,7 +3422,7 @@ class Facts:
         return prev
 
     def _death_info(self, cid):
-        """(卒日, 死因, 凶手) — 缓存优先, 熔件 `dead_data` 兜底 (v74)。"""
+        """(death date, death reason, killer): cache first, melt dead_data as fallback."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         d = rec.get("death") or {}
         dd = (self._chars.get(str(cid)) or {}).get("dead_data") or {}
@@ -3530,18 +3432,14 @@ class Facts:
         return (d.get("date") or dd.get("date"), d.get("reason") or dd.get("reason"), k)
 
     def seat_note(self, cid):
-        """承位句 (v74 问题1, 只给《家室列传》的子女档案):
-        「承位：加贺国司之任：源能有891年9月17日神秘死亡；
-          大和惟条、大和惟恒、大和惟彦、大和行有、源当时、源当元相继居之，未几皆卒；
-          891年12月13日归田所久保。」
+        """Succession sentence for the children's files of the house biography, else ''.
 
-        判据 (全程序直算): 该角色现任有地头衔的**前任**里, 连续一串死于主角之手的
-        那一段 —— 这正是用户说的「刀下亡魂是为了给我的孩子腾位置」。
-
-        v75 (凶手点名, 用户 2026-09-27): 公开档不点名 —— 首位前任的结局走
-        `death_clause` 的公开文案 (神秘死亡/失踪而亡…), 其余一串只写「未几皆卒」;
-        整串**都**已公开 (killer_known ∨ 死因自带公开性) 时才照旧写「皆死于X之手」
-        (用户拍板 D1: 已公开者保留点名)。无此链返回 ''。"""
+        Computed entirely from data: the run of consecutive predecessors of the character's
+        current landed title who died at the subject's hand — the deaths that cleared the seat
+        for his child. The first predecessor's fate uses the public `death_clause` wording and
+        the rest are summarized; the killer is named only when every death in the chain is
+        already public.
+        """
         pid = self.cache.get("player_id")
         if pid is None or cid is None:
             return ""
@@ -3582,12 +3480,13 @@ class Facts:
         return "；".join(bits)
 
     def seat_succession(self, cid):
-        """死者之位的后续持有者链 (v74): [{"title", "chain": [...], "settled": {...}}]。
+        """Holder chain after this character's death or loss of office, as
+        [{"title", "chain": [...], "settled": {...}}].
 
-        链从「此人失位/卒后」的下一位算起, 走到**第一位不是主角所杀**的持有者为止;
-        与该持有者**同日**相继者一并收入 (田所档 胆泽国 894.8.26 即父子同日受官,
-        其位的最终归处是主角之子 田所德川)。全程序直算, 与《家室列传》的承位句
-        (`Facts.seat_note`) 共用同一份头衔序列。"""
+        The chain starts at the next holder and runs to the first holder not killed by the
+        subject, including same-day successors. Computed from data, sharing the title sequence
+        with `Facts.seat_note`.
+        """
         out = []
         if cid is None:
             return out
@@ -3618,31 +3517,31 @@ class Facts:
         return out
 
     def _is_nomad_camp(self, tid):
-        """游牧毡帐头衔 (x_c_nomad_*) — 驻地而非领地 (v26)。"""
+        """True for a nomadic yurt title (x_c_nomad_*), a dwelling rather than land."""
         return ((self._lt.get(str(tid)) or {}).get("key") or "") \
             .startswith("x_c_nomad_")
 
-    # v28: 无地/家业头衔三分 — 世族庄园 (_nf_) / 无地冒险者营地 (_laamp_ 等) /
-    # 游牧毡帐 (x_c_nomad_)。旧代码把一切 x_ 前缀当「无地冒险者营地」, 使
-    # 中国世族 (x_nf_552「陆家族」家族庄园) 被写成「无地冒险者营地」。
+    # Three kinds of landless/house title: house estates (_nf_), landless adventurer camps
+    # (_laamp_ and similar) and nomadic yurts (x_c_nomad_). An x_ prefix alone does not make a
+    # title an adventurer camp.
     _ESTATE_KEY_MARK = "_nf_"
     _CAMP_KEY_PREFIXES = ("x_mc_", "x_script_", "x_ho_")
 
     def _is_estate_title(self, tid):
-        """家族庄园头衔? (x_nf_/c_nf_/d_nf_ — 中国世族、日本武家、家族地产)"""
+        """True for a house-estate title (x_nf_/c_nf_/d_nf_: clans, warrior houses, family land)."""
         if tid is None:
             return False
         return self._ESTATE_KEY_MARK in ((self._lt.get(str(tid)) or {}).get("key") or "")
 
     def _eff_rank(self, tid):
-        """头衔的**有效层级** (v68 问题5): 世族庄园 (`_nf_`) 是家业而非领地 —
-        层级一律按 0 计, 与无地营地/毡帐同档。游戏侧这三类头衔都带
-        `landless = yes` / `noble_family = yes` (`common\\landed_titles\\04_china_noble_families.txt`),
-        UI 的领地栏为空; 旧稿按 key 前缀给庄园 `c_`/`d_` 的 2/3 级, 无地世族
-        遂以伯爵领身份入选首要头衔, 家业名当领地地名 ⇒「张氏刺史」(实测 973.1.12 死者)。
+        """Effective rank of a title: a house estate (`_nf_`) is family property, not land, so it
+        counts as rank 0 like a landless camp or yurt.
 
-        与项目既有口径一致: `_has_current_landed_title`(v36) 与 `_primary_group`(v28)
-        早已把庄园排除在真领地外, 本函数把其余按前缀算层级处一并收口。"""
+        Those titles carry `landless = yes` / `noble_family = yes`
+        (`common/landed_titles/04_china_noble_families.txt`) and the UI land column is empty, so
+        ranking an estate by its `c_`/`d_` prefix would let a landless clan enter the primary
+        title slot as a county.
+        """
         if tid is None:
             return 0
         if self._is_estate_title(tid):
@@ -3651,7 +3550,7 @@ class Facts:
         return self._TT_RANK.get(key[:2], 0)
 
     def _is_adventurer_camp(self, tid):
-        """无地冒险者营地头衔? (x_d_laamp_* 等; 与游牧毡帐/家族庄园区分)"""
+        """True for a landless adventurer camp title (x_d_laamp_* and similar), not a yurt/estate."""
         if tid is None:
             return False
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
@@ -3659,12 +3558,14 @@ class Facts:
             return False
         return "_laamp_" in key or key.startswith(self._CAMP_KEY_PREFIXES)
 
-    # v29 (问题2): 冒险者（营地）时期区间 — 【冒险者行踪】只记这段时期
+    # Adventurer (camp) period intervals: the adventurer itinerary section covers only these.
     def camp_intervals(self, cid=None, kind="camp"):
-        """角色持有该种驻地头衔的区间 [(gain, loss|None)] (按起始日排序)。
+        """Intervals [(gain, loss|None)] in which the character held this kind of dwelling title,
+        sorted by start date.
 
-        v64 (问题1): `kind` 可取 "camp" (无地冒险者营地) / "nomad" (游牧毡帐) ——
-        【冒险者行踪】与【游牧行踪】各取一种; 缺省 "camp" 与旧行为逐字相同。"""
+        kind is "camp" (landless adventurer camp) or "nomad" (yurt); the two itinerary sections
+        each take one.
+        """
         pid = self.cache.get("player_id") if cid is None else cid
         if pid is None:
             return []
@@ -3679,7 +3580,8 @@ class Facts:
         return out
 
     def in_camp_period(self, date, cid=None, kind="camp"):
-        """date 是否落在某个驻地头衔持有区间内 (含端点; kind 见 `camp_intervals`)。"""
+        """True when date falls inside a dwelling-title interval (endpoints included); kind as in
+        `camp_intervals`."""
         dk = cl.date_key(date) if date else None
         if dk is None:
             return False
@@ -3689,8 +3591,8 @@ class Facts:
         return False
 
     def title_kind(self, tid):
-        """无地/家业头衔语义: 'estate' 世族庄园 / 'nomad' 毡帐 / 'camp' 冒险者营地 /
-        '' 领地头衔 (含 c_/b_ 州府县堡)。"""
+        """Semantic kind of a title: 'estate' house estate, 'nomad' yurt, 'camp' adventurer camp,
+        '' for a landed title (including counties and baronies)."""
         if tid is None:
             return ""
         if self._is_nomad_camp(tid):
@@ -3704,12 +3606,11 @@ class Facts:
     _EAST_ASIAN_ESTATE_TPL = {"han", "chinese", "bai", "yi"}
 
     def estate_kind_word(self, tid, cid=None, date=None):
-        """庄园的汉文类别词 (v41b 用户拍板1: 用游戏原文): 日本 → 武家庄园;
-        东亚 (汉/中华/白/彝) 或天朝官制 → 世族庄园; 其余 → 世族
-        (`game_concept_noble_family` = 世族, 行政制领地内的强宗头衔)。
-
-        旧实现用「政体 ∈ 中华系 **或** 文化 ∈ 东亚」判定 —— 政体是行政制不等于
-        文化是中华, 于是希腊人行政制的世族头衔被写成中华味的「世族庄园」。"""
+        """Chinese category word for an estate, taken from the game's own wording: Japanese ->
+        warrior-house estate; East Asian culture (han/chinese/bai/yi) or celestial government ->
+        clan estate; otherwise the plain noble-family word, which is how administrative realms
+        refer to powerful clans. Culture, not government, decides the East Asian case.
+        """
         tpl = self.culture_template(cid) if cid is not None else ""
         if tpl == "japanese":
             return "武家庄园"
@@ -3723,21 +3624,13 @@ class Facts:
         return "世族"
 
     def _primary_group(self, held, cid=None):
-        """按持有集计算「主要头衔组」[(gain_date, tid)] (v11): held = {tid: gain_date}
-        - 州府/县/堡 (c_/b_) 不进组 (如 898-911 的登州伯爵领等);
-        - 有 公国(d_) 及以上或营地(x_) 时: 层级 ≥ 王国只留首要; 公国/营地层取
-          首要 + 全部营地 (同级营地/庄园并写, 游牧营地/淄青公国);
-        - 只有 州府/县 时: 取最高层级单个。
-        - v13: 朝廷职司 (e_minister_*) 不进组 (官职非领地, 由官职行呈现)。
-        - v26: 游牧毡帐 (x_c_nomad_*) 是驻地不是领地 — 持有任何领地头衔时
-          不进 major 组, 否则「伯爵领 + 毡帐」的游牧主角历任只出现营地,
-          取得伯爵领一事完全丢失 (田所2: 891 得也勒克河/巴赫穆特两领无记录)。
-        - v64 (问题1): 毡帐**任何情形**都不占相位 —— 旧稿只排除了 major 组,
-          回落的 `cands` 分支仍会把毡帐当相位, 于是游牧者每次 migration 迁离、
-          领地清空的那一天都多出一行「任菲利普游牧营地」(实测卡尔 6 行:
-          935.2.25 / 936.1.19 / 937.10.17 / 939.10.22 / 945.2.11 / 950.10.18)。
-          游戏侧毡帐 `landless: true`, UI 的首要头衔栏本就为空, 故此处返回 []
-          (无地可「任」), 当日的失地由 `held_titles` 的空组相位留痕。"""
+        """Primary title group for a holding set {tid: gain_date} -> [(gain_date, tid)].
+
+        Counties and baronies never enter; at duchy level or above, kingdom rank keeps only the primary
+        while duchy/camp level keeps the primary plus every camp. Court offices are posts, not land,
+        and nomadic yurts are dwellings (`landless: true`), so neither occupies the slot and [] means
+        the land lost that day is reported by `held_titles`.
+        """
         if not held:
             return []
         items = []
@@ -3747,20 +3640,17 @@ class Facts:
                 continue
             items.append((tid, self._eff_rank(tid), gain))
         if not items:
-            return []  # 仅持朝廷职司 (官职非领地)
+            return []  # court offices only (posts, not land)
         order = self._domain_order(cid) if cid is not None else {}
         majors = [it for it in items
                   if (it[1] >= 3 or it[1] == 0)
                   and not self._is_nomad_camp(it[0])
                   and not self._is_estate_title(it[0])]
         if not majors:
-            # 仅州府/县/堡 (或仅庄园/毡帐): 最高层级最早获得的一个
-            # (v28: 有领地时庄园不再占位, 领地阶段照常出现在历任里 —
-            #  陆氏 869 受任阶州此前被 x_nf_ 庄园挤掉, 历任只剩一行)
-            # v36 (用户拍板5): 男爵领 (rank 1) 不入相位 — 头衔材料最低取到州府 (c_);
-            # 只剩男爵领时返回 [] (该日不改相位, 由祖业/营地行承担)。
-            # v64 (问题1): 游牧毡帐同样不占相位 (理由见 docstring) —— 只剩毡帐
-            # 的游牧者返回 [], 由 `held_titles` 出「迁离X」的失地句。
+            # Counties/baronies only (or estates/yurts only): highest rank, earliest gain.
+            # Estates never occupy the slot while there is land, baronies (rank 1) never enter at
+            # all, and yurts never occupy it either (see the docstring) — the loss of land is
+            # reported by `held_titles` instead.
             cands = [it for it in items
                      if it[1] != 1 and not self._is_nomad_camp(it[0])]
             if not cands:
@@ -3772,7 +3662,7 @@ class Facts:
         tops = sorted([it for it in majors if it[1] == max_tier],
                       key=lambda it: (order.get(int(it[0]), 10 ** 6),
                                       cl.date_key(it[2])))
-        if max_tier >= 4:  # k_ 及以上: 只记首要
+        if max_tier >= 4:  # kingdom and above: primary title only
             t0 = tops[0]
             return [(t0[2], t0[0])]
         camps = [it for it in majors if self.title_kind(it[0]) == "camp"]
@@ -3780,17 +3670,13 @@ class Facts:
         return [(g, t) for t, _r, g in sorted(picked, key=lambda it: cl.date_key(it[2]))]
 
     def _domain_order(self, cid):
-        """角色「辖地列表」的次序 (v58 问题1) → {tid: 下标}。
+        """Order of the character's domain list -> {tid: index}.
 
-        游戏写进的 `domain` 列表把**首要头衔放在首位**（实测: 驼背戈特弗里德
-        `dead_data.domain = [879 下洛塔林吉亚, 819 布拉班特, …]`，且他当日的承袭
-        记忆 `landed_title` 也是 879；玩家 `domain[0] = d_toscana` 与游戏 UI 一致）。
-        旧稿同级并列时只比「取得日」，同日则退化成**头衔 id 序**（819 先于 879），
-        于是两条同日到手的公国头衔里取到了布拉班特。
-
-        取值链: 死者的 `dead_data.domain`（死亡时烘死, 最稳）→ 活人
-        `landed_data.domain` → 缓存 `landed.domain`（仅玩家有）。取不到返回 {}
-        （调用方退回旧口径）。"""
+        The game's `domain` list puts the primary title first, so ties at the same rank are broken
+        by this index rather than by title id. Read from a dead character's `dead_data.domain`
+        (baked at death, most reliable), then `landed_data.domain`, then the cache's
+        `landed.domain` (players only). {} when unavailable.
+        """
         if cid is None:
             return {}
         key = str(cid)
@@ -3815,7 +3701,8 @@ class Facts:
         return out
 
     def inherit_consumed(self, cid):
-        """已被继承合句消费的记忆对象 id 集 (v58 问题8; 与 `inherit_pairs` 同源)。"""
+        """Ids of memory objects already consumed by a merged inheritance sentence (same source as
+        `inherit_pairs`)."""
         memo = getattr(self, "_inherit_consumed_memo", None)
         if memo is None:
             memo = self._inherit_consumed_memo = {}
@@ -3828,22 +3715,18 @@ class Facts:
         memo[key] = ids
         return ids
 
-    # ---- v58 (问题8): 继承合句 (谁去世, 谁从他那里承袭了哪块领地) ----
+    # ---- merged inheritance sentences (who died, who inherited which land from him) ----
     #
-    # 存档里「父死」与「子承袭」是同日两条独立记忆:
-    #   relative_died         participants {dead_relation: <父>}
-    #   ascended_throne_memory vars reason=inheritance, landed_title=<头衔>,
-    #                          participants {flavor_character: <父>}
-    # 旧稿逐条出句 → 「X承袭下洛塔林吉亚公国。」＋「X的亲属Y去世。」两行割裂,
-    # 看不出「因为父死, 所以子继承」; 而「亲属」还会被 v45 亲缘定语按**板块传主**
-    # 算词插成「亲属公公」。现按 (同日/邻近 + 同一被继承者) 合为一句:
-    #   「1074年2月25日，下洛塔林吉亚公爵大胡子戈特弗里德·维格里希去世，
-    #     布永伯爵驼背戈特弗里德·维格里希从其手中承袭下洛塔林吉亚公国。」
-    # 继承者称谓取**继承前一日**（否则会写成「下洛塔林吉亚公爵X承袭下洛塔林吉亚公国」）。
+    # The save records a parent's death and the child's inheritance as two separate same-day
+    # memories: `relative_died` with participants {dead_relation: <parent>} and
+    # `ascended_throne_memory` with vars reason=inheritance, landed_title=<title> and participants
+    # {flavor_character: <parent>}. Emitting them separately hides the causal link, so memories
+    # that are near in date and share the deceased are merged into one sentence. The heir's label
+    # is taken from the day before the inheritance, when he does not yet wear the new title.
     _INHERIT_MERGE_DAYS = 3
 
     def _mem_var(self, mem, flag):
-        """记忆 vars 里某 flag 的取值 (identity 优先, 否则 value)。"""
+        """Value of a flag in a memory's vars (identity first, then value)."""
         for v in (mem.get("vars") or []):
             if v.get("flag") == flag:
                 return v.get("identity") if v.get("identity") is not None \
@@ -3851,7 +3734,7 @@ class Facts:
         return None
 
     def _inherited_title_names(self, cid, prev, date):
-        """cid 在 date 从 prev 手中按继承得到的头衔名列表 (title history)。"""
+        """Names of the titles cid inherited from prev on date, from title history."""
         idx = getattr(self, "_inherit_title_index", None)
         if idx is None:
             idx = {}
@@ -3871,9 +3754,9 @@ class Facts:
         return out
 
     def _inherit_line(self, heir, prev, date, landed_title=None):
-        """继承合句正文 (不含日期前缀); 无料返回 ''。"""
+        """Body of a merged inheritance sentence, without the date prefix; '' when nothing to say."""
         dead = self.person_label(prev, date=date, style="brief") or self.name_or(prev)
-        # 继承者称谓取继承前一日 (当天他已戴上新头衔, 会与新得的头衔撞车)
+        # the heir's label comes from the day before: on the day itself he already wears the new title
         heir_lbl = self.person_label(heir, date=_day_before(date), style="brief") \
             or self.name_or(heir)
         if not dead or not heir_lbl:
@@ -3892,10 +3775,12 @@ class Facts:
         return f"{dead}去世，{heir_lbl}从其手中承袭{tname}。"
 
     def inherit_pairs(self, cid):
-        """cid 的 (死讯记忆, 继承记忆) 配对 (按 cid 记忆化)。
+        """Pair the character's death memories with his inheritance memories (memoized per cid).
 
-        返回 {死讯记忆对象 id: (合句正文, {被消费的记忆对象 id})} —— 调用方
-        跳过被消费的记忆、改用合句（日期前缀由调用方补）。"""
+        Returns {death memory object id: (merged sentence, {consumed memory object ids})}; the
+        caller skips the consumed memories and emits the merged sentence, adding the date prefix
+        itself.
+        """
         memo = getattr(self, "_inherit_pairs_memo", None)
         if memo is None:
             memo = self._inherit_pairs_memo = {}
@@ -3938,32 +3823,20 @@ class Facts:
         return out
 
     def _primary_title_at(self, cid, as_of=None, held_through=None):
-        """角色在 as_of 日期的首要头衔 (tier, tid): 最高层级中最早获得者;
-        无头衔 (仅营地) 返回 (None, tid)。
-        v36 (用户拍板5): **男爵领 (rank 1) 不入首要头衔** — 头衔材料最低取到州府 (c_),
-        男爵领只在「死于X / 生于X」这类地名处使用; 营地/庄园 (rank 0, 见 `_eff_rank`) 照旧保留。
+        """Primary title of the character at as_of -> (tier, tid); (None, None) if none qualifies.
 
-        v41 (问题1) 关键修正: 持有区间按 **as_of 与末档之间**的持有状态算,
-        区间起点可能晚于 as_of (福尔科 1078 年的事件里, 他被 1080 年才到手的
-        热那亚公爵挤出称谓); 故此处再按 as_of 过滤一次 —— 取得日晚于 as_of 的
-        头衔在那一刻**尚未持有**。
-
-        v61 (问题2): `held_through` 非空时改判「**与 held_through 相交**」——
-        区间 (gain, loss) 满足 gain <= held_through <= loss 即算持有
-        (loss 为空 = 仍持; 卒日当天失去也算持有)。缺省 (None) 行为与 v60 前一致;
-        仅**已卒传主**需要它: 卒日当天失去全部头衔, 旧判据「末档仍在持」会判成
-        「无头衔」, 使 `_my_realm_tids()` 空集、朝廷职司的政权门槛 fail-open
-        (唐六部因此混进别国传记; 实测崔佛终传)。
-        v68 (问题5): 层级一律走 `_eff_rank` —— 无地世族庄园 (`c_nf_`/`d_nf_`) 按 0 级,
-        仅持庄园者返回 (None, 庄园 tid), 与「仅营地」同态; 称谓由 `official_title`
-        的庄园分支出「X氏乡绅」, 家业名不再被当作领地地名 (旧稿出「张氏刺史」)。"""
+        Baronial titles (rank 1) never qualify and stay place names, while camps and estates (rank 0)
+        count. Acquisitions after as_of are filtered out. `held_through` tests intersection instead of
+        "still held in the last save", which a dead subject needs or losing every title on his death
+        day would let the court-office government gate fail open.
+        """
         held = {}
         ao = cl.date_key(as_of) if as_of else None
         through = cl.date_key(held_through) if held_through else None
         for tid, ivs in self._hold_intervals(cid, as_of).items():
             if through is not None:
                 gain = None
-                for (g, l, _lt) in ivs:      # 与 held_through 相交的那一段
+                for (g, l, _lt) in ivs:      # the segment that intersects held_through
                     if g and cl.date_key(g) > through:
                         continue
                     if l and cl.date_key(l) < through:
@@ -3993,18 +3866,20 @@ class Facts:
         return tier, tid
 
     def held_titles(self, cid):
-        """历任 (v11): 只记首要头衔的变化; 层级≤公国时同级营地/庄园并写。
-        依 title history (精确) + realm_history (兜底)。
-        v24: 阶段行用游戏口径统治者称呼 — 营地「东邪吸毒头目（无地冒险者营地）」、
-        领地「撒丁尼亚王 / 撒丁王 / 贝州侯」(文化词族×层级×政体), 不再写「任X之主」。
-        返回 ['1200年10月18日任东邪吸毒头目（无地冒险者营地）', ...]"""
+        """Office history: one line per change of primary title, with same-rank camps/estates
+        written alongside when the rank is a duchy or below.
+
+        Built from title history (exact dates) with realm_history snapshots as fallback. Stage lines
+        use the game's ruler address words (culture family x tier x government). Returns one string per
+        phase, each beginning with its date.
+        """
         intervals = self._hold_intervals(cid)
         events = []
         loss_types = {}  # (tid, date_key) -> type
         for tid, ivs in intervals.items():
-            # v36 (用户拍板5): 男爵领 (rank 1) 不进历任 — 最低取到州府 (c_);
-            # 男爵领只在「死于X / 生于X」处作地名。
-            # v68 (问题5): 层级走 `_eff_rank` (庄园按 0 级, 仍进历任 —— 家业是身份)。
+            # Baronial titles (rank 1) never enter the office history and serve only as place
+            # names; ranks come from `_eff_rank`, so estates count as rank 0 and still appear
+            # (family property is part of one's standing).
             if self._eff_rank(tid) == 1:
                 continue
             for (g, l, lt) in ivs:
@@ -4013,7 +3888,7 @@ class Facts:
                     events.append((cl.date_key(l), l, tid, -1))
                     loss_types[(tid, cl.date_key(l))] = lt
         events.sort(key=lambda x: x[0])
-        # 按日批量应用: 同日事件整体生效 (毁营地/建营地/得州府同日, 避免中间态)
+        # apply per day: same-day events take effect together, avoiding intermediate states
         by_day = {}
         for dk, d, tid, delta in events:
             by_day.setdefault(dk, []).append((d, tid, delta))
@@ -4030,9 +3905,8 @@ class Facts:
                 else:
                     held.pop(tid, None)
             group = self._primary_group(held, cid)
-            # v64 (问题1): 只剩游牧毡帐的相位 —— 毡帐不算领地, 故不「任」毡帐,
-            # 但当日失去的领地要留痕 (空组相位, 渲染成「935年2月25日迁离库曼顿巴斯部」)。
-            # 判据限于「手上仍有毡帐」, 使「被褫夺殆尽」等其它情形逐字不变。
+            # A phase with only nomadic yurts left: yurts are not land, so no office is recorded,
+            # but the land lost that day must be logged as an empty-group phase.
             nomad_only = (not group) and any(
                 self.title_kind(t) == "nomad" for t in held)
             if group and group != prev_group:
@@ -4044,7 +3918,7 @@ class Facts:
             prev_held = set(held)
         if not phases:
             return []
-        # 阶段终点: 下一阶段开始日 / 无则 as_of (或末档)
+        # phase end: the next phase's start, else as_of (or the last save)
         span_end = self.as_of or self.cache.get("last_date")
         out = []
         prev_ids = []
@@ -4055,21 +3929,14 @@ class Facts:
             for t in ids:
                 key = (self._lt.get(str(t)) or {}).get("key") or ""
                 if key.startswith("x_") or self.title_kind(t) in ("camp", "estate"):
-                    # v24: 营地阶段用游戏口径 (营地宗旨词: 头目/领袖/队长…);
-                    # 词取不到时回退旧式「X之主」防失名。
-                    # v26: 游牧毡帐 (x_c_nomad_*) 不给冒险者宗旨词, 只写毡帐名。
-                    # v28: 家族庄园 (x_nf_*) 是家业而非无地营帐, 用持有者词
-                    # (乡绅/当主/户长) 并标注庄园类别。
-                    # v52 (问题2): 无地冒险者营地真键是 `d_laamp_*` (非 x_ 前缀),
-                    # 判据改走 `title_kind`; 持有者行只用营地**本名** (不含「营地」
-                    # 层级词), 与领地「象州伯爵 / 象州伯爵领」的分工同构。
-                    # v66: 毡帐/营地/庄园**不走**用地名 —— 它们的名字取自营地宗旨词与
-                    # 家业词 (v24/v28/v52), 与"那块地当时叫什么"无关; 且无地冒险者营地
-                    # 的动态名 (`specific_title_name` = 持剑骑手) 常在他取得之前就定下,
-                    # 沿革表锚点取不到。逐字保持 v52 行为。
-                    # v68 (问题5): 判据由 `x_` 前缀改为 `title_kind` — 无地世族庄园的
-                    # 键是 `c_nf_`/`d_nf_` (非 x_ 前缀), 旧稿落进领地支写成
-                    # 「952年3月23日受任张氏女伯爵」(实测 73985)。
+                    # Camp phases use the game's camp-purpose word (chief/leader/captain…) and
+                    # fall back to "lord of X". Yurts get no camp word, only the yurt name; house
+                    # estates use a holder word (squire/head of house) plus their category. The
+                    # decision goes through `title_kind`, because landless adventurer camps and
+                    # estates do not use an x_ prefix. Holder lines show the base name only.
+                    # Camps, yurts and estates never use the [place name] mode: their names come
+                    # from camp-purpose and family-estate words, and a camp's dynamic name is
+                    # often fixed before its holder acquires it, so no history anchor exists.
                     nm = self._name_at_date(t, d) or self.title_base_name(t)
                     if self._is_nomad_camp(t):
                         parts.append(nm)
@@ -4078,24 +3945,20 @@ class Facts:
                         ew = self.estate_kind_word(t, cid)
                         w = self._estate_holder_word(cid)
                         base = f"{nm}{w}" if nm and w else (nm or "")
-                        # v29b: 类别词改逗号同位语 (「周家族乡绅，世族庄园」)
+                        # the category word follows as a comma appositive
                         parts.append(f"{base}，{ew}" if base else "")
                         continue
                     w = self._camp_holder_word(cid, d)
                     base = f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else "")
                     parts.append(f"{base}，无地冒险者营地" if base else "")
                 else:
-                    # v24: 领地阶段用「头衔地名+统治者称呼词」(游戏口径,
-                    # 文化/政体感知: 撒丁尼亚王/撒丁王/贝州侯…), 不再用「X之主」。
-                    # v66: 地名改走【用地名】(按档取该头衔被主角占领之前的动态名)
-                    # —— 旧稿读末档粘滞名, 于是游牧期四块不同头衔全写成
-                    # 「库曼顿巴斯部」, 历任读来像同一块地反复得失。
-                    # 取样点**照旧**用相位中点 `mid` (v11: 一段任期内只取一个名,
-                    # 「k_viet 899.9.5 夺得、次日改称桂」这类年内更名不分裂成两名);
-                    # 用地名锚点由 cid 最早取得日给出, 与 mid 无关。
-                    # 例外: **承袭**相位照旧读当日的名 —— 继承来的政权名 (宗族命名的
-                    # 汗国/苏丹国) 正是那一行要说的东西; 用地名会把「任库曼顿巴斯部
-                    # 国王」写成「任高昌国王」(尼克 954.7.12 实测)。
+                    # Land phases use the title's place name plus the game's ruler address word
+                    # (culture- and government-aware). The place name comes from the [place name]
+                    # mode, sampled at the phase midpoint so a mid-tenure rename does not split
+                    # one tenure into two names; its anchor is the subject's earliest acquisition
+                    # and is independent of the midpoint. An inherited phase uses the name of the
+                    # day instead, because the inherited realm name (a house-named khanate or
+                    # sultanate) is exactly what that line reports.
                     mid = self._span_mid(d, end)
                     if self.gain_reason(cid, t, d) == "inheritance":
                         nm = self._name_at_date(t, mid) or self.title_base_name(t)
@@ -4105,25 +3968,24 @@ class Facts:
                     w = self._ruler_word_at(cid, t, d)
                     parts.append(f"{nm}{w}" if nm and w else (f"{nm}之主" if nm else ""))
             parts = [p for p in parts if p]
-            # 真正失去 (不在持有集) 且此前在组内的头衔 (v64: 空组相位也要算)
+            # titles genuinely lost (absent from the held set) that were in the group before
             lost_names = []
             _seen_lost = set()
             for t in prev_ids:
                 if t in ids or t not in lost_now:
                     continue
                 lt = loss_types.get((t, cl.date_key(d)))
-                # v66: 失去句的名字同样走【用地名】(末档粘滞名会让四块不同头衔
-                # 写成同一个「库曼顿巴斯部」); 营地/毡帐/庄园不适用 (见 _site_ok)
+                # loss lines use the [place name] mode too, or several different titles would
+                # share the last save's name; camps/yurts/estates are excluded (see _site_ok)
                 nm = self._title_name_at(t, d, cid, site=self._site_ok(t))
                 if not nm or nm in _seen_lost:
                     continue
-                # v28: 失去缘由按 title history 事件类型出词 (卸任/调任/被褫夺/
-                # 失守/转授…), 未知回退旧词「让出」; 毁弃单列。
-                # v64 (问题1): 游牧者迁离日, 游戏会自动毁弃其顶层地级头衔
-                # (`09_dlc_mpo_scripted_effects.txt` Change 4), 该头衔与该日
-                # migration 失去的郡**同名** (动态名 = 文化集合名词+宗族名+部),
-                # 故出「迁离」而非「毁弃」, 并按名去重 (毡帐/营地自身的毁弃照旧)。
-                # v68 (问题5): 层级走 `_eff_rank` (庄园按 0 级, 与营地同档)。
+                # The loss verb comes from the title history event type; an unknown type falls
+                # back to a generic verb, and destruction is listed separately. On a nomad's
+                # migration day the game destroys his top land title
+                # (`09_dlc_mpo_scripted_effects.txt`, Change 4), which shares its name with the
+                # county lost that day, so the migration verb is used instead of the destruction
+                # verb; names are de-duplicated. Ranks come from `_eff_rank`.
                 _rank = self._eff_rank(t)
                 if lt == "destroyed":
                     verb = "迁离" if (nomad_only and _rank >= 2) else "毁弃"
@@ -4132,22 +3994,20 @@ class Facts:
                 _seen_lost.add(nm)
                 lost_names.append(f"{verb}{nm}")
             if not ids:
-                # v64 (问题1): 空组相位 —— 无地可「任」, 只写当日失去的领地
+                # empty-group phase: no office to hold, so only the land lost that day is written
                 if lost_names:
                     out.append(self.date(d) + "、".join(lost_names))
                 prev_ids = ids
                 continue
             if not parts:
                 continue
-            # v41 (问题1/2): 阶段行写出**取得经过** —— 首要头衔 (组内最高层级者)
-            # 的 title history 事件类型 + 失主/授予者, 形如
-            # 「1086年1月1日自海因里希·萨利安手中夺得神圣罗马帝国巴西琉斯」。
-            # 旧稿只有「1086年任神圣罗马帝国巴西琉斯」, 模型无从知道是战争、
-            # 继承还是阴谋 (修复方案_v41 问题2)。
+            # A stage line reports how the top title was gained: the title history event type plus
+            # the previous holder or grantor, as in a conquest from a named holder. Without it the
+            # reader cannot tell war, inheritance and intrigue apart.
             top = max(ids, key=lambda t: self._eff_rank(t))
             gain = self._gain_clause(cid, top, d)
-            # v53: 开创/重建/创建是造衔动词, 宾语是头衔名 (秦皇朝),
-            # 不是统治者词 (秦皇帝)。受任/承袭/攻取仍用人称 (江西节度使)。
+            # Founding/restoring/creating are title-making verbs, so their object is the title
+            # name, while appointment, inheritance and conquest keep the personal form.
             reason = self.gain_reason(cid, top, d)
             if gain and reason == "created":
                 tname = self._title_name_at(top, d, cid) or parts[0]
@@ -4158,23 +4018,23 @@ class Facts:
                 line = f"{self.date(d)}任{'／'.join(parts)}"
             prev_ids = ids
             if lost_names:
-                # v55 (问题2): 失去缘由去括注 (旧稿「…夺得魏博镇（褫夺魏博镇）」)
+                # the loss clause joins with a comma, not a parenthetical
                 line += "，并" + "、".join(lost_names)
             out.append(line)
         return out
 
-    # ---- v41 (问题1/2): 头衔取得方式 / 前一持有人 / 政体变更 ----
+    # ---- how a title was gained / previous holder / government changes ----
 
     def gain_reason(self, cid, tid, date):
-        """头衔在 date 由 cid 取得时 title history 记的事件类型
-        (conquest/created/inheritance/appointment/granted/usurped…); 无则 ''。"""
+        """Event type recorded in title history when cid gained the title on date
+        (conquest/created/inheritance/appointment/granted/usurped…), else ''."""
         if cid is None or tid is None or date is None:
             return ""
         return self._gain_reason.get((int(cid), int(tid), str(date)), "")
 
     def prev_holder(self, tid, date, exclude=None):
-        """头衔在 date 的**前一持有人** id (title history 中该日之前最后一条
-        holder ≠ exclude); 无记录/无前主返回 None。"""
+        """Id of the previous holder of the title on date (last history entry before that day with
+        a holder != exclude), else None."""
         if tid is None or date is None:
             return None
         seq = self._title_seqs.get(int(tid)) or []
@@ -4197,12 +4057,13 @@ class Facts:
         return found
 
     def _gain_clause(self, cid, tid, date):
-        """头衔取得经过短语 (v41): 「自X手中夺得」/「承袭」/「创建」/「受X任命」。
-        返回到动词为止的串 (不含「任」), 无据返回 ''。
+        """Phrase describing how a title was gained ("took from X", "inherited", "created",
+        "appointed by X"), up to but not including the office verb; '' without evidence.
 
-        与 v36 的记忆句同源 (`style.TITLE_GAIN_VERBS` + `title_had_other_holder`
-        的创建/重建分档 + `grant_actor` 的授予者), 但走 **title history 的事件日**
-        而非记忆日 —— 历任阶段行的日期与动词由此一致 (1086.1.1 而非快照日 1087.1.1)。"""
+        Same sources as the memory sentence (style.TITLE_GAIN_VERBS, the created/restored bucket
+        of `title_had_other_holder`, and `grant_actor`'s grantor) but dated by the title history
+        event day rather than the memory day, so the date and verb of a stage line agree.
+        """
         reason = self.gain_reason(cid, tid, date)
         if not reason:
             return ""
@@ -4219,7 +4080,7 @@ class Facts:
             pn = self.person_label(ph, date=date, style="brief") \
                 if isinstance(ph, int) else ""
             return f"自{pn}手中{verb}" if pn else verb
-        # 受任/受封/承袭自他人: 写明来源 (受X任命为…)
+        # appointment/grant/inheritance from someone: name the source
         if reason in _TITLE_FROM_REASONS:
             ph = self.prev_holder(tid, date, exclude=cid)
             pn = self.person_label(ph, date=date, style="brief") \
@@ -4228,27 +4089,22 @@ class Facts:
         return verb
 
     def government_changes(self, cid=None):
-        """政体变更事实 (v41, 问题1): 逐档政体变化点 → 每一点一句
-        「1087年，诺兰由冒险者改行封建制；此后诸领主依次称公爵、伯爵、专制君主。
-          1095年，诺兰由封建制改行行政制；此后诸领主依次称将军、分区长、专制君主。」
-        数据源: `cache["char_government_history"][cid]` (cache_lib 逐档为每个入
-        目标集角色记录变化点); 旧缓存退 `cache["government_history"]` (玩家专属)。
+        """One sentence per dated change of government, e.g. a switch to feudalism followed by the
+        lord address words of that government.
 
-        v41b (用户 2026-09-15 指正): 前身取**紧邻的上一条**, 早先误取 `hist[0]`
-        (最早那条), 于是 1095 年那次变更被写成「由**冒险者**改行行政官制」——
-        1087–1094 的封建制整段从稿子里消失, 模型遂以为主角从无地直达行政制。
-
-        无变化 (或只有一次政体) 时返回 '' —— 无料不下发。
-        日期用**变化点所在档期** (如 1095.1.1 → 「1095年」), 不用夺位日 ——
-        夺位 (1086) 与改行行政制 (1094 年中) 是两件事, 混写会读成因果。
-        政体名不用「（原X）」括注形态 (与「名词（名词）」同位语判据冲突)。"""
+        Data source: `cache["char_government_history"][cid]` (cache_lib records change points per
+        save for every in-scope character), with `cache["government_history"]` (player only) as the
+        older fallback. The predecessor is the immediately preceding entry, not the earliest one.
+        Dates are the save dates of the change points, not the accession date, because accession
+        and a government change are separate events. '' when there are fewer than two governments.
+        """
         pid = self.cache.get("player_id") if cid is None else cid
         if pid is None:
             return ""
         hist = [h for h in self._government_history(pid)
                 if isinstance(h, dict) and h.get("date") and h.get("government")]
-        # v41: 只看到本篇截止日为止的变化点 —— 否则早期十年会预告「1095 年改行
-        # 行政官制」这件尚未发生的事 (as_of 泄漏)。
+        # only change points up to this biography's as_of, so an early decade cannot announce a
+        # government change that has not happened yet
         if self.as_of:
             _ao = cl.date_key(self.as_of)
             hist = [h for h in hist if cl.date_key(str(h["date"])) <= _ao]
@@ -4277,9 +4133,11 @@ class Facts:
         return "".join(lines)
 
     def _government_history(self, cid):
-        """角色的逐档政体史 [{date, government}] (v41b): 逐角色表优先
-        (`char_government_history`, cache_lib 为每个入目标集角色记录);
-        旧缓存只有玩家表 (`government_history`)。"""
+        """Per-save government history [{date, government}] for the character.
+
+        The per-character table (`char_government_history`) wins; older caches only have the player
+        table (`government_history`).
+        """
         ch = self.cache.get("char_government_history") or {}
         hist = ch.get(str(cid))
         if isinstance(hist, list) and hist:
@@ -4289,27 +4147,22 @@ class Facts:
         return []
 
     def _government_zh(self, gov):
-        """政体中文名 (v41b): 与档案里「政体X」同源 —— 本地化表优先, 兜底表其次。"""
+        """Chinese name of a government: localization table first, built-in fallback table second."""
         if not gov:
             return ""
         return L.loc(self.table, gov) or GOVERNMENT_ZH.get(gov, "")
 
-    # ---- v41 (问题5): 宗族宗支 ----
+    # ---- dynasty branches ----
 
     def clan_line(self, cid, date=None):
-        """宗族宗支句 (v41, 问题5): 该角色的分家与宗族不同名时给出
-        「东盎格利亚为布里奥讷宗族的分支」, 使同一宗族的不同分家能被读成同宗
-        (诺兰档: 休·东盎格利亚 与前英格兰国王同属布里奥讷宗族, 旧稿只显示
-        分家名「东盎格利亚」, 模型便当他是路人)。
+        """Dynasty-branch sentence, e.g. "X is a branch of the Y dynasty", so branches of one
+        dynasty read as kin instead of strangers. The main branch is never named.
 
-        用户 2026-09-15 定规: **不写「主支为谁」** —— 不点名宗族内哪一支为主。
-        宗族名缺失、或分家名与宗族名相同 (即初始家族) 时返回 ''。
-        v44 (问题1): 家族名按 date 取沿革之值 —— 家族改名后 (冯·亚琛 → 冯)
-        分家名与宗族名同为一字, 此句自然消失, 不再拿旧名说「为X宗族的分支」。
-        v81 (问题1, 用户 2026-09-29): 家族称法改由 `house_label` 按文化/名序组装,
-        组装形**必含宗族名** (平氏下北沢家 / 斯卡利茨施氏 / 菲利普，顿巴斯) ——
-        本句与【家族】行、名号句三重复述同一件事, 故不再出句; 只在**名序判不出**
-        (无从组装, 家族词退回旧形) 时保留旧句。"""
+        Returns '' when the dynasty name is missing, when the branch shares the dynasty name (the
+        founding house), or when the culture's name order is known — there the house label already
+        contains the dynasty name and the sentence would only repeat the family line. Family names
+        are the dated ones, so a rename makes the sentence disappear by itself.
+        """
         if cid is None:
             return ""
         dn, hn = self._house_names_at(cid, date)
@@ -4320,11 +4173,12 @@ class Facts:
         return f"{hn}为{dn}宗族的分支。"
 
     def _house_names_at(self, cid, date=None):
-        """(宗族名, 家族名) 按 date 取家族沿革 (v44 问题1) —— **先宗族后家族**。
+        """(dynasty name, house name) at date, dynasty first, in display form (a single-character name
+        takes the house-name suffix, as in `_dynasty_display`).
 
-        返回显示形 (单字加「氏」, 与 `_dynasty_display` 同口径):
-        前者为宗族名 ($DYNASTY$, 东方名序的姓), 后者为家族/分家名 ($HOUSE$,
-        西方名序的姓)。顺序与 `_dynasty_display(dn, hn)` 的形参一致。"""
+        The dynasty name is $DYNASTY$ (the eastern name order's surname) and the house name is
+        $HOUSE$ (the western one); the order matches `_dynasty_display(dn, hn)`.
+        """
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         h, dn = cl._house_names_at(rec, self.melt, date or self.as_of,
                                    rec.get("house_name") or "",
@@ -4333,12 +4187,13 @@ class Facts:
         return house_display(dn or h), house_display(h)
 
     def house_history_lines(self, cid):
-        """家格沿革句 (v44 问题1): 别立家族与家族改名只有逐档差分能记。
+        """House-status history lines: only a per-save diff can record founding a new house or
+        renaming one.
 
-        数据源 = 缓存 `house_history` (cache_lib 逐档差分: 家族 id 或家族/宗族
-        显示名变更点; 别立家族那一点的日期取游戏 `found_date`)。单点/无沿革返回 []。
-        例 (阿德尔海德): '家格：原属诺兰氏，1118年4月2日起别立冯·亚琛氏，属弗兰肯宗族；
-        1133年起改称冯氏。'"""
+        Source: the cache's `house_history` (cache_lib diffs the house id and the house/dynasty
+        display names per save; the founding point is dated by the game's `found_date`). [] without
+        at least two points. Returns a single line prefixed with the house-status label, or [].
+        """
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         hist = [h for h in (rec.get("house_history") or []) if h.get("from")]
         if len(hist) < 2:
@@ -4373,9 +4228,9 @@ class Facts:
             new_house = hid != p_hid
             house_changed = hn != p_hn
             dyn_changed = dn != p_dn
-            # 宗族名只在「别立家族」或「宗族本身改名」时补出 (避免逐句重复);
-            # v81 (问题1): 家族称法已含宗族名 (东方名序的组装形) 时不再补 ——
-            # 否则「属平氏宗族」与【家族】行的「平氏下北沢家」两次同义。
+            # The dynasty name is added only when a new house was founded or the dynasty itself was
+            # renamed, and never when the house label already contains it (eastern name order),
+            # which would be redundant.
             _east = self.name_order(cid) in cl.EASTERN_NAME_ORDERS
             clan = f"，属{dn}宗族" if dn and hn and dn != hn and not _east \
                 and (new_house or dyn_changed) else ""
@@ -4390,32 +4245,37 @@ class Facts:
         return ["家格：" + "，".join(segs) + "。"] if len(segs) > 1 else []
 
     def _kin_word(self, a, b):
-        """a 对 b 的亲缘**旁称** (v44 传主链用): 「其父」「其兄」「其配偶」…
+        """Kinship side term of a relative to b (for the subject chain): "his father", "his elder
+        brother", "his spouse"…
 
-        v45: 委托模块级 `kin_key` (一套判据两处用), 词形取史传单字
-        (`kin_word_short`); 前配偶不算 (用户拍板), 故传主链的「配偶」也随之
-        收紧为现配偶。判不出返回 ''。"""
+        Delegates to the module-level `kin_key` and uses the single-character chronicle form
+        (`kin_word_short`). Former spouses do not count, so "spouse" means the current one. ''
+        when the relation cannot be determined.
+        """
         key = kin_key(self.cache, a, b, spouse_back=self._spouse_back_index())
         if not key:
             return ""
         return f"其{kin_word_short(key)}"
 
     def kin_word_for(self, cid, subject):
-        """subject 相对 cid 的亲缘词 (v45 单一出口; 见模块级 `kin_word`)。
+        """Kinship word of subject relative to cid (single outlet; see the module-level `kin_word`).
 
-        chars 一律取**缓存的**角色表 —— 亲属图由缓存持有 (熔件 family_data 常为空),
-        只在缓存缺记录时才由 kin_key 内部回落。"""
+        The character table always comes from the cache, because the cache holds the kinship graph
+        (the melt's family_data is often empty); kin_key falls back only for records the cache
+        lacks.
+        """
         return kin_word(self.cache, subject, cid,
                         spouse_back=self._spouse_back_index(),
                         rev=self._kin_rev_index())
 
     def blood_kin_word_for(self, cid, subject):
-        """subject 相对 cid 的**血亲**称谓词 (v92, 问题1); 姻亲/继亲/配偶一律返回 ''。
+        """Blood-relation term of subject relative to cid; affinal, step and spousal relations
+        return ''.
 
-        与 `kin_word_for` 同一套判据, 但**先摘掉两人的配偶边**再判 —— 双重亲属
-        (既是妾又是甥) 时取血缘那一条。用途: 事实面在妾/妻名单里标出血缘称谓,
-        否则模型只能自造 (天贵福之妾洪天美实为其外甥女, 成稿曾写成
-        「贵福之姊妹行」「外姐姐」并附一句「终生未嫁」)。"""
+        Same test as `kin_word_for`, but the spouse edge between the two is removed first, so a
+        double relation (both concubine and niece) resolves to the blood one. Used to label the
+        blood tie in concubine/wife lists.
+        """
         chars = mask_spouse_edges(self.cache.get("characters") or {}, (subject, cid))
         key = kin_key(self.cache, subject, cid, chars=chars,
                       spouse_back={}, rev=self._kin_rev_index())
@@ -4424,24 +4284,21 @@ class Facts:
         return kin_text(key)
 
     def consort_of_line(self, cid):
-        """本人档案的**位分行** (v92, 问题1): cid 为本篇传主所纳, 而本人档案里
-        查不到这层关系时, 由程序直陈位分。兼为血亲者血缘优先。
+        """Rank line for the character's own file when the subject took her but her file does not
+        record the relation; a blood tie takes precedence over the consort rank.
 
-        为什么需要: 妾的 `concubinist` 反向指针被记进**对方**名下 (己方
-        `family` 只剩父/母/同胞), 于是「洪天美」的档案通篇没有夫婿行, 模型写成
-        「天美终生未嫁」—— 而同篇的传主档案又列她为妾, 两处自相矛盾
-        (用户 2026-10-02 报「洪天美的亲属关系乱了」)。
-
-        返回 '本为<传主>之<血亲词>，入侍为其妾' / '为<传主>之妾' 这类短语
-        (不含句号), 判不出或本人档案已写明时返回 ''。"""
+        Needed because the concubinage pointer is stored on the other party's record, leaving the
+        concubine's own file with no husband line. Returns a phrase naming the blood tie and the consort
+        rank (no final period), or '' when undeterminable or when her own file already states the
+        relation.
+        """
         pid = self.cache.get("player_id")
         if pid is None or cid is None or int(cid) == int(pid):
             return ""
         pfam_raw = ((self.cache.get("characters") or {}).get(str(pid)) or {}).get("family") or {}
-        # `merge_spouse_latch` 是**就地补** — 这里必须喂副本: 直接喂缓存记录会把
-        # 闩存的婚配行写回缓存, 于是同一次生成里**后读**到的亲属集与旧行为不同
-        # (实测: 主角配偶行被写进诸人缓存 → 12 处 `mother_note`、`kin_ids` 自指
-        # 等 180 处非预期差异)。
+        # `merge_spouse_latch` mutates in place, so a copy must be passed: feeding the cache record
+        # directly would write the latched spouse rows back into the cache and change what later
+        # reads see within the same run.
         pfam = dict(pfam_raw)
         for _k in ("primary_spouse", "spouse", "concubine",
                    "former_spouses", "former_concubines"):
@@ -4454,11 +4311,12 @@ class Facts:
         elif cid in (pfam.get("spouse") or []):
             kind = "妻"
         elif cid in (pfam.get("concubine") or []):
-            # 位分词按**传主**性别取 (与 biography 的「妾/男宠」标签同口径)
+            # the rank word follows the subject's sex (same rule as the biography's concubine labels)
             kind = "男宠" if self._is_female(pid) else "妾"
         if not kind:
             return ""
-        # 本人的配偶/妾行已经写明时不重复 (只读, 同样不并闩存 —— 否则这条判据恒真)
+        # skip when her own spouse/concubine rows already state it (read-only, also unlatched, or
+        # this test would always be true)
         own = ((self.cache.get("characters") or {}).get(str(cid)) or {}).get("family") or {}
         for k in ("primary_spouse", "spouse", "concubine"):
             if pid in (own.get(k) or []):
@@ -4472,14 +4330,15 @@ class Facts:
         return f"为{who}之{kind}"
 
     def _kin_rev_index(self):
-        """反向同胞/子女索引 (v45b; 惰性建一次, 供 `kin_key` 双向并集)。"""
+        """Reverse sibling/child index, built lazily once for kin_key's two-way union."""
         if getattr(self, "_kin_rev", None) is None:
             self._kin_rev = kin_rev_index(self.cache.get("characters") or {})
         return self._kin_rev
 
     def _spouse_back_index(self):
-        """反向配偶索引 {cid: [配偶id…]} (v45): 缓存里配偶边可能只写在对端记录上
-        (实测 0.65% 反向缺失), 一次性建好供 `kin_word` 双向并集用。"""
+        """Reverse spouse index {cid: [spouse ids…]}: the cache may record a spouse edge only on
+        one side (about 0.65% of reverse edges are missing), so this is built once for `kin_word`'s
+        two-way union."""
         if getattr(self, "_spouse_back_idx", None) is None:
             idx = {}
             for k, rec in (self.cache.get("characters") or {}).items():
@@ -4494,7 +4353,7 @@ class Facts:
         return self._spouse_back_idx
 
     def spouses_now(self, cid):
-        """cid 的现配偶 id 集 (含反向边; 前配偶不算) —— v45 判据用。"""
+        """Ids of cid's current spouses, reverse edges included and former spouses excluded."""
         fam = _fam_of(self.cache, cid)
         out = spouses_now_family(fam)
         out |= set(self._spouse_back_index().get(int(cid), []))
@@ -4502,13 +4361,14 @@ class Facts:
 
     def kin_attrib_label(self, cid, subject=None, date=None, style="brief",
                          scope=None, base=None):
-        """称谓 + 亲缘定语 (v45 唯一出词口)。
+        """Label plus a kinship attributive (single outlet).
 
-        scope 为 None 时**行为与 `person_label` 逐字一致** (向后兼容);
-        给了 scope 时, 该人若在本板块是首次出现且与 scope.subject 有可判亲缘,
-        即在称谓前加定语 (「父亲唐皇帝李漼」「姻亲姊妹X」)。
-        `base` 供调用方传入**已算好**的称谓 (如刺客死者按卒日取的 label),
-        缺省才现取 person_label。"""
+        With scope=None the behavior is identical to `person_label`. With a scope, a person
+        appearing for the first time in that block and having a determinable relation to
+        scope.subject gets the relation prefixed to the label. `base` lets the caller pass an
+        already computed label (such as a murder victim's dated label) instead of calling
+        person_label.
+        """
         if base is None:
             base = self.person_label(cid, date, style)
         if scope is None or not base:
@@ -4517,7 +4377,7 @@ class Facts:
 
 
     def _older_than(self, a, b):
-        """a 是否年长于 b (生年比较); 任一方无生年返回 None。"""
+        """True when a is older than b by birth date; None when either birth date is missing."""
         ra = (self.cache.get("characters") or {}).get(str(a)) or {}
         rb = (self.cache.get("characters") or {}).get(str(b)) or {}
         ba, bb = ra.get("birth"), rb.get("birth")
@@ -4528,21 +4388,15 @@ class Facts:
         except Exception:
             return None
 
-    # ---- v44 (问题2): 传主链 (前任/后任传主) ----
+    # ---- subject chain (previous and next subject) ----
 
     def _chain_person(self, cid, date=None):
-        """传主链里的一个人 → 名号文本 (本缓存查不到时用其本人缓存兜底)。
+        """Name of one member of the subject chain, falling back to that member's own cache.
 
-        v87 (问题1, 用户 2026-09-30 拍板「用游戏自渲染的名字」): 链成员若在数据
-        窗口里**没有真领地头衔** (只持枢机名一类的非领地尊号, 或干脆无头衔), 则
-        优先取**他本人缓存的 `player_name`** —— 那是游戏自己渲染的名号
-        (`meta_player_name`, 由 `cache_lib` 在该角色第一次作为玩家入库时写入,
-        即其继位那一档), 也是「继位改名」的权威记录: 洪氏档继任者 Giuseppe 在
-        872.5.17 当选教宗后按改名决议称 **色尔爵三世**, 而熔件重建只能给出生名
-        「朱塞佩」+ 尊号「枢机」(终传用的是他当选**前**那一档熔件, 见
-        docs/调研_v87_后任称谓大阿亚图拉.md §2/§6)。有真领地者仍走熔件重建
-        (信徒名下的「江西节度使马丁」不能被后来的「皇帝马丁」顶掉 —— 缓存信封名
-        是首见那一档的值, 可能晚于继位日)。罗马数字按项目世系口径折汉字。"""
+        A member with no real landed title prefers his cache's `player_name`, the game's own rendering
+        (`meta_player_name`) and the authoritative record of a regnal rename; a member with real land
+        uses the melt rebuild instead, because the cache envelope name may postdate his accession.
+        """
         gname = self._chain_game_name(cid)
         if gname and self._chain_no_landed_dignity(cid, date):
             return gname
@@ -4557,11 +4411,11 @@ class Facts:
         return nm or ""
 
     def _chain_game_name(self, cid):
-        """链成员的**游戏自渲染名** (本人缓存 `player_name`, v87 问题1); 无则 ''。
+        """The game's own rendered name of a chain member (his cache's `player_name`), else ''.
 
-        `player_name` 形如「教宗，洪秀全」(称号，名字, 旧稿的 mod 译法) 或
-        「关白久保」「教宗色尔爵III」; 逗号按项目既定口径去掉 (`_clean_ck3_loc`),
-        尾部罗马数字折汉字 (`_roman_ordinal_zh`)。"""
+        The value looks like "<dignity>，<name>" or "<dignity><name>III"; commas are removed by
+        `_clean_ck3_loc` and a trailing Roman numeral is converted by `_roman_ordinal_zh`.
+        """
         if cid is None:
             return ""
         try:
@@ -4576,13 +4430,13 @@ class Facts:
         return _roman_ordinal_zh(pn)
 
     def _chain_no_landed_dignity(self, cid, date=None):
-        """链成员在数据窗口里是否**只持非领地尊号** (枢机名 `d_cd_*` 一族) —— 此时
-        熔件重建不出其真实身分, 该用游戏自渲染名 (v87)。
+        """True when a chain member holds only a landless dignity (a cardinal title, `d_cd_*`), a
+        case where the melt cannot rebuild his real identity.
 
-        判据刻意收得很窄: 只在**首要头衔是枢机名**时启用。无头衔者不启用 ——
-        那种情形熔件给的就是裸名, 而对「继位那一瞬」而言裸名反而是对的 (缓存信封名
-        取自首见那一档, 实测可能晚于继位日: 田所档继任者 1006.8.7 尚无头衔, 其
-        信封名「领袖业有」来自 1007 档)。"""
+        Deliberately narrow: it applies only when the primary title is a cardinal title. A member
+        with no title at all is excluded, because the melt then gives a bare name and a bare name
+        is right for the moment of accession.
+        """
         if cid is None:
             return False
         try:
@@ -4592,20 +4446,21 @@ class Facts:
         return self._is_cardinal_title(tid)
 
     def reign_end_word(self, re_end):
-        """让位性质词 (v76 问题1): 剃发退位 / 退隐让位 / 去位，转徙无领地 / 让位。"""
+        """Wording for how a reign ended (tonsured abdication, abdication, loss of all land, …)."""
         kind = str((re_end or {}).get("kind") or "unknown")
         W = _style.FACT_WORDING
         return W.get("reign_end_" + kind) or W.get("reign_end_unknown") or "让位"
 
     def reign_end_clause(self, cid, re_end):
-        """传主「在位终结但未死亡」的收句 (v76 问题1) → 「剃发退位，传位于其子关白田所定治」。
+        """Closing sentence for a subject whose reign ended without death, e.g. a tonsured
+        abdication handing power to a successor.
 
-        数据源 = `cache["reign_end"]` (由 `pipeline._cross_check_reign_ends` 从存档
-        `played_character.legacy` 接替链判出, 见 `pipeline.py` 该函数注释)。措辞按 `kind`:
-        剃发退位 (tonsured, 佛教「寻找净土」) / 退隐让位 (abdicated, 通用「放弃领导家族」) /
-        去位转无地 (landless) / 让位 (unknown)。后任称谓走 `_chain_person` + `_kin_word`
-        (与前代传主同一套亲属词; 后任不在本缓存时用其本人缓存兜底)。
-        返回**不含句末句号**的收句 (调用方按所在行补标点)。"""
+        Source: `cache["reign_end"]`, derived by `pipeline._cross_check_reign_ends` from the save's
+        `played_character.legacy` succession chain. Wording follows `kind` (tonsured, abdicated,
+        landless, unknown). The successor's name goes through `_chain_person` and `_kin_word` with
+        the same kinship words used for a predecessor. The returned sentence has no final period,
+        which the caller adds.
+        """
         re_end = re_end or {}
         kind = str(re_end.get("kind") or "unknown")
         W = _style.FACT_WORDING
@@ -4630,13 +4485,12 @@ class Facts:
         return line.rstrip("。")
 
     def succession_lines(self):
-        """传主链事实 (v44 问题2): 前任/后任传主与继位日。
+        """Subject-chain facts: previous and next subject with the succession dates.
 
-        数据源 = 存档 `played_character.legacy` (逐档入库为 cache["played_legacy"]),
-        亲缘由本缓存亲属图判定, 名号走 person_label。
-        例: '承继：1117年6月19日，继前代传主邪魔克里斯托弗·诺兰之位（其父，同日崩）。'
-            '后任：1152年3月4日，传主之位归于其子X。'
-        无链/只有本人时返回 []。"""
+        Source: the save's `played_character.legacy` (stored per save as cache["played_legacy"]);
+        kinship comes from this cache's graph and names from person_label. Returns the predecessor and
+        successor lines; [] without a chain or when the subject is the only member.
+        """
         cache = self.cache
         pid = cache.get("player_id")
         chain = [e for e in (cache.get("played_legacy") or [])
@@ -4659,19 +4513,18 @@ class Facts:
             if isinstance(pv, dict):
                 death = ((pv.get("player_death") or {}).get("date")) or ""
                 re_end = pv.get("reign_end") or {}
-            # 无括注、无同位语括注 (v29b 口径): 「其父、前代传主X崩于当日」
+            # no parentheticals: the relation and the predecessor title are comma-joined
             lead = f"{kin}、" if kin else ""
-            # v76 (问题1): 前代传主**在位终结但未死亡** (让位/剃发退位) 时不能说「崩」
+            # a predecessor whose reign ended without death (abdication) must not be called dead
             re_date = re_end.get("date") or ""
 
             def _death_fate(when):
-                """前代传主卒句 (v95 问题5, 用户 2026-10-02 拍板案 A)。
+                """Death phrase for the predecessor, including the specific cause when known.
 
-                旧稿只写「崩于当日／崩于X」, 读不出怎么死的 (用户: 「只知道上一任传主
-                死了，却不知道怎么死的」)。死因本就在数据里 (`death_clause` 读该任缓存
-                的 `death`; 本档 `death_clause(38957)` = 「溺死」), 故改为
-                「于当日溺死」; 取不到**具体**死因 (空或通用词「去世」) 时回退旧句
-                「崩于当日」—— 保住「崩」的史传腔, 且不把无料写成有料。"""
+                The cause is in the data (`death_clause` reads that subject's cache `death`), so a
+                specific cause is written out; when it is missing or only the generic word, the
+                chronicle-style "died on <date>" form is kept rather than inventing detail.
+                """
                 why = ""
                 try:
                     why = self.death_clause(pcid, date=death) or ""
@@ -4713,21 +4566,12 @@ class Facts:
         return out
 
     def protagonist_era(self):
-        """本传主**执政起点** (v77 问题1): 存档接替链里「本人成为传主」的那一日。
+        """Start of the subject's reign -> (era_start, has_predecessor).
 
-        返回 `(era_start, has_predecessor)`:
-          · `era_start` = `cache["played_legacy"]` 链上本人那一条的 `date`
-            (与 `succession_lines` 同一数据源: 存档 `played_character.legacy`);
-            无链 / 链上无本人 ⇒ 退回本缓存起点 `sources[0]`;
-          · `has_predecessor` = 链上本人之前**还有前代传主**。
-
-        为什么需要它 (`_timeline` 的「传主时代」闸): 继任传主的存档里带着前任
-        **整整一朝**的材料 —— 前任的记忆列表在存档中持续存在, 而前任多是本传主的
-        父/兄, 故在 `_related_ids` 内全部入表。实测田所久保 (16795838) 终传:
-        80 条大事年表里 60 条是父亲浩二 867–891 年的谋杀、姻亲之死与其子女出生,
-        模型于是把本纪写成了「关白浩二一生行事, 见诸旧记者血迹斑斑」(见
-        `docs/方案_v77_传主时代裁料.md`)。首位传主 (链上无前任) 不设闸:
-        他缓存起点之前的零星记忆本就是他开局世界的一部分 —— 既有传记零回归。"""
+        era_start is his entry's date in `cache["played_legacy"]` (as in `succession_lines`), falling
+        back to the cache's first source. Needed for the timeline gate: a successor's save still holds
+        the previous reign's memories, which would otherwise pass the related-ids test.
+        """
         cache = self.cache
         pid = cache.get("player_id")
         srcs = [str(s) for s in (cache.get("sources") or []) if s]
@@ -4742,11 +4586,10 @@ class Facts:
             return start, has_prev
         return (chain[idx].get("date") or start), idx > 0
 
-    # ---- v41 (问题6): 共治者 (co-ruler) 称谓 ----
+    # ---- co-ruler address forms ----
 
     def _co_ruler_hit(self, cid, date=None):
-        """该角色在 date 是否为共治者 (diarchy 记录 type=co_*)。
-        返回记录 dict 或 None。"""
+        """Diarchy record (type co_*) making this character a co-ruler on date, or None."""
         if cid is None:
             return None
         try:
@@ -4758,7 +4601,7 @@ class Facts:
         for e in self._diarchies:
             if e["diarch"] != cid:
                 continue
-            # diarchy 记录只存 start_date (存档里无 end): 以 as_of 为上限
+            # a diarchy record stores only start_date (the save has no end), so as_of is the limit
             if dk is not None and e["start"] and cl.date_key(e["start"]) > dk:
                 continue
             if e["start"] and (hit is None
@@ -4766,7 +4609,7 @@ class Facts:
                 hit = e
         return hit
 
-    # 共治类型 → 宫廷职位名词条 (游戏 <diarchy_type>_diarch_title 约定)
+    # co-ruler type -> court-position localization key (the game's <diarchy_type>_diarch_title)
     _CO_RULER_TITLE_KEYS = {
         "co_emperorship": "co_emperorship_diarch_title",
         "co_monarchy": "co_monarchy_diarch_title",
@@ -4775,8 +4618,7 @@ class Facts:
     }
 
     def co_ruler_title_word(self, cid, date=None):
-        """共治者的**职位名** (游戏 `<type>_diarch_title`): 共治皇帝 / 名义共治皇帝;
-        取不到返回 ''。"""
+        """Court-position name of the co-ruler (the game's `<type>_diarch_title`), else ''."""
         hit = self._co_ruler_hit(cid, date)
         if not hit:
             return ""
@@ -4789,16 +4631,15 @@ class Facts:
         return v
 
     def co_ruler_word(self, cid, date=None):
-        """共治者的**统治者称谓** (游戏文本原样): 「共治」+ 领主的统治者称谓词。
+        """Ruler address form of the co-ruler, exactly as the game renders it: the co- prefix plus
+        the liege's ruler address word.
 
-        游戏键 `co_ruler_male`/`co_ruler_female` (culture_titles) 的规则是
-        `"共治" + <领主头衔的统治者称谓>` —— 本档领主 62045 的称谓是
-        「巴西琉斯」, 故产出「共治巴西琉斯」, 与游戏自己缓存的渲染文本逐字一致
-        (见 logs/research_coemperor.md)。取不到领主称谓时回退职位名 (共治皇帝)。
-
-        共治者身份需同时满足两条 (游戏口径): diarchy 记录 type 属于 co_* 族,
-        且角色带变量 `use_co_ruler_title` (否则游戏不加「共治」)。
-        十年传记传 date=as_of, 共治尚未开始时返回 ''。"""
+        The game's `co_ruler_male`/`co_ruler_female` culture_titles rule is
+        "co-" + <the liege title's ruler address>, so the liege's word is used verbatim and the
+        court-position name is the fallback when that is unavailable. Both conditions of the game
+        must hold: a co_* diarchy record and the character variable `use_co_ruler_title`. A decade
+        biography passes date=as_of, and '' is returned before the co-rule starts.
+        """
         hit = self._co_ruler_hit(cid, date)
         if not hit:
             return ""
@@ -4821,11 +4662,8 @@ class Facts:
         return "共治" + base
 
     def co_ruler_note(self, cid, date=None):
-        """共治者身份句 (v41, 问题6): 「共治巴西琉斯，君主神圣罗马帝国巴西琉斯。」
-
-        与游戏内文本同源: 「共治」+ 领主的统治者称谓 (co_ruler_male 规则),
-        并点明其正职君主, 使「这是共治者」与「谁的共治者」一次给全。
-        非共治者返回 ''。"""
+        """Identity sentence of a co-ruler: the co-ruler address form plus the liege's label, so
+        both "he is a co-ruler" and "whose co-ruler" are stated once. '' for non-co-rulers."""
         w = self.co_ruler_word(cid, date)
         if not w:
             return ""
@@ -4835,7 +4673,7 @@ class Facts:
         return f"{w}，君主{ln}。" if ln else f"{w}。"
 
     def _span_mid(self, start, end):
-        """区间中点日期 (v24, 供阶段稳定命名复用 _name_in_span 的中点口径)。"""
+        """Midpoint date of an interval, used for stable phase naming."""
         if start and end:
             try:
                 sy = [int(x) for x in str(start).split(".")[:3]]
@@ -4847,10 +4685,12 @@ class Facts:
         return start
 
     def _ruler_word_at(self, cid, tid, date):
-        """领地阶段统治者称呼词 (v24): 依 (文化词族 × 层级 × 政体 × 独立 × 性别)
-        取游戏口径词 — 与 official_title 同源, 供历任阶段行使用。
-        v47: 政体走 `_gov_for_word` (头衔政体 → 本人政体 → 死者卒档政体),
-        使「前X」在失去头衔当日也能按本人文化+政体出词。"""
+        """Ruler address word for a land phase, chosen by (culture family x tier x government x
+        independence x sex); same source as official_title.
+
+        The government comes from `_gov_for_word` (title government, then the character's, then
+        his dead_data government), so even on the day he lost the title the word is his own.
+        """
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         tier = ""
         for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
@@ -4868,9 +4708,11 @@ class Facts:
                                  female=female, tid=tid, cid=cid, date=date)
 
     def _camp_purpose_at(self, cid, date=None):
-        """角色在某日期的营地宗旨 (camp_purpose_brigands 等 → 'brigands'):
-        现职营地 (缓存 landed 政体=landless) 读现行 laws; 过往阶段读
-        cache.camp_purposes 位置史 (每次并入记录变化点); 未知返回 ''。"""
+        """Camp purpose of the character at a date (`camp_purpose_brigands` -> 'brigands').
+
+        A current camp (cache landed government = landless) reads the current laws; earlier phases
+        read the dated `cache.camp_purposes` history. '' when unknown.
+        """
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         ld = rec.get("landed") or {}
         if ld.get("government") == "landless_adventurer_government":
@@ -4892,9 +4734,8 @@ class Facts:
         return purpose or ""
 
     def _camp_holder_word(self, cid, date=None):
-        """营地持有者称呼词 (v24): 依营地宗旨查游戏键
-        (duke_landless_adventurer_camp_brigands=头目 / explorers=领袖 /
-        mercenaries=队长…); 宗旨/词取不到返回 ''。"""
+        """Camp holder word from the game key `<duke|duchess>_landless_adventurer_camp_<purpose>`
+        (brigands = chief, explorers = leader, mercenaries = captain…); '' when unavailable."""
         purpose = self._camp_purpose_at(cid, date)
         if not purpose:
             return ""
@@ -4906,8 +4747,8 @@ class Facts:
         return ""
 
     def _camp_holder_word_default(self, female=False):
-        """营地宗旨未知时的持有者词 (v52): 游戏键
-        `duke_landless_adventurer_{male|female}_camp` (= 队长)。"""
+        """Holder word when the camp purpose is unknown, from the game key
+        `duke_landless_adventurer_{male|female}_camp`."""
         for k in (f"duke_landless_adventurer_{'female' if female else 'male'}_camp",
                   "duke_landless_adventurer_male_camp"):
             v = L.loc(self.table, k)
@@ -4916,9 +4757,10 @@ class Facts:
         return ""
 
     def _camp_tier_word(self, tid):
-        """无地冒险者营地的**层级词** (v52, 问题2): 游戏键
-        `<tier>_landless_adventurer_camp` (`duchy_landless_adventurer_camp` = 营地)。
-        缺键返回 '' —— 营地头衔一律不叠领地层级词 (旧稿写出「私生子大队公国」)。"""
+        """Tier word of a landless adventurer camp, from the game key
+        `<tier>_landless_adventurer_camp`. Camp titles never take a landed tier word; '' when the
+        key is missing.
+        """
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         tier = ""
         for pfx, tv in L.TIER_KEY_OF_PREFIX.items():
@@ -4937,7 +4779,7 @@ class Facts:
             return None
         return self._title_by_key.get(key)
 
-    # ---- 官职名 / 王子称号 (v9) ----
+    # ---- office names / prince titles ----
 
     _TIER_KEY = {"hegemon": "hegemon", "empire": "emperor", "kingdom": "king",
                  "duchy": "duke", "county": "count", "barony": "baron"}
@@ -4946,63 +4788,50 @@ class Facts:
                   2: "county", 1: "barony"}
     _CELESTIAL_LIKE_GOVS = {"celestial_government", "meritocratic_government",
                             "steppe_admin_government", "administrative_government"}
-    # v17: 日式律令制政体 (japan_administrative_government) 官职词 — 按游戏本地化键
-    # (修复方案_汤利五问题.md 问题2: e_japan 日本帝国之主是关白, 非皇帝; 天皇另座)。
-    # v80 (点4): 本表**只对律令制生效** —— 惣領制另有 `_JAPAN_SORYO_KEYS`
-    # (旧稿把两种政体合流成一张律令制表, 于是 `japan_feudal_government` 的郡级持有者
-    # 在 flavorization 未命中时也落 `count_administrative_male_japanese` = 国司,
-    # 且女性也出男词; 见 logs/v80_gov_probe3/4 与 docs/调研_v80_封臣政体判定.md)。
+    # Office words for the Japanese ritsuryo government (japan_administrative_government), keyed by
+    # the game's localization keys: the holder of e_japan is the regent, not an emperor, and the
+    # throne is separate. This table applies only to ritsuryo; the soryo government has its own
+    # `_JAPAN_SORYO_KEYS`.
     _JAPAN_OFFICE_KEYS = {
-        "empire":  "emperor_administrative_male_japanese",   # 关白
-        "kingdom": "king_administrative_male_japanese",      # 帅
-        "duchy":   "duke_administrative_male_japanese",      # 国司
-        "county":  "count_administrative_male_japanese",     # 国司
-        "barony":  "baron_administrative_male_japanese",     # 郡司
+        "empire":  "emperor_administrative_male_japanese",   # regent
+        "kingdom": "king_administrative_male_japanese",      # marshal
+        "duchy":   "duke_administrative_male_japanese",      # provincial governor
+        "county":  "count_administrative_male_japanese",     # provincial governor
+        "barony":  "baron_administrative_male_japanese",     # district governor
     }
-    # v80 (点4): 惣領制 (japan_feudal_government) 的兜底键表 —— 总领/女士/栋梁/一族
-    # (词源 dlc_tgp_cultural_titles_l_simp_chinese.yml:24-32; 「总领」是**男**键)
+    # Fallback keys for the soryo government (japan_feudal_government), words taken from
+    # dlc_tgp_cultural_titles_l_simp_chinese.yml; the male key is the house-head word.
     _JAPAN_SORYO_KEYS = {
         "county":  ("count_feudal_male_japanese", "count_feudal_female_japanese"),
         "duchy":   ("duke_feudal_male_japanese", "duke_feudal_female_japanese"),
         "kingdom": ("king_feudal_male_japanese", "king_feudal_female_japanese"),
     }
-    _TENNO_TITLE_KEYS = {"k_chrysanthemum_throne"}  # 天皇座持有人 → 天皇
-    # v62 (问题: 关白/将军): 日本最高头衔的官职词**按政体出词, 不看年代**
-    # (用户 2026-09-24 指正: CK3 一局不是史实重演 —— 律令制可能被推翻成惣領制,
-    #  也可能被「恢复天皇亲政」翻回律令制, 还可能整局不出现幕府; 故任何按年份分支
-    #  的写法都是错的)。判据 = 游戏内的政体值, 与游戏同一组 flavorization:
-    #   japan_administrative_government (律令制)
-    #     → e_japan: emperor_administrative_male_japanese = 关白
-    #       (10_tgp_japan_flavorization.txt:336-347, priority 1000)
-    #   japan_feudal_government (惣領制)
-    #     → e_japan: emperor_shogun_male_japanese = 幕府将军
-    #       (同文件 :398-410, priority 1001, 游戏另需 flag = shogun_flag; 无旗的封建
-    #        持有者是 :363 太政大臣 —— 缓存与熔件都不存角色旗标, 故惣領制统一取
-    #        「幕府将军」)
-    #   k_chrysanthemum_throne → king_tenno_male_japanese = 天皇 (同文件 :591, 不分政体)
-    # 政体取值顺序 (见 `_title_government` / `_gov_for_word`): 持有者逐档政体史
-    # → 头衔自身的 history_government → 通用词。旧稿只取「该日持有者」的政体,
-    # 持有者政体史早于缓存窗口时 (藤原良房卒 879) 取不到, 落通用词「皇帝」,
-    # 于是同一顶 e_japan 在源融写「关白」、在藤原良房写「皇帝」。
+    _TENNO_TITLE_KEYS = {"k_chrysanthemum_throne"}  # holders of the throne title are the emperor
+    # Office words for the Japanese top titles follow the government value, never the era: a CK3 run
+    # is not history, so ritsuryo may be overthrown, restored, or never give way to a shogunate at
+    # all. Same flavorization group as the game:
+    #   japan_administrative_government -> e_japan: emperor_administrative_male_japanese (regent)
+    #   japan_feudal_government -> e_japan: emperor_shogun_male_japanese, which the game gates on
+    #     flag = shogun_flag; without that flag a feudal holder is the chancellor. Caches and melts
+    #     store no character flags, so the feudal case uniformly uses the shogun word.
+    #   k_chrysanthemum_throne -> king_tenno_male_japanese (emperor, government-independent)
+    # Government order (see `_title_government` / `_gov_for_word`): the holder's dated history, then
+    # the title's own history_government, then a generic word.
     _JAPAN_TOP_OFFICE_KEYS = {
         ("e_japan", "japan_administrative_government"): "emperor_administrative_male_japanese",
         ("e_japan", "japan_feudal_government"): "emperor_shogun_male_japanese",
         ("k_chrysanthemum_throne", "japan_administrative_government"): "king_tenno_male_japanese",
         ("k_chrysanthemum_throne", "japan_feudal_government"): "king_tenno_male_japanese",
     }
-    # v81 (问题3, 用户 2026-09-29 拍板): 日本最高头衔的官称改走**直表裸词**
-    # (「前面不加日本」——「关白某某某」「幕府将军某某某」「上皇某某某」)。
-    # 为什么要另立直表, 而不修 flavorization 那条链 (三层实证, 见
-    # logs/v81_probe3.txt / v81_probe7.txt):
-    #   ① 带 `flag` 的条目 (将军/上皇/幕府) 建表时被标 unsupported
-    #      (flavorization.py:126; 游戏原文 10_tgp_japan_flavorization.txt:398/424/435);
-    #   ② `_dead_flavor_consistent` 把键中段当政体前缀比对, `shogun`/`joko` 永不等于
-    #      `feudal`/`administrative` → 游戏**烘死的正词**被拒收 (盛秀 = 幕府将军被写成
-    #      太政大臣、久荫 = 上皇一次也没出现);
-    #   ③ `flavorization.resolve` 的 `top_liege` 缺省值让**领主政体**压过持有者政体
-    #      —— 律令制的久荫 (964.11.19) 与久保 (919.2.24) 因此被叫「太政大臣」。
-    # 表一: 游戏烘死的职称键 → 裸词 (带旗标信息, 是「上皇/幕府将军」唯一可靠来源)。
-    # 只在**卒时窗口**内采信 (该键是角色死亡时按卒时状态烘死的, 用在早年就是错词)。
+    # Office wording for the Japanese top titles uses a direct table of bare words, because the
+    # flavorization chain cannot supply them: flag-gated entries (shogun, retired emperor) are marked
+    # unsupported by the parser; `_dead_flavor_consistent` compares a key's middle as a government
+    # prefix, so `shogun`/`joko` never equal `feudal`/`administrative` and the game's own baked word
+    # is rejected; and flavorization.resolve's top_liege default lets the liege's government override
+    # the holder's.
+    # Table 1: baked flavor key -> bare word (the only reliable source for retired emperor and
+    # shogun, because the key carries the flag information). Trusted only inside the death window,
+    # since the key is baked from the state at death.
     _JAPAN_OFFICE_FROM_FLAVOR = {
         "emperor_shogun_male_japanese": "幕府将军",
         "emperor_shogun_female_japanese": "幕府将军",
@@ -5021,8 +4850,9 @@ class Facts:
         "king_tenno_male_japanese": "天皇",
         "king_tenno_female_japanese": "天皇",
     }
-    # 表二: (头衔 key, 政体) → 裸词 —— 无烘死词时 (在世者/早年档期) 的判据。
-    # 惣領制 + 头衔带 `shogun_flag` (开府) 者另写「幕府将军」(见 `japan_top_office`)。
+    # Table 2: (title key, government) -> bare word, used when there is no baked key (living
+    # characters, early saves). A feudal title carrying `shogun_flag` gets the shogun word instead
+    # (see `japan_top_office`).
     _JAPAN_TOP_OFFICE_WORD = {
         ("e_japan", "japan_administrative_government"): "关白",
         ("e_japan", "japan_feudal_government"): "太政大臣",
@@ -5032,48 +4862,38 @@ class Facts:
     _JAPAN_OFFICE_SHOGUN = "幕府将军"
     _JAPAN_OFFICE_JOKO = "上皇"
     _SHOGUN_FLAG = "shogun_flag"
-    # v62 (菲利普2 问题1/2): 日本最高头衔 = 天皇座 (高御座) + 日本帝国 (e_japan)。
-    # 二者的**头衔名/国号一律不作「王子/公主」称号的前缀** —— 旧稿在父/母已故或已失位时
-    # 走「一生最高头衔」兜底, 把它们拼成「高御座王子」「日本王子」, 而游戏侧从无此词:
-    #   · 御座名不作人名前缀 (10_tgp_japan_flavorization.txt:634「亲王」只给
-    #     special=ruler_child 且 titles={k_chrysanthemum_throne} 的在位天皇子女);
-    #   · e_japan 的持有人是关白/幕府将军 (同文件 :336 关白 / :398 幕府将军),
-    #     其子女在游戏里无王子/公主词可用 (全文件 prince*/princess*_japanese 仅 :634,644 两条)。
-    # 日本皇族的称号只由 _tenno_prince_word 一条路出词。
+    # The Japanese top titles are the throne (k_chrysanthemum_throne) and e_japan. Neither name is
+    # ever used as a prince/princess prefix: the game's prince word applies only to a living
+    # emperor's children with special = ruler_child and the throne title, and e_japan's holder is a
+    # regent or shogun whose children have no prince word at all. Japanese imperial titles come only
+    # from _tenno_prince_word.
     _JAPAN_TOP_TITLE_KEYS = {"k_chrysanthemum_throne", "e_japan"}
-    # v75 (高御座): **虚位御座** (游戏侧 landless = yes + figurehead = yes) 的名字是
-    # **位号**、不是地名 —— 拼层级词会写出游戏的机械串「高御座府」:
-    #   · 01_japan.txt:1573-1584 (k_chrysanthemum_throne, landless=yes/figurehead=yes)、
-    #     05_goryeo.txt:1126-1137 (k_yongson_throne 龙孙王座, 同形);
-    #   · 拼装 = titles_l_simp_chinese.yml:3 `TITLE_TIERED_NAME: "$NAME$$TIER|U$"`;
-    #   · 「府」来自 kingdom_administrative_japanese / kingdom_feudal_japanese
-    #     (10_tgp_japan_flavorization.txt:204-214 / :321-330),
-    #     简中词见 dlc_tgp_cultural_titles_l_simp_chinese.yml:22 与 :32。
-    # 故成稿侧这类头衔一律**只用官职词** (天皇 / 国王), 不出「位号 + 层级词」。
-    # 官职词直表与 `_JAPAN_TOP_OFFICE_KEYS` 同源 (御座不分政体, 同 :4310)。
+    # An empty throne (landless = yes + figurehead = yes in the game, e.g. k_chrysanthemum_throne and
+    # k_yongson_throne) has a position name, not a place name, so appending a tier word would produce
+    # the game's mechanical string. Such titles therefore use the office word only (emperor / king).
+    # The direct table has the same source as `_JAPAN_TOP_OFFICE_KEYS`; a throne has no government
+    # distinction.
     _THRONE_TITLE_KEYS = {"k_chrysanthemum_throne", "k_yongson_throne"}
     _THRONE_OFFICE_KEYS = {
-        "k_chrysanthemum_throne": "king_tenno_male_japanese",       # 天皇 (:591 / loc :34)
-        "k_yongson_throne": "king_yongson_throne_male_korean",      # 国王 (loc :98)
+        "k_chrysanthemum_throne": "king_tenno_male_japanese",       # emperor
+        "k_yongson_throne": "king_yongson_throne_male_korean",      # king
     }
-    # v62 (史实口径 B): 日本皇籍宗族 —— 天皇一家的宗族 (dynn_Yamato = 大和)。
-    # 皇族与臣的分界是**臣籍降下 (赐姓源/平)**, 不是「父是否在位」:
-    #   · 《大日本史》卷十七 / 维基实测: 惟喬親王 (文德天皇之子) 在父 858 年崩御后
-    #     仍以親王身分活到 897 年; 本康親王・人康親王・秀良親王・業良親王同例;
-    #   · 受源姓者即入臣籍 (嵯峨弘仁 5 年/814 诏「赐皇子皇女未为亲王者姓源朝臣…除亲王之号」):
-    #     源融・源信・源常・源弘・源定・源明・源澄・源昇・源本有・文德源氏 皆为臣。
-    # 游戏侧对应机制: `tgp_japan_imperial_branch_decision`「请求皇室本姓」
-    # (game/common/decisions/dlc_decisions/tgp/tgp_japan_decisions.txt:826-1005, 皇室 → 源/平)。
+    # Japanese imperial clan membership: the boundary between imperial and subject status is demotion
+    # from the clan (being granted the Minamoto/Taira surname), not whether the father still reigns.
+    # The game models this with `tgp_japan_imperial_branch_decision`
+    # (game/common/decisions/dlc_decisions/tgp/tgp_japan_decisions.txt), which moves a character from
+    # the imperial clan to Minamoto or Taira.
     _IMPERIAL_DYNASTY_KEYS = {"japanese_yamato"}
-    _IMPERIAL_DYNASTY_NAMES = {"大和"}   # dynn_Yamato 的简中名 (本项目本地化表口径)
+    _IMPERIAL_DYNASTY_NAMES = {"大和"}   # Simplified-Chinese name of dynn_Yamato in this project's table
 
     def _imperial_clan_state(self, cid):
-        """日本皇籍三态 (v62): 'imperial' 在皇籍 / 'subject' 已臣籍降下 / '' 判不明。
+        """Imperial clan status: 'imperial' (in the clan), 'subject' (demoted) or '' (unknown).
 
-        取值链: ① 本项目统一宗族名链 `dynasty_name` (缓存逐角色字段, 最稳 —
-        v44 起每篇按沿革取值, 源/平/藤原/大和 直接可读);
-        ② 宗族 key (熔件 `dynasties.dynasties[<id>].key` == japanese_yamato)。
-        判不明返回 '', 由调用方**拒绝**出亲王词 (宁可退裸名, 不凭空给皇族称号)。"""
+        Resolution order: the unified `dynasty_name` field in the cache (dated per save, so
+        Minamoto/Taira/Fujiwara/Yamato are directly readable), then the dynasty key in the melt
+        (`dynasties.dynasties[<id>].key` == japanese_yamato). '' makes the caller withhold the prince
+        word rather than invent an imperial title.
+        """
         nm = self.dynasty_name(cid) or ""
         if nm:
             return "imperial" if nm in self._IMPERIAL_DYNASTY_NAMES else "subject"
@@ -5087,8 +4907,9 @@ class Facts:
         return "imperial" if key in self._IMPERIAL_DYNASTY_KEYS else "subject"
 
     def _ever_held_throne(self, cid, date=None):
-        """父/母是否**曾**持天皇座 (含已退位/已崩御) —— v62: 親王是终身身分,
-        故认「一生持有过」, 不限于取词当日仍在位。"""
+        """True when the parent ever held the throne (abdicated or dead included): prince status is
+        for life, so holding it at any point counts.
+        """
         for tid, ivs in (self._hold_intervals(cid, date) or {}).items():
             if ((self._lt.get(str(tid)) or {}).get("key") or "") not in self._TENNO_TITLE_KEYS:
                 continue
@@ -5098,7 +4919,7 @@ class Facts:
         return False
 
     def title_base_name(self, tid):
-        """头衔基础名 (不含层级词/官职词): 动态名 → custom → name → 本地化 → key。"""
+        """Base name of a title without tier or office word: dynamic name, custom, name, loc, key."""
         if tid is None:
             return ""
         specific = self._specific_name(tid)
@@ -5114,8 +4935,8 @@ class Facts:
         return name
 
     def _primary_title(self, cid):
-        """角色首要头衔 (tier, tid): 最高层级, 同级取 domain 首个 (法兰西国王兼
-        阿基坦王国 → 法兰西王国)。无头衔返回 (None, None)。"""
+        """Primary title (tier, tid): the highest rank, and among equals the first in the domain
+        list. (None, None) without a title."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         dom = (rec.get("landed") or {}).get("domain") or []
         if not dom:
@@ -5132,11 +4953,14 @@ class Facts:
         return self._RANK_TIER[best_rank], best_tid
 
     def _vassal_history(self, cid):
-        """角色的逐档封臣史 (v53): 本缓存与同战役其他传主缓存按日期合并。
+        """Per-save vassal history of the character, merged by date from this cache and the
+        campaign's other subject caches.
 
-        马丁终传的缓存从继位档才起算, 早年节度使合同只在亨利档里;
-        本缓存一旦有「已独立」条目就不能再「空则借用」, 必须按日期拼起来。
-        同日以本缓存为准。条目 {date, liege, flags}; liege is None = 该日已非封臣。"""
+        Each cache starts only at its own subject's accession, so an earlier vassal contract may
+        exist only in another cache; the date merge is required because this cache may already hold
+        an "independent" entry. Same-date entries prefer this cache. Entries are
+        {date, liege, flags}, with liege None meaning not a vassal that day.
+        """
         if cid is None:
             return []
         by_date = {}
@@ -5150,7 +4974,7 @@ class Facts:
         return [by_date[k] for k in sorted(by_date, key=lambda x: cl.date_key(x))]
 
     def _vassal_entry_at(self, cid, date=None):
-        """角色在 date 的封臣史条目; 无史/早于史起点返回 None。"""
+        """Vassal history entry at date; None without history or before its first point."""
         hist = self._vassal_history(cid)
         if not hist:
             return None
@@ -5166,9 +4990,12 @@ class Facts:
         return hit
 
     def _obligation_flags_at(self, cid, date=None):
-        """角色在 date 的封臣合同义务旗标 (celestial_province_*); 独立/无史 → []。
+        """Vassal contract obligation flags (celestial_province_*) at date; [] when independent or
+        without history.
 
-        年中受封: 下一档已是封臣时取下一档旗标 (与 `_is_independent` 前瞻同口径)。"""
+        For an ennoblement mid-year the next save's flags are used when it already shows vassalage,
+        matching `_is_independent`'s lookahead.
+        """
         ent = self._vassal_entry_at(cid, date)
         if (not ent or ent.get("liege") is None) and date:
             hist = self._vassal_history(cid)
@@ -5183,8 +5010,10 @@ class Facts:
         return list(ent.get("flags") or [])
 
     def _is_independent(self, cid, date=None):
-        """是否独立 (非他人封臣)。v53: 有日期时按 char_vassal_history 取值;
-        日期早于史起点返回 None (调用方回退通用词); 无史回退末档 _vassal_ids。"""
+        """Independence (not someone's vassal): with a date, from char_vassal_history; a date before
+        the history starts returns None so the caller uses a generic word; without history the final
+        save's vassal id set decides.
+        """
         if cid is None:
             return True
         key = (int(cid), str(date or ""))
@@ -5200,8 +5029,8 @@ class Facts:
                 if h.get("date") and cl.date_key(h["date"]) > dk:
                     nxt = h
                     break
-            # 年中受封为臣: 上一档尚无合同、下一档 (约一年内) 已是封臣 → 当日按封臣取词
-            # (马丁 910.4.18 受任江西, 快照要到 911.1.1 才看见合同)。
+            # Ennobled mid-year: this save has no contract yet but the next one (within about a year)
+            # shows vassalage, so the vassal word is used for that day.
             nxt_gap = (_date_ord(nxt.get("date")) - _date_ord(date)) if nxt else None
             if (ent is None or ent.get("liege") is None) \
                     and nxt is not None and nxt.get("liege") is not None \
@@ -5220,8 +5049,8 @@ class Facts:
         return v
 
     def _is_female(self, cid):
-        """性别 (v26): 缓存持久化的 female 优先 (跨熔件剪除仍可判定),
-        旧缓存无该字段时回退熔件全量角色索引。cid 非法返回 False。"""
+        """Sex: the cache's persisted `female` flag wins (it survives melt pruning), with the melt's
+        character index as fallback for older caches. False for an invalid cid."""
         try:
             cid = int(cid)
         except (TypeError, ValueError):
@@ -5233,10 +5062,13 @@ class Facts:
         return bool((self._chars.get(str(cid)) or {}).get("female"))
 
     def is_spouse_pair(self, a, b):
-        """a、b 是否为夫妻 (v31, 问题2): b 属于 a 的配偶集 (含前配偶与妾)。
+        """True when a and b are spouses: b belongs to a's spouse set, former spouses and concubines
+        included.
 
-        口径: 缓存累积的 `family.ever_spouses` (跨快照并集, 离异/丧偶后仍算) 优先,
-        旧缓存无该字段时回退当前 family 的配偶键。ID 非法返回 False。"""
+        The cache's accumulated `family.ever_spouses` (a cross-snapshot union that survives divorce
+        or widowhood) wins; older caches fall back to the current family spouse keys. False for an
+        invalid id.
+        """
         try:
             a, b = int(a), int(b)
         except (TypeError, ValueError):
@@ -5254,25 +5086,14 @@ class Facts:
         return b in {int(x) for x in ids if isinstance(x, int)}
 
     def kin_word_gendered(self, subject, other, kind):
-        """配偶/情偶类亲缘词的**性别化**形态 (v63 问题5)。
+        """Gendered form of a spouse/consort kinship word, chosen by the subject's sex. kind is
+        `spouse`, `former`, `concubine` or `f_concubine`, each with a male and a female form.
 
-        旧稿的《刺客列传》亲缘行把标签写死成男性视角
-        (`("primary_spouse","妻"), ("former_spouses","前妻"), ("concubine","妾")`),
-        女性死者的配偶因此被写成「妻藤原范宗」(用户实测: 大三轮丰子那行,
-        实测该篇 19 条亲缘行里 4 条如此)。这里按**主体性别**取词:
-
-          | kind          | 主体为男 | 主体为女 |
-          |---------------|---------|---------|
-          | `spouse`      | 妻      | 夫      |
-          | `former`      | 前妻    | 前夫    |
-          | `concubine`   | 妾      | 男宠    |
-          | `f_concubine` | 前妾    | 前男宠  |
-
-        性别不可判 (缓存无 `female` 且熔件无此人) 时回落中性词「配偶」/「前配偶」,
-        **不猜**。词形只在这一个出口定义, 供 `biography._assassin_kill_lines` /
-        `_assassin_lead_line` 共用 —— 与 `_profile_lines` 的 `spouse_lbl` 同口径
-        (`biography.py` 的 `夫婿/妻室` 二档), 避免同一人两套写法。"""
-        # 性别不可判 → 中性词 (不猜): 缓存无 female 且熔件也无此人时才会走到这里
+        When the sex cannot be determined (no `female` flag in the cache and no such character in the
+        melt) a neutral word is used rather than guessing. The word forms live only here and are
+        shared by the assassin-line helpers, so one person is never described two ways.
+        """
+        # sex undeterminable -> neutral word, reached only without a cache flag or melt record
         rec = (self.cache.get("characters") or {}).get(str(subject)) or {}
         v = rec.get("female")
         if v is None:
@@ -5289,11 +5110,12 @@ class Facts:
         return "夫" if fem else "妻"
 
     def _consort_word(self, owner, other):
-        """owner 对 other 的配偶称谓 (v32, 问题3): 妻 / 夫 / 妾 / 情人。
+        """Consort term of other relative to owner: wife, husband, concubine or lover.
 
-        夭折句要写「X之妻Y产下死婴」—— 侧室不能写成妻、情人不能写成妻, 故按
-        缓存亲属集判定: 妾集 (concubine/former_concubines) 优先, 其次配偶对
-        (`is_spouse_pair` 含 ever_spouses), 其余为情人。持有人为女性时取「夫」。"""
+        Needed because a stillbirth sentence must not call a concubine or a lover a wife. The cache's
+        kinship sets decide: the concubine set first, then the spouse pair (via `is_spouse_pair`,
+        which includes ever_spouses), otherwise lover. A female owner gets the husband word.
+        """
         try:
             owner, other = int(owner), int(other)
         except (TypeError, ValueError):
@@ -5310,15 +5132,16 @@ class Facts:
             return "夫" if fem else "妻"
         return "情人"
 
-    # ---- v43: 婚姻线系 (普通婚 / 母系婚·入赘) ----
+    # ---- marriage line: standard vs matrilineal (uxorilocal) ----
 
     def _common_children(self, a, b, after=None, before=None):
-        """a、b 的共同子女 id 集 (双方亲属集交集), 可按出生日开闭区间过滤。
+        """Ids of the children a and b have in common (the intersection of their child sets),
+        filterable by a birth-date interval.
 
-        `after` 应为**成婚日** —— 婚前所出 (私生) 一律随母方家族, 与婚姻线系无关,
-        拿它当判据会把「主角娶了带私生子的女王」误判成入赘 (诺兰 × 康斯坦恰:
-        兹比格涅夫 1111.8.25 生、9.12 才成婚, 随母方皮雅斯特; 婚后的贝利撒留斯
-        随父方诺兰 —— 该婚实为普通婚)。"""
+        `after` should be the wedding date: a child born before the marriage takes the mother's house
+        and says nothing about the marriage line, so counting it would misread a marriage to a queen
+        with an illegitimate child as matrilineal.
+        """
         out = set()
         chars = self.cache.get("characters") or {}
         try:
@@ -5346,7 +5169,7 @@ class Facts:
         return out
 
     def wedding_date(self, a, b):
-        """a、b 的成婚日 (缓存记忆里最早的一条 married; 查不到返回 '')。"""
+        """Wedding date of a and b from a `married` memory in either cache record, else ''."""
         try:
             a, b = int(a), int(b)
         except (TypeError, ValueError):
@@ -5365,11 +5188,11 @@ class Facts:
         return ""
 
     def _spouses_asof(self, cid, ids):
-        """配偶 id 列表按本篇截止日裁剪 (v43)。
+        """Trim a spouse id list to this biography's as_of.
 
-        `family.primary_spouse` 是**末档**状态 —— 十年档此前会把八岁女儿的
-        未来丈夫写进 1087 年的《家室列传》(诺兰档: 多萝特娅 1095 年才成婚,
-        d2 篇却已列「夫婿鲁普雷希特」)。成婚日不可考者保留 (不丢数据)。"""
+        `family.primary_spouse` is the final save's state, so a decade biography would otherwise list
+        a daughter's future husband. Spouses whose wedding date is unknown are kept.
+        """
         ids = list(ids)
         if not self.as_of:
             return ids
@@ -5382,30 +5205,24 @@ class Facts:
             out.append(s)
         return out
 
-    # ---- v76 (问题2): 婚配的**终了侧** —— 十年档只列窗口内仍在婚的妻妾 ----
+    # ---- end of a marriage: a decade biography lists only spouses still married in its window ----
     #
-    # 现象: 田所第 5 个十年 (窗口 908–918) 里, 867 年娶、880 年已卒的初妻中御门伊子
-    # 独占一整节 (1500 字)。根因是三处来源都只有「起」没有「止」: 缓存 `family` 是
-    # 逐档并集 (`cache_lib.py:2659-2684`)、婚配闩存只记 `since`、裁剪只判
-    # 「成婚日 ≤ as_of」(`_spouses_asof`)。用户 2026-09-27 拍板: **十年档全部篇目的
-    # 配偶清单都按窗口裁** (子女不裁)。
-    #
-    # 终了日的唯一可靠**带日**留痕是家族关系流水里的「离婚」(日精度) —— 死亡不留
-    # 结婚/离婚流水, 但卒日本身就是终了日。四个坑 (全部实测, 见
-    # `docs/调研_v76_婚配起止与离异留痕.md`):
-    #   ① 配偶死亡时引擎**也写**「离婚」流水 (全档 251 条里 60 条发起方当日死亡),
-    #      故 date 等于任一方卒日者一律作废;
-    #   ② `family_data.former_spouses` 是「离异 ∪ 丧偶」并集、无日期、不分类型;
-    #   ③ `active_opinions` 的 `divorced_me_opinion` (50 年) 任一方死即清空, 只作正证;
-    #   ④ 全档 171,922 条记忆里 `divorc*` 为 0 —— 没有离婚记忆可用。
+    # Every source records a marriage start but not its end: the cache's `family` is a per-save
+    # union, the spouse latch keeps only `since`, and trimming tested only "wedding date <= as_of".
+    # The only reliable dated end is a divorce line in the house-relations flow (day precision) while
+    # death leaves no such line, though the death date is itself the end. Two traps: the engine also
+    # writes a divorce line when a spouse dies, so a date equal to either death date is void; and
+    # `family_data.former_spouses` unions divorce with widowhood without dates or types. Memories
+    # carry no divorce entries at all.
 
     def _house_pair_flows(self):
-        """家族关系流水按「角色对」建索引 → `{frozenset({a,b}): [(date, raw), …]}`。
+        """Index of the house-relations flow by character pair: {frozenset({a,b}): [(date, raw), …]}.
 
-        源 = `melt["house_relations"]["database"][*]["history"][*]` 的 `change_reason`
-        (游戏渲染好的整句, 例「…与…离婚」/「…与…结婚」), 两端 id 走 `_FEUD_CHAR_RE`
-        (与 `_house_raid_index` 同源同表)。惰性一次扫描; 句面含不可读
-        `MAX_RECURSIVE_DEPTH` 的条目**自动不入索引** (两端 id 抽不出), 由卒日兜底。"""
+        Source: the `change_reason` of `melt["house_relations"]["database"][*]["history"][*]`, a
+        game-rendered whole sentence (marriage or divorce); the two ids are extracted with
+        `_FEUD_CHAR_RE`. Scanned lazily once. Entries whose sentences cannot be parsed (no ids) are
+        skipped, and the death date covers those cases.
+        """
         cached = getattr(self, "_pair_flows_idx", None)
         if cached is not None:
             return cached
@@ -5429,13 +5246,13 @@ class Facts:
         return idx
 
     def _char_death_date(self, cid):
-        """该角色的卒日 (缓存 `characters[].death`; 主角回读 `player_death`;
-        再退回熔件三桶的 `dead_data.date`)。
+        """Death date of the character: cache `characters[].death`, `player_death` for the subject,
+        then `dead_data.date` from the three melt buckets.
 
-        v79: 熔件兜底 —— 判「卒日判离」(见 `is_widow_divorce`) 时, 离婚流水两端
-        常有一端不在本传主缓存里 (缓存只并入本传主在位的档), 而 `dead_unprunable`
-        一直保留亡者对象字段 (`cache_lib._extract_snapshot` 同源读取)。查不到
-        一律返回空串 (判据宁缺勿猜), 结果按 id 记忆化。"""
+        The melt fallback matters for the death-day divorce test, because one end of a divorce line is
+        often absent from this subject's cache. An unknown date returns '' rather than a guess;
+        results are memoized per id.
+        """
         try:
             cid = int(cid)
         except (TypeError, ValueError):
@@ -5464,14 +5281,13 @@ class Facts:
         return memo[cid]
 
     def is_widow_divorce(self, raw, date):
-        """该条家族关系流水是否为「卒日引擎判离」(v79, 用户 2026-09-27)。
+        """True when a house-relations divorce line is actually the engine's death-day divorce.
 
-        引擎在婚配一方**死亡当日**也写一条「…与…离婚」流水 (全档 251 条里
-        60 条发起方当日卒、第二端 0 条 —— `docs/调研_v76_婚配起止与离异留痕.md`
-        §A.6), 故「日期 == 任一端卒日」的离婚流水一律不是离异, 一切展示面都不得
-        采用: 传主侧的配偶清单由 `spouse_end` 的卒日守卫丢弃 (v76), 《家族恩怨录》
-        与仇人列传的近因流水由本判据在**渲染前**丢弃 (v79 —— 久保终传里出现
-        「919年2月24日浩二与大和春子、大和规子离婚」, 而 919.2.24 正是浩二卒日)。"""
+        The engine writes a divorce line on the day a spouse dies, so a line dated on either end's
+        death date is not a divorce and must not be used on any display surface: the spouse list drops
+        it through `spouse_end`'s death guard, and the feud and enemy sections drop it before
+        rendering.
+        """
         s = str(raw or "")
         if "离婚" not in s or not date:
             return False
@@ -5486,12 +5302,13 @@ class Facts:
         return False
 
     def spouse_end(self, pid, other):
-        """该对 (传主 × 配偶) 的婚配终了 → `(date, kind, source, precision)` (v76 问题2)。
+        """End of the marriage between the subject and one spouse -> (date, kind, source, precision).
 
-        kind ∈ {divorce 离异, widowed 对方卒, player_end 主角卒/让位};
-        取「离异流水 / 对方卒日 / 主角卒日或让位日」的**最早者**, 同日优先离异;
-        三类都取不到 ⇒ 返回空串 (调用方按开区间保留, 宁多列不漏列)。
-        离异流水先过「卒日守卫」(见本节坑①)。"""
+        kind is one of divorce, widowed (the spouse died) and player_end (the subject died or gave up
+        the throne). The earliest of the divorce line, the spouse's death date and the subject's end
+        date wins, with divorce preferred on the same day. All three missing returns empty strings, so
+        the caller keeps an open interval. Divorce lines pass the death-day guard first.
+        """
         try:
             pid, other = int(pid), int(other)
         except (TypeError, ValueError):
@@ -5503,24 +5320,24 @@ class Facts:
             if not date or "离婚" not in raw:
                 continue
             if self.is_widow_divorce(raw, date):
-                continue                       # 坑①: 引擎把丧偶也写成「离婚」
+                continue                       # trap: the engine also writes a divorce line for widowhood
             cands.append((cl.date_key(date), date, "divorce", "house_relations", "day"))
-        # 其他家族关系流水里「同族通婚」查不到时, 记忆 `married` 只给起日, 不给终了
+        # a `married` memory gives only a start date, so it cannot supply an end
         if d_other:
             cands.append((cl.date_key(d_other), d_other, "widowed", "death", "day"))
         if d_self:
             cands.append((cl.date_key(d_self), d_self, "player_end", "player_death", "day"))
         if not cands:
             return "", "", "", ""
-        # 同日优先离异 (divorce 排在同类日期之前); key 里用 kind 序号保证稳定
+        # divorce wins on the same day; the kind index keeps the sort stable across equal dates
         _ord = {"divorce": 0, "widowed": 1, "player_end": 2}
         cands.sort(key=lambda c: (c[0], _ord.get(c[2], 9)))
         _k, date, kind, src, prec = cands[0]
         return date, kind, src, prec
 
     def _bio_window_start(self):
-        """本篇叙事窗口的**起点** (v76 问题2): 十年档 = 上一个十年截止日;
-        其余 (终传/在世) = 战役起点 —— 后者使终传与在世传记的裁剪恒为空操作 (零回归)。"""
+        """Start of this biography's narrative window: for a decade biography, the previous decade's
+        cutoff; otherwise the campaign start, which makes final and living biographies a no-op."""
         srcs = self.cache.get("sources") or []
         if not self.decade:
             return str(srcs[0]) if srcs else ""
@@ -5533,13 +5350,13 @@ class Facts:
         return self._decade_cutoff(n - 1) or (str(srcs[0]) if srcs else "")
 
     def spouse_active_in_window(self, other, win_start=None):
-        """该配偶在**本篇窗口**内是否仍为传主妻妾 (v76 问题2, 用户口径)。
+        """True when this spouse was still married to the subject inside this biography's window.
 
-        窗口 = (win_start, as_of] 半开区间; 婚配区间 = [起, 止):
-          · 起日优先 `wedding_date` (精确 `married` 记忆), 次闩存 `since`;
-          · 止日取 `spouse_end` (离异/卒/主角终了), 取不到 ⇒ 开区间;
-          · 收录 ⟺ 起日 ≤ as_of 且 (无止日 或 止日 > win_start)。
-        终传/在世档 win_start = 战役起点 ⇒ 恒真 (不裁, 零回归)。"""
+        The window is the half-open interval (win_start, as_of] and the marriage is [start, end): the
+        start prefers `wedding_date` (an exact `married` memory) and falls back to the latched
+        `since`; the end comes from `spouse_end` and is open when unknown. A spouse is kept when the
+        start is at or before as_of and the end is missing or after win_start.
+        """
         try:
             other = int(other)
         except (TypeError, ValueError):
@@ -5553,14 +5370,14 @@ class Facts:
                     start = r.get("first_seen") or ""
                     break
         if start and y1 and cl.date_key(start) > cl.date_key(y1):
-            return False                       # 窗口末之后才成婚
+            return False                       # married after the window end
         end = self.spouse_end(self.cache.get("player_id"), other)[0]
         if end and y0 and cl.date_key(end) <= cl.date_key(y0):
-            return False                       # 窗口开始前已终了
+            return False                       # already ended before the window starts
         return True
 
     def spouses_in_window(self, ids, win_start=None):
-        """配偶 id 列表 → 只留本篇窗口内仍在婚者 (保持原次序; v76 问题2)。"""
+        """Filter a spouse id list to those still married inside this biography's window, keeping order."""
         if not ids:
             return []
         if win_start is None:
@@ -5568,10 +5385,11 @@ class Facts:
         return [x for x in ids if self.spouse_active_in_window(x, win_start)]
 
     def _matrilineal_pairs_live(self):
-        """当前熔件 `relations.active_relations` 里的母系婚对 (惰性建索引, v43)。
+        """Matrilineal pairs from the current melt's `relations.active_relations`, indexed lazily.
 
-        熔件是**当下**最完整的来源 (凡仍存续的母系婚都在), 缓存 `matrilineal_pairs`
-        只是逐档闩存的历史 (补「此后已离异/丧偶」的婚事)。"""
+        The melt is the most complete source for marriages still in force, while the cache's
+        `matrilineal_pairs` is per-save latched history that also covers marriages since ended.
+        """
         memo = getattr(self, "_matri_live", None)
         if memo is None:
             memo = set()
@@ -5586,21 +5404,13 @@ class Facts:
         return memo
 
     def is_matrilineal(self, a, b, after=None, before=None):
-        """a、b 的这桩婚姻是否为**母系婚 (入赘)**; 返回 True/False/None。
+        """True/False/None for whether the marriage is matrilineal, per the game rule that its children
+        belong to the mother's house.
 
-        游戏规则 (本地化原文): `game_concept_matrilineal_desc` = 在母系婚姻中,
-        出生的孩子将属于**母亲的家族**而不是父亲的; 交互界面把这一档写作
-        「切换入赘」(`MARRIAGE_MATRILINEAL_TOGGLE_TOOLTIP`)。
-
-        判据三级, 全在程序侧:
-          ① 当前熔件 `relations.active_relations` 的 matrilineal 标记 (惰性索引);
-          ② 缓存 `matrilineal_pairs` —— 同一标记的逐档闩存 (婚姻离异/丧偶后条目
-             会从存档消失, 闩存保证当年那桩婚事仍判得出);
-          ③ 未见标记时按**婚后所生子女的家族归属**判: 父母各有家族且彼此不同时,
-             子女随母方即母系婚 (这正是上述规则的结果), 随父方即普通婚。
-             婚前所出不入判据 (`after`), 因私生一律随母方, 与线系无关。
-        无子女 / 一方无家族 / 两方同族 / 子女家族混杂 → None (判不出即不下发,
-        句面保持普通形态)。"""
+        Tests: the matrilineal flag in the melt's `relations.active_relations`; the same flag latched
+        per save in `matrilineal_pairs` (the save entry disappears on divorce or widowhood); failing
+        that, the houses of children born after the wedding. None when undeterminable.
+        """
         try:
             a, b = int(a), int(b)
         except (TypeError, ValueError):
@@ -5637,23 +5447,15 @@ class Facts:
         return None
 
     def marriage_lineality_note(self, a, b, wedding=None, before=None):
-        """配偶**行** (无动词的并列名单: 妻室/夫婿/世系表) 的母系婚补注 (v43→v92)。
+        """Lineage note for a verbless spouse list: the shortest matrilineal marker.
 
-        只标异常那一档 (母系婚) —— 与游戏 UI 只对母系婚给出
-        `MATRILINEAL_WARNING`「该婚姻所生子将属于X的家族」同一口径; 普通婚与判不
-        出者返回 '' (句面即普通形态)。
+        Only the exceptional case is marked, matching the game UI's warning, which appears for
+        matrilineal marriages alone; standard and undeterminable marriages return ''. Sentences with
+        a verb use `marriage_verb` instead.
 
-        v51 (用户拍板): 补注只写线系名 —— 旧稿逐行写全
-        「（入赘婚：所生子女随母方，属X氏）」太长, 且把母方家族名重复进每一处;
-        「入赘婚」一词本身即含「所生子女随母方」之义 (CK3 简中同用此词),
-        故不再另附家族名, 也不再依赖母方家族名解析成功。
-        v55 (问题2): 括注改分句 —— 句面成「X与Y成婚，是入赘婚。」
-        v92 (问题2, 用户 2026-10-02 拍板): 不再用「是入赘婚」这个短语 ——
-        有动词处一律走 `marriage_verb` 直作动词 (「X与Y结入赘婚。」);
-        本方法只服务**无动词的名单行**, 故补注压到最短的「，入赘」。
-
-        `wedding` = 成婚日 (传日历记忆的日期; 缺省由 `wedding_date` 回查),
-        `before` = 本篇截止日 (十年传记不把尚未出生的子女算进判据)。"""
+        `wedding` is the wedding date (looked up from `wedding_date` when omitted) and `before` is
+        this biography's as_of, so children not yet born are not counted.
+        """
         try:
             a, b = int(a), int(b)
         except (TypeError, ValueError):
@@ -5665,11 +5467,12 @@ class Facts:
         return "，入赘"
 
     def marriage_verb(self, a, b, wedding=None, before=None):
-        """成婚句的**动词** (v92, 用户 2026-10-02 拍板): 母系婚写「结入赘婚」,
-        其余写「成婚」—— 与普通结婚同形, 不再另起「，是入赘婚」的分句。
+        """Verb of a wedding sentence: the matrilineal form for a matrilineal marriage and the plain
+        wedding verb otherwise, with no separate lineage clause.
 
-        判据与 `marriage_lineality_note` 同 (只看母系婚这一档; 判不出按普通婚)。
-        句面: 「885年6月21日，洪天姣与崔舣结入赘婚。」/「…与崔舣成婚。」"""
+        Same test as `marriage_lineality_note`: only the matrilineal case differs, and an
+        undeterminable marriage uses the standard verb.
+        """
         try:
             a, b = int(a), int(b)
         except (TypeError, ValueError):
@@ -5682,52 +5485,43 @@ class Facts:
 
     def _office_word(self, tier, government, independent=False, female=False, tid=None,
                      cid=None, date=None):
-        """官职词: (层级, 政体) → 词。天朝/行政/草原行政共用同一套 (刺史/节度使/
-        观察使/宣抚使…), 与文化无关 (实测: 诺斯伯爵在中国亦为刺史)。
-        独立天朝制统治者用独立词 (皇帝/王/节度使), 不用封臣官职词。
-        v14: 独立天朝制改为查游戏真实键 (dlc_tgp_cultural_titles):
-          hegemon=hegemon_celestial_male_chinese(皇帝), empire=emperor_..._independent(皇帝),
-          kingdom=king_male_chinese(王)/king_female_chinese(女王),
-          duchy=duke_male_chinese_independent(节度使), county=count_independent_male_feudal_chinese(将军)。
-        旧逻辑查 king_celestial_male_chinese_independent — 游戏本地化表中不存在,
-        回退到通用 king「国王」→ 渲染成「粤国王」, 与游戏「桂王/粤王」口径不符 (修复方案_菲利普2.md 问题3)。
-        v17: 日式律令制政体 (japan_administrative_government) 单独分支 — 查游戏键
-        帝国=关白/王国=帅/郡县=国司/堡=郡司 (修复方案_汤利五问题.md 问题2);
-        tid 传入时, 天皇座 (k_chrysanthemum_throne) 持有人直称「天皇」。
-        v62: 日本最高头衔另走 `_JAPAN_TOP_OFFICE_KEYS` 直表 —— e_japan **按政体**出词
-        (律令制=关白 / 惣領制=幕府将军; 不看年代), 不再落通用词「皇帝」。"""
+        """Office word for (tier, government).
+
+        The celestial, administrative and steppe-administrative governments share one set of words
+        regardless of culture, and an independent celestial ruler uses an independent word rather than
+        a vassal office word. The Japanese ritsuryo government has its own branch, and the Japanese
+        top titles go through the `_JAPAN_TOP_OFFICE_KEYS` table, keyed by government rather than era.
+        """
         gov = government or ""
-        # v52 (问题2): 无地冒险者营地的持有者称呼走游戏键
-        # (`duke_landless_adventurer_camp_<宗旨>` = 头目/领袖/队长…; 宗旨未知回退
-        # `duke_landless_adventurer_male_camp` = 队长), 不再落到封建官职词「公爵」。
+        # Landless adventurer camps use the game's camp keys
+        # (`duke_landless_adventurer_camp_<purpose>`, and the default key when the purpose is
+        # unknown) instead of a feudal office word.
         if tid is not None and self.title_kind(tid) == "camp":
             w = self._camp_holder_word(cid, date) if cid is not None else ""
             if not w:
                 w = self._camp_holder_word_default(female)
             return w if (w and not w.startswith(("$", "["))) else ""
-        # v30: 游戏 flavorization 优先 (修复方案_菲利普4.md 问题2) — 文化专属层级词
-        # 压过政体通用词: 诺斯公国 = 雅尔 (count_feudal_male_norse, tier=duchy,
-        # priority 30) 而非 duke_tribal_male 大酋长 (26)。未命中才走既有链。
-        # v74 (问题2, 用户拍板): 政体不可知 (`gov == ''`) 时, `duke`/`count` 这类
-        # **无任何条件**的兜底条目视为未命中 —— 否则它以其 priority 压过后面的
-        # 文化/政体链 (且性别词也取不到: 女性公爵会得男性词「公爵」而非「女公爵」)。
+        # Game flavorization wins: a culture-specific tier word outranks a generic government word.
+        # When the government is unknown, an unconditional fallback entry such as duke/count counts as
+        # a miss, or its priority would override the culture/government chain below and lose the
+        # gendered form.
         fw_key = self._flavor_key("character", tier, cid, tid=tid,
                                   gender=("female" if female else "male"),
                                   gov=gov, date=date)
         if fw_key and not (not gov and FZ.is_unconditional(fw_key)):
-            # v87 (问题1): 该键的值可能是 `[CHARACTER.Custom('GetActualDukeTheocracyTitle')]`
-            # 一族委托 (基督教神权官称), 由 `_loc_or_custom_word` 求臂表后出词。
+            # The key's value may be a `[CHARACTER.Custom('GetActualDukeTheocracyTitle')]`
+            # delegation (Christian theocratic office words), resolved by `_loc_or_custom_word`.
             v = self._loc_or_custom_word(fw_key, cid=cid, tid=tid, date=date)
             if v:
                 return v
         if gov in ("japan_administrative_government", "japan_feudal_government"):
             tkey = (self._lt.get(str(tid)) or {}).get("key") or ""
-            # v62: 日本最高头衔 (e_japan / 天皇座) 先查 (头衔, 政体) 直表 ——
-            # 关白 (律令制) / 幕府将军 (封建期) / 天皇, 不再落通用词「皇帝」。
+            # The Japanese top titles (e_japan, the throne) consult the (title, government) table
+            # first: regent, shogun or emperor, never the generic emperor word.
             key = self._JAPAN_TOP_OFFICE_KEYS.get((tkey, gov))
             if key is None:
                 if gov == "japan_feudal_government":
-                    # v80 (点4): 惣領制走自己的键表 (总领/女士/栋梁), 且**分性别**
+                    # the soryo government has its own key table, split by sex
                     _pair = self._JAPAN_SORYO_KEYS.get(tier)
                     key = (_pair[1] if female else _pair[0]) if _pair else ""
                 else:
@@ -5741,9 +5535,9 @@ class Facts:
         if gov in self._CELESTIAL_LIKE_GOVS:
             if independent:
                 if tier == "hegemon":
-                    # v73 (用户 2026-09-27): 女性霸权级统治者称「女皇」(如「元女皇」)
-                    # —— 游戏原文的 `hegemon_celestial_female_chinese` 只是对男键的
-                    # 模板引用, 与男键同形, 旧稿在此**直写男键**, 女性一律被写成「皇帝」。
+                    # A female hegemon ruler gets the empress word directly: the game's
+                    # `hegemon_celestial_female_chinese` is only a template reference to the male
+                    # key, so the female key must be looked up explicitly.
                     key = "hegemon_celestial_female_chinese" if female \
                         else "hegemon_celestial_male_chinese"
                 elif tier == "empire":
@@ -5777,28 +5571,25 @@ class Facts:
             v = L.loc(self.table, key)
             if v and not v.startswith("$") and not v.startswith("["):
                 return v
-        # v26: 游牧/牧民/部落政体官职词 (游戏 flavorization 口径):
-        #   ① <tier>_nomad_{male|female}_<heritage> (突厥: 叶护/颉利发…)
-        #   ② <tier>_tribal_{male|female} (count_tribal_male=酋长 / duke_tribal_male=大酋长)
-        #   ③ <tier>_herder_{male|female} (count_herder_male=牧主)
-        # 游戏里 nomad_government 的封臣官职词命中 count_tribal_male (priority 16);
-        # 非突厥文化无 count_nomad_male 键 — 此前回退 count_feudal_male=伯爵,
-        # 田所2 主角因而被写成「也勒克河伯爵」而非「可萨田所部酋长」。
+        # Nomad/herder/tribal office words follow the game's flavorization keys:
+        # <tier>_nomad_{male|female}_<heritage>, <tier>_tribal_{male|female} and
+        # <tier>_herder_{male|female}. A nomad_government vassal matches the tribal key at the game's
+        # own priority, while a non-Turkic culture has no nomad key; falling back to the feudal count
+        # word would misname a nomad ruler.
         if gov in self._NOMAD_LIKE_GOVS:
             w = self._nomad_office_word(tier, gov, independent, female, cid)
             if w:
                 return w
-        # v24: 文化 title 词族 (汉人 → chinese: 王/公/侯/伯/将军…) — 封建/宗族等
-        # 非天朝政体下游戏按文化称呼统治者 (实测: 汉人独立公爵/国王皆称「王」,
-        # 存档信封 meta_player_name = 王，郭冬临), 此前回退通用 国王/公爵 与游戏不符。
+        # Culture title words (Chinese culture: king/duke/marquis/earl/general…): outside the
+        # celestial governments the game addresses a ruler by culture, which the generic kingdom and
+        # duchy words would not match.
         w = self._culture_office_word(cid, tier, independent, female)
         if w:
             return w
         prefix = re.sub(r"_government$", "", gov)
-        # v30: 性别入键 (修复方案_菲利普4.md 问题9) — 此前两条键都写死 _male,
-        # 女性持有者的官职词一律退化成男性词 (埃尔斯威思 id=15511 female=True
-        # 被写成「诺丁汉郡伯爵」, 游戏口径为「诺丁汉郡女伯爵」)。
-        # 候选顺序: 政体×性别 → 封建×性别 → 层级×性别 → 封建男性 (旧表兼容)。
+        # The sex belongs in the key: hard-coding the male form would degrade every female holder's
+        # office word. Candidate order: government x sex, feudal x sex, tier x sex, then the plain
+        # feudal male key for compatibility.
         g = "female" if female else "male"
         keys = ([f"{self._TIER_KEY[tier]}_{prefix}_{g}"] if prefix else []) \
             + [f"{self._TIER_KEY[tier]}_feudal_{g}",
@@ -5808,16 +5599,15 @@ class Facts:
             v = L.loc(self.table, k)
             if v and not v.startswith("$") and not v.startswith("["):
                 return v
-        # v30: 通用兜底改查男女分列的官职词表 (GENERIC_TIER_ZH 是头衔名后缀, 不混用)
+        # the generic fallback uses the sex-split office table (GENERIC_TIER_ZH holds title suffixes)
         pair = L.GENERIC_OFFICE_ZH.get(tier)
         if pair:
             return pair[1] if female else pair[0]
         return L.GENERIC_TIER_ZH.get(tier, "")
 
-    # v24: CK3 culture_titles 词族 (dlc_tgp_cultural_titles 的 chinese 族键;
-    # 键名与游戏一致: king_male_chinese=王 / duke_independent_male_feudal_chinese=王 /
-    # duke_male_feudal_chinese=公 / count_male_feudal_chinese=侯 /
-    # count_independent_male_feudal_chinese=将军 / baron_male_feudal_chinese=伯)。
+    # CK3 culture_titles word family (the `chinese` family in dlc_tgp_cultural_titles), using the
+    # game's own key names for king, independent duke, feudal duke, feudal count, independent count
+    # and feudal baron.
     _CULTURE_OFFICE_KEYS = {
         "hegemon": ("hegemon_male_chinese", None),
         "empire":  ("emperor_male_feudal_chinese", "emperor_female_feudal_chinese"),
@@ -5834,7 +5624,7 @@ class Facts:
     }
 
     def _culture_office_word(self, cid, tier, independent, female):
-        """文化 title 词族查词; 仅当 cid 文化与词族映射命中时可用。"""
+        """Look up a culture title word; usable only when the cid's culture maps to a word family."""
         if cid is None:
             return ""
         tpl = (self.culture_template(cid) or "").lower()
@@ -5856,30 +5646,27 @@ class Facts:
                 return v
         return ""
 
-    # v26: 游牧/牧民/部落政体 (游戏 flavorization 里 governments 含 nomad_government 的族)
+    # Nomad/herder/tribal governments (the flavorization family whose entries list nomad_government)
     _NOMAD_LIKE_GOVS = {"nomad_government", "herder_government",
                         "tribal_government", "wanua_government"}
     _NOMAD_TIER_KEY = {"hegemon": "emperor", "empire": "emperor",
                        "kingdom": "king", "duchy": "duke",
                        "county": "count", "barony": "baron"}
 
-    # ---- v30: 游戏 flavorization 取词 (统治者称呼 / 头衔名后缀) ----
-    # 见 flavorization.py 与 修复方案_菲利普4.md 问题2: 诺斯公国 = 雅尔
-    # (键名 count_feudal_male_norse, 块内 tier = duchy, priority 30) ——
-    # 文化专属词优先于政体通用词, 这是游戏的实际规则。
+    # ---- game flavorization lookups (ruler address words / title name suffixes) ----
+    # A culture-specific entry outranks a generic government entry by the game's own priority rules,
+    # which is what flavorization.py implements.
 
     _FLAVOR_TIER = {"hegemon": "hegemony"}
 
-    # ---- v47: 死者文化/信仰的取回 —— 存档里 culture/faith 是**可选键** ----
-    # CK3 官方 wiki (Modding#Contents_of_the_gamestate_file) 明文: 角色记录里
-    # `culture=`/`faith=` 在写了 `dynasty_house` 时**可选**, 缺省即取该家族的
-    # 文化/信仰; 家族记录本身不带这两个字段, 值沿 `historical` + `head_of_house`
-    # 的**族长链由近及远**取第一个显式值 (社区参考实现 CK3-history-extractor
-    # `house.rs::get_culture/get_faith` 逐字如此)。所以死者记录里缺 culture
-    # 不是「没有」, 而是「等于家族值」—— 这正是游戏总能显示死者文化/信仰的机制。
-    # 见 docs/研究_v47_文化信仰存档来源.md §1。
+    # ---- recovering a dead character's culture/faith: both are optional save keys ----
+    # In a character record, `culture=` and `faith=` are optional once `dynasty_house` is written, and
+    # the default is the house's value; the house record itself stores neither, so the value is the
+    # first explicit one along the house leader chain (recent first), derived from `historical` plus
+    # `head_of_house`. A missing culture on a dead character therefore means "the house's value",
+    # which is how the game can always display it.
     def _house_of(self, cid):
-        """角色家族 id (缓存优先, 熔件角色对象兜底); 无家族返回 None。"""
+        """House id of the character (cache first, melt character as fallback); None without a house."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         hid = rec.get("dynasty_house")
         if hid is None:
@@ -5890,10 +5677,12 @@ class Facts:
             return None
 
     def _house_default(self, cid, field):
-        """家族缺省值 (游戏口径): 沿族长链由近及远取第一个**显式** `field` 值。
+        """House default per the game's rule: the first explicit `field` value along the house leader
+        chain, recent first.
 
-        field = 'culture' / 'faith'。家族值按家族记忆化 (同一家族的成员共用一次
-        求解)。取不到返回 None —— 调用方照旧回退「无据」。"""
+        field is 'culture' or 'faith'. The result is memoized per house, so the members share one
+        resolution. None when unavailable.
+        """
         hid = self._house_of(cid)
         if hid is None:
             return None
@@ -5929,14 +5718,13 @@ class Facts:
         return val
 
     def _culture_entry(self, cid, date=None):
-        """角色文化的 culture_manager 条目 (含 name_list / heritage)。
+        """The character's culture entry in culture_manager (with name_list and heritage).
 
-        v47: 值链改为**按日期**取并补上「家族缺省」兜底 ——
-          沿革表 (`culture_history`) → 本篇缓存现值 → 熔件角色对象 → 家族缺省。
-        旧实现只读本篇缓存的 `culture` 现值: 死者(尤其跨传主引用时)该字段被
-        存档剪除, 于是 flavorization 全失配、静默降级成通用称谓词
-        (诺兰档实测: 克里斯托弗的「巴西琉斯」→「皇帝」, 见
-        docs/研究_v47_统治者头衔动态.md §2)。"""
+        Resolution is dated and falls back to the house default: the culture history, then this
+        cache's current value, then the melt character, then the house default. Reading only the
+        cache's current value fails for dead characters, whose culture field the save prunes, which
+        silently degrades flavorization to generic address words.
+        """
         if cid is None:
             return {}
         cul = self._culture_id_at(cid, date)
@@ -5951,16 +5739,14 @@ class Facts:
         return e if isinstance(e, dict) else {}
 
     def _faith_tags(self, cid, date=None):
-        """角色信仰 → (faith tag, religion tag)。
+        """Faith tags of the character as (faith tag, religion tag).
 
-        v47: 按 date 取 (信仰沿革 `faith_history` → 现值 → 家族缺省) —— 与
-        `_culture_entry` 同口径; 死者记录里 `faith` 同样会被存档剪除。
-        v87 (问题1): 信仰定义改走 `cl.faith_entry` —— 1.20 已搬到顶层
-        `faiths.database`, 而本函数旧稿仍读 `melt["religion"]["faiths"]`
-        (1.20 无此键) ⇒ 恒返回 `('','')`, 使 flavorization 的 `faiths`/`religions`
-        门在 1.20 全线失效 (实测代价: 基督教神权词被什叶词 `…_ismaili` 压过,
-        见 docs/调研_v87_后任称谓大阿亚图拉.md §4.4)。旧档 (1.19) 由
-        `faith_entry` 内部回落到 `religion.faiths`, 口径不变。"""
+        Dated the same way as `_culture_entry` (faith history, current value, house default), because
+        the save prunes `faith` on dead characters. The faith definition comes from `cl.faith_entry`,
+        which reads the top-level `faiths.database` of newer saves and falls back to
+        `religion.faiths` for older ones; reading only the old path would make every faith and
+        religion gate fail.
+        """
         fid = self._faith_id(cid, date) if cid is not None else None
         if fid is None:
             return "", ""
@@ -5978,18 +5764,18 @@ class Facts:
         return ftag, rtag
 
     def _rite_type(self, cid, date=None):
-        """角色所奉礼仪的 `rite_type` 键 (1.20 `flavorization` 的 `rites` 条件用)。
+        """`rite_type` key of the character's rite, used by the `rites` condition of flavorization.
 
-        取词口与 `rite_name` 同源: `rites.database[<rid>].rite_type` (如 `roman_rite`、
-        `ismaili`)。旧档 (1.19) 无礼仪库 → '' —— 带 `rites` 条件的条目因此一律不命中,
-        与游戏「该角色没有礼仪」同效。"""
+        Read from `rites.database[<rid>].rite_type`. An older save without a rite database returns '',
+        so entries with a `rites` condition never match, equivalent to the character having no rite.
+        """
         rid = self._rite_id(cid, date)
         if rid is None:
             return ""
         return str(cl.rite_entry(self.melt, rid).get("rite_type") or "")
 
     def _top_liege_of(self, cid, tid):
-        """角色沿 de_facto_liege 上溯的最高领主 (自身即最高时返回 (cid, tid))。"""
+        """Top liege along de_facto_liege; returns (cid, tid) when the character is already top."""
         seen = set()
         cur = str(tid) if tid is not None else ""
         holder, top_tid = cid, tid
@@ -6012,20 +5798,22 @@ class Facts:
 
     def _flavor_key(self, kind, tier, cid, tid=None, gender=None, gov=None,
                     date=None, special=None, independent=None):
-        """flavorization 取词的本地化键; 未命中/无表返回 ''。
-        v41: date 锚点 — 本人与领主的政体均按该日期取 (封建期/行政期词不同)。
-        v64 (问题2): `special` 透传给 `FZ.resolve` (缺省 None → holder 类);
-        `independent` 可显式覆盖独立性 —— 王子/公主词的「独立/封臣」档看的是
-        **父/母** (ruling parent) 的独立性, 而 `cid` 传的是子女本人 (无地,
-        `_is_independent` 取不到 ruling parent 的值)。"""
+        """Localization key chosen by flavorization, or '' when nothing matches.
+
+        Government values for the character and his liege are taken at `date`, since the words differ
+        between feudal and administrative periods. `special` is passed through to `FZ.resolve` (None
+        means the holder class), and `independent` can override independence: the independent/vassal
+        choice for a prince or princess word looks at the ruling parent, while `cid` is the landless
+        child whose own independence is not determinable.
+        """
         if not self._flavor or tier is None or cid is None:
             return ""
         tkey = self._FLAVOR_TIER.get(tier, tier)
         if gender is None:
             gender = "female" if self._is_female(cid) else "male"
         if gov is None:
-            # v80 (点4): 政体按**持有者本人**取 —— flavorization 的 `governments`
-            # 在 Context Character 上求值 (见 `_gov_for_word` 的说明)
+            # The government is the holder's own: flavorization evaluates `governments` on the
+            # Context Character (see `_gov_for_word`)
             gov = self._gov_for_word(cid, tid, date) if tid is not None else ""
         ce = self._culture_entry(cid, date)
         ftag, rtag = self._faith_tags(cid, date)
@@ -6037,7 +5825,7 @@ class Facts:
             independent = self._is_independent(cid, date)
         if independent is None:
             independent = True
-        # 封臣: 未显式 top_liege = no 的条目按最高领主判定 (游戏默认行为)
+        # vassal: entries without an explicit top_liege = no are judged by the top liege (game default)
         top = None
         if not independent and tid is not None:
             lid, ltid = self._top_liege_of(cid, tid)
@@ -6064,21 +5852,11 @@ class Facts:
 
     def _prince_word_exists(self, ptier, government, independent, cid, tid, date,
                             owner=None):
-        """游戏侧**有没有**王子/公主称号 (v64, 问题2) —— 问 `special = ruler_child`
-        条目表 (`FZ.ruler_child_exists`): 命中任一 (条件全中、priority 最高者) 即「有」。
-
-        为什么必须问表: tribal_government / nomad_government **在任何层级**都没有
-        ruler_child 条目 (`00_flavorization.txt:354-400` 的 prince/princess 是
-        `governments = { feudal_government clan_government }` 穷举), 故部落制与
-        游牧制的王国级/帝国级无头衔子女在游戏里没有任何称号; 旧稿末档无条件回落
-        「王子/公主」, 于是卡尔 15 名子女全带「库曼顿巴斯部王子/公主」。
-        仅作**闸门**用: 出词仍走 `_PRINCE_WORD_OVERRIDE` / 本地化表的既有中文口径
-        (v16 把西式王国之女的「郡主」写作「公主」等定规不变)。
-
-        **政体取不到时放行** —— 已毁/已剪除的头衔 `_title_government` 为空
-        (阿基坦公国、意大利王国等 9 世纪旧衔), 此时先退持有者本人的政体史
-        (`_character_government_or_earliest`), 仍取不到就返回 True: 闸门只挡
-        「确知游戏不给」的部落制/游牧制, 判不出来的情形一律照旧出词。"""
+        """Whether the game has a prince/princess word here, asked of the `special = ruler_child`
+        entry table (`FZ.ruler_child_exists`). Tribal and nomad governments have no such entry at any
+        tier, so their untitled children get none, while an undeterminable government passes the gate.
+        A gate only: the wording comes from the existing tables.
+        """
         if cid is None or ptier is None or not self._flavor:
             return True
         gov = (government or "").strip()
@@ -6094,7 +5872,7 @@ class Facts:
         rtype = self._rite_type(cid, date)
         title_key = ((self._lt.get(str(tid)) or {}).get("key") or "") \
             if tid is not None else ""
-        # 封臣: 未显式 top_liege = no 的条目按最高领主判定 (与 `_flavor_key` 同式)
+        # vassal: entries without an explicit top_liege = no are judged by the top liege (as `_flavor_key`)
         top = None
         if not independent and tid is not None:
             lid, ltid = self._top_liege_of(cid, tid)
@@ -6123,7 +5901,7 @@ class Facts:
 
     def _flavor_word(self, kind, tier, cid, tid=None, gender=None, gov=None,
                      date=None):
-        """flavorization 键 → 本地化词 (未命中/未解析返回 '')。"""
+        """Localization word for a flavorization key; '' when unmapped or unresolved."""
         k = self._flavor_key(kind, tier, cid, tid=tid, gender=gender, gov=gov,
                              date=date)
         if not k:
@@ -6134,7 +5912,8 @@ class Facts:
         return ""
 
     def _heritage_of(self, cid):
-        """文化支柱 heritage (heritage_turkic 等), 供游牧官职词按游戏优先级取词。"""
+        """Culture heritage pillar (heritage_turkic and the like), used to pick a nomad office word by
+        the game's priority."""
         if cid is None:
             return ""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
@@ -6148,11 +5927,10 @@ class Facts:
         return (e.get("heritage") or "") if isinstance(e, dict) else ""
 
     def _nomad_office_word(self, tier, gov, independent, female, cid):
-        """游牧/牧民/部落统治者称呼词 — 复现游戏 flavorization 取值顺序:
-        ① 文化 heritage 专属游牧词 (突厥: count_nomad_male_turkish 等);
-        ② 通用部落词 (<tier>_tribal_male: 酋长/大酋长/国王/至高王);
-        ③ 牧民词 (<tier>_herder_male: 牧主)。
-        取不到返回 '' (调用方回退后续逻辑)。"""
+        """Nomad/herder/tribal ruler word, reproducing the game's flavorization order: the
+        heritage-specific nomad word, then the generic tribal word, then the herder word. '' when none
+        is found.
+        """
         g = "female" if female else "male"
         tkey = self._NOMAD_TIER_KEY.get(tier)
         if not tkey:
@@ -6173,49 +5951,34 @@ class Facts:
         return ""
 
     def _anchor_date(self, cid, date=None):
-        """官职/国号的日期锚点 (v25): 显式 date > 卒前一日 (已死且在传记窗口内) > as_of。
-        死者取卒前一日 → 卒于唐则为「唐皇帝」(李漼 874.8.15 卒, h_china 875.6.25 才
-        由崔氏改国号秦); 卒于 as_of 之后者视为在世, 取 as_of (窗口外国号不外泄)。
+        """Date anchor for office and realm names: an explicit date, else the day before death for a
+        character dead inside the biography window, else as_of.
 
-        v42 (问题7): 两处收口 ——
-        ① **卒日当天头衔已随继承易主**: 头衔史的丢失日就是卒日, 而 `_hold_intervals`
-           的 as_of 过滤是「丢失日 > as_of 才算仍持有」, 取卒日会让死者自己的皇位
-           落空。改取**卒前一日**, 语义即「按卒前的身分称呼」。
-        ② **主角的卒档不在 `characters[pid].death`**: 它记在 `cache["player_death"]`,
-           旧稿因此对主角取不到卒日 → 落到 `as_of` (终传为 None → 熔件当前档,
-           已是卒后) → 终传里主角自己的 `office`/`label` 退成裸名。此处一并回读。
-
-        v46 (问题1): ①的漏口补上 —— 旧实现 `if date: return date` 让**显式传入**
-        的日期绕过卒前一日回退, 于是十年篇 (as_of=1128/1133/1138, 晚于卒日) 里
-        已死者被读成「当日不在职」, `_full_label` 再拿他一生最高头衔补成
-        「**前**神圣罗马帝国皇帝X」(实测诺兰档 62045 等 8 人)。语义仍是
-        「死者按卒时身分称呼」: 显式日期晚于卒日时折到卒前一日。"""
+        Titles pass to the heir on the death day, so the day before is used to keep the dead
+        character's own titles, and a date at or after death folds there too. A character who died
+        after as_of counts as living, so a later realm name cannot leak into an early decade.
+        """
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         dd = (rec.get("death") or {}).get("date")
         if not dd and cid == self.cache.get("player_id"):
             dd = (self.cache.get("player_death") or {}).get("date")
         if date:
             if dd and cl.date_key(date) >= cl.date_key(dd):
-                return _day_before(dd)          # v46: 卒日/卒后日期 → 按卒时身分
+                return _day_before(dd)          # a date at or after death -> standing at death
             return date
         if dd and (not self.as_of or cl.date_key(dd) <= cl.date_key(self.as_of)):
             return _day_before(dd)
         return self.as_of
 
     def _title_display_name(self, tid, date=None, cid=None):
-        """头衔的**显示名** = 名 + 层级词后缀 (v80 点4 B, 方案 §4.3)。
+        """Display name of a title: its name plus the tier word suffix, matching the game's
+        TITLE_TIERED_NAME, so the label outlets and `title()` do not give one title two faces in the
+        same material.
 
-        `title()` 那条链走的是游戏 `TITLE_TIERED_NAME = "$NAME$$TIER$"` 的口径 ——
-        日式惣領制伯爵领显示为「下总武士团」; 而 label 出口 (`official_title` /
-        `_last_title_place`) 旧稿只用 `_name_at_date` = 「下总」, 于是**同一顶头衔
-        在同一份材料里两副面孔**(「承袭下总武士团」vs「下总女士」), 成稿据此写出
-        「妻子继为下总国司」这类混串 (用户问题4)。
-
-        **窄口径** (控影响面): 只在层级词来自 `japan_feudal_government` 的
-        flavorization 条目时追加 —— 即只解决用户报告的惣領制头衔。理由:
-          · 律令制的头衔词是「国」, 而官职词是「国司」, 拼接会叠字
-            (「下总**国国**司」), 故律令制**不加** (仍是「下总国司」, 与旧稿一致);
-          · 西式/行政制头衔 (军区、雅尔国…) 的拼接影响面未评估, 本轮不动。
+        Narrow by design: the suffix is appended only when the tier word comes from a
+        `japan_feudal_government` flavorization entry. The ritsuryo title word and the office word
+        would otherwise stack, and the effect on western and administrative titles has not been
+        assessed.
         """
         if tid is None:
             return ""
@@ -6249,13 +6012,14 @@ class Facts:
         return f"{name}{v}"
 
     def _last_title_place(self, cid, fkey="", date=None):
-        """角色官职的地名 (dead_data.flavor 只有官职词无地名 — v13 补全用)。
-        取值顺序: ① 与官职层级精确匹配的头衔 (关白=帝国级→日本; 国司=郡级→出云);
-        ② 最高层级头衔; ③ 最近一次持有的头衔; ④ v14: 死者 dead_data.domain 的
-        头衔名 (title history 被存档剪除时, dead_data 仍带死时辖地 — 蓝田县令)。
-        v25: 国号取 date (默认卒日) 时点的名 — 死者按其卒时国号称呼, 不再一律
-        取 as_of 现名 (修: 李漼卒于唐而被写作「秦皇帝」)。
-        返回 '建宁'/'颍州'/'出云' 等; 无则 ''。"""
+        """Place name for a character's office word, since dead_data.flavor carries only the office
+        word.
+
+        Order: a title matching the office tier exactly, then the highest-tier title, then the most
+        recently held one, then the titles in a dead character's `dead_data.domain` (which still holds
+        his lands when title history has been pruned). The realm name is taken at the anchor date, so
+        a dead character is named by the realm of his death. Returns a place name or ''.
+        """
         anchor = self._anchor_date(cid, date)
         tier_want = None
         for pfx, rk in (("hegemon_", 6), ("emperor_", 5), ("king_", 4),
@@ -6265,9 +6029,11 @@ class Facts:
                 break
 
         def _place_nm(tid):
-            """头衔的 date (默认卒日) 时点国号 (v25: 死者按卒时国号)。
-            v68 (问题5): 世族庄园 (`_nf_`) 与营地/职司同判 —— 家业名不是领地地名
-            (否则「张氏」会被拼进官职词, 出「张氏刺史」)。"""
+            """Realm name of the title at the anchor date (a dead character's realm at death).
+
+            House estates, camps and court offices are excluded: a family estate name is not a landed
+            place name and must not be prefixed to an office word.
+            """
             if tid is None:
                 return ""
             if self._is_estate_title(tid):
@@ -6276,13 +6042,12 @@ class Facts:
             key = t.get("key") or ""
             if not key or key.startswith(("x_", "e_minister_")):
                 return ""
-            # v80 (点4 B): 惣領制头衔的显示名带「武士团」后缀 (「下总武士团女士」)
+            # soryo titles carry their display-name suffix here too
             return self._title_display_name(tid, anchor, cid=cid) \
                 or self._name_at_date(tid, anchor) or self.title_base_name(tid)
 
-        # v21: 同级多头衔的场合, 优先取「首要头衔」与死档 liege_title (游戏口径),
-        # 不再按迭代序取第一个 — 嵬名仁孝同持 k_xia(夏) 与 k_hexi(河西) 时稳定得「夏」
-        # (修复: 1179 年「河西宁令嵬名仁孝」应为游戏显示的「夏宁令」)。
+        # With several titles of the same tier, the primary title and the death save's liege_title win
+        # over iteration order, so the result is stable and matches the game's display.
         if tier_want is not None:
             _pt, ptid = self._primary_title_at(cid, as_of=anchor)
             if ptid is not None and self._eff_rank(ptid) == tier_want:
@@ -6309,16 +6074,14 @@ class Facts:
             for (gain, _loss, _lt) in ivs:
                 if not gain:
                     continue
-                # v17: 地名取「当前」国号, 非上任日 (修复方案_汤利五问题.md 问题6
-                # — 王言 886 年上任时国号关内, 角色窗显示当时/当前国号)。
-                # v25: 「当前」锚点改为 anchor — 死者取卒日国号 (李漼卒于唐 → 唐皇帝)。
-                # v80 (点4 B): 惣領制头衔同走显示名 (「下总武士团」)
+                # the realm name is the current one, not the accession day's; "current" means the
+                # anchor date, so a dead character takes the realm of his death
                 nm = self._title_display_name(tid, anchor, cid=cid) \
                     or self._name_at_date(tid, anchor) or self.title_base_name(tid)
                 if not nm:
                     continue
                 if tier_want is not None and rank == tier_want:
-                    return nm  # 与官职层级精确匹配 → 直接返回
+                    return nm  # exact tier match with the office tier: return directly
                 if rank > best_tier:
                     best_tier, best_tier_nm = rank, nm
                 dk = cl.date_key(gain)
@@ -6328,8 +6091,8 @@ class Facts:
             return best_tier_nm
         if best_late_nm:
             return best_late_nm
-        # v14: title history 缺失 (存档剪除) 时, 死者的 dead_data.domain 仍带
-        # 死时辖地 — 用作官职地名兜底 (贾瑾: b_lantian → 蓝田县令)。
+        # when title history is pruned, a dead character's dead_data.domain still carries the lands he
+        # held at death; used here as the place-name fallback
         c = self._chars.get(str(cid)) or {}
         dd = c.get("dead_data") or {}
         ddom = dd.get("domain") or []
@@ -6346,7 +6109,7 @@ class Facts:
                     nm = self._name_at_date(tid, died)
                     if nm:
                         return nm
-            # 无层级精确匹配: 取最高层级辖地
+            # no exact tier match: take the highest-tier domain
             b_t, b_nm = -1, ""
             for tid in ddom:
                 t = self._lt.get(str(tid)) or {}
@@ -6361,17 +6124,19 @@ class Facts:
             return b_nm
         return ""
 
-    # v28b: 派系领袖头衔 (无地名, 单用不成称谓「领袖」) — 称谓交起义分支出词
+    # Faction-leader titles carry no place name and are no label on their own; the revolt section words them
     _FACTION_LEADER_FLAVORS = ("faction_leader", "faction_leader_male",
                                "faction_leader_female")
-    # v36 (问题1): 层级前缀 flavor — 这些键的词是**统治者层级词** (王/国王/公爵/皇帝…),
-    # 必须配地名才成称谓; 解不出地名时整词作废 (此前写出裸词「王丁文举」「公爵句就狼莫」)。
+    # Tier-prefixed flavors hold ruler tier words, which need a place name to form a label; when no
+    # place name resolves the whole word is dropped rather than emitted bare.
     _TIER_FLAVOR_PREFIXES = ("hegemon_", "emperor_", "king_", "duke_", "count_",
                              "baron_", "prince_", "princess_")
 
     def _has_current_landed_title(self, cid, anchor):
-        """锚点仍持有州府 (c_) 以上的**真领地**头衔? (v36 — 朝廷职司「前」字判据)
-        营地/庄园/朝廷职司/男爵领都不算真领地。"""
+        """True when the character still holds a real landed title of county rank or above at the anchor
+        (the test behind the "former" prefix for court offices). Camps, estates, court offices and
+        baronies do not count.
+        """
         for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
             if not any(iv[1] is None for iv in ivs):
                 continue
@@ -6383,10 +6148,13 @@ class Facts:
         return False
 
     def _ministry_office_at(self, cid, anchor, include_former=False):
-        """朝廷职司官职词 (v36, 问题6): 在任 → 「礼部尚书」; include_former 且已去职
-        → 「前礼部尚书」。多桩取层级最高、再取最晚获得者 (用户拍板2: 用最高头衔)。
-        数据源只有 e_minister_* 头衔 — 存档 dead_data.flavor 对礼部/户部只给通用词
-        「尚书」(minister_any_male), 部名必须由头衔补。"""
+        """Office word for a court post: the current word when still held, or with a "former" prefix
+        when include_former is set and the post is gone. Among several posts the highest rank and then
+        the latest gain win.
+
+        The only source is the e_minister_* titles: the save's dead_data.flavor gives just the generic
+        minister word, so the ministry name must come from the title.
+        """
         best = None   # (rank, gain_key, word, still_held)
         for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
@@ -6407,25 +6175,21 @@ class Facts:
             return best[2]
         return f"前{best[2]}" if include_former else ""
 
-    # ---- v89 (问题2): 教省 (圣职区) 首座的官称 ----
-    # 存档事实 (实测 洪氏2 904 档): 教省头衔是 `landed_titles.19634`
-    #   = key `x_script_2632` / `landless = true` /
-    #     `clerical_region = {clerical_region: 51, domicile: 1740}` /
-    #     `title_name_data.name = '江宁'` / `history = {901.8.7: created}`,
-    # 游戏侧它是**公国级**神权头衔 —— `common\landed_titles\00_landed_titles.txt` 的
-    # `@never_primary_score`(仅影响 AI 择首要头衔) 与
-    # `common\flavorization\20_pam_flavorization.txt:2-17` 的
-    # `special_title = clerical_region` + `tier = duchy` 共同给出层级与措辞。
-    # 项目旧稿按**键前缀**算层级 (`_TT_RANK["x_"] = 0`) ⇒ 该头衔不算真领地,
-    # `official_title` 遂落到「前朝廷职司」兜底, 把「江宁总主教」写成「前礼部尚书」
-    # (实测 logs/v89_probe_live.txt)。此处按游戏口径单独出词。
+    # ---- office word for the head of a clerical province (holy see) ----
+    # In the save a clerical province is a landed title with `landless = true`, a
+    # `clerical_region = {…}` block and its own `title_name_data.name`, and the game treats it as a
+    # duchy-level ecclesiastical title: `common/landed_titles/00_landed_titles.txt` marks it
+    # `@never_primary_score` (affecting only AI primary-title choice) and
+    # `common/flavorization/20_pam_flavorization.txt` gives it `special_title = clerical_region` with
+    # `tier = duchy`. Ranking by key prefix would treat it as no real land and mislabel its holder, so
+    # the word is produced here on the game's own terms.
     _HOLY_SEAT_KEYS = ("d_et_alexandria", "d_et_antioch", "d_et_aquileia",
-                       "d_et_armenia", "d_et_jerusalem")     # 宗主教区 (牧首座)
-    _METROPOLITANATE_KEYS = ("d_et_axum",)                  # 都主教区
-    _CR_WORD_TRIM = "区"        # 「总主教区」→「总主教」/「牧首区」→「牧首」
+                       "d_et_armenia", "d_et_jerusalem")     # patriarchal sees
+    _METROPOLITANATE_KEYS = ("d_et_axum",)                  # metropolitanate
+    _CR_WORD_TRIM = "区"        # trims the province suffix to leave the office word
 
     def _clerical_region_title(self, cid, date=None):
-        """date 时点仍持有的**教省**头衔 id (无则 None)。"""
+        """Id of the clerical-province title still held at date, else None."""
         if cid is None:
             return None
         ao = cl.date_key(date) if date else None
@@ -6446,13 +6210,13 @@ class Facts:
         return None
 
     def _clerical_holder_word(self, cid, tid, date=None):
-        """教省首座的官称词 (由游戏 `clerical_region_duchy_*` 措辞去掉末字「区」得来)。
+        """Office word for the head of a clerical province, from the game's `clerical_region_duchy_*`
+        wording with its trailing province suffix removed.
 
-        变体选择 (游戏 `common\flavorization\20_pam_flavorization.txt:2-122`):
-        · 基督教 · 正教/东方礼 ⇒ `clerical_region_duchy_orthodox`=「牧首区」→「牧首」;
-        · 基督教 · 其余      ⇒ `clerical_region_duchy_west_christian`→`…_catholic`=「总主教区」→「总主教」;
-        · 非基督教            ⇒ `clerical_region_duchy_fallback`→`…_catholic`=「总主教区」→「总主教」。
-        先命中先取, 键缺整词作废 (调用方回退到教省名或空串)。"""
+        Variant per `common/flavorization/20_pam_flavorization.txt`: Orthodox or eastern-rite
+        Christianity uses the orthodox key, while other Christianity and non-Christian faiths use the
+        western-christian and fallback keys. The first hit wins, and a missing key drops the word.
+        """
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         if key in self._HOLY_SEAT_KEYS:
             lk = "clerical_region_duchy_patriarchate"
@@ -6483,10 +6247,11 @@ class Facts:
         return v[:-1] if v.endswith(self._CR_WORD_TRIM) else v
 
     def clerical_region_word(self, cid, date=None):
-        """教省 (圣职区) 首座官称「江宁总主教」(v89 问题2, 用户 2026-10-02 拍板)。
+        """Office word of a clerical province's head (place name plus ecclesiastical office word), else ''.
 
-        判据: date 时点持有 `clerical_region` 非空的头衔。地名取项目唯一头衔出词口
-        `title()`; 官称取 `_clerical_holder_word`。非教省首座返回 ''。"""
+        Applies when the character holds a title with a non-empty `clerical_region` at date. The place
+        name comes from `title()` and the office word from `_clerical_holder_word`.
+        """
         tid = self._clerical_region_title(cid, date)
         if tid is None:
             return ""
@@ -6502,11 +6267,11 @@ class Facts:
         return f"{place}{word}" if place else word
 
     def _title_flags(self, tid, date=None):
-        """头衔**自身**的旗标集 (v81): 开府 (`shogun_flag`) 就是这样落在 e_japan 上的
-        (实测 melt_1007: `landed_titles.13279.variables.data[0]`)。
+        """Flag set of the title itself; the shogunate flag lands on e_japan this way.
 
-        只认**当前状态** —— 熔件只存末档的 `variables`, 历史档期的旗标无从得知,
-        故历史日期一律返回空集 (宁缺勿错; 用户已拍板不为它加逐档闩存)。"""
+        Only the current state is known, because the melt stores just the last save's `variables`, so a
+        historic date returns an empty set rather than a guess.
+        """
         if date is not None:
             last = self.cache.get("last_date")
             if last and cl.date_key(str(date)) < cl.date_key(str(last)):
@@ -6517,10 +6282,12 @@ class Facts:
                 if isinstance(v, dict) and v.get("flag")}
 
     def _char_flags(self, cid, date=None):
-        """角色自身的旗标集 (v81): 在世者取 `alive_data.variables.data[].flag`
-        (实测 melt_1007: 平干有带 `shogun_flag`); 死者存档会清掉 variables,
-        故返回空集 —— 死者的词由烘死的 `dead_data.flavor` 承担。
-        与 `_title_flags` 同一条「只认当前状态」的口径。"""
+        """Flag set of the character himself, read from `alive_data.variables.data[].flag`.
+
+        A dead character's save has its variables cleared, so an empty set is returned and the baked
+        `dead_data.flavor` supplies the wording instead. Same "current state only" rule as
+        `_title_flags`.
+        """
         if date is not None:
             last = self.cache.get("last_date")
             if last and cl.date_key(str(date)) < cl.date_key(str(last)):
@@ -6531,14 +6298,13 @@ class Facts:
                 if isinstance(v, dict) and v.get("flag")}
 
     def japan_top_office(self, cid, date=None):
-        """日本最高头衔持有者的**官称裸词** (v81 问题3); 非此类持有者返回 ''。
+        """Bare office word of a holder of a Japanese top title, else ''.
 
-        判据顺序 (每层都有实测, 见 `_JAPAN_OFFICE_FROM_FLAVOR` 的注释):
-          ① 卒时窗口内的游戏烘死键 (`dead_data.flavor`) —— 上皇/幕府将军只有这里能得;
-          ② (头衔, 政体) 直表 —— 律令制=关白 / 惣領制=太政大臣;
-             另: 惣領制且**头衔带 `shogun_flag`** (已开府) → 幕府将军;
-          ③ 在世者本人带 `shogun_flag` → 幕府将军 (头衔旗标缺失时的兜底)。
-        返回裸词 (不带国号前缀) —— 用户 2026-09-29 拍板「e_japan 统治者前面不加日本」。"""
+        Order: the game's baked flavor key inside the death window (the only source for the retired
+        emperor and the shogun); the (title, government) table, where a feudal title carrying
+        `shogun_flag` gives the shogun word; then the character's own `shogun_flag` as a fallback when
+        the title flag is missing. The word is returned bare, with no realm-name prefix.
+        """
         if cid is None:
             return ""
         anchor = self._anchor_date(cid, date)
