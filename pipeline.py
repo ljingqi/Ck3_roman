@@ -1,33 +1,22 @@
 # -*- coding: utf-8 -*-
-"""主角一生记忆缓存 + 死后传记生成 流水线 v3.1 (移植自 expck3/pipeline.py)
+"""Main-character memory cache + post-death biography pipeline.
 
-**素材库纪律 (与 Journal 报纸 Mod 的 watch/continue 一致)**:
-  - `watch`  / `continue`: 启动时记录基准 (当前最新存档的 mtime), **只处理本程序
-    启动后写入的新存档**; 目录里已有的老存档(旧战役/历史档)一律不读、不记录。
-  - `scan`: 单次补录——只补录**当前战役**(playthrough_id 一致或玩家一致)中日期
-    新于缓存且 mtime 晚于缓存文件的新档; 其它战役的存档一律跳过。
-  - 每次玩家角色死亡只生成一篇「终传」(`bio_generated` 标记); 死亡跨查带
-    **身份校验**(名字一致 + 死亡日期晚于最后存活档), 防跨战役 id 撞号误判。
+watch/continue process only saves written after startup; scan catches up the current campaign only.
+Each player death yields exactly one final biography (`bio_generated`). Saves reach the material as
+rakaly JSON melts under output/<house>/data/, merged into player_<player_id>.json by
+cache_lib.extract_snapshot.
 
-工作流:
-  1. 检测新存档 (watch: mtime > 基准; scan: 同战役且日期新于缓存)
-  2. rakaly json 熔化 → output/<家族>/data/melt_<日期>.json
-  3. cache_lib.extract_snapshot → output/<家族>/data/player_<玩家id>.json
-     (每玩家一份, 跨年去重; 文件夹按宗族名; watch 每次运行一律新建编号文件夹
-      哈布斯堡→哈布斯堡2, continue 沿用最新文件夹)
-  4. 死亡检测 → 自动生成终传 → output/<家族>/<姓名>_终传_<日期>.md + 刷新 index.html
-
-用法:
-  python pipeline.py watch [秒]          # 新档监控: 只处理启动后保存的新存档 (每次运行一律新建文件夹 菲利普→菲利普2)
-  python pipeline.py continue [秒]       # 旧档续传: 沿用最新文件夹, 补录当前战役新档后进入监控
-  python pipeline.py scan                # 单次: 只补录当前战役的新档
-  python pipeline.py status              # 打印各玩家缓存状态
-  python pipeline.py bio [玩家id]        # 手动生成传记 (在世传记或终传)
-  python pipeline.py demo-death          # 模拟主角死亡, 演示「死后自动生成」链路
-  python pipeline.py rebuild-cache       # 从各战役文件夹熔件重建缓存 (迁移/修复)
-  python pipeline.py index-melts         # 预建全部熔件的记忆归档边车 (回溯加速)
-  python pipeline.py compact [--gz]     # 冷熔件与边车压缩归档 (v49 方案①: 默认 xz, 约 1.4GB)
-  python pipeline.py migrate             # 迁移 v4: 旧文件夹更名 + 缓存移入 output/<家族>/data/ + 重建
+Usage:
+  python pipeline.py watch [sec]        # monitor new saves only; creates a new numbered folder
+  python pipeline.py continue [sec]     # reuse the newest folder, catch up, then monitor
+  python pipeline.py scan               # one catch-up pass over current-campaign saves
+  python pipeline.py status             # print per-player cache status
+  python pipeline.py bio [player_id]    # generate a biography by hand (living or final)
+  python pipeline.py demo-death         # simulate the player death path
+  python pipeline.py rebuild-cache      # rebuild caches from campaign-folder melts
+  python pipeline.py index-melts        # pre-build the memory archive sidecar of every melt
+  python pipeline.py compact [--gz]     # archive cold melts and sidecars (default xz, ~1.4GB)
+  python pipeline.py migrate            # move legacy caches under output/<house>/data/, rebuild
 """
 import gzip
 import hashlib
@@ -50,12 +39,10 @@ import biography as bio
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-# ---------------------------------------------------------------------------
-# 存档读取
-# ---------------------------------------------------------------------------
+# --- Save reading ---------------------------------------------------------------
 
 def read_save_envelope(path):
-    """读取 SAV 信封明文头: 返回 (magic, meta_date, meta_player_name)。"""
+    """Read the plaintext SAV envelope header: (magic, meta_date, meta_player_name)."""
     with open(path, "rb") as fp:
         head = fp.read(65536)
     magic = head[:8].decode("utf-8", "replace")
@@ -68,10 +55,8 @@ def read_save_envelope(path):
 
 
 def melt_save(cfg, save_path, out_path):
-    """rakaly json 熔化存档 → out_path。
-
-    v49 (O7): stdout 直写目标文件 (旧为 capture_output=True —— 244 MiB JSON 先在
-    内存里攒一份再落盘, 白占 244 MiB 峰值内存与一次拷贝); stderr 仍收着报错。"""
+    """Melt a save to out_path with `rakaly json` and return out_path. stdout streams into
+    the file, so the ~244 MiB JSON is never held in memory; stderr is captured for errors."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     rakaly = cfg.get("rakaly_path") or ""
     if not rakaly or not os.path.isfile(rakaly):
@@ -85,7 +70,7 @@ def melt_save(cfg, save_path, out_path):
 
 
 def scan_saves(save_dir):
-    """返回 [{path, date, player, magic, mtime}] 按日期排序。"""
+    """List the saves in save_dir as [{path, date, player, magic, mtime}], sorted by date."""
     out = []
     if not os.path.isdir(save_dir):
         return out
@@ -107,20 +92,18 @@ def scan_saves(save_dir):
 
 
 def melt_path(cfg, date):
-    """(兼容旧布局) 根 data 目录下的日期熔件路径。"""
+    """Date-keyed melt path in the root data dir (legacy layout)."""
     return os.path.join(cfg.get("data_dir", ""), f"melt_{cl.date_filekey(date)}.json")
 
 
 def campaign_data_dir(cfg, folder):
-    """战役文件夹的 data 目录: output/<家族>/data/。"""
+    """Campaign folder data dir: output/<house>/data/."""
     return os.path.join(cfg.get("output_dir", ""), folder, "data")
 
 
 def melt_file_in(cfg, folder, date, player_id=None):
-    """战役文件夹内该日期的熔件路径: 本玩家既有 _p 文件优先, 否则日期文件。
-    v44 (问题5): 冷熔件归档后后缀可能是 `.json.gz`; v49 (方案①) 还可能是
-    `.json.xz` —— 返回**实际存在**的那一份 (都不在时返回规范 `.json` 路径,
-    由调用方 isfile 判定)。"""
+    """Melt path for this date in a campaign folder: an existing `_p` file of this player wins,
+    else the date file; an archived `.json.gz`/`.json.xz` variant is returned when it exists."""
     d = campaign_data_dir(cfg, folder)
     key = cl.date_filekey(date)
     if player_id is not None:
@@ -134,7 +117,7 @@ def melt_file_in(cfg, folder, date, player_id=None):
 
 
 def melt_player_id(path):
-    """熔件所属玩家 id (读文件找玩家); 解析失败返回 None。"""
+    """Player id owning a melt file (read from its contents); None if parsing fails."""
     try:
         return cl.find_player(cl.load_melt(path))
     except Exception:
@@ -142,14 +125,14 @@ def melt_player_id(path):
 
 
 def temp_melt_path(cfg, date):
-    """熔化中间文件 (定玩家/战役文件夹前): 根 data 目录, 进程唯一。"""
+    """Intermediate melt before the player/campaign folder is known: root data dir, per process."""
     return os.path.join(cfg.get("data_dir", ""),
                         f".tmp_melt_{cl.date_filekey(date)}_{os.getpid()}.json")
 
 
 def _melt_save_into(cfg, folder, date, player_id, save_path):
-    """把存档熔化写入战役文件夹 (日期文件被他人占用时改用 _p 后缀)。
-    返回实际熔件路径。"""
+    """Melt a save into the campaign folder and return the lasting path; when the
+    date file already belongs to another player the `_p` suffixed name is used."""
     d = campaign_data_dir(cfg, folder)
     os.makedirs(d, exist_ok=True)
     key = cl.date_filekey(date)
@@ -163,8 +146,8 @@ def _melt_save_into(cfg, folder, date, player_id, save_path):
 
 
 def _move_melt_into(cfg, folder, date, player_id, tmp_path):
-    """把临时熔件归入战役文件夹; 日期文件被他人占用时改用 _p 后缀;
-    本玩家同日期熔件已存在则复用 (丢弃临时)。返回实际熔件路径。"""
+    """Move a temp melt into the campaign folder and return its lasting path; the `_p` suffix is
+    used when the date file belongs to another player, and an existing same-date melt is reused."""
     d = campaign_data_dir(cfg, folder)
     os.makedirs(d, exist_ok=True)
     key = cl.date_filekey(date)
@@ -179,14 +162,14 @@ def _move_melt_into(cfg, folder, date, player_id, tmp_path):
         except OSError:
             pass
     else:
-        cl.melt_memo_move(tmp_path, target)  # v49 (O4): 熔件记忆跟到归位路径
+        cl.melt_memo_move(tmp_path, target)  # keep the melt memo on the final path
         os.replace(tmp_path, target)
     return target
 
 
 def melt_path_for_cache(cfg, cache, date):
-    """缓存战役文件夹内的熔件路径 (优先战役文件夹, 兼容旧根目录布局)。
-    v28: 根目录兜底前先验战役 — 根 data/ 下遗留的其它战役熔件不再被本缓存取用。"""
+    """Melt path inside the cache's campaign folder, falling back to the legacy root layout,
+    which validates the campaign first so a leftover root melt of another campaign is refused."""
     folder = cache.get("output_folder")
     if folder:
         p = melt_file_in(cfg, folder, date, cache.get("player_id"))
@@ -207,11 +190,9 @@ def melt_path_for_cache(cfg, cache, date):
 
 
 def load_latest_melt(cfg, cache):
-    """取缓存最后一份存档的 melt (dict); 缺失返回 None。
-    优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。
-    最后日期熔件缺失 (损坏/被清理) 时, 按 sources 降序回退到该会话文件夹
-    最近一份现存熔件 (保证传记/十年传记仍可生成), 全无则返回 None。
-    v28: 载入后再验战役 — 熔件 playthrough_id 与缓存不一致即弃用 (不进 facts)。"""
+    """Melt dict of the cache's last save, or None. Prefers the campaign folder over the legacy
+    root layout and, when the last-date melt is gone, falls back to the newest surviving source
+    melt so biographies can still be produced; a melt of another campaign is discarded."""
     last = cache.get("last_date")
     if not last:
         return None
@@ -246,21 +227,18 @@ def load_latest_melt(cfg, cache):
     return None
 
 
-# ---------------------------------------------------------------------------
-# 缓存管理 (v4: 缓存位于 output/<家族>/data/)
-# ---------------------------------------------------------------------------
+# --- Cache management (caches live in output/<house>/data/) ---------------------
 
 def _session_folder_seq(folder):
-    """会话文件夹序号: '菲利普' → ('菲利普', 0), '菲利普2' → ('菲利普', 2)。"""
+    """Session folder sequence: 'name' -> ('name', 0), 'name2' -> ('name', 2)."""
     m = re.match(r"^(.*?)(\d+)$", str(folder or ""))
     return (m.group(1), int(m.group(2))) if m else (str(folder or ""), 0)
 
 
 def _cache_pick_key(path, cache):
-    """同玩家多份会话缓存的优先级键 (越大越优先):
-    当前 watch 会话文件夹 > 会话文件夹编号大 (菲利普2 > 菲利普) > last_date 新 > mtime 新。
-    重开老档后新会话日期 (883) 小于旧会话 (886), 故不能只看 last_date;
-    会话文件夹编号 (determine_folder 递增) 才是「最新会话」的稳定判据。"""
+    """Priority key among several session caches of one player (larger wins): this watch run's
+    folder > higher session folder sequence > newer last_date > newer mtime. A restarted old save
+    has an earlier last_date, so the folder sequence is the stable "newest session" test."""
     try:
         mt = os.path.getmtime(path)
     except OSError:
@@ -275,11 +253,9 @@ def _cache_pick_key(path, cache):
 
 
 def find_cache_path(cfg, player_id, playthrough_id=None):
-    """查找玩家缓存现有路径 (output 树 + 旧 cache/); 无则返回 None。
-    v18: 可传 playthrough_id — 玩家 id 跨战役复用 (867 自定义角色恒为
-    38701) 时按战役过滤, 只找同战役的缓存; 未传时保持旧行为 (取最新会话)。
-    同玩家同战役多会话副本 (菲利普 / 菲利普3) 取最新会话 (_cache_pick_key,
-    对齐 <另一项目> _latest_session_folder_by_tag)。"""
+    """Existing cache path of a player in the output tree, then the legacy cache/; None when
+    absent. playthrough_id filters by campaign because player ids are reused across campaigns;
+    several sessions of one player and campaign resolve to the newest session."""
     base = cfg.get("output_dir", "")
     best = None
     if os.path.isdir(base):
@@ -287,13 +263,13 @@ def find_cache_path(cfg, player_id, playthrough_id=None):
             p = os.path.join(dp, f"player_{player_id}.json")
             if os.path.isfile(p):
                 cache = cl.load_cache(p)
-                # 空缓存 (损坏文件被 load_cache 改名留证后返回的空缓存) 不参与选路,
-                # 否则会以 seq=0 落选后把新档误并进旧会话文件夹 (2026-08-28 事件)
+                # An empty cache (a corrupt file renamed aside by load_cache) must not route
+                # new saves into the old session folder.
                 if not cache.get("player_id"):
                     continue
                 if playthrough_id is not None \
                         and cache.get("playthrough_id") != playthrough_id:
-                    continue  # 跨战役同 id 缓存一律排除
+                    continue  # a cache of the same id from another campaign is excluded
                 if best is None or _cache_pick_key(p, cache) > _cache_pick_key(best[0], best[1]):
                     best = (p, cache)
     if best:
@@ -308,10 +284,9 @@ def find_cache_path(cfg, player_id, playthrough_id=None):
 
 
 def all_caches(cfg):
-    """{(player_id, playthrough_id): (path, cache)} 全部玩家缓存。
-    v18: 玩家 id 跨战役复用 (867 自定义角色恒为 38701) — 键改为
-    (player_id, playthrough_id), 同 id 不同战役的缓存互不覆盖;
-    同战役多会话文件夹 (菲利普 / 菲利普3) 仍只保留最新会话者。"""
+    """All player caches as {(player_id, playthrough_id): (path, cache)}. The tuple key keeps
+    caches of one id in different campaigns apart (ids are reused across campaigns), while
+    several session folders of one campaign collapse to the newest session."""
     out = {}
     for root in (cfg.get("output_dir", ""), cfg.get("cache_dir", "")):
         if not root or not os.path.isdir(root):
@@ -325,7 +300,7 @@ def all_caches(cfg):
                 path = os.path.join(dp, fn)
                 cache = cl.load_cache(path)
                 if not cache.get("player_id"):
-                    continue  # 损坏缓存 (load_cache 已改名留证) 不参与任何战役选路
+                    continue  # a corrupt cache (renamed by load_cache) joins no campaign
                 key = (cache.get("player_id") or pid,
                        cache.get("playthrough_id"))
                 prev = out.get(key)
@@ -336,24 +311,21 @@ def all_caches(cfg):
 
 
 def cache_path_for(cfg, player_id, playthrough_id=None):
-    """(兼容旧调用) 玩家缓存路径; 不存在返回 None。"""
+    """Player cache path (legacy call site); None when it does not exist."""
     return find_cache_path(cfg, player_id, playthrough_id)
 
 
 def folder_display(name):
-    """文件夹显示名: 单字中文姓加「氏」(边 → 边氏), 其余原样 (冯·大马士革)。"""
+    """Folder display name: a single-character CJK name gets the clan suffix, other names stay as is."""
     if len(name) == 1 and "\u4e00" <= name <= "\u9fff":
         return name + "氏"
     return name
 
 
 def session_folder_name(cache):
-    """会话文件夹命名基准: 宗族名(氏约定) → 家族名 → 人物名。
-
-    v44 (问题1): 家族改名后**基准不跟着变** —— 取家族沿革**首点**之名 (开档时的
-    家族/宗族名), 无沿革 (旧缓存) 时才用现值。否则阿德尔海德 1133 年把家族改名
-    「冯」之后, watch 模式下一轮会把新会话文件夹算成「冯」而另建目录, 并把缓存
-    当「新会话首档」从空重建 (见 _process_save 的 dir0 != dir1 分支)。"""
+    """Name basis for a session folder: house name (clan convention), then dynasty name, then
+    character name. It deliberately takes the first house-history entry (the name at save start)
+    and ignores a later rename, which would open a second folder on the next watch round."""
     pid = cache.get("player_id")
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
     hist = [h for h in (rec.get("house_history") or []) if h.get("from")]
@@ -372,16 +344,14 @@ def sanitize_folder_name(name):
 
 
 def determine_folder(name, output_dir):
-    """重名文件夹加数字: 哈布斯堡 → 哈布斯堡2 → 哈布斯堡3... (仿 <另一项目>)。
-    v14: 语义改为「已有编号最大值 + 1」— 磁盘上 菲利普/菲利普3 并存时新会话建 菲利普4,
-    不再找最小空号 (旧逻辑在 菲利普3 已存在时新建 菲利普2, 编号倒退破坏
-    find_latest_session_folder/_cache_pick_key 的「编号大=最新」判据, 见 修复方案_菲利普2.md 问题1)。
-    不带编号的 base 目录视为 1 (菲利普 存在 → 新会话 菲利普2)。"""
+    """Suffix a counter to a clashing folder name: base, base2, base3... The counter is the highest
+    existing number plus one, since a lower number would break the "higher number = newer session"
+    rule that find_latest_session_folder and _cache_pick_key rely on. An unnumbered base counts as 1."""
     base = sanitize_folder_name(name)
     max_seq = 0
     if os.path.isdir(output_dir):
         if os.path.isdir(os.path.join(output_dir, base)):
-            max_seq = 1  # 无编号的 base 目录 = 1
+            max_seq = 1  # an unnumbered base folder counts as 1
         for fn in os.listdir(output_dir):
             m = re.match(re.escape(base) + r"(\d+)$", fn)
             if m:
@@ -390,7 +360,7 @@ def determine_folder(name, output_dir):
 
 
 def find_latest_session_folder(name, output_dir):
-    """返回该家族已存在的编号最大会话文件夹 (哈布斯堡 → 哈布斯堡2); 无则 None。"""
+    """Newest numbered session folder existing for this family (base -> base2), or None."""
     base = sanitize_folder_name(name)
     found = []
     i = 1
@@ -406,24 +376,18 @@ def find_latest_session_folder(name, output_dir):
     return found[-1] if found else None
 
 
-# watch 运行级会话文件夹 (对齐 <另一项目> 的 watch 语义):
-# 每次 watch 运行 = 新的存档期 — 首个新档一律新建编号文件夹 (菲利普 → 菲利普2),
-# 运行内同一玩家沿用本次运行文件夹, 换玩家(新局)再新建; continue 不走此逻辑。
+# Watch-run session folder: one watch run is one new save period, so the first new save opens a
+# freshly numbered folder, the same player keeps it, and a new player opens another one.
 _WATCH_SESSION = {"active": False, "folder": None, "player_key": None}
 
-# v51: 监控空转时控制台的报平安间隔 (轮数; 60s 轮询下 30 轮 ≈ 半小时一次)。
-# 明细轮次仍逐轮写入 logs/journal.log。
+# Console heartbeat interval for idle monitoring, in 60 s poll rounds (~half an hour at 30).
 IDLE_HEARTBEAT_ROUNDS = 30
 
 
 def resolve_output_folder(cfg, cache, continue_mode=False):
-    """纯函数: 该缓存应使用的会话文件夹 (不修改缓存)。
-
-    - continue: 沿用 (缓存绑定 → 同 playthrough → 该家族最新文件夹 → 新建);
-    - watch:    一律新建编号文件夹, 绝不进旧文件夹 (对齐 <另一项目> 会话语义:
-                每次 watch 运行/换玩家 = 新存档期, determine_folder → 菲利普2...;
-                运行内同玩家沿用本次运行的文件夹)。
-    """
+    """Session folder this cache should use (pure function). continue reuses the bound folder, the
+    same playthrough's folder or the newest one and creates a folder only when none exists; watch
+    always creates a newly numbered folder, since a run or a new player is a new save period."""
     out = cfg.get("output_dir", "")
     if continue_mode:
         cur = cache.get("output_folder")
@@ -440,10 +404,8 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
         if latest:
             return latest
         return determine_folder(name, out)
-    # watch 模式: 运行内同玩家沿用本次运行的文件夹; 换玩家(父死子继/新局)时——
-    # v14: 先查同 playthrough_id 的既有缓存, 有则沿用其 output_folder (父死子继共享文件夹,
-    # 修复方案_菲利普2.md 问题2: 旧逻辑 player_key 一变就 determine_folder 新建 菲利普4,
-    # 且后台终传线程又建 菲利普5, 缓存绑定被污染); 无同战役缓存才新建编号文件夹。
+    # watch mode: the same player keeps this run's folder. A player change (succession or a new
+    # game) reuses the folder of an existing cache of the same playthrough_id, else creates one.
     name = session_folder_name(cache)
     key = cache.get("player_id")
     if _WATCH_SESSION["active"]:
@@ -464,7 +426,8 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
         _WATCH_SESSION["player_key"] = key
         llm.log(f"  新会话文件夹: [{folder}] (本次 watch 运行新建)")
         return folder
-    # 非 watch 运行上下文 (独立 bio/rebuild 等): 沿用绑定/同战役, 否则新建
+    # Outside a watch run (standalone bio/rebuild): reuse the binding or the folder
+    # of the same campaign, else create one.
     cur = cache.get("output_folder")
     if cur and os.path.isdir(os.path.join(out, cur)):
         return cur
@@ -478,24 +441,23 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
 
 
 def ensure_output_folder(cfg, cache, continue_mode=False):
-    """确定并绑定会话文件夹 (写入 cache.output_folder), 返回文件夹名。"""
+    """Resolve the session folder, bind it into cache["output_folder"] and return the name."""
     folder = resolve_output_folder(cfg, cache, continue_mode)
     cache["output_folder"] = folder
     return folder
 
 
 def session_data_path(cfg, cache, folder=None):
-    """缓存文件路径: output/<家族>/data/player_<id>.json"""
+    """Cache file path: output/<house>/data/player_<id>.json."""
     folder = folder or resolve_output_folder(cfg, cache, True)
     return os.path.join(cfg.get("output_dir", ""), folder, "data",
                         f"player_{cache.get('player_id')}.json")
 
 
 def save_session_cache(cfg, cache, continue_mode=False):
-    """把缓存写入其会话文件夹并持久化文件夹绑定。
-    v8.1: 写前合并磁盘上的 bio_decades/bio_generated — 后台传记线程可能在主线程
-    读缓存之后、写缓存之前更新了这两个标记, 主线程整写会把它覆盖丢失
-    (实测 15:12:50 覆盖 15:12:48, 导致第2个十年重复触发、重复烧 token)。"""
+    """Write the cache into its session folder and persist the folder binding. bio_decades and
+    bio_generated are merged from disk first, so flags set by the background biography thread
+    between this read and write are not lost and a decade cannot run twice."""
     folder = ensure_output_folder(cfg, cache, continue_mode)
     path = session_data_path(cfg, cache, folder)
     try:
@@ -518,20 +480,15 @@ def _cache_mtime(path):
 
 
 def _date_scalar(s):
-    """'869.2.22' → 排序标量 (年*372+月*31+日, 便于算时间线差距)。"""
+    """Sort scalar of a 'y.m.d' date (year*372 + month*31 + day) for timeline gaps."""
     y, m, d = cl.date_key(s)
     return y * 372 + m * 31 + d
 
 
 def active_cache(cfg):
-    """当前战役缓存: 取「最新存档(mtime)」所属战役的缓存; 逐级回退。
-    a) 信封人物名匹配缓存 (最新档属当前游戏, 名称带称号也能命中, 首选);
-    b) 最新档日期已并入某缓存 → 该缓存战役 — 多战役同日期时选「时间线最贴近
-       最新档」者 (last_date ≥ 最新档且差距最小, 次按缓存文件 mtime), 不再取
-       last_date 最大 — 后者会把锚点漂到跑得最久的旧战役 (2026-08-30 事件:
-       continue 误判 菲利普3/菲利普2, 导致汤利第3个十年传记漏生成);
-    c) 熔化最新档一次按 playthrough_id 找同战役缓存 (覆盖「新玩家无缓存」);
-    d) 回退: 全部缓存中 last_date 最新者。"""
+    """(player_id, cache) of the campaign the newest save (by mtime) belongs to, matched by the
+    envelope character name, then the save date among a cache's sources (closest timeline wins, since
+    the largest last_date would drift to an old campaign), one melt for playthrough_id, then date."""
     caches = all_caches(cfg)  # {(pid, playthrough_id): (path, cache)}
     if not caches:
         return None, None
@@ -540,17 +497,17 @@ def active_cache(cfg):
         return max(keys, key=lambda k: cl.date_key(caches[k][1].get("last_date") or ""))
 
     def campaign_pick(keys, newest_date):
-        """从候选缓存中选「当前战役」: 无 last_date 者垫底;
-        last_date ≥ 最新档者优先, 与最新档差距最小者优先, 同差取缓存 mtime 新者。"""
+        """Pick the current campaign among candidate caches: entries without a last_date rank
+        last, then last_date >= the newest save, then the smallest gap, then the newer mtime."""
         ad = _date_scalar(newest_date or "")
         def key(k):
             path, c = caches[k]
             mt = _cache_mtime(path)
             ld = c.get("last_date")
             if not ld:
-                return (-2, 0, mt)  # 空/异常缓存垫底
+                return (-2, 0, mt)  # empty or broken cache ranks last
             v = _date_scalar(ld)
-            behind = 1 if v < ad else 0  # 落后于最新档 → 次优先
+            behind = 1 if v < ad else 0  # behind the newest save -> lower priority
             return (-behind, -abs(ad - v), mt)
         return max(keys, key=key)
 
@@ -561,17 +518,17 @@ def active_cache(cfg):
     if saves:
         newest = max(saves, key=lambda s: s["mtime"])
         hit = []
-        # a) 信封人物名 → 匹配缓存 (与 _catchup 预过滤同一规范化)
+        # a) envelope character name -> cache (same normalization as the _catchup prefilter)
         nm = player_char_name(newest["player"])
         if nm:
             hit = [k for k, (_pp, c) in caches.items()
                    if player_char_name(c.get("player_name")) == nm]
         if not hit:
-            # b) 该档日期已并入某缓存 → 该缓存所属战役 (零成本); 平局按时间线贴近度
+            # b) the save's date is already among a cache's sources; ties by timeline closeness
             hit = [k for k, (_pp, c) in caches.items()
                    if newest["date"] in (c.get("sources") or [])]
         if not hit:
-            # c) 熔化最新档一次 → 按 playthrough_id 找同战役缓存 (覆盖「新玩家无缓存」)
+            # c) melt the newest save once and match caches by playthrough_id (new player)
             try:
                 tmp = temp_melt_path(cfg, newest["date"])
                 melt_save(cfg, newest["path"], tmp)
@@ -588,37 +545,37 @@ def active_cache(cfg):
         if hit:
             key = campaign_pick(hit, newest["date"])
             pt = caches[key][1].get("playthrough_id")
-            if pt:  # 同战役内取最新缓存 (继位后锚定新统治者)
+            if pt:  # within the campaign take the newest cache (the new ruler after succession)
                 key = best([k for k, (_pp, c) in caches.items()
                             if c.get("playthrough_id") == pt])
             return key[0], caches[key][1]
-    # d) 全部失败: 回退原逻辑 (最后日期最新)
+    # d) nothing matched: fall back to the cache with the newest last_date
     key = best(list(caches))
     return key[0], caches[key][1]
 
 
 def same_campaign(cache, melt, player_id):
-    """判断存档是否属于缓存所记录的同一战役。
-    playthrough_id 都存在时按它判; 否则按玩家 id 判。"""
+    """Whether a save belongs to the campaign recorded by the cache: by playthrough_id
+    when both sides have one, otherwise by player id."""
     pt = melt.get("playthrough_id")
     cpt = cache.get("playthrough_id")
     if cpt and pt:
         return cpt == pt
     if not cpt and not pt:
         return cache.get("player_id") == player_id
-    # 一边有 playthrough 一边没有: 无法确认同战役, 视为不同
+    # Only one side carries a playthrough id: the campaign cannot be confirmed, so differ
     return False
 
 
 def player_char_name(name):
-    """'观察使，边诚' → '边诚' (取最后一个逗号后的角色名, 用于信封级预过滤)。"""
+    """Character name after the last comma of an envelope name (a title may precede it)."""
     if not name:
         return ""
     return str(name).rsplit("，", 1)[-1].rsplit(",", 1)[-1].strip()
 
 
 def _pending_catchup_saves(cfg, cache):
-    """当前战役待补录的存档列表 (信封预过滤后, 尚未熔化)。"""
+    """Saves of the current campaign still to catch up on (envelope-prefiltered, not yet melted)."""
     pid = cache.get("player_id")
     my_name = player_char_name(cache.get("player_name"))
     save_dir = cfg.get("save_dir", "")
@@ -642,11 +599,10 @@ def _pending_catchup_saves(cfg, cache):
 
 
 def _catchup(cfg, cache, continue_mode=False):
-    """补录当前战役的新档 (仅当信封角色名与缓存玩家名一致, 否则不熔化直接跳过)。
-    新档 = 日期新于缓存 last_date 且 mtime 晚于缓存文件写入时刻 (上次运行已见过的
-    老档一律不扫不记录, 防误读历史战役存档)。返回处理数。
-
-    v53 (问题5): 先数出待补录总数, 每档打 `补录 i/N` 与粗算 ETA, 减少「没反应」的错觉。"""
+    """Catch up on the current campaign's new saves and return how many were merged. Only saves whose
+    envelope character name equals the cached player name are melted, and a new save must be dated
+    after the cache's last_date and written after the cache file, so earlier runs are not rescanned.
+    The total is counted up front and each save logs its index and a rough ETA."""
     pid = cache.get("player_id")
     pending = _pending_catchup_saves(cfg, cache)
     total = len(pending)
@@ -660,11 +616,11 @@ def _catchup(cfg, cache, continue_mode=False):
             elapsed = time.time() - t0
             remain = elapsed / processed * (total - i + 1)
             eta = f", 约剩 {remain / 60:.0f} 分钟" if remain >= 60 else f", 约剩 {remain:.0f} 秒"
-        # 熔件入战役文件夹 output/<家族>/data/ (同一战役的继位玩家共用)
+        # melt into the campaign folder output/<house>/data/, shared by successive players
         folder = resolve_output_folder(cfg, cache, continue_mode)
         mp = melt_file_in(cfg, folder, s["date"], pid)
         if os.path.isfile(mp) and melt_player_id(mp) not in (None, pid):
-            mp = None  # 日期文件属他人战役, 需重新熔化
+            mp = None  # the date file belongs to another campaign, so melt again
         if not mp or not os.path.isfile(mp):
             llm.log(f"  补录 {i}/{total} 熔化 {os.path.basename(s['path'])} "
                     f"({s['magic']}){eta} ...")
@@ -694,7 +650,7 @@ def _catchup(cfg, cache, continue_mode=False):
                     find_cache_path(cfg, player_id, melt.get("playthrough_id")) or "",
                     fresh=True)
                 pid = player_id
-            _prebuild_melt_index(mp, melt)   # v49 (O1): 下一档回溯直接读边车
+            _prebuild_melt_index(mp, melt)   # later backfills read the sidecar directly
             new_deaths = []
             if cl.extract_snapshot(cache, melt, s["date"], _new_deaths=new_deaths):
                 _recover_dead_memories(cfg, cache, new_deaths)
@@ -709,17 +665,13 @@ def _catchup(cfg, cache, continue_mode=False):
     return processed
 
 
-# ---------------------------------------------------------------------------
-# 传记生成与输出
-# ---------------------------------------------------------------------------
+# --- Biography generation and output -------------------------------------------
 
 def _bio_pname(cache):
-    """传记文件名用人物标识 (v13): 显示名+生年, 如「崔佛·菲利普(844)」。
-    同宗同名 (祖孙都叫崔佛) 靠生年区分, 根治十年判重/文件名撞车。
-    v44 (问题1): 首次用到即**钉存** `cache["bio_pname"]` —— 传主别立家族/家族改名
-    后 name_full 会随年代变 (阿德尔海德·冯·亚琛 → 冯阿德尔海德), 文件名若跟着变,
-    早先十年的文件就匹配不上重新生成一次 (pipeline._generated_decades_on_disk
-    按这个名字串匹配)。文件名是历史锚点, 显示名在正文里按篇变。"""
+    """Identifier of the subject in biography file names: display name plus birth year, e.g.
+    "<name>(844)", the year separating same-name kin so decade file names cannot collide. It is pinned
+    into cache["bio_pname"] on first use, because name_full changes with a house founding or rename
+    and a following file name would no longer match the earlier decades and regenerate them."""
     pinned = cache.get("bio_pname")
     if pinned:
         return pinned
@@ -734,10 +686,9 @@ def _bio_pname(cache):
 
 
 def _reign_end(cache):
-    """v76 (问题1): 传主的**在位终了档** —— 让位(reign_end) 优先于死亡(player_death)。
-
-    用户 2026-09-27 拍板「让位即终了, 日后死亡只进缓存」: 两档都有时以 reign_end 为准,
-    终传文件名与数据截止日都钉在让位日, 不会因日后检测到死亡而改文件名、生成第二篇。"""
+    """The subject's end-of-reign record, in which abdication (reign_end) outranks death
+    (player_death): the final biography's file name and cutoff date stay pinned to the abdication
+    date, so a death found later neither renames the file nor writes a second biography."""
     re_ = cache.get("reign_end") or {}
     if re_.get("date"):
         return re_
@@ -745,24 +696,22 @@ def _reign_end(cache):
 
 
 def output_paths(cfg, cache, continue_mode=False, decade=None):
-    """(家族文件夹, 输出文件名) — 会话文件夹 + 传记文件名。
-    decade 非空时输出十年传记独立命名, 避免与普通在世传记同日期重名
-    被 generate_bio 的 exists 检查误跳过。
-    v76 (问题1): 在位终了 = reign_end (让位) 优先, 其次 player_death (卒)。"""
+    """(folder, output file name) of a biography: the session folder plus the file name. A non-empty
+    decade names the decade biography on its own, so it cannot clash with a living biography of the
+    same date and be skipped; end of reign is reign_end (abdication) first, then player_death."""
     folder = resolve_output_folder(cfg, cache, continue_mode)
     pname = _bio_pname(cache)
     re_end = _reign_end(cache)
     death = cache.get("player_death")
     end_date = re_end.get("date") or (death or {}).get("date")
     if end_date:
-        kind = "终传"                     # v76: 让位档篇名不变 (用户拍板②)
+        kind = "终传"                     # abdication keeps the same file kind
         dkey = cl.date_filekey(end_date)
     else:
         kind = "传记"
         dkey = cl.date_filekey(cache.get("last_date") or "")
     if decade:
-        # 十年传记独立命名: 日期用数据截止日 (十年末, v11: 而非缓存 last_date —
-        # 满档重跑时 last_date 是 931, 会误导文件名)
+        # A decade biography is dated by its data cutoff (the decade end), not by last_date.
         dkey = cl.date_filekey(_decade_cutoff(cache, decade) or cache.get("last_date") or "")
         fname = f"{pname}_传记_第{decade}个十年_{dkey}.md"
     else:
@@ -771,7 +720,7 @@ def output_paths(cfg, cache, continue_mode=False, decade=None):
 
 
 def _decade_cutoff(cache, decade):
-    """第 decade 个十年的数据截止日 (v11): 起始年+decade×10 的年初, 取 min(last_date)。"""
+    """Data cutoff of the decade-th decade: start year + decade*10, January 1st, capped at last_date."""
     srcs = cache.get("sources") or []
     last = cache.get("last_date")
     if not srcs:
@@ -787,9 +736,8 @@ def _decade_cutoff(cache, decade):
 
 
 def _bio_as_of(cache, decade=None):
-    """传记数据截止日期 (v11): 十年传记 = 十年末; 终传/普通传记 = 在位终了日或末档日期。
-    None 表示不截断。
-    v76 (问题1): 终传的截止日 = reign_end (让位) 优先, 其次 player_death (卒)。"""
+    """Data cutoff of a biography: the decade end for a decade biography, otherwise the end of reign
+    or the last save date. None means no truncation; reign_end outranks player_death."""
     if not decade:
         re_end = _reign_end(cache)
         death = cache.get("player_death") or {}
@@ -798,12 +746,9 @@ def _bio_as_of(cache, decade=None):
 
 
 def tail_melt_candidate(cfg, cache):
-    """终了日**之后**最近一档熔件 (路径|None) —— v82 抽出的公共口径。
-
-    为什么是「之后」: 卒/让位落在两次年度自动保存之间, 那一档熔件是唯一记着
-    终了日状态的档 (卒日/死因/卒地, 以及开府 `shogun_flag` 这类卒时旗标)。
-    `_backfill_tail_deaths` 与 `tools/tests/snap.py` 共用它, 使快照面与实跑面
-    钉在同一档上。"""
+    """Path of the earliest melt after the end date, or None. The end of reign falls between two yearly
+    autosaves, so that melt is the only one recording the end-of-reign state (death date, cause, place,
+    flags). _backfill_tail_deaths and tools/tests/snap.py share it, so snapshots and runs agree."""
     folder = cache.get("output_folder") or ""
     d = os.path.join(cfg.get("output_dir", ""), folder, "data")
     pat = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json(?:\.gz|\.xz)?$")
@@ -820,10 +765,8 @@ def tail_melt_candidate(cfg, cache):
 
 
 def tail_state_applies(cache):
-    """本篇是否需要按「终了日之后那一档」补终了状态 (v82)。
-
-    判据 = 有终了日 (让位优先, 其次卒) 且晚于 `cache.last_date` —— 与
-    `generate_bio` 触发尾年回填的条件同源。"""
+    """Whether this biography needs the end state from the melt after the end date: an end date
+    exists (abdication first, then death) and is later than cache["last_date"]."""
     if not cache:
         return False
     end = ((cache.get("reign_end") or {}).get("date")
@@ -834,18 +777,11 @@ def tail_state_applies(cache):
 
 
 def _backfill_tail_deaths(cfg, cache):
-    """v24: 终传尾年死者死亡记录回填。
-
-    主角之死若发生在最后一次并入快照 (每年 1月1日) 之后, 其间死去的角色
-    (处决/谋杀受害者等) 的死亡记录只存在于死亡后的下一份存档。若不同步回填,
-    终传的刺客列传/时间线会把这些死者渲染成「死因不详」, v22 处决方式亦无从
-    动态化 (郭氏 1200.2.21 处决 / 1200.9.29 谋杀即此例)。
-
-    取战役文件夹中日期晚于 cache.last_date 的最早熔件, 把其中 dead chars 的
-    死亡记录写入缓存 (仅限缓存已有档案、death 为空、死日晚于 last_date 者,
-    并做名字身份校验防 id 撞号)。返回 (回填条数, 那一档熔件|None) ——
-    v82: 熔件一并回给 `generate_bio`, 供 `_merge_tail_title_flags` 并头衔旗标
-    (同一次载入, 不额外耗时)。"""
+    """Backfill the death records of characters who died in the final year, because they appear only in
+    the save after their death once the subject dies after the last snapshot merge (January 1st). The
+    earliest melt after cache["last_date"] supplies them for characters already on file with an empty
+    death and a matching name. Returns (number backfilled, that melt or None), the melt also serving
+    _merge_tail_title_flags."""
     p_tail = tail_melt_candidate(cfg, cache)
     if not p_tail:
         return 0, None
@@ -856,14 +792,13 @@ def _backfill_tail_deaths(cfg, cache):
         return 0, None
     pid = cache.get("player_id")
     chars = cache.get("characters") or {}
-    # v82: 回填门槛 = `last_date` 之后死去的人 (与 v24 同口径)。此行在抽出
-    # `tail_melt_candidate` 时被一并带走, 之后每次终传都会在这里 NameError —— 补回。
+    # Backfill threshold: characters who died after last_date.
     last = cl.date_key(cache.get("last_date") or "0.0.0")
     dead = list((melt.get("dead_unprunable") or {}).items())
     dead += list(((melt.get("characters") or {}).get("dead_prunable") or {}).items())
     n = 0
     for cid2, c2 in dead:
-        if not isinstance(c2, dict):  # v9: none 条目防护
+        if not isinstance(c2, dict):  # guard against a `none` entry
             continue
         cid2 = str(cid2)
         if pid is not None and cid2 == str(pid):
@@ -875,7 +810,7 @@ def _backfill_tail_deaths(cfg, cache):
         ddate = dd.get("date")
         if not ddate or cl.date_key(ddate) <= last:
             continue
-        # 身份校验: 名字一致 (防跨战役 id 撞号)
+        # identity check: the names must agree, so colliding ids cannot match
         cn = rec.get("name_zh") or rec.get("name_full") or ""
         dn = cl.name_zh(c2)
         if cn and dn and cl.zh(cn) != cl.zh(dn):
@@ -902,10 +837,8 @@ def _backfill_tail_deaths(cfg, cache):
 
 
 def _landed_titles_of(melt):
-    """熔件 (或 `cache_lib.load_melt_landed_titles` 的返回) → 头衔表 dict。
-
-    存档与 facts 的口径都是**两层**: `melt["landed_titles"]["landed_titles"][tid]`
-    (`Facts._lt` 同源)。这里两种入参都吃, 免得调用方各自拆一层。"""
+    """Landed title dict from a melt or from cache_lib.load_melt_landed_titles, both of which nest
+    titles two levels deep (`melt["landed_titles"]["landed_titles"][tid]`, as Facts._lt reads)."""
     if not isinstance(melt, dict):
         return {}
     seg = melt.get("landed_titles")
@@ -916,19 +849,11 @@ def _landed_titles_of(melt):
 
 
 def _merge_tail_title_flags(melt, tail):
-    """把**终了日之后那一档**熔件的头衔旗标并进本次渲染用的熔件 (v82)。
-
-    为什么需要: 终传的 as_of 是**终了日** (卒/让位), 而 `load_latest_melt` 给的是
-    `cache.last_date` 那一档 —— 终了日之前最后一次自动保存。只在终了日那一刻成立的
-    状态因此缺席, 最典型的是开府: `e_japan` 上的 `shogun_flag` 首次出现在死后那一档
-    (实测 melt_1006 → melt_1007 之间), 于是 1006 终传的素材行写成「平盛秀｜太政大臣」,
-    成稿里「幕府将军」一次都不出现。`_backfill_tail_deaths` 本就要载入那一档取卒日/
-    享年/卒地, 顺手并旗标不必再载一次。
-
-    只并 `landed_titles[*].variables` (旗标的唯一来源, 消费口只有 `Facts._title_flags`),
-    持有者/直辖/封臣等**当前状态**仍按 `last_date` 那一档 —— 整份换档会把死后才易主的
-    宝物读成「现主=继位者」(实测 1007 档: 宝物现主由平盛秀变成平干有)。
-    旗标在 `_title_flags` 内已按「日期须晚于 last_date」把关, 早年档期一律照旧。"""
+    """Merge the title flags of the melt after the end date into the melt being rendered: a final
+    biography's as_of is the end date while load_latest_melt returns the melt of cache["last_date"], and
+    `shogun_flag` on `e_japan` appears only in the melt after the death. Only
+    `landed_titles[*].variables` is merged (the sole source of flags, read by `Facts._title_flags`);
+    holder and vassal state keep following the `last_date` melt."""
     if not isinstance(melt, dict) or not isinstance(tail, dict):
         return 0
     lt = _landed_titles_of(melt)
@@ -951,37 +876,27 @@ def _merge_tail_title_flags(melt, tail):
 
 
 def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
-    """为一名玩家生成传记 (终传 / 在世传记 / 第decade个十年传记), 刷新家族 index.html。
-    返回 (输出路径, facts) 或 None。
-    v14: continue_mode — 后台传记线程传 True, 输出文件夹一律按缓存绑定/同战役解析,
-    永不新建文件夹 (修复方案_菲利普2.md 问题2: 旧逻辑 watch 运行期间死者终传
-    被 resolve 到新文件夹 菲利普5, 缓存绑定被污染)。
-    v24: 终传生成前回填尾年死者死亡记录 (材料构建前落库)。
-    v82: 同一次载入的死后那一档熔件顺带供 `_merge_tail_title_flags` 并头衔旗标 ——
-    终了日才成立的状态 (开府 → 幕府将军) 因此能进材料。"""
+    """Generate a biography (final, living or the decade-th decade one) for a player and refresh the
+    family's index.html; returns (output path, facts) or None. The background biography thread passes
+    continue_mode=True, which resolves the output folder from the cache binding or the same campaign
+    and never creates a folder, so a death during a watch run cannot corrupt the binding."""
     melt = load_latest_melt(cfg, cache)
     if melt is None:
         llm.log(f"玩家 {cache.get('player_id')} 无可用 melt, 跳过生成")
         return None
     as_of = _bio_as_of(cache, decade)
-    # v24: 主角死亡晚于最后一次并入快照 → 先把尾年死者死亡记录回填进缓存
-    # v76 (问题1): 让位日同样可能落在一档之间 (田所 922.1.1 → 923.1.1), 一并回填
+    # A death and an abdication can both fall after the last snapshot merge: backfill the records.
     pd = cache.get("player_death") or {}
     _re_end = _reign_end(cache)
     _end_date = _re_end.get("date") or pd.get("date")
     if tail_state_applies(cache):
         _n_tail, _tail_melt = _backfill_tail_deaths(cfg, cache)
-        # v82: 终了日之后那一档还带**终了日才成立**的头衔旗标 (开府 shogun_flag /
-        # 上皇 joko_flag) —— 并进来, 免得终传的称号位停在卒前那一档的旧词。
+        # The melt after the end date carries flags that exist only there (shogun_flag, joko_flag).
         _merge_tail_title_flags(melt, _tail_melt)
-    # v20: 十年传记按时代取绰号 — 绰号存于各年熔件 nickname_text, 最新档只是
-    # 当前值; 重跑十年1 (as_of=878) 若不覆盖会被 888 档的「屠狼者」漂移。
-    # v21: 时代末熔件存在即显式覆盖 (含空绰号) — 该时代无绰号时清空,
-    # 防末档绰号泄漏进早期十年 (郭靖 1197 年才得「欺诈者」, 第1个十年
-    # as_of=1189 不得出现该绰号)。
-    # v49 (O5): 优先用缓存里的 nickname_history (并入时按档锁存) —— 旧实现为取
-    # 一个字符串要整份载入该时代末档熔件 (244 MiB 档实测 6–18 s)。旧缓存无沿革
-    # 时仍回退读熔件 (口径不变)。
+    # A decade biography uses the nickname of its own era, so the era-end melt overrides it (an empty
+    # nickname included) and a nickname earned later cannot leak into an early decade. The cache's
+    # nickname_history is preferred, since reading one string from the melt meant loading the whole
+    # era-end file (6-18 s for 244 MiB); a cache without that history falls back to the melt.
     nickname_override = None
     if decade and as_of:
         last = cache.get("last_date")
@@ -1010,8 +925,7 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     out_path = os.path.join(out_dir, fname)
     if not force:
         if decade:
-            # 十年传记: 磁盘推导 — 输出目录任一 第N个十年_*.md 已存在即视为已生成。
-            # 文件名带 last_date (第2个十年_903 / _912), 直接比精确路径会在日期前进后漏检。
+            # Decade file names carry a moving date, so existence comes from any matching file on disk.
             pname = os.path.basename(fname).split("_传记_", 1)[0]
             pat = re.compile(re.escape(pname)
                              + rf"_传记_第{decade}个十年_.*\.md$")
@@ -1026,9 +940,8 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
                                                  decade=decade, as_of=as_of,
                                                  nickname_override=nickname_override,
                                                  campaign=_campaign_caches(cfg, cache))
-    # 持久化文件夹绑定 (v14: 只绑定、不覆盖 — output_folder 已存在且目录存在时
-    # 不再改写, 修复方案_菲利普2.md 问题2: 旧逻辑把 38696 的绑定从 菲利普2
-    # 覆盖成 菲利普5, 但缓存文件与熔件都在 菲利普2, 导致后续按错误绑定找文件夹)
+    # Persist the folder binding, binding only: an existing output_folder whose directory still exists
+    # keeps it, since rewriting it would point later lookups at a folder without cache or melts.
     cur_bind = cache.get("output_folder")
     cur_ok = cur_bind and os.path.isdir(os.path.join(cfg.get("output_dir", ""), cur_bind))
     if not cur_ok and cache.get("output_folder") != house:
@@ -1046,14 +959,12 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     return out_path, facts
 
 
-# ---------------------------------------------------------------------------
-# 单档处理与死亡跨查
-# ---------------------------------------------------------------------------
+# --- Single-save processing and death cross-checks ------------------------------
 
 def _process_save(cfg, save, continue_mode=False):
-    """熔化并并入一份存档 (watch 用): 熔到临时 → 定玩家/战役文件夹 → 归位。
-    返回 (玩家 id, playthrough_id) 或 None。并入阶段异常会清理临时熔件后重新抛出,
-    由调用方记失败并在下一轮重试 (v7)。"""
+    """Melt and merge one save (watch path): a temp melt, then the player/campaign folder; returns
+    (player_id, playthrough_id) or None. A merge exception cleans up the temp melt and is re-raised,
+    so the caller records the failure and retries next round."""
     date = save["date"]
     tmp = temp_melt_path(cfg, date)
     llm.log(f"  熔化 {os.path.basename(save['path'])} ({save['magic']}) ...")
@@ -1073,19 +984,18 @@ def _process_save(cfg, save, continue_mode=False):
             llm.log(f"  {date}: 存档中无玩家角色, 跳过")
             return None
         melt_pt = melt.get("playthrough_id")
-        # v18: 按战役过滤找缓存 — 玩家 id 跨战役复用 (867 自定义角色恒为 38701),
-        # 不加战役过滤会加载到旧战役缓存 (汤利→沙逊事件)。
+        # Filter by campaign: player ids are reused, and without it an old campaign's cache loads.
         path0 = find_cache_path(cfg, player_id, melt_pt)
-        cache = cl.load_cache(path0 or "", fresh=True)  # v13: 提取路径独立副本
-        # v18: 兜底闸门 — 战役仍不一致 (无 playthrough 的旧缓存等边角) 时
-        # 从空缓存重建, 旧战役的记忆/头衔历史绝不进入新战役。
+        cache = cl.load_cache(path0 or "", fresh=True)  # an independent copy for extraction
+        # Last gate: a campaign that still disagrees rebuilds the cache empty, so no memory or title
+        # history of the old campaign enters the new one.
         if cache.get("player_id") is not None and not same_campaign(cache, melt, player_id):
             llm.log(f"  {date}: 缓存战役与存档战役不一致 (玩家id复用/新局), "
                     f"从空缓存重建")
             cache = cl.new_cache()
-        # 去重: continue 沿用旧会话 — 该玩家战役已记录过此日期 (轮转副本/同日期重存)
-        # → 丢弃临时熔件跳过; watch 每次运行 = 新存档期 (对齐 <另一项目>): 一律新建
-        # 编号文件夹并入, 不做跨会话去重, 单次运行内重复由 step_watch 的 mtime/日期兜住。
+        # Dedup: with continue a date already among the sources drops the temp melt and is skipped,
+        # while a watch run is a new save period and always merges into a newly numbered folder;
+        # repeats inside one run are caught by the mtime and date checks in step_watch.
         if continue_mode and date in (cache.get("sources") or []):
             llm.log(f"  {date}: 已并入过 (轮转副本/重存), 跳过")
             try:
@@ -1099,8 +1009,8 @@ def _process_save(cfg, save, continue_mode=False):
             llm.log(f"  {date}: 玩家不一致, 跳过")
             return None
         folder = ensure_output_folder(cfg, cache, continue_mode)
-        # 新会话首档: watch 定出的会话文件夹 ≠ 缓存所在文件夹 → 丢弃旧会话数据,
-        # 用本档从空缓存重建 (防把 菲利普 旧战役数据缝合进 菲利普2, 出现 886 事件)。
+        # First save of a new session: a folder differing from the cache's own means the old session
+        # data is dropped and the cache rebuilt empty from this save, with nothing stitched across.
         if not continue_mode and path0:
             dir0 = os.path.normpath(os.path.dirname(path0))
             dir1 = os.path.normpath(os.path.join(cfg.get("output_dir", ""), folder, "data"))
@@ -1113,7 +1023,7 @@ def _process_save(cfg, save, continue_mode=False):
                 new_deaths = []
                 cl.extract_snapshot(cache, melt, date, _new_deaths=new_deaths)
         mp = _move_melt_into(cfg, folder, date, player_id, tmp)
-        _prebuild_melt_index(mp, melt)   # v49 (O1): 下一档回溯直接读边车
+        _prebuild_melt_index(mp, melt)   # later backfills read the sidecar directly
         _recover_dead_memories(cfg, cache, new_deaths)
         save_session_cache(cfg, cache, continue_mode)
         llm.log(f"  并入 {date}: 玩家 {cache.get('player_name')} (id={cache.get('player_id')}), "
@@ -1129,14 +1039,10 @@ def _process_save(cfg, save, continue_mode=False):
 
 
 def _prebuild_melt_index(mp, melt):
-    """v49 (O1): 并入 X 档时顺手为 X 建记忆归档边车。
-
-    回溯读的恒定是「死期之前最近的一档」: 一档存档里的死者必死在上一档之后,
-    所以 X+1 档并入时的回溯读的就是 X。旧流程把 X 的边车留到那一刻才惰性构建,
-    于是每档都白付一次 X 的整份解析 (实测 244 MiB 档 18.2 s; 建+落边车只要 4 s)。
-    并入 X 时 melt 已在内存, 此刻建边车不再需要额外解析。
-
-    已存在则跳过; 失败只记日志 —— 边车是派生件, 缺了仍会走原惰性路径。"""
+    """Build the memory archive sidecar of a melt while it is being merged. Backfill reads the save just
+    before a death, so X's sidecar is needed once X+1 merges, and building it here avoids a second full
+    parse (18.2 s for 244 MiB against 4 s to build and store). An existing sidecar is kept, and a
+    failure is only logged because the sidecar is derived and falls back to the lazy path."""
     if not mp or not melt or not os.path.isfile(mp):
         return None
     try:
@@ -1153,18 +1059,13 @@ def _prebuild_melt_index(mp, melt):
 
 
 def _recover_dead_memories(cfg, cache, new_deaths=None):
-    """v5: 为缓存中「已死且记忆为空」的角色, 从死前最近一份存档恢复记忆。
-    角色死亡时游戏清空其 memories; 死前最后一份自动存档中记忆完好。
+    """Restore the memories of cached characters that are dead with none left (the game clears them on
+    death, while the autosave before it still holds them); returns the number restored.
 
-    v9: 传入 new_deaths (本轮并入时新发现的死亡角色 id 列表) 时只处理这些角色,
-    避免每次合并全量扫描全部已死角色 (随战役增长而膨胀, 是进程追不上游戏的主因之一);
-    按死前档案分组, 同一份 melt 只加载一次, 为组内所有角色恢复。
-
-    v12: 优先读记忆归档边车 (melt_<日期>_idx.json, 瘦身 ~20 MB) 回溯, 不再整份
-    json.load 160 MB 旧熔件; 归档缺失时回退全量熔件, 并在回溯后惰性构建持久化
-    归档 (下次直接读归档)。返回恢复的角色数。"""
+    new_deaths limits the work to the ids found dead by this merge, so the scan does not grow with the
+    campaign, and the sidecar archive (~20 MB) is preferred over a full old melt of up to 160 MB."""
     sources = cache.get("sources") or []
-    # 候选: 已死、记忆为空、且 (提供 new_deaths 时) 属本轮新死亡
+    # candidates: dead, no memories left, and (when new_deaths is given) newly dead here
     pending = []
     for cid, rec in (cache.get("characters") or {}).items():
         d = rec.get("death") or {}
@@ -1173,7 +1074,7 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
             continue
         if new_deaths is not None and int(cid) not in new_deaths:
             continue
-        # 死前最近档: sources 中日期 < 死亡日期的最大值
+        # save before the death: the newest source dated earlier than the death
         before = [s for s in sources if cl.date_key(s) < cl.date_key(ddate)]
         if not before:
             continue
@@ -1183,7 +1084,7 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
         pending.append((cid, mp, ddate, before[-1], rec))
     if not pending:
         return 0
-    # 按死前档分组: 每份 melt (或其归档) 只读一次
+    # group by source save, so each melt (or its archive) is read once
     by_melt = {}
     for cid, mp, ddate, src, rec in pending:
         by_melt.setdefault(mp, []).append((cid, ddate, src, rec))
@@ -1216,7 +1117,7 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
             for cid, _d, _s, _r in items:
                 llm.log(f"  [回溯失败] 角色 {cid}: {e}")
             continue
-        chars = cl.all_characters(melt)  # v11: 每份熔件只建一次全角色索引
+        chars = cl.all_characters(melt)  # build the all-character index once per melt
         for cid, ddate, src, rec in items:
             try:
                 n = cl.recover_dead_memories_from(melt, cache, int(cid), chars=chars)
@@ -1227,7 +1128,7 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
             except Exception as e:
                 llm.log(f"  [回溯失败] 角色 {cid}: {e}")
         try:
-            # v12: 惰性构建并持久化归档 — 今后回溯直接读边车索引
+            # build and persist the archive lazily, so later backfills read the sidecar
             cl.save_melt_index(mp, melt)
             llm.log(f"  [归档] {os.path.basename(mp)} 记忆归档已生成", detail=True)
         except Exception as e:
@@ -1238,15 +1139,13 @@ def _recover_dead_memories(cfg, cache, new_deaths=None):
 
 
 def _cross_check_deaths(cfg, melt, current_player):
-    """检查本档 dead_unprunable 中, 是否存在「既有缓存且身份一致」的前代玩家死亡。
-    **身份校验**: 名字一致 (防跨战役 id 撞号) + 死亡日期晚于其最后存活档。
-    v7: 预计算 {pid: (path, cache)} 一次, 避免为每个死亡角色 os.walk 整个 output 树。
-    v18: 玩家 id 跨战役复用 (867 自定义角色恒为 38701) — 同 id 可能有多份缓存,
-    同战役缓存优先, 其余需身份校验通过才采用。"""
-    caches = all_caches(cfg)  # {(pid, pt): (path, cache)}
+    """Look for a previous player character's death among this save's dead_unprunable, verifying
+    identity by name (ids are reused across campaigns) and by a death date after that character's last
+    living save. Caches are indexed by id once, and a same-campaign cache is preferred."""
+    caches = all_caches(cfg)  # {(player_id, playthrough_id): (path, cache)}
     melt_pt = melt.get("playthrough_id")
     for cid, c in (melt.get("dead_unprunable") or {}).items():
-        if not isinstance(c, dict):  # v9: none 条目防护 (坏/写入中存档)
+        if not isinstance(c, dict):  # guard against a `none` entry (broken or half-written save)
             continue
         cid = int(cid)
         if cid == current_player:
@@ -1256,8 +1155,8 @@ def _cross_check_deaths(cfg, melt, current_player):
             continue
         hits.sort(key=lambda hv: hv[1].get("playthrough_id") != melt_pt)
         for path, prev in hits:
-            # v28: 不同战役的缓存绝不接收本战役的死亡记录 (角色 id 跨战役复用;
-            # 同战役缓存因上面的排序优先命中, 走到这里说明只剩它战役的缓存)。
+            # Another campaign's cache never takes this death record: character ids are reused, and
+            # same-campaign caches sort first, so only other campaigns remain here.
             prev_pt = prev.get("playthrough_id")
             if melt_pt and prev_pt and str(prev_pt) != str(melt_pt):
                 continue
@@ -1266,25 +1165,24 @@ def _cross_check_deaths(cfg, melt, current_player):
                 continue
             if prev.get("player_death") is not None:
                 continue
-            # 身份校验: 名字一致
+            # identity check: the names must agree
             rec = (prev.get("characters") or {}).get(str(cid)) or {}
             cached_name = rec.get("name_zh") or rec.get("name_full") or ""
             dead_name = cl.name_zh(c)
             if cached_name and dead_name and cl.zh(cached_name) != cl.zh(dead_name):
-                continue  # id 撞号, 非同一人
-            # 死亡日期必须晚于其最后存活档
+                continue  # colliding id, not the same person
+            # the death date must be later than that character's last living save
             if cl.date_key(dd.get("date")) <= cl.date_key(prev.get("last_date") or "0.0.0"):
                 continue
             prev["player_death"] = {
                 "date": dd.get("date"),
                 "reason": dd.get("reason"),
                 "killer": dd.get("killer"),
-                "kills": dd.get("kills") or [],  # v8: 刺客列传数据源之一
+                "kills": dd.get("kills") or [],  # one data source of the assassin chapter
             }
-            # v45 (用户指正): 终传触发的前提就是「最新一档的扮演角色已不是前代传主」,
-            # 故此刻本档的 played_character.legacy **必定含后任传主** —— 把这条链
-            # 抄进前代缓存, 前代终传才能写出「后任：…其子X继为传主」。
-            # (前代缓存的最后一次并入停在他在位的那一档, 其 played_legacy 只到自己。)
+            # A final biography triggers only once the newest save's played character is no longer the
+            # previous subject, so this save's legacy chain must already hold the successor; copying it
+            # into the previous cache is what lets that final biography name the successor.
             _lg = (melt.get("played_character") or {}).get("legacy") or []
             _chain = [{"cid": e.get("character"), "date": e.get("date")}
                       for e in _lg
@@ -1298,33 +1196,34 @@ def _cross_check_deaths(cfg, melt, current_player):
 
 
 def _cross_check_lineage(cfg, melt, current_player):
-    """v76 (问题1): 传主终了**两路** —— 先查死亡 (既有 `_cross_check_deaths`),
-    再查「在位终结但未死亡」的传主更替 (让位/剃发退位/被废/转无地)。"""
+    """Detect both ways a subject's tenure can end: first a death
+    (_cross_check_deaths), then a change of subject that ends the reign while the former
+    one lives (abdication, tonsure and retirement, deposition, loss of all land)."""
     _cross_check_deaths(cfg, melt, current_player)
     return _cross_check_reign_ends(cfg, melt, current_player)
 
 
-# ---------------------------------------------------------------------------
-# v76 (问题1): 「在位终结但未死亡」的传主更替
-# ---------------------------------------------------------------------------
-# 触发例: 田所 922.7.7 —— 久保(16795838)用日本佛教决议「寻找净土」剃发退位,
-# `tgp_renounce_estate_effect` 把家督与头衔交给继承人并 `set_player_character`
-# (game/common/scripted_effects/10_dlc_tgp_japan_scripted_effects.txt:3915),
-# 前任**不死**, 于是既有「死亡才写 player_death」的触发链整条落空 —— 静默丢一篇终传。
-#
-# 为什么不能逐决议特判: 全游戏 26 处 `set_player_character` (天命王朝兴衰/权臣夺位/
-# 无地冒险者/游牧忽里勒台/大圣战受地/RICE 7 文件…), 且会随版本与 Mod 继续增加。
-# 故只判「形状」: **接替链上换人了, 而前任仍在世** = 在位终结但非死亡。
+# --- A reign ends without a death: the subject changes while the former one lives ---
+# A Japanese Buddhist decision ("seek the pure land") makes the character tonsure and abdicate;
+# `tgp_renounce_estate_effect` hands the headship and titles to the heir and calls
+# `set_player_character`
+# (game/common/scripted_effects/10_dlc_tgp_japan_scripted_effects.txt), leaving the former character
+# alive, so a trigger chain that only writes player_death on an actual death misses the biography.
+# Per-decision special cases are not an option: `set_player_character` appears in dozens of places
+# across the game (dynastic rise and fall, usurpation, landless adventurers, nomadic kurultai, great
+# holy war land grants, RICE files) and keeps growing, so only the shape is tested: the succession
+# chain changed hands while the previous character is still alive.
 _REIGN_END_WORD = {
-    "tonsured": "剃发退位",      # 佛教「寻找净土」: add_trait = devoted + 交产
-    "abdicated": "退隐让位",     # 通用「放弃领导家族」: 只加 ep3_renounced_estate
-    "landless": "去位转无地",
-    "unknown": "让位",
+    "tonsured": "剃发退位",      # Buddhist "seek the pure land": add_trait = devoted + give up the estate
+    "abdicated": "退隐让位",     # generic "renounce head of house": only adds ep3_renounced_estate
+    "landless": "去位转无地",    # lost all land
+    "unknown": "让位",           # abdication without an attributed cause
 }
 
 
 def _lineage_chain(melt):
-    """本档 `played_character.legacy` → [(cid, date), …] (有序; 末条 = 现任扮演者)。"""
+    """This save's `played_character.legacy` as [(cid, date), ...] in order, the last entry
+    being the character currently played."""
     out = []
     for e in ((melt.get("played_character") or {}).get("legacy") or []):
         if not isinstance(e, dict):
@@ -1336,7 +1235,8 @@ def _lineage_chain(melt):
 
 
 def _char_has_trait(melt, c, name):
-    """该角色条目是否持有特质 `name` (走熔件顶层 `traits_lookup` 数组)。"""
+    """Whether a character entry carries the trait `name`, looked up in the melt's top-level
+    `traits_lookup` array."""
     tl = melt.get("traits_lookup") or []
     for t in (c.get("traits") or []):
         if isinstance(t, int) and 0 <= t < len(tl) and tl[t] == name:
@@ -1345,14 +1245,10 @@ def _char_has_trait(melt, c, name):
 
 
 def _reign_end_kind(melt, c):
-    """让位的**性质** (只用存档字段):
-      · `devoted` 特质 ⇒ `tonsured` 剃发退位 (日本佛教决议「寻找净土」: add_trait = devoted);
-      · 只有 `ep3_renounced_estate` 修正 ⇒ `abdicated` 退隐让位 (通用「放弃领导家族」;
-        简中修正名「宁静的冬天」);
-      · 本档已无任何领地 ⇒ `landless`; 其余 ⇒ `unknown` (措辞退化为中性的「让位」)。
-    实测久保 923 档: modifier `ep3_renounced_estate`(永久) + traits 含 `devoted`(id 184) —— 见
-    `logs/tmp_probe_v76_abdA.txt`。⚠ 不能拿「无地」当让位判据 (久保让位后仍留有领地,
-    见同文件), 只在上面两支之外当兜底性质。"""
+    """Nature of an abdication, from save fields only: the `devoted` trait means `tonsured`, only the
+    `ep3_renounced_estate` modifier means `abdicated`, no domain left means `landless`, anything else is
+    `unknown`. Landlessness cannot be the criterion, since a character may abdicate and keep land, so it
+    is only the fallback."""
     if _char_has_trait(melt, c, "devoted"):
         return "tonsured"
     if "ep3_renounced_estate" in cl._char_modifier_names(c):
@@ -1363,22 +1259,15 @@ def _reign_end_kind(melt, c):
 
 
 def _cross_check_reign_ends(cfg, melt, current_player):
-    """v76 (问题1): 前代传主「在位终结但未死亡」→ 写 `prev["reign_end"]` (待生成终传)。
+    """Record a previous subject whose reign ended without a death as prev["reign_end"], copying the
+    succession chain into that cache so its final biography can name the successor; returns how many
+    entries were written.
 
-    判据 (全部来自存档已给字段, 不特判决议):
-      · 本档 `played_character.legacy` = 扮演角色接替链 (带接替日); 链上某人之后仍有后任,
-        则该后任的接替日 = 前任的在位终了日;
-      · 前任在本档**仍在 `living` 段** ⇒ 本次更替不是死亡;
-      · **死亡优先**: 前任在 `dead_unprunable` 里 ⇒ 一律交 `_cross_check_deaths` 的既有死亡路径
-        (让位后确实卒了的人仍按「卒于X」出终传 —— 既有判据与措辞零回归);
-      · 日期须晚于该缓存 `last_date`; 名字一致 (防角色 id 跨战役撞号, 与死亡路径同口径)。
-
-    ⚠ 不可用「不在 `dead_unprunable`」判在世: 死者会被剪除进 `characters.dead_prunable`
-    (`cache_lib.py:830-847`), 故「不在 dead_unprunable」推不出「在世」; 反过来, 若前任
-    既不在 `living` 也不在 `dead_unprunable`, 本函数**不写** (宁缺勿错)。
-
-    同时把本档接替链抄进前任缓存 (与死亡路径同一份代码), 前代终传才写得出「后任：…」。
-    返回本轮新写入的条数。"""
+    All criteria come from save fields, never a decision id: this save's played_character.legacy dates
+    the succession, the former subject is still in `living` (so it is no death), death wins when the
+    subject sits in `dead_unprunable`, and the date must follow the cache's last_date with matching
+    names. Absence from `dead_unprunable` proves nothing, since the dead are pruned into
+    `characters.dead_prunable`; with no `living` entry either, nothing is written."""
     rows = _lineage_chain(melt)
     if len(rows) < 2:
         return 0
@@ -1392,10 +1281,10 @@ def _cross_check_reign_ends(cfg, melt, current_player):
         succ_cid, succ_date = rows[i + 1]
         if cid == current_player or not succ_date:
             continue
-        if str(cid) in dead_un:          # 死亡继承 → 既有路径 (零回归)
+        if str(cid) in dead_un:          # inherited by death -> the existing death path
             continue
         c = living.get(str(cid))
-        if not isinstance(c, dict):      # 无法确认「未死亡」→ 不写
+        if not isinstance(c, dict):      # "not dead" cannot be confirmed -> write nothing
             continue
         hits = [v for k, v in caches.items() if k[0] == cid]
         if not hits:
@@ -1414,18 +1303,18 @@ def _cross_check_reign_ends(cfg, melt, current_player):
             cached_name = rec.get("name_zh") or rec.get("name_full") or ""
             now_name = cl.name_zh(c)
             if cached_name and now_name and cl.zh(cached_name) != cl.zh(now_name):
-                continue                 # id 撞号, 非同一人
+                continue                 # colliding id, not the same person
             kind = _reign_end_kind(melt, c)
             succ_c = living.get(str(succ_cid)) or dead_un.get(str(succ_cid)) or {}
             prev["reign_end"] = {
-                "date": succ_date,       # 后任接替日 = 前任在位终了日
+                "date": succ_date,       # successor's date = former subject's end of reign
                 "kind": kind,            # tonsured / abdicated / landless / unknown
-                "alive": True,           # 本档仍在 living 段 (非死亡更替)
+                "alive": True,           # still in this save's living section, so no death
                 "successor": int(succ_cid),
                 "successor_name": cl.name_zh(succ_c) or "",
                 "evidence": "played_character.legacy",
             }
-            # 传主链抄进前任缓存 (与死亡路径 pipeline.py:1185-1190 同一份)
+            # copy the succession chain into the previous cache, as on the death path
             prev["played_legacy"] = [{"cid": c_, "date": d_} for c_, d_ in rows]
             cl.save_cache(prev, path)
             llm.log(f"  [更替] 前代玩家 {cid} ({cached_name}) 在位终于 {succ_date}，"
@@ -1437,16 +1326,16 @@ def _cross_check_reign_ends(cfg, melt, current_player):
 
 
 _BIO_LOCK = threading.Lock()
-_BIO_PENDING = set()        # 待生成任务 ((pid, pt), kind, decade) 去重; kind ∈ {"death","decade"}
-_BIO_LAST_TRY = {}          # ((pid, pt), kind, decade) -> time.monotonic() 上次尝试时间 (失败退避)
-_BIO_RETRY_SECONDS = 300    # 生成失败后至少间隔多久重试
+_BIO_PENDING = set()        # queued tasks ((pid, pt), kind, decade), deduplicated; "death"/"decade"
+_BIO_LAST_TRY = {}          # ((pid, pt), kind, decade) -> time.monotonic() of the last attempt
+_BIO_RETRY_SECONDS = 300    # shortest wait before retrying a failed generation
 _BIO_WORKER = None
-_DECADE_SKIP_LOGGED = set()  # 已打「满十年但已死, 跳过」日志的玩家 (每会话一次, 防刷屏)
+_DECADE_SKIP_LOGGED = set()  # players already logged as "decade complete but dead, skipped"
 
 
 def _ensure_bio_worker(cfg):
-    """启动后台终传生成线程 (watch/continue/scan 共用, 只启动一次)。
-    终传生成 (多次 LLM 调用, 数分钟) 在后台进行, watch 轮询不阻塞 (v7)。"""
+    """Start the background final-biography thread once, shared by watch/continue/scan. Producing a
+    biography takes several LLM calls and minutes, so the poll loop never blocks on it."""
     global _BIO_WORKER
     if _BIO_WORKER is None:
         _BIO_WORKER = threading.Thread(target=_bio_worker_loop,
@@ -1455,9 +1344,9 @@ def _ensure_bio_worker(cfg):
 
 
 def _campaign_caches(cfg, anchor):
-    """与 anchor 同战役 (playthrough_id 一致) 的玩家缓存 {player_id: cache};
-    anchor 无 playthrough 时只返回其自身。v10: watch/continue 只检查
-    当前战役的玩家, 不再全局扫描旧战役 (对齐 <另一项目> 会话语义)。"""
+    """Player caches of the campaign anchor belongs to (same playthrough_id) as
+    {player_id: cache}; an anchor without a playthrough id returns only itself. Callers
+    therefore look at the current campaign's players instead of scanning old campaigns."""
     out = {}
     if anchor is None:
         return out
@@ -1474,16 +1363,15 @@ def _campaign_caches(cfg, anchor):
 
 
 def _auto_bio(cfg, caches=None):
-    """为「传主之位已终了且未生成终传」的缓存排队生成终传 (后台线程执行, 每任一篇)。
-    位终了 = 死亡 (`player_death`) **或** 在位终结但未死亡 (`reign_end`, v76 问题1)。
-    失败不置 bio_generated, 下轮自动重试 (带退避)。返回本轮排队数。
-    v10: caches 限定检查范围 (同战役); 缺省全部 (rebuild 等一次性路径)。"""
+    """Queue a final biography for every cache whose subject's tenure ended without one, whether by
+    death (player_death) or not (reign_end); returns how many were queued. A failure leaves
+    bio_generated unset so the next round retries after a backoff; caches limits the scope."""
     _ensure_bio_worker(cfg)
     if caches is None:
         caches = {k: c for k, (_path, c) in all_caches(cfg).items()}
     else:
-        # v18: 调用方可能传 {pid: cache} (int 键, _campaign_caches) — 统一为
-        # {(pid, pt): cache} 元组键, 与后台 worker 的 ((pid, pt), kind, decade) 一致
+        # A caller may pass {player_id: cache} (int keys, from _campaign_caches), so the
+        # keys are normalized to the (player_id, playthrough_id) tuples worker tasks use
         caches = {(k if isinstance(k, tuple) else (k, c.get("playthrough_id"))): c
                   for k, c in caches.items()}
     queued = 0
@@ -1520,8 +1408,8 @@ def _auto_bio(cfg, caches=None):
 
 
 def _completed_decades(cache):
-    """v8: 以数据起始年为刻度, 返回已满的十年序号列表 [1,2,...]。
-    第 k 个十年 = [起始年+(k-1)*10, 起始年+k*10); 数据跨度满 10 年才出第 1 篇。"""
+    """Complete decade numbers [1, 2, ...] from the first data year, where decade k spans
+    [start + (k-1)*10, start + k*10); the first exists only once the data covers a full 10 years."""
     sources = cache.get("sources") or []
     last = cache.get("last_date")
     if len(sources) < 2 or not last:
@@ -1538,9 +1426,9 @@ def _completed_decades(cache):
 
 
 def _generated_decades_on_disk(cfg, cache):
-    """磁盘推导: 已生成的十年序号 = 输出文件夹中「第N个十年_*.md」的 N 集合。
-    以输出文件为准 (十年文件命名含 last_date, 且 bio_decades 会被并发写覆盖丢失),
-    跨崩溃/多进程安全。v13: 文件标识含生年 (崔佛·菲利普(844)), 同宗同名不再误判。"""
+    """Decade numbers already generated, read from the decade biography files in the output folder.
+    Disk is authoritative because a file name carries its build date and bio_decades can be lost to a
+    concurrent write, while files survive a crash and are shared between processes."""
     folder = cache.get("output_folder") or resolve_output_folder(cfg, cache, True)
     out_dir = os.path.join(cfg.get("output_dir", ""), folder)
     pname = _bio_pname(cache)
@@ -1555,15 +1443,14 @@ def _generated_decades_on_disk(cfg, cache):
 
 
 def _auto_decade_bios(cfg, caches=None):
-    """v8: 为「在世且已满新十年」的玩家排队生成十年传记 (后台线程执行)。
-    十年传记素材取全部累计数据 (统治40年即读取40年数据);
-    已终了 (死亡或让位, v76) 的角色不再补十年传记 (终传覆盖一生)。返回本轮排队数。
-    v10: caches 限定检查范围 (同战役); 缺省全部。"""
+    """Queue decade biographies for living players who completed a new decade; returns how many were
+    queued. A decade biography draws on all data so far, so 40 years of rule read 40 years of data, and
+    a subject whose tenure ended gets no more because the final biography covers the whole life."""
     _ensure_bio_worker(cfg)
     if caches is None:
         caches = {k: c for k, (_path, c) in all_caches(cfg).items()}
     else:
-        # v18: 统一为 {(pid, pt): cache} 元组键 (同 _auto_bio)
+        # normalize to (player_id, playthrough_id) tuple keys, as in _auto_bio
         caches = {(k if isinstance(k, tuple) else (k, c.get("playthrough_id"))): c
                   for k, c in caches.items()}
     queued = 0
@@ -1581,7 +1468,8 @@ def _auto_decade_bios(cfg, caches=None):
                             f"（{'让位' if _re_end else '已死亡'}), "
                             f"按设计跳过 (终传覆盖一生)")
                 continue
-            # 已生成 = 缓存标记 ∪ 磁盘文件推导 (防 bio_decades 被并发写覆盖后重复触发)
+            # generated = cache flags plus files on disk, so a concurrently overwritten
+            # bio_decades cannot trigger the same decade twice
             done = (set(cache.get("bio_decades") or [])
                     | _generated_decades_on_disk(cfg, cache))
             for k in _completed_decades(cache):
@@ -1602,11 +1490,11 @@ def _auto_decade_bios(cfg, caches=None):
 
 
 def _bio_worker_loop(cfg):
-    """后台线程: 从队列取任务 (终传 / 十年传记) → 生成 → 置对应标记。
-    以磁盘最新缓存为准只翻转标记, 防覆盖主线程刚写入的新档数据。
-    v8: 队列项为 (pid, kind, decade), kind ∈ {"death", "decade"};
-    v18: 队列键改为 ((pid, playthrough_id), kind, decade) — 玩家 id 跨战役
-    复用 (867 自定义角色恒为 38701), 生成/回写必须落在该战役自己的缓存。"""
+    """Background loop: take a queued task (final or decade biography), generate it, then set the flag.
+
+    Flags are flipped on the newest cache on disk rather than written from memory, so data merged
+    meanwhile survives. The queue key carries (player_id, playthrough_id), because ids are reused
+    across campaigns and generation must write to its own campaign's cache."""
     while True:
         key = None
         with _BIO_LOCK:
@@ -1630,20 +1518,20 @@ def _bio_worker_loop(cfg):
                 re_end = _reign_end(cache)
                 if not (death or re_end) or cache.get("bio_generated"):
                     continue
-                out = generate_bio(cfg, cache, continue_mode=True)  # v14: 后台线程按绑定解析
+                out = generate_bio(cfg, cache, continue_mode=True)  # background resolves by binding
                 if out:
                     out_path, _ = out
-                    cur = cl.load_cache(path, fresh=True)  # v13: 写入路径独立副本
+                    cur = cl.load_cache(path, fresh=True)  # an independent copy for the write
                     cur["bio_generated"] = True
                     cl.save_cache(cur, path)
                     llm.log(f"终传已生成: {out_path}")
             elif kind == "decade":
                 if cache.get("player_death") or _reign_end(cache):
-                    continue  # 已终了 (卒/让位): 跳过十年传记 (终传覆盖)
+                    continue  # tenure ended (death or abdication): the final biography covers it
                 if (decade in (cache.get("bio_decades") or [])
                         or decade in _generated_decades_on_disk(cfg, cache)):
-                    continue  # 磁盘上已有该十年文件 (或缓存标记), 不再生成
-                out = generate_bio(cfg, cache, decade=decade, continue_mode=True)  # v14
+                    continue  # the decade file or flag already exists, so do not generate again
+                out = generate_bio(cfg, cache, decade=decade, continue_mode=True)  # by binding
                 if out:
                     out_path, _ = out
                     cur = cl.load_cache(path, fresh=True)
@@ -1651,9 +1539,8 @@ def _bio_worker_loop(cfg):
                     cl.save_cache(cur, path)
                     llm.log(f"十年传记已生成 (第{decade}个十年): {out_path}")
         except Exception as e:
-            # v88 (问题1 附带): 兜底 except 一并落 traceback 末行 —— 旧稿只记 `str(e)`,
-            # 2026-10-01 那个 `string index out of range` 因此全靠人猜位置
-            # (实为 biography.build_intro_messages 的篇目序号表越界)。
+            # The catch-all also logs the last traceback frames: `str(e)` alone leaves an
+            # IndexError such as "string index out of range" with no location at all.
             _tb = traceback.format_exc().strip().split("\n")
             llm.log(f"传记生成失败 (将重试): {e}"
                     + (f" | {_tb[-2].strip()} @ {_tb[-3].strip()}"
@@ -1663,15 +1550,11 @@ def _bio_worker_loop(cfg):
                 _BIO_LAST_TRY[key] = time.monotonic()
 
 
-# ---------------------------------------------------------------------------
-# watch / continue / scan
-# ---------------------------------------------------------------------------
+# --- watch / continue / scan ---------------------------------------------------
 
 def _cleanup_tmp_melts(cfg):
-    """清理残留的临时熔件 (上次异常退出遗留的 .tmp_melt_*.json / 归档中断的 .xz.tmp)。
-
-    v53 (问题5): 归档线程中断会留下 `melt_*.json.xz.tmp` (或 .gz.tmp / .mig.tmp),
-    启动时清掉, 避免把半成品当成进度、下轮再压一遍抢磁盘。"""
+    """Delete leftovers of an abnormal exit: temp melts (.tmp_melt_*.json) and the partial archives of
+    an interrupted compaction (melt_*.json.xz.tmp, .gz.tmp, .mig.tmp), which would fake progress."""
     dirs = []
     data_dir = cfg.get("data_dir", "")
     if os.path.isdir(data_dir):
@@ -1705,16 +1588,16 @@ def _cleanup_tmp_melts(cfg):
 
 
 def _newest_save(save_dir):
-    """存档目录里 mtime 最新的一份存档; 无存档返回 None。
-    v9: 只读最新存档 — autosave_1/2 是 autosave.ck3 轮转出的旧副本,
-    不可能含独立新数据 (对齐 <另一项目> find_latest_v3 语义)。"""
+    """The save with the newest mtime, or None. Only it is read: autosave_1/2 are older copies rotated
+    out of autosave.ck3 and cannot hold independent new data."""
     saves = scan_saves(save_dir)
     return max(saves, key=lambda s: s["mtime"]) if saves else None
 
 
 def _wait_save_stable(path, seconds=2.0, attempts=4):
-    """等待存档文件大小/修改时间连续稳定, 避免在游戏写入中途熔化
-    (读到写入中的坏存档是 872 事件崩溃的根源; 对齐 <另一项目> _wait_save_stable)。"""
+    """Wait until the save file's size and mtime are unchanged across consecutive checks, so
+    that melting never starts while the game is still writing and a half-written save is
+    never read."""
     try:
         prev = None
         for _ in range(attempts):
@@ -1730,51 +1613,41 @@ def _wait_save_stable(path, seconds=2.0, attempts=4):
 
 
 def step_watch(cfg, continue_mode=False):
-    """watch/continue: 以启动时刻为基准, 只处理启动后写入的新存档。
+    """watch/continue: take the startup moment as the baseline and process only later saves.
 
-    - continue: 启动时先补录当前战役的新档 (日期新于缓存), 再进入监控;
-    - watch:    直接进入监控 (无缓存时首个新存档建立战役)。
-
-    监控循环 (v9, 对齐 <另一项目> cmd_watch 语义):
-      - 每轮只取存档目录中 mtime 最新的一份存档处理; autosave_1/2 等轮转副本
-        只是 autosave.ck3 的旧内容, 不再单独读取;
-      - 熔化前等待文件写入稳定 (_wait_save_stable), 根除「读到写入中的坏存档」崩溃;
-      - 会话级去重: 同一文件 (mtime 未变) 或同一日期 (重存/轮转副本) 只处理一次;
-        换玩家 (新局) 后同日期允许重新出现;
-      - _process_save 去重: continue 沿用旧会话时日期已入缓存 sources 则跳过
-        (兜住跨会话重启); watch 每次运行 = 新存档期, 一律新建编号文件夹并入,
-        不做跨会话去重 (对齐 <另一项目>);
-      - 处理失败不中止循环, 下轮重试 (存档轮转后旧文件自然不再被选中)。
-
-    v7: 每档独立容错 (单档失败不中断本轮其余存档, 下轮重试);
-        每轮都检查待生成终传; 终传生成在后台线程, 轮询不阻塞。"""
+    continue first catches up on the current campaign's newer saves; watch monitors straight away, and
+    without a cache the first new save establishes the campaign. Each round handles only the save with
+    the newest mtime, because rotated copies such as autosave_1/2 merely repeat autosave.ck3, and waits
+    for the file to be stable (_wait_save_stable) before melting. Dedup works by file (the last seen
+    mtime) and by date, where the same date may reappear after the player changes; _process_save skips
+    a date that is already among the cache's sources in continue mode. A failure never stops the loop
+    and the next round retries, and pending final biographies are checked every round in the background
+    thread."""
     global _WATCH_SESSION
-    # watch = 新存档期: 一律新建文件夹 (对齐 <另一项目>); continue = 沿用, 不启用会话文件夹
+    # watch opens a new save period and always creates a folder; continue reuses one and
+    # keeps the per-run session folder disabled
     _WATCH_SESSION["active"] = not continue_mode
     _WATCH_SESSION["folder"] = None
     _WATCH_SESSION["player_key"] = None
     save_dir = cfg.get("save_dir", "")
-    # v85: 基准时间**先**取 —— 下面的启动自检 (校验来源指纹, 必要时重建本地化表)
-    # 可能耗时数秒到数分钟, 期间游戏写出的新存档仍须算「启动后的新存档」; 若基准取在
-    # 自检之后, 这些存档的 mtime 早于基准, 会被永久跳过。
+    # The baseline is taken first: startup work below can take minutes, and a save written meanwhile
+    # still counts as new; taking it later would skip those saves forever.
     baseline = max((s["mtime"] for s in scan_saves(save_dir)), default=0)
     _cleanup_tmp_melts(cfg)
-    # v86 (用户 2026-09-30 拍板「启动完全不检查」): 启动路径**不再**做本地化自检,
-    # 也不再按指纹重建任何表 —— 建表一律手动 `重建对照表.bat` / build-tables。
-    # 表过期时惰性载入只打印一行提示 (见 localization.load_localization_table)。
-    # 基准时间的取值顺序保持不变: 先取基准再干别的, 免得启动期间写出的新档被漏掉。
-    # v44 (问题5): 冷熔件 gzip 归档在后台进行 (启动跑一遍, 之后每 10 分钟一轮)
-    # v53 (问题5): continue 有爆发式补录, 归档线程让路 —— 等 _catchup 完成后再启动,
-    # 避免 rakaly/load_melt 与 xz preset 6 抢单核和磁盘。watch 无爆发补录, 仍启动即归档。
+    # Startup performs no localization check and rebuilds no table: tables are built by hand
+    # (build-tables), and an outdated one only prints a line when loaded lazily. The baseline order is
+    # unchanged (baseline first) so saves written during startup are not missed.
+    # Cold melts are archived in the background every 10 minutes; a continue run catches up in bursts,
+    # so its archiving thread waits for _catchup and never competes with xz preset 6 for core and disk,
+    # while watch starts archiving immediately.
     if not continue_mode:
         _ensure_compact_worker(cfg)
     llm.log("监控存档中 (只处理本程序启动后保存的新存档)...")
     llm.log(f"基准时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(baseline))} "
             f"— 更早的老存档一律不读、不记录")
-    # v15: continue 会话锚点 — 启动时解析一次 (active_cache 已修多战役同日期歧义),
-    # 监控循环内只在有新档并入时跟随该档玩家 (继位/换局), 不再每轮全局重算,
-    # 防锚点漂移到旧战役 (2026-08-30 事件: continue 误判菲利普3/菲利普2,
-    # 漏生成 汤利 第3个十年传记)。
+    # The continue session anchor is resolved once at startup and then follows the player of a newly
+    # merged save (succession or new game), instead of a global recomputation every round that could
+    # drift to an old campaign.
     continue_anchor = None
     if continue_mode:
         pid, cache = active_cache(cfg)
@@ -1790,18 +1663,23 @@ def step_watch(cfg, continue_mode=False):
         else:
             llm.log("续传模式: 暂无缓存, 等同 watch (首个新存档建立战役)")
         _ensure_compact_worker(cfg)
-    # 启动时检查: continue 用当前战役缓存; watch 无战役不检查 (首个新档建立战役后再查)
+    # Startup check: continue uses the current campaign's cache; watch has no campaign yet and
+    # waits until the first new save establishes one.
     if continue_anchor:
         _auto_bio(cfg, _campaign_caches(cfg, continue_anchor))
         _auto_decade_bios(cfg, _campaign_caches(cfg, continue_anchor))
-    # 监控循环 (v9: 只读最新存档 + 会话级去重 + 等写入稳定; v10: 检查限定当前战役)
+    # Monitoring loop: newest save only, session dedup, wait for a stable file, and checks
+    # scoped to the current campaign
     interval = cfg.get("poll_interval_seconds", 60)
-    last_mtime = None      # 上次已处理文件的 mtime (同一文件不重复处理)
-    last_date = None       # 上次已处理日期 (同日期重存/轮转副本不重复并入)
-    last_player = None     # 上次处理存档的玩家名 (换玩家 = 新局, 允许同日期重现)
-    watch_anchor = None    # watch 模式: 首个新档建立的玩家缓存 (此后每轮只查该战役)
-    idle_rounds = 0        # v51: 连续「无新存档」轮数 — 控制台只在空闲首轮与
-                           # 每 IDLE_HEARTBEAT 轮各报一次, 其余进日志文件
+    last_mtime = None      # mtime of the last processed file, so one file is not handled twice
+    last_date = None       # last processed date: a re-save or rotated copy of it is not merged again
+    last_player = None     # player of the last processed save; a change means a new game, where the
+                           # same date may legitimately reappear
+    watch_anchor = None    # watch mode: cache built by the first new save; later rounds check only
+                           # that campaign
+    idle_rounds = 0        # consecutive rounds with no new save; the console reports the first
+                           # idle round and then one every IDLE_HEARTBEAT rounds, the rest go to
+                           # the log file
     while True:
         try:
             s = _newest_save(save_dir)
@@ -1812,7 +1690,7 @@ def step_watch(cfg, continue_mode=False):
                 nm = player_char_name(s.get("player"))
                 if nm and last_player is not None and nm != last_player:
                     last_player = nm
-                    last_date = None  # 新局/换玩家: 同日期允许重新出现
+                    last_date = None  # new game or new player: the same date may appear again
                 if s["date"] == last_date:
                     llm.log(f"[{time.strftime('%H:%M:%S')}] "
                             f"{os.path.basename(s['path'])} ({s['date']}) 日期未变, 跳过 (避免重复)")
@@ -1830,8 +1708,8 @@ def step_watch(cfg, continue_mode=False):
                         if ret:
                             processed += 1
                             processed_player, processed_pt = ret
-                        # 处理完成 (并入或判定重复/跳过) → 记住该文件与该日期;
-                        # 失败 (异常) 不推进, 下轮重试
+                        # Processing finished (merged, or judged duplicate), so remember this file and
+                        # date; a failure advances nothing and is retried next round
                         last_mtime = s["mtime"]
                         last_date = s["date"]
                         if nm:
@@ -1842,21 +1720,21 @@ def step_watch(cfg, continue_mode=False):
                 llm.log(f"并入 {processed} 个新档")
                 idle_rounds = 0
             else:
-                # v51: 空转不再每轮刷屏 (60s 轮询时旧稿每分钟一行), 控制台留心跳
+                # An idle round no longer prints on every poll (60 s apart); the console keeps
+                # a heartbeat instead
                 idle_rounds += 1
                 msg = f"无新存档 (已空转 {idle_rounds} 轮)"
                 if idle_rounds == 1 or idle_rounds % IDLE_HEARTBEAT_ROUNDS == 0:
                     llm.log(msg)
                 else:
                     llm.log(msg, detail=True)
-            # 后台传记检查只查当前战役:
-            # continue = 启动时定死的锚点 (有新档并入时跟随该档玩家, 防继位漏检);
-            # watch = 新档建立的战役 (watch_anchor); 旧战役的缓存一律不扫
-            # (对齐 <另一项目> 会话语义; v15: 不再每轮 active_cache 全局重算)
+            # Checks look at the current campaign only: the anchor fixed at startup for continue
+            # (following the player of a newly merged save so a succession is not missed), the new
+            # saves' campaign for watch. Old campaigns' caches are never scanned.
             anchor = None
             if continue_mode:
                 if processed_player:
-                    # v18: 按战役过滤加载 — 玩家 id 跨战役复用 (867 自定义角色恒为 38701)
+                    # load filtered by campaign: player ids are reused across campaigns
                     p = find_cache_path(cfg, processed_player, processed_pt)
                     if p:
                         continue_anchor = cl.load_cache(p)
@@ -1870,16 +1748,17 @@ def step_watch(cfg, continue_mode=False):
                 anchor = watch_anchor
             if anchor:
                 caches = _campaign_caches(cfg, anchor)
-                _auto_bio(cfg, caches)  # v7: 每轮检查待生成终传 (限定当前战役)
-                _auto_decade_bios(cfg, caches)  # v8: 每轮检查待生成的十年传记
+                _auto_bio(cfg, caches)  # every round checks pending final biographies of this campaign
+                _auto_decade_bios(cfg, caches)  # every round checks pending decade biographies
         except Exception as e:
             llm.log(f"扫描异常: {e}")
         time.sleep(interval)
 
 
 def step_scan(cfg):
-    """单次补录: 只补录当前战役中「日期新于缓存且 mtime 晚于缓存文件」的新档。
-    信封角色名不一致的存档直接跳过 (不熔化), 其它战役一律不读。"""
+    """One catch-up pass: only current-campaign saves dated after the cache and written after
+    the cache file. A save whose envelope character name disagrees is skipped without melting,
+    and no other campaign is read."""
     _cleanup_tmp_melts(cfg)
     pid, cache = active_cache(cfg)
     if not cache:
@@ -1893,9 +1772,7 @@ def step_scan(cfg):
     llm.log(f"补录完成: 处理 {n} 个新档")
 
 
-# ---------------------------------------------------------------------------
-# 其它命令
-# ---------------------------------------------------------------------------
+# --- Other commands ------------------------------------------------------------
 
 def step_status(cfg):
     caches = all_caches(cfg)
@@ -1918,11 +1795,9 @@ def step_status(cfg):
 
 
 def step_bio(cfg, player_id=None, decade=None):
-    """手动生成传记。player_id 缺省取当前战役 (最新存档所属战役) 的玩家。
-    decade 非空时生成第 N 个十年传记 (验证十年功能/补档用)。
-    v18: 玩家 id 跨战役复用 (867 自定义角色恒为 38701) — 同 id 多战役
-    缓存时优先当前战役 (active_cache 的 playthrough), 无法判定时取
-    last_date 最新者并在日志说明。"""
+    """Generate a biography by hand; player_id defaults to the current campaign's player and a non-empty
+    decade selects that decade biography instead. Several caches sharing one id prefer the current
+    campaign's playthrough_id and otherwise the newest last_date, which the log reports."""
     caches = all_caches(cfg)
     if not caches:
         llm.log("暂无玩家缓存 (先运行 watch/continue)")
@@ -1938,7 +1813,7 @@ def step_bio(cfg, player_id=None, decade=None):
     if len(cands) == 1:
         key = next(iter(cands))
     else:
-        # 同 id 跨战役: 优先当前战役 (active_cache 按最新存档解析)
+        # one id across campaigns: prefer the current campaign (active_cache reads the newest save)
         act_pid, act = active_cache(cfg)
         act_pt = act.get("playthrough_id") if act else None
         key = next((k for k in cands if k[1] == act_pt), None)
@@ -1956,9 +1831,8 @@ def step_bio(cfg, player_id=None, decade=None):
 
 
 def _iter_melts(cfg):
-    """遍历全部熔件: (所属战役文件夹或 None, 绝对路径, 日期)。
-    优先战役文件夹 output/<家族>/data/, 兼容旧根目录布局。
-    v44 (问题5): 同时认 `.json` 与 `.json.gz`; v49 (方案①) 再加 `.json.xz`。"""
+    """Walk every melt as (campaign folder or None, absolute path, date). Campaign folders come first,
+    the legacy root layout is still accepted, and `.json`, `.json.gz` and `.json.xz` are recognized."""
     pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz|\.xz)?$")
     out = []
     out_dir = cfg.get("output_dir", "")
@@ -1984,15 +1858,15 @@ def _iter_melts(cfg):
 
 
 def step_rebuild_cache(cfg):
-    """从各战役文件夹熔件重建缓存 (每玩家每会话文件夹一份, 输出至 output/<家族>/data/)。
-    熔件现存放于战役文件夹; 兼容旧根目录布局。
-    同玩家跨会话文件夹 (菲利普 / 菲利普2) 的熔件各自独立重建, 防跨会话缝合。"""
+    """Rebuild caches from the melts in the campaign folders, one per player and session folder, into
+    output/<house>/data/. The legacy root layout is still accepted, and melts of one player in different
+    session folders are rebuilt independently, so nothing is stitched across sessions."""
     melts = _iter_melts(cfg)
     if not melts:
         llm.log("未找到 melt 文件 (战役文件夹 data/ 或根 data/)")
         return
     llm.log(f"重建缓存: {len(melts)} 份 melt")
-    built = {}  # player_id → (folder, cache); 同玩家换会话文件夹 (菲利普→菲利普2) 时另起新缓存
+    built = {}  # player_id -> (folder, cache); another session folder starts a new cache
     for folder, path, date in melts:
         melt = cl.load_melt(path)
         player_id = cl.find_player(melt)
@@ -2001,19 +1875,20 @@ def step_rebuild_cache(cfg):
             continue
         ent = built.get(player_id)
         if not folder:
-            # 旧根目录熔件 (legacy 布局): 与既有根熔件合并, 首次并入后解析会话文件夹
+            # legacy root melt: merge into the previous root cache and resolve the session
+            # folder once the first save has been merged
             if ent is None:
                 prev = cl.load_cache(
                     find_cache_path(cfg, player_id, melt.get("playthrough_id")) or "")
                 cache = cl.new_cache()
                 if prev.get("player_death"):
                     cache["player_death"] = prev["player_death"]
-                if prev.get("reign_end"):        # v76: 让位终了档不能丢
+                if prev.get("reign_end"):        # an abdication record must not be lost
                     cache["reign_end"] = prev["reign_end"]
                 if prev.get("bio_generated"):
                     cache["bio_generated"] = prev["bio_generated"]
                 if prev.get("bio_decades"):
-                    cache["bio_decades"] = prev["bio_decades"]  # v8
+                    cache["bio_decades"] = prev["bio_decades"]  # keep the decade flags
                 if prev.get("playthrough_id"):
                     cache["playthrough_id"] = prev["playthrough_id"]
                 built[player_id] = ("", cache)
@@ -2027,8 +1902,8 @@ def step_rebuild_cache(cfg):
             else:
                 folder = ent[0]
         else:
-            # 熔件所在战役文件夹为准; 同玩家换文件夹 = 另一会话 (菲利普 / 菲利普2),
-            # 各自独立重建 (仅用本文件夹熔件), 防跨会话缝合。
+            # The melt's campaign folder decides; another folder for the same player is another
+            # session, rebuilt from that folder's melts only.
             if ent is None or ent[0] != folder:
                 prev = cl.load_cache(os.path.join(
                     cfg.get("output_dir", ""), folder, "data",
@@ -2036,12 +1911,12 @@ def step_rebuild_cache(cfg):
                 cache = cl.new_cache()
                 if prev.get("player_death"):
                     cache["player_death"] = prev["player_death"]
-                if prev.get("reign_end"):        # v76: 让位终了档不能丢
+                if prev.get("reign_end"):        # an abdication record must not be lost
                     cache["reign_end"] = prev["reign_end"]
                 if prev.get("bio_generated"):
                     cache["bio_generated"] = prev["bio_generated"]
                 if prev.get("bio_decades"):
-                    cache["bio_decades"] = prev["bio_decades"]  # v8
+                    cache["bio_decades"] = prev["bio_decades"]  # keep the decade flags
                 if prev.get("playthrough_id"):
                     cache["playthrough_id"] = prev["playthrough_id"]
                 built[player_id] = (folder, cache)
@@ -2057,14 +1932,12 @@ def step_rebuild_cache(cfg):
 
 
 def step_migrate(cfg):
-    """迁移到 v4 布局:
-      1) 旧 cache/*.json → output/<家族>/data/ (绑定 output_folder, 用旧文件夹名);
-      2) 历史文件夹更名 大师巴沙尔 → 冯·大马士革 (姓氏修复后的家族名), 同步绑定;
-      3) 重建缓存 (v4 schema)。"""
+    """Migrate to the current layout: legacy cache/*.json move to output/<house>/data/ bound to their old
+    folder name, a historical folder takes the house name as fixed later, and caches are rebuilt."""
     out = cfg.get("output_dir", "")
     legacy = cfg.get("cache_dir", "")
     rename_map = {}
-    # 1) 旧缓存迁移 (先用旧文件夹名绑定)
+    # 1) migrate the legacy caches, binding the old folder name first
     moved = 0
     if os.path.isdir(legacy):
         for fn in sorted(os.listdir(legacy)):
@@ -2087,7 +1960,7 @@ def step_migrate(cfg):
             moved += 1
             llm.log(f"  缓存迁移: {fn} → {os.path.relpath(dst, out)}")
     llm.log(f"旧缓存迁移 {moved} 份 → output/<家族>/data/")
-    # 2) 历史文件夹更名 (把 data/ 一起带走)
+    # 2) rename the historical folder, data/ included
     old_dir = os.path.join(out, "大师巴沙尔")
     if os.path.isdir(old_dir):
         new_dir = os.path.join(out, "冯·大马士革")
@@ -2104,13 +1977,15 @@ def step_migrate(cfg):
                 cache["output_folder"] = rename_map[f]
                 cl.save_cache(cache, find_cache_path(
                     cfg, key[0], cache.get("playthrough_id")) or _path)
-    # 3) 重建 (v4)
+    # 3) rebuild the caches
     step_rebuild_cache(cfg)
     llm.log("迁移完成: 缓存已按 v4 重建")
 
 
 def _legacy_folder_for(cfg, cache, pid):
-    """旧缓存 → 会话文件夹 (v4 迁移): 家族名(兼容氏)/人物名/同战役, 逐级匹配现存文件夹。"""
+    """Session folder for a legacy cache during migration: house name (with and without the
+    clan suffix), then character name, then the same campaign, matching an existing folder at
+    each step."""
     out = cfg.get("output_dir", "")
     folder = cache.get("output_folder")
     if folder and os.path.isdir(os.path.join(out, folder)):
@@ -2134,7 +2009,7 @@ def _legacy_folder_for(cfg, cache, pid):
 
 
 def step_demo_death(cfg):
-    """模拟主角死亡 → 演示「死后自动生成终传」链路。"""
+    """Simulate the subject's death to exercise the automatic final-biography path."""
     pid, cache = active_cache(cfg)
     if not cache:
         llm.log("暂无玩家缓存")
@@ -2157,16 +2032,12 @@ def step_demo_death(cfg):
     print("\n".join(md.splitlines()[:6]))
 
 
-# ---------------------------------------------------------------------------
-# 主入口
-# ---------------------------------------------------------------------------
+# --- Main entry points ---------------------------------------------------------
 
 def step_index_melts(cfg):
-    """预建全部熔件的记忆归档边车 (melt_<日期>_idx.json)。
-
-    日常回溯 (死角色记忆补全) 优先读归档, 全量 160 MB 熔件只在归档缺失时加载
-    一次 (惰性构建), 之后直接读 ~20 MB 归档。本命令用于升级后一次性补齐历史
-    熔件的归档, 也可随时重跑补齐新增熔件。"""
+    """Pre-build the memory archive sidecar (melt_<date>_idx.json) of every melt. Backfill prefers the
+    archive and loads a full 160 MB melt only once when it is missing, so this fills in historical melts
+    after an upgrade and can be rerun for new ones."""
     melts = _iter_melts(cfg)
     if not melts:
         llm.log("未找到 melt 文件 (战役文件夹 data/ 或根 data/)")
@@ -2175,7 +2046,7 @@ def step_index_melts(cfg):
     built = skipped = failed = 0
     for _folder, path, date in melts:
         idx_path = cl.melt_index_path(path)
-        # v44: 边车可能已被 gzip 归档 (两种后缀都算"已有")
+        # the sidecar may already be archived, so both suffixes count as present
         if any(os.path.isfile(p) for p in cl._melt_index_variants(path)):
             skipped += 1
             continue
@@ -2198,16 +2069,12 @@ def step_index_melts(cfg):
 
 
 def _compress_file(path, codec="xz", out_path=None):
-    """把冷熔件/边车压缩归档 (原子写 + **往返 sha1 校验**, 通过后才删原件)。
+    """Archive a cold melt or sidecar: atomic write plus a round-trip sha1 check, deleting the source
+    only on success; a path already ending in `.gz`/`.xz` comes back as is unless it is migrated.
 
-    v44 (问题5): gzip-6 —— 256 MB → 39 MB (15.3%), 4.3 s/份。
-    v49 (方案①): 默认 xz (lzma preset 6) —— 244 MiB 档 37.1 MB → 22.8 MB
-    (gzip 的 61.5%), 压缩 46 s, 解压 1.22 s (gzip 0.46 s)。冷档只在回溯/补档/重导
-    时读, 用一次性后台 CPU 换 39% 体积; 最新一份始终留明文 (见 _compact_keep_paths)。
-
-    往返校验不可省: 这批熔件是 60 年存档的唯一副本, 宁可少省也不能压坏 ——
-    压完解回来逐块比 sha1, 不一致就删掉半成品、保留原件并报错。
-    已是 `.gz`/`.xz` 且非迁移用途时原样返回。"""
+    The default codec xz (lzma preset 6) shrinks a 244 MiB melt from 37.1 MB with gzip to 22.8 MB, at
+    46 s to compress and 1.22 s to decompress. The round-trip check is not optional, because these melts
+    are the only copy of 60 years of saves: a mismatch removes the partial file and raises."""
     p = str(path)
     low = p.lower()
     if out_path is None:
@@ -2248,25 +2115,21 @@ def _compress_file(path, codec="xz", out_path=None):
             pass
         raise
     os.replace(tmp, out)
-    cl.melt_memo_drop(p)   # v49 (O4): 源文件已归档, 记忆里的旧键顺手释放
+    cl.melt_memo_drop(p)   # the source is archived, so drop its stale memo entry
     return out
 
 
 def _recompress_file(path, codec="xz"):
-    """把一份冷档/边车归档成目标格式, **成功后删原件** (方案①迁移用)。
-
-    - 明文 → 直接压缩 (校验通过后删明文);
-    - `.gz` → 解压到临时明文, 再压成 `.xz` (校验通过后删临时件与旧 `.gz`);
-    - 已是目标格式 → 原样返回。
-    返回归档后的路径。"""
+    """Archive a cold file or sidecar in the target format for the codec migration and delete the source
+    on success: plaintext is compressed directly, a `.gz` file is decompressed to a temporary plaintext
+    and compressed to `.xz`, and a file already in the target format comes back as is."""
     p = str(path)
     low = p.lower()
     want = ".xz" if str(codec).lower() == "xz" else ".gz"
     if low.endswith(want):
         return p
     if low.endswith(".xz") and want == ".gz":
-        # 只升不降: `compact --gz` 只作用于未压缩的明文, 不把已存的 xz 重新涨回去
-        # (否则手滑跑一次 --gz 就要再花一小时迁回来)
+        # Upgrading only: `compact --gz` touches plaintext and never inflates an existing .xz.
         return p
     if not low.endswith((".gz", ".xz")):
         out = _compress_file(p, codec)
@@ -2295,15 +2158,14 @@ def _recompress_file(path, codec="xz"):
             os.remove(p)
         except OSError:
             pass
-        cl.melt_memo_drop(p)   # v49 (O4)
+        cl.melt_memo_drop(p)   # drop the stale memo entry
     return got
 
 
 def _compact_keep_paths(cfg):
-    """各战役文件夹里**保持明文**的熔件路径 (最新一份)。
-
-    每次并入新档、每次生成传记都要读最新一份, 留着明文省一次解压;
-    历史熔件只在回溯/补档/核对时读, 压缩代价可忽略。"""
+    """Melt paths that stay plaintext: the newest melt of every campaign folder. Every merge and
+    biography generation reads it, so plaintext saves a decompression, while older melts are read only
+    by backfill, catch-up and verification."""
     keep = set()
     by_folder = {}
     for folder, path, date in _iter_melts(cfg):
@@ -2314,18 +2176,12 @@ def _compact_keep_paths(cfg):
 
 
 def step_compact(cfg, codec=None, quiet_if_idle=True):
-    """把冷熔件与记忆归档边车压缩归档 (v44 问题5, 可反复运行)。
+    """Archive cold melts and memory archive sidecars; safe to run repeatedly.
 
-    quiet_if_idle (v51): 无事可做时是否静默控制台 —— 后台归档线程用默认 True
-    (每 10 分钟一轮, 无新档时不必刷屏), 手动 `compact` 传 False 留一行确认。
-
-    v44: gzip-6 —— 诺兰 82 份熔件 14.12GB + 80 份边车 1.92GB → 约 2.4GB。
-    v49 (方案①): 默认改用 xz (lzma preset 6, 可用 config.compact_codec 或
-    `compact --gz` 改回) —— 体积再降到 gzip 的 61.5%; 已是 `.gz` 的存量档案会被
-    解压重压成 `.xz` (迁移), 已达标者跳过, 故可反复运行。
-    归档后全部读取口 (cache_lib.load_melt / load_melt_index / pipeline.melt_file_in
-    / _iter_melts / _backfill_tail_deaths) 都认三种后缀。
-    返回 (归档份数, 释放字节)。"""
+    quiet_if_idle keeps the console silent when there is nothing to do. The codec defaults to xz (lzma
+    preset 6), overridable through config.compact_codec or `compact --gz`; existing `.gz` archives are
+    recompressed to `.xz` and files already in the target format are skipped, while every reader accepts
+    all three suffixes. Returns (files archived, bytes freed)."""
     codec = (codec or cfg.get("compact_codec") or "xz").lower()
     want = ".xz" if codec == "xz" else ".gz"
     melts = _iter_melts(cfg)
@@ -2345,9 +2201,8 @@ def step_compact(cfg, codec=None, quiet_if_idle=True):
         if idx:
             targets.append(idx)
     done = freed = 0
-    # v51: 只对待处理项编号 (旧稿用 targets 全量下标配待处理总数, 打出 [477/3]);
-    # 无事可做时不再打两行 (后台归档线程每 10 分钟跑一轮) —— 控制台只在手动
-    # `compact` 时留一行确认 (quiet_if_idle=False), 文件里一律留一行明细。
+    # Only pending items are numbered, so the counter never exceeds the total; with nothing to do a
+    # manual `compact` asks for one confirming line while the log file always gets a detail line.
     todo = [p for p in targets if not p.lower().endswith(want)]
     if not todo:
         llm.log(f"冷熔件归档 ({codec}): 无需归档 "
@@ -2379,7 +2234,8 @@ _COMPACT_THREAD = None
 
 
 def _compact_loop(cfg):
-    """后台归档线程: 启动时跑一遍, 此后每 10 分钟补一轮 (新档并入后旧最新档转入冷区)。"""
+    """Background archiving thread: one pass at startup, then one every 10 minutes, since the
+    previous newest melt turns cold once a newer save is merged."""
     while True:
         try:
             step_compact(cfg)
@@ -2389,7 +2245,8 @@ def _compact_loop(cfg):
 
 
 def _ensure_compact_worker(cfg):
-    """启动后台归档线程 (watch/continue 共用, 只启动一次; 不阻塞轮询)。"""
+    """Start the background archiving thread once, shared by watch/continue and never blocking
+    the poll loop."""
     global _COMPACT_THREAD
     if _COMPACT_THREAD is not None:
         return
@@ -2398,11 +2255,9 @@ def _ensure_compact_worker(cfg):
 
 
 def _log_loc_source(cfg):
-    """v29/v85: 只读自检 —— 通报本地化来源 (游戏目录 + 启用 Mod 个数 + 来源指纹)
-    与三张派生表 (本地化/特质显示名/特质轨道) 的指纹比对结果, 供 status 一眼可查。
-
-    这里只报告**不重建**; 真正的「不符即重建一次」在 _ensure_source_tables,
-    由 watch / continue / scan 启动路径调用。"""
+    """Read-only check reporting the localization source (game directory, enabled mods, fingerprint) and
+    how the three derived tables (localization, trait display names, trait tracks) compare with it, so
+    `status` shows the state at a glance. Nothing is rebuilt here."""
     try:
         import localization as loc
         rep = loc.inspect_source_tables(cfg)
@@ -2418,12 +2273,8 @@ def _log_loc_source(cfg):
 
 
 def _ensure_source_tables(cfg):
-    """【v86 起不再由启动路径调用】指纹自检 + 按需重建 (保留给手动/诊断使用)。
-
-    v85 曾把它挂在 watch / continue / scan 的启动上; 用户 2026-09-30 拍板
-    「启动完全不检查」 ⇒ 启动路径零自检, 建表一律走 `pipeline.py build-tables`
-    (双击 `重建对照表.bat`)。此函数保留: 诊断时可用, 也供 build-tables 复用其
-    逐表报告口径。"""
+    """Fingerprint self-check with rebuild-on-demand, no longer called from the startup path and kept for
+    manual use; tables are built through `pipeline.py build-tables` instead."""
     try:
         import localization as loc
         return loc.ensure_source_tables(cfg)
@@ -2432,22 +2283,19 @@ def _ensure_source_tables(cfg):
         return None
 
 
-# ---------------------------------------------------------------------------
-# v86: 手动建表 (用户 2026-09-30 拍板 —— 启动不再自检/重建)
-# ---------------------------------------------------------------------------
-# 表分两类:
-#   · 派生表 (游戏/Mod 文件 → data/*.json): 本命令全量 force 重建;
-#   · 手工表 (人工维护, 无构建器, 删了就没了): 只做存在性校验并提示。
-# force 的语义: **一律落盘**, 只拒绝空结果 —— 手动命令就是「我确认要重建」,
-# Mod 停用导致条数变少也必须写下去 (旧稿的「重建结果偏小就保留旧表」正是
-# 1.20 升级后每次启动都白跑一遍建表的原因)。旧表条数仅作对照打印。
+# --- Manual table building (startup neither checks nor rebuilds any table) ------
+# Derived tables (game/mod files -> data/*.json) are rebuilt in full with force here; manual tables
+# (maintained by hand, no builder, gone once deleted) are only checked for existence.
+# force always writes and only an empty result is refused, because a manual command means the rebuild
+# is wanted: a smaller table from a disabled mod must still be written. Old row counts are printed for
+# comparison only.
 _MANUAL_TABLES = (
     ("宗族名(手工维护·无构建器)", "patronym_rules.json"),
 )
 
 
 def _table_builders():
-    """[(显示名, 旧表路径, 构建, 落盘)] —— 全部游戏/Mod 派生表。"""
+    """Every game/mod derived table as (display name, current path, builder, writer)."""
     import localization as loc
     import flavorization as fl
     return [
@@ -2466,10 +2314,10 @@ def _table_builders():
          loc.save_council_names),
         ("主教称谓臂表", loc._bishop_titles_path, loc.build_bishop_titles,
          loc.save_bishop_titles),
-        # v87 (问题1): 神权官称自定义本地化臂表 (GetActualDuke/CountTheocracyTitle)
+        # theocracy title arms from custom localization (GetActualDuke/CountTheocracyTitle)
         ("神权官称臂表", loc._custom_loc_path, loc.build_theocracy_titles,
          loc.save_theocracy_titles),
-        # v89 (问题6): 灵性满足分档表 (common/spiritual_fulfillment/*.txt)
+        # spiritual fulfillment tiers (common/spiritual_fulfillment/*.txt)
         ("灵性满足分档", loc._spiritual_fulfillment_path,
          loc.build_spiritual_fulfillment, loc.save_spiritual_fulfillment),
         ("宗族与家族名", loc._dynasties_path, loc.build_dynasty_table,
@@ -2487,11 +2335,9 @@ def _table_builders():
 
 
 def _count_keys(obj):
-    """表对象 → 条数 (取主容器; 拿不到给 -1)。
-
-    包装型表 ({schema, entries, <主容器>}) 按主容器计 —— 直接取「最大容器」会被
-    `categories` / `fingerprint` 这类附属容器带偏, 直接 len() 又会把 province_map
-    的 {省: {county, barony}} 数成主容器条数。"""
+    """Row count of a table object, read from its primary container; -1 when unavailable. Taking the
+    largest container would be skewed by side containers such as `categories` or `fingerprint`, and a
+    plain len() would count the province_map shape {province: {county, barony}} as its row count."""
     _PRIMARY = ("table", "entries", "traits", "tracks", "arms", "positions", "tasks",
                 "hook_types", "doctrines", "by_parameter", "map", "titles",
                 "dynasties", "houses", "rules", "positions")
@@ -2504,24 +2350,22 @@ def _count_keys(obj):
                 return v
             if isinstance(v, (dict, list)):
                 return len(v)
-        if "schema" in obj:                      # 包装型但主容器名不在表内 → 取最大
+        if "schema" in obj:                      # wrapped, primary name absent -> take the largest
             best = -1
             for v in obj.values():
                 if isinstance(v, (dict, list)) and len(v) > best:
                     best = len(v)
             return best if best >= 0 else len(obj)
-        return len(obj)                          # 纯映射 (如 province_map 的 map)
+        return len(obj)                          # a plain mapping, such as province_map's map
     if isinstance(obj, (list, set)):
         return len(obj)
     return -1
 
 
 def step_build_tables(cfg, only=None):
-    """v86: 手动重建全部游戏/Mod 派生表 (force 落盘)。
+    """Rebuild every game/mod derived table by hand, writing with force.
 
-    用法:
-      python pipeline.py build-tables              # 全部
-      python pipeline.py build-tables --only=loc,traits
+    python pipeline.py build-tables [--only=loc,traits]
     """
     import json as _json
     only = set(only or ())
@@ -2565,7 +2409,7 @@ def step_build_tables(cfg, only=None):
         except Exception as e:
             rows.append((name, old_n, -1, time.time() - t0, str(e)))
             print(f"  [失败] {name}: {type(e).__name__}: {e}")
-    # 手工表: 只校验存在性
+    # manual tables: existence check only
     for name, fn in _MANUAL_TABLES:
         p = os.path.join(cfg.get("data_dir", ""), fn)
         if os.path.isfile(p):
@@ -2594,7 +2438,7 @@ def main():
         cfg["poll_interval_seconds"] = int(sys.argv[2]) if len(sys.argv) > 2 else 60
         step_watch(cfg, continue_mode=True)
     elif cmd == "scan":
-        # v86: 启动零自检 (用户 2026-09-30 拍板) —— 表的事一律手动
+        # startup performs no self-check: tables are always handled by hand
         step_scan(cfg)
     elif cmd == "build-tables":
         only = set()
@@ -2625,9 +2469,9 @@ def main():
     elif cmd == "index-melts":
         step_index_melts(cfg)
     elif cmd == "compact":
-        # v49 (方案①): 默认 xz; `compact --gz` 可退回 gzip (压缩快 10 倍, 体积大 63%)
+        # default xz; `compact --gz` selects gzip, ~10x faster to compress but 63% larger
         codec = "gz" if "--gz" in sys.argv else None
-        # v51: 手动运行留一行「无事可做」的确认 (后台线程仍静默)
+        # a manual run confirms "nothing to do" with one line; the background thread stays silent
         step_compact(cfg, codec=codec, quiet_if_idle=False)
     elif cmd == "migrate":
         step_migrate(cfg)
