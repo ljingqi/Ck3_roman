@@ -1,17 +1,6 @@
 # -*- coding: utf-8 -*-
-"""干净事实渲染层 (facts.py)
-============================
-把 缓存(cache) + 最新熔化档(melt) 渲染成**只含中文自然语言**的事实清单,
-供 biography.py 拼提示词。铁律: **任何内部 id / 键 / 英文枚举一律不进入提示词**。
-
-v4 变更:
-  - 名字/姓氏/头衔/文化/信仰/特质/政体/死因 全部先查 localization.py 本地化表
-    (Daria → 达丽娅; 文化 ashkenazi → 阿什肯纳兹; 信仰 ashari → 艾什尔里派)。
-  - 头衔层级词按政体动态取 (celestial: 路/大路/镇/州府; 回退 王国/帝国/公国/县/堡)。
-  - 无地冒险者分支: 营地现驻郡 + 县主 + 上位链 + 最高领主 (经省份→伯爵领映射)。
-  - 亲属/妻族: 父/母/兄弟姐妹 + 曾任头衔 (经 realm_history 反查, 妻父宋帝/妻兄今上)。
-  - 特质履历: trait_history 渲染「自某日起获得 / 自某日后消失」。
-  - 朝局数据: 帝国/王国级头衔持有者逐年变化, 供《朝局风云录》。
+"""Fact rendering layer: turns the cache plus the latest melt save into a Chinese
+natural-language fact list for biography.py; internal ids/keys/enums never reach the prompt.
 """
 import json
 import os
@@ -25,10 +14,10 @@ import llm
 import cache_lib as cl
 import flavorization as FZ
 import localization as L
-import style as _style   # v30: 措辞表 (死因/头衔/统计标签) 见 style.py
+import style as _style   # style.py phrasing tables (death reasons/titles/stat labels)
 
 # ---------------------------------------------------------------------------
-# 中文映射表 (本地化缺失时的兜底)
+# Chinese fallback maps used when localization lacks an entry
 # ---------------------------------------------------------------------------
 
 TRAIT_ZH = {
@@ -58,10 +47,9 @@ TRAIT_ZH = {
 
 CULTURE_TEMPLATE_ZH = {"han": "汉"}
 
-# v24: 中文建制地名 (地名本身以 州/府/京/郡/县 收尾) 不再叠西式/政体层级词 —
-# 贝州伯爵领/杭州州府 → 贝州/杭州 (只对伯爵领 c_ 级生效, 公国/王国名不受影响)。
+# Chinese place names ending in 州/府/京/郡/县 take no title-level word (county-tier c_ titles only).
 _CN_PLACE_SUFFIX_RE = re.compile(r"[州府京郡县]$")
-# v24: CK3 culture_titles 词族 (汉人文化 → 键后缀 chinese: 王/公/侯/伯/将军…)。
+# CK3 culture_titles word family (han culture -> localization key suffix "chinese").
 _CULTURE_TITLE_FAMILY = {"han": "chinese"}
 
 FAITH_TYPE_ZH = {"jingxue": "经学"}
@@ -82,23 +70,22 @@ GOVERNMENT_ZH = {
 
 
 
-# 谋杀类隐事: 正文归《刺客列传》, 篇内只计数 + 索引
+# Murder secrets: the prose belongs to the assassin chapter, so only counts and an index remain here.
 SECRET_MURDER_TYPES = {"secret_murder", "secret_murder_attempt"}
 
 
 
 
-# v28: 健康/压力档位 — 游戏数值属元信息, 提示词只给档位词 (现代白话)。
-# 阈值取自游戏 defines HEALTH_STATE_LEVELS_VALUES {0,1,3,5,7} 与
-# script_values (dying 0 / poor 1 / fine 3 / good 5 / excellent 7);
-# 压力按 game_concept_stress_level「每 100 压力升一级, 0–3 级」。
+# Health/stress bands: the prompt gets band words only, never the raw game numbers. Thresholds
+# from HEALTH_STATE_LEVELS_VALUES {0,1,3,5,7} and the dying/poor/fine/good/excellent script
+# values; stress gains one band per 100 stress.
 _HEALTH_BANDS = ((7.0, "身体康健"), (5.0, "健康良好"), (3.0, "健康尚可"),
                  (1.0, "身体抱恙"), (0.0, "病危"))
 _STRESS_BANDS = {1: "压力较轻", 2: "压力较重", 3: "压力极重"}
 
 
 def health_state_zh(value):
-    """健康值 → 档位词 (元信息不外泄); 无法解析返回 ''。"""
+    """Health value -> band word (raw numbers stay internal); '' when unparseable."""
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -110,7 +97,7 @@ def health_state_zh(value):
 
 
 def stress_state_zh(value):
-    """压力值 → 档位词 (0 级 = 无压力, 不写); 无法解析返回 ''。"""
+    """Stress value -> band word (band 0 means no stress and is omitted); '' when unparseable."""
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -118,14 +105,13 @@ def stress_state_zh(value):
     return _STRESS_BANDS.get(min(3, int(v // 100)), "")
 
 
-# v29: 无游戏档位的量 — 数值一律不下发, 只给档位词 (用户决策 2026-09-11:
-# 「其他数量用档位, 金币直接删去」)。国库金/月入/牧群属货币, 整项不写;
-# 口粮 (无地营地补给) 给档位词。
+# Quantities without a game-defined band also become band words; currency (treasury, monthly
+# income, herds) is dropped entirely, while provisions (landless camp supply) gets a band word.
 _PROVISIONS_BANDS = ((100.0, "口粮充盈"), (30.0, "口粮尚足"), (0.0, "口粮将尽"))
 
 
 def provisions_band(value):
-    """营地口粮 → 档位词; 无法解析返回 ''。"""
+    """Camp provisions -> band word; '' when unparseable."""
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -135,7 +121,7 @@ def provisions_band(value):
             return word
     return "口粮将尽"
 
-# 参与者槽位: 记忆类型 → participants 键 (缺失时取第一个 int 参与者)
+# Participant slots: memory type -> participants key (falls back to the first int participant).
 PARTICIPANT_SLOTS = {
     "became_rivals": "rival", "became_grudge": "grudge", "became_nemesis": "nemesis",
     "stopped_being_rivals": "rival", "rival_died": "dead_relation",
@@ -146,31 +132,25 @@ PARTICIPANT_SLOTS = {
     "became_soulmates": "new_soulmate", "became_blood_brother": "blood_brother",
     "imprisoned_other": "imprisoned", "imprisoned": "imprisoner",
     "released_from_prison_memory": "imprisoner", "lost_title_memory": "new_holder",
-    # v32 (马克龙问题1): 越狱记忆同带 imprisoner 槽, 此前未登记 → 监禁者丢失
+    # Escape memory also carries the imprisoner slot.
     "escaped_from_prison_memory": "imprisoner",
-    # v32 (马克龙问题3): 夭折/早产记忆的参与者是**生母** (游戏定义 participants={mother}),
-    # 此前未登记 → 「未知其母, 只知为某人之血脉」
+    # Stillbirth/premature-birth memories carry the birth mother (game: participants={mother}).
     "child_stillborn": "mother", "child_premature": "mother",
     "child_born": "child", "first_born": "child",
     "childhood_education_guardian": "guardian",
     "successful_murder": "victim",
-    # v38 (问题1): Carnalitas 性事记忆族 (24 键共用 `sex_partner` 槽;
-    # 常量 `_SEX_MEM_PREFIX` 处按前缀族解析, 无需逐键登记)
+    # Carnalitas sex-memory family: 24 keys share the `sex_partner` slot, resolved by prefix at
+    # `_SEX_MEM_PREFIX` rather than registered key by key.
     "had_a_threesome_memory": "partner_1",
-    # v38 (问题1 顺带): 同期未登记槽位的普通游戏记忆 —— 槽名取自游戏本地化
-    # 描述里的占位符 ([rescuer]/[old_friend]/[dead_relation]/[new_relation])。
+    # Slot names taken from the placeholders in the game localization text ([rescuer]/[old_friend]/...).
     "saved_from_assault_memory": "rescuer",
     "stopped_being_friends": "old_friend",
     "lover_died": "dead_relation", "soulmate_died": "dead_relation",
     "best_friend_died": "dead_relation", "nemesis_died": "dead_relation",
     "developed_crush": "new_relation",
-    # v56 (问题1b): 加冕类记忆 —— host 是加冕礼的主角 (受冕者), coronator 是施礼者。
-    # 存档实测 witnessed 的参与者即 `{"host": <受冕者>}` (游戏文案
-    # 「我见证了[host]的加冕」); held 的是 `{"coronator": <施礼者>}`。
-    # 旧稿两槽都未登记 + 模板无 {other} → 句面只剩「见证加冕」, 加冕者与加冕之事全失。
-    # v78-5 (用户 D6): 加冕族其余键的参与者槽 (缺一即取不到 {other} 或取错槽)。
-    # `held_a_coronation_memory` 以前**只有模板、没有模块** —— `module == ""` 会被
-    # `slice_events` 放行到**所有**板块 (旧稿的漏点), 现随本轮一并登记。
+    # Coronation memories: host is the crowned ruler, coronator the officiant (save:
+    # witnessed = {"host": ...}, held = {"coronator": ...}). Every slot must be registered,
+    # since an unregistered key leaves module == "" and slice_events then admits it everywhere.
     "witnessed_a_coronation_memory": "host",
     "held_a_coronation_memory": "coronator",
     "crowned_by_hof_memory": "hof",
@@ -187,54 +167,50 @@ PARTICIPANT_SLOTS = {
     "coronation_faction_members_memory": "host",
     "coronation_magnificence_loss_memory": "host",
     "coronation_coup_memory": "plotter",
-    # 双槽键必须登记: 不登记时「取第一个 int 参与者」会按字典序随机取到 baron
+    # Two-slot keys must be registered, or the first-int-participant fallback picks one arbitrarily.
     "got_the_city_drunk_memory": "coronation_host",
     "injured_in_crowd_crush_at_coronation_memory": "coronation_host",
     "defeated_detractor_in_drinking_contest_memory": "detractor",
     "was_caught_cheating_in_drinking_contest_memory": "detractor",
-    # v78-5: 流放三型 (各只有一槽, 登记后 {other} 稳定)
+    # Exile memories have a single slot each; registering it keeps {other} stable.
     "exiled_kin_memory": "exile",
     "exiled_by_kin_memory": "banisher",
     "defected_from_kin_memory": "kin",
 }
 
-# v32 (问题3): 生母本人持有该记忆时 particip[mother] == 持有人 → 视为无对手方,
-# 用 `<type>_no_other` 模板 (不出「A之妻A」)。
+# When the mother herself holds the memory, participants[mother] == holder: treat it as
+# having no counterparty and use the `<type>_no_other` template (avoids "A's wife A").
 _SELF_NO_OTHER_TYPES = {"child_stillborn", "child_premature"}
 
-# v63 (行内定语基准): 句面**已把对手方与本行主语的关系写明**的记忆型 —— 成婚事写
-# 「与X成婚」、生育写「添子X/得长女X/之{妻}Y产下死婴」、丧偶写「丧偶，X去世」。
-# 这些行里的人名不再插亲缘定语 (否则出「与丈夫X成婚」「得长女女儿X」这类赘语;
-# 妻/夫/妾 是单字, 进不了 `biography._KIN_MARK_RE` 的「已写明」判据)。
+# Memory types whose rendered sentence already states how the counterparty relates to the line's
+# subject (marriage, birth, bereavement): names there get no kin attributive, which would produce
+# "married husband X". The single-character 妻/夫/妾 cannot match biography._KIN_MARK_RE.
 _REL_STATED_TYPES = frozenset({
     "married", "had_sex", "spouse_died", "child_born", "first_born",
     "twins_born", "child_premature", "child_stillborn",
-    # v78-5: 流放三型句面已写明亲属关系 (「放逐其亲属X」/「为亲属X所放逐」),
-    # 不登记会出「放逐其亲属其堂弟X」这类叠字
+    # Exile lines already state kinship; without this the attributive stacks ("exiled his kin, his cousin X").
     "exiled_kin_memory", "exiled_by_kin_memory", "defected_from_kin_memory",
 })
 
-# v32 (问题3): 需带配偶称谓 ({rel}) 的记忆型
+# Memory types that need the consort term ({rel}).
 _CONSORT_MEM_TYPES = {"child_stillborn", "child_premature"}
 
-# v31 (问题3): 同伴槽位型记忆 — 参与槽与持有者同一人时该记录退化。
-# 存档实测: 妻子的 6 条 had_sex 的 `sex_partner` 就是她自己 (游戏未记对方是谁),
-# 旧渲染直接取名成句 → 「公主与公主有私情」。这类记录整条丢弃。
+# Peer-slot memories: a participant slot holding the holder herself is degenerate (the game does
+# not record the other party), so the record is dropped.
 _PEER_SLOT_TYPES = {
     "had_sex", "became_lovers", "became_soulmates", "became_friends",
     "became_rivals", "became_grudge", "became_nemesis", "became_blood_brother",
     "broke_up_lovers", "married",
 }
 
-# v31 (问题1): 体况瞬时特质 — 得而复失只是状态回摆 (妻子怀孕三段: 868→869 /
-# 872→876 / 878→), 不进「特质履历」; **当前持有仍写入「为人」**,
-# 「878年公主怀孕」是有用事实, 只有履历噪声要去掉。
+# Transient condition traits: losing one is just state oscillation, so it stays out of the trait
+# history; a currently held one is still rendered as a present condition.
 _TRANSIENT_TRAITS = {"pregnant", "ill", "wounded_1", "wounded_2", "wounded_3"}
-# v35 (问题5): 疫情类疾病特质 —— 取游戏算好的当代疫名而非特质静态名
-# (键取自 common/epidemics/00_epidemics.txt 的 `trait =` 行)。
+# Epidemic disease traits: use the game-generated contemporary epidemic name (keys from the
+# `trait =` lines of common/epidemics/00_epidemics.txt), not the static trait name.
 _DISEASE_TRAITS = frozenset({"smallpox", "bubonic_plague", "typhus", "consumption",
                              "measles", "dysentery", "ergotism"})
-# v35 (问题5): 疫情类**死因键** → 疾病特质键 (取动态疫名用)。
+# Epidemic death-reason key -> disease trait key (for the dynamic epidemic name).
 _DEATH_DISEASE_REASON = {
     "death_typhus": "typhus", "death_smallpox": "smallpox",
     "death_bubonic_plague": "bubonic_plague",
@@ -242,20 +218,19 @@ _DEATH_DISEASE_REASON = {
     "death_dysentery": "dysentery", "death_ergotism": "ergotism",
 }
 
-# v34 (问题1, 用户拍板「不留」): 生育能力类特质属**史官不可知**的身体隐微 —
-# 「不育」写在《本纪》里等于告诉读者主角的生育力, 而史官只见他子女绕膝。
-# 这类特质在**公开档案**(surface) 的「为人」句中整体隐去, 只保留在内部版档案里。
+# Fertility traits are bodily details a chronicler could not know: the public (surface)
+# archive hides them and only the internal archive lists them.
 _FERTILITY_TRAITS = frozenset({
     "infertile", "infertile_male", "infertile_female", "sterile",
     "fertile", "fecund", "lustful_fertility",
 })
 
-# v31 (问题1): 「为人」句的类别顺序与每类上限 (超限加「等」)
+# Category order and per-category cap for the character-traits sentence (overflow adds 等).
 _TRAIT_GROUP_ORDER = ("personality", "education", "lifestyle", "commander",
                       "fame", "health", "childhood", "court_type", "")
 _TRAIT_GROUP_LIMIT = 5
 
-# v31 (问题4): 妻室情事脉络的取材类型 → 对方所在参与槽
+# Consort-affair lineage: source memory type -> participant slot holding the other party.
 _AFFAIR_SLOTS = {
     "had_sex": "sex_partner",
     "became_lovers": "new_relation",
@@ -264,29 +239,22 @@ _AFFAIR_SLOTS = {
     "lover_died": "dead_relation",
 }
 
-# v31 (问题7): 这些隐事的 target 即对方当事人 (存档 participants 只列持有人),
-# 算「当事人」而非第三方知情者
+# For these secrets target is the other party (participants list only the holder), so it counts
+# as a party rather than as a third-party witness.
 _SECRET_PARTY_TARGET_TYPES = {"secret_lover", "secret_adultery"}
 
-# v34 (问题2): 乱伦隐事在存档里**不记对方** (`target` 恒为空数组, 双方各持一条),
-# 但对方可由「持有人的血亲 ∩ 与持有人的性/情记忆」判定。
-# 血亲只认**血缘** (父/母/子女/同胞); 姻亲 (配偶) 不算 — 否则夫妻同房会被写成乱伦。
+# Incest secrets record no other party (target is always empty; each side holds one record), so
+# the other party is inferred as blood kin ∩ the holder's sex/romance memories. Spouses are
+# excluded, or marital sex would read as incest.
 _SEX_MEM_TYPES = ("had_sex", "became_lovers", "became_soulmates", "developed_crush")
 _SEX_MEM_OTHER_KEYS = ("sex_partner", "new_relation", "new_soulmate")
 
-# v42 (问题1): 乱伦主题已并入 style.SECRET_TOPICS (`与{target}乱伦`) —— 旧稿在
-# 此处另立 `SECRET_INCEST_TOPIC = "乱伦：与{target}"`, 是全库唯一一条「标签：内容」
-# 式隐事主题, 嵌进「有隐事N桩：」成双层冒号。
+# "Self" in a secret sentence means the record holder, i.e. that sentence's subject.
 
-# v42 (问题2): 「自己」的指代基准 = **记录持有人** (即该隐事句的主语)。
-# 旧稿以 `self_cid` (主角 id) 为基准, 家人隐事句的主语是家人、基准却是主角,
-# 于是「对方＝主角」被写成「自己」: 欧金尼娅·诺兰的三桩隐事成了
-# 「乱伦：与自己」「与自己私通」「实父为自己」, 并被子模型逐字抄进正文。
-
-# 记忆类型 → 取 vars 中的 landed_title (头衔 id)
+# Memory types whose vars carry landed_title (a title id).
 TITLE_VAR_TYPES = {"lost_title_memory", "ascended_throne_memory"}
 
-# 朝局类记忆类型 (群英录/朝局风云录用, 与 biography.POLITICAL_TYPES 同步)
+# Political memory types for the court-dynamics sections (kept in sync with biography.POLITICAL_TYPES).
 POLITICAL_TYPES_KEYS = {
     "ascended_throne_memory", "lost_title_memory", "imprisoned",
     "released_from_prison_memory", "escaped_from_prison_memory",
@@ -296,13 +264,14 @@ POLITICAL_TYPES_KEYS = {
     "battle_won_memory", "battle_lost_memory",
 }
 
-# v11: 刺客列传击杀数超过该阈值时, 剔除 lowborn (无家族且非家人/友/仇) 死者,
-# 压缩提示词体积, 保住模型注意力 (168 人 → 142 人)。
+# Above this kill count the assassin chapter drops lowborn victims (no house and not
+# family/friend/rival), keeping the prompt small.
 KILL_LOWBORN_THRESHOLD = 15
 
 
 def _kill_keep_ids(cache, pid):
-    """击杀者名单里必须保留的角色 id 集: 主角家人 (含前妻/妾) + 结友/结仇者。"""
+    """Ids that must survive the lowborn filter: the subject's family (incl. former spouses
+    and concubines) plus friends and rivals."""
     keep = set()
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
     fam = rec.get("family") or {}
@@ -320,8 +289,8 @@ def _kill_keep_ids(cache, pid):
     return keep
 
 
-# 父名制规则表 (由 experiments/patronym_scan.py 从游戏 name_lists 生成):
-# {文化模板: {pm/pf/sm/sf 键, pm_zh/pf_zh/sm_zh/sf_zh 中文}}
+# Patronymy rule table, generated from the game name_lists by experiments/patronym_scan.py:
+# {culture template: {pm/pf/sm/sf keys, pm_zh/pf_zh/sm_zh/sf_zh Chinese words}}
 _PATRONYM_RULES = None
 
 
@@ -339,11 +308,11 @@ def _patronym_rules():
 
 
 # ---------------------------------------------------------------------------
-# 小工具
+# Small helpers
 # ---------------------------------------------------------------------------
 
 def house_display(h):
-    """家族名显示: 单字中文姓加「氏」(边 → 边氏), 其余原样 (冯·大马士革)。"""
+    """House name for display: a single-character Chinese surname gains 氏, anything else is returned as is."""
     if not h:
         return ""
     if len(h) == 1 and "\u4e00" <= h <= "\u9fff":
@@ -352,17 +321,15 @@ def house_display(h):
 
 
 def _house_shi(nm):
-    """家格句/立家年表行用的家族称法 (「顿巴斯」→「顿巴斯氏」; 已带氏/家/部者原样)。
-
-    v64: 由 `house_history_lines` 内的局部函数提为模块级 —— 家格句与年表事件
-    (`_house_founding_events`) 两处同源, 免得一处写「顿巴斯氏」一处写「顿巴斯」。"""
+    """House name for the house-rank sentence and the founding-chronology rows: names ending in
+    氏/家/家族/部 pass through, others gain 氏."""
     if not nm:
         return ""
     return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
 
 
 def _year_of(d):
-    """日期文本 → 四位数年份 (兼容 '872.1.1' 与 '872年' 两式); 取不到返回 ''。"""
+    """Date text -> four-digit year (accepts '872.1.1' and '872年'); '' if unavailable."""
     if d is None:
         return ""
     m = re.match(r"\s*(\d{3,4})", str(d))
@@ -370,10 +337,8 @@ def _year_of(d):
 
 
 def date_gap_days(d1, d2):
-    """两个游戏日期 (Y.M.D) 的整日差 (d2 − d1); 解析失败返回 None。
-
-    v81 (问题6): 只服务「首见快照距出生 ≤ 400 天」这类**粗判** (存档快照日是
-    每年 1月1日), 故按月 30 日、年 365 日折算, 不追求历法精确。"""
+    """Whole-day difference (d2 − d1) between two game dates Y.M.D; None if unparseable.
+    Approximates 30-day months and 365-day years, which suffices for coarse tests."""
     try:
         y1, m1, x1 = (int(x) for x in str(d1).split(".")[:3])
         y2, m2, x2 = (int(x) for x in str(d2).split(".")[:3])
@@ -383,15 +348,12 @@ def date_gap_days(d1, d2):
 
 
 # ---------------------------------------------------------------------------
-# v45: 亲缘定语 (「父亲X」「姻亲姊妹Y」)
+# Kin attributives ("father X", "sister-in-law Y")
 # ---------------------------------------------------------------------------
-# 用户 2026-09-16 拍板:
-#   · 词形 = 游戏本地化口径, **有双音节词用双音节词** (父亲/岳父, 不用 父/岳);
-#   · 「首次」语义 S1 字面 —— 该名字在本板块任何位置出现过即消费名额;
-#   · 基准人 = 该篇传主 (《列传》即好友/仇人本人);
-#   · 前配偶不算 (配偶集 = primary_spouse ∪ spouse ∪ concubine, 双向闭包);
-#   · 零提示词改动 —— 定语在事实面拼。
-# 长幼四词 (兄长/弟弟/姐姐/妹妹) 与「配偶」游戏无键, 由本项目自造 (兜底常量)。
+# Word form follows game localization and prefers two-syllable terms (父亲/岳父). "First
+# occurrence" is literal: a name appearing anywhere in the section consumes its slot, and the
+# reference person is the section's subject. The spouse set is primary_spouse ∪ spouse ∪
+# concubine in both directions, former spouses excluded.
 KIN_WORDS = {
     "father":            ("relation_father", "父亲"),
     "mother":            ("relation_mother", "母亲"),
@@ -413,30 +375,30 @@ KIN_WORDS = {
     "sister_in_law":     ("relation_sisterinlaw", "姻亲姊妹"),
     "step_son":          ("relation_stepson", "继子"),
     "step_daughter":     ("relation_stepdaughter", "继女"),
-    # ---- v45b: 中式亲属细分 (40 词, 判据见 docs/研究_v45b_中式亲属.md §1.2) ----
-    # 组 A 父母之同胞: 伯叔按与父母的生年, 舅/姑/姨按父系/母系与性别
+    # ---- Chinese kin subdivisions (rules live in kin_key) ----
+    # Group A, parents' siblings: paternal uncles by birth year against the parent; 舅/姑/姨 by side and sex.
     "uncle_pat_older":   ("", "伯父"),
     "uncle_pat_younger": ("", "叔父"),
     "uncle_mat":         ("", "舅父"),
     "aunt_pat":          ("", "姑母"),
     "aunt_mat":          ("", "姨母"),
-    "uncle":             ("relation_uncle", "叔舅"),      # 回落: 长幼不可判
-    "aunt":              ("relation_aunt", "姑姨"),        # 回落: 父母边不可判
-    # 组 B 同胞之子女: 兄弟之子女 → 侄, 姊妹之子女 → 甥
+    "uncle":             ("relation_uncle", "叔舅"),      # fallback: seniority unknown
+    "aunt":              ("relation_aunt", "姑姨"),        # fallback: side unknown
+    # Group B, siblings' children: a brother's child -> 侄, a sister's -> 甥
     "nephew_brother":    ("", "侄子"),
     "niece_brother":     ("", "侄女"),
     "nephew_sister":     ("", "外甥"),
     "niece_sister":      ("", "外甥女"),
-    "nephew":            ("NEPHEW", "侄甥"),               # 回落: 同胞性别不可判
+    "nephew":            ("NEPHEW", "侄甥"),               # fallback: sibling sex unknown
     "niece":             ("NIECE", "侄甥女"),
-    # 组 C 子女之子女: 子之子女 → 孙, 女之子女 → 外孙
+    # Group C, children's children: a son's child -> 孙, a daughter's -> 外孙
     "grandson_son":      ("GRANDSON", "孙子"),
     "granddaughter_son": ("GRANDDAUGHTER", "孙女"),
     "grandson_daughter": ("", "外孙子"),
     "granddaughter_daughter": ("", "外孙女"),
-    "grandson":          ("relation_grandson", "（外）孙"),      # 回落: 中间人性别不可判
+    "grandson":          ("relation_grandson", "（外）孙"),      # fallback: middle person's sex unknown
     "granddaughter":     ("relation_granddaughter", "（外）孙女"),
-    # 组 D 堂表 (姑表算表: 只有伯叔之子女为堂)
+    # Group D, cousins: only a paternal uncle's children are 堂, every other branch is 表
     "cousin_pat_brother_older":   ("", "堂兄"),
     "cousin_pat_brother_younger": ("", "堂弟"),
     "cousin_pat_sister_older":    ("", "堂姐"),
@@ -445,25 +407,24 @@ KIN_WORDS = {
     "cousin_mat_brother_younger": ("", "表弟"),
     "cousin_mat_sister_older":    ("", "表姐"),
     "cousin_mat_sister_younger":  ("", "表妹"),
-    "cousin_pat_brother": ("", "堂兄弟"),                  # 回落: 长幼不可判
+    "cousin_pat_brother": ("", "堂兄弟"),                  # fallback: seniority unknown
     "cousin_pat_sister":  ("", "堂姊妹"),
     "cousin_mat_brother": ("", "表兄弟"),
     "cousin_mat_sister":  ("", "表姊妹"),
-    "cousin_male":        ("COUSIN_MALE", "堂表兄弟"),      # 回落: 堂/表侧不可判
+    "cousin_male":        ("COUSIN_MALE", "堂表兄弟"),      # fallback: 堂/表 side unknown
     "cousin_female":      ("relation_cousin_female", "堂表姊妹"),
-    # 组 E 配偶之父母 (按配偶性别取词; 游戏无键者自造)
+    # Group E, spouse's parents (word chosen by spouse sex; no game keys)
     "mother_in_law":     ("", "岳母"),
     "husband_father":    ("", "公公"),
     "husband_mother":    ("", "婆婆"),
-    # 组 F 同胞之配偶 (按同胞性别 + 长幼取词; 游戏无键者自造)
+    # Group F, siblings' spouses (by sibling sex and seniority; no game keys)
     "sister_in_law_older":   ("", "嫂"),
     "sister_in_law_younger": ("", "弟媳"),
     "brother_in_law_older":  ("", "姐夫"),
     "brother_in_law_younger": ("", "妹夫"),
-    # ---- v80 (点3, 用户 2026-09-27 拍板「任何有亲属关系的角色都要有一个词」) ----
-    # 规格见 docs/调研_v80_亲属称谓全覆盖.md §1.2 (41 键净增量)。
-    # 词源: 有大写关系键的优先取游戏本地化 (GRANDFATHER/…), 其余自造兜底。
-    # 组 H 上行直系: 祖辈 + 曾祖辈 (父系/母系按**第一跳**分, 见 kin_key 5b/5d)
+    # ---- Wider coverage: every related character gets a word ----
+    # Uppercase relation keys take the game localization (GRANDFATHER/...); the rest are fallbacks.
+    # Group H, direct ancestors: grandparents and great-grandparents (side by the first hop only)
     "grandfather_pat":   ("GRANDFATHER", "祖父"),
     "grandmother_pat":   ("GRANDMOTHER", "祖母"),
     "grandfather_mat":   ("", "外祖父"),
@@ -476,14 +437,15 @@ KIN_WORDS = {
     "great_grandmother_mat": ("", "外曾祖母"),
     "great_grandfather": ("relation_great_grandfather", "（外）曾祖父"),
     "great_grandmother": ("relation_great_grandmother", "（外）曾祖母"),
-    # 组 I 祖辈同胞 (连接祖辈 = 祖父/祖母; 外祖辈同胞本轮不做, 见规格 §5.2)
+    # Group I, grandparents' siblings (the linking grandparent is 祖父/祖母; maternal-grandparent
+    # siblings are out of scope)
     "granduncle_pat":    ("", "伯祖父"),
     "grandaunt_pat":     ("", "姑祖母"),
     "granduncle_mat":    ("", "舅祖父"),
     "grandaunt_mat":     ("", "姨祖母"),
     "granduncle":        ("", "祖辈叔伯"),
     "grandaunt":         ("", "祖辈姑姨"),
-    # 组 J 父母之堂表兄弟姊妹 (我的「堂叔/表姑」一辈)
+    # Group J, parents' cousins (my 堂叔/表姑 generation)
     "uncle_pat_cousin_older":   ("", "堂伯"),
     "uncle_pat_cousin_younger": ("", "堂叔"),
     "uncle_side_older":         ("", "表伯"),
@@ -492,14 +454,14 @@ KIN_WORDS = {
     "aunt_pat_cousin":          ("", "堂姑"),
     "aunt_mat_cousin":          ("", "表姑"),
     "aunt_mat_cousin2":         ("", "表姨"),
-    # 组 K 同胞之孙 (侄孙/外甥孙)
+    # Group K, siblings' grandchildren (侄孙/外甥孙)
     "grandnephew_brother": ("", "侄孙"),
     "grandniece_brother":  ("", "侄孙女"),
     "grandnephew_sister":  ("", "外甥孙"),
     "grandniece_sister":   ("", "外甥孙女"),
     "grandnephew":         ("", "侄甥孙"),
     "grandniece":          ("", "侄甥孙女"),
-    # 组 L 曾孙辈 (下行三代; 中间人性别定 曾孙/外曾孙)
+    # Group L, great-grandchildren (three generations down; the middle person's sex picks 曾孙/外曾孙)
     "great_grandson_son":      ("GREATGRANDSON", "曾孙"),
     "great_granddaughter_son": ("GREATGRANDDAUGHTER", "曾孙女"),
     "great_grandson_daughter":      ("", "外曾孙"),
@@ -510,10 +472,8 @@ KIN_WORDS = {
 
 _KIN_TEXT_CACHE = {}
 
-# v92 (问题1, 用户 2026-10-02): **非血亲** (姻亲/继亲/配偶) 键集 —— 判「双重亲属」
-# 时以它取反, 得出血缘那一档。用户拍板: 同一人既以血缘又以婚姻系于传主时,
-# **用血缘上最优先的那一条** (洪天美既是天贵福之甥女, 又是其妾 —— 事实面只写
-# 「妾」, 模型于是自造「贵福之姊妹行」「外姐姐」并把她说成「终生未嫁」)。
+# Non-blood keys (affinal, step, spouse); negating this set yields the blood tier, which wins for a
+# person related both by blood and by marriage.
 _KIN_NONBLOOD_KEYS = frozenset({
     "wife", "husband", "spouse", "step_son", "step_daughter",
     "father_in_law", "mother_in_law", "son_in_law", "daughter_in_law",
@@ -525,22 +485,19 @@ _KIN_NONBLOOD_KEYS = frozenset({
 
 
 def kin_key_is_blood(key):
-    """该亲缘键是否血亲 (v92): 判得出键且不在非血亲表内即为血亲。"""
+    """True when the kin key exists and is not in the non-blood set."""
     return bool(key) and key not in _KIN_NONBLOOD_KEYS
 
 
-# v92 (问题1): 摘除配偶边时要清掉的键
+# Keys cleared when masking spouse edges.
 _KIN_SPOUSE_KEYS = ("primary_spouse", "spouse", "concubine",
                     "former_spouses", "former_concubines")
 
 
 def mask_spouse_edges(chars, ids):
-    """把 ids 两人的**配偶键**从 chars 视图里摘掉 (v92, 问题1); 其余键原样。
+    """Drop the spouse keys of the given ids from a chars view; other keys pass through.
 
-    `kin_key` 按「度」判定, 配偶 (度 4) 排在同胞之子女 (度 7) 之前 —— 于是
-    「既为妾又是甥女」的人恒判成 `wife` (实测洪天美 `kin_key` = 'wife'/「妻子」),
-    血缘那一档永远读不到。用户 2026-10-02 拍板: 双重亲属取血缘那一条。
-    只摘当事人两人, 不动其余亲属边 —— 判据与 `kin_key` 完全同源。"""
+    kin_key ranks by degree, so a spouse+blood double relation would otherwise always read as spouse."""
     out = dict(chars or {})
     for x in (ids or ()):
         try:
@@ -559,7 +516,7 @@ def mask_spouse_edges(chars, ids):
         out[str(x)] = rec2
     return out
 
-# 史传单字对照 (供「其父/其兄」这类旁称; 定语词形另走 kin_text 的双音节口径)
+# Single-character chronicle forms for indirect reference ("其父", "其兄"); attributives use kin_text.
 KIN_SHORT = {
     "father": "父", "mother": "母", "son": "子", "daughter": "女",
     "brother_older": "兄", "brother_younger": "弟",
@@ -573,19 +530,19 @@ KIN_SHORT = {
 
 
 def kin_word_short(key):
-    """亲缘键 → 旁称单字 (父/母/兄/姊…); 未收录者回落双音节词。"""
+    """Kin key -> single-character indirect form (父/母/兄/姊...); unmapped keys fall back to the
+    two-syllable word."""
     return KIN_SHORT.get(key) or kin_text(key)
 
 
 def kin_texts():
-    """**词表白名单** (v45b): 全部可出定语词形 = 双音节表 ∪ 史传单字表。
-
-    单一定义处 —— 断言 (「标注词都在词表内」) 与实现同源, 扩表时不会漏改判据。"""
+    """Whitelist of every emittable attributive word: the two-syllable table ∪ the
+    single-character table. One definition site, so assertions and implementation cannot drift."""
     return {kin_text(k) for k in KIN_WORDS} | set(KIN_SHORT.values())
 
 
 def kin_text(key):
-    """KIN_WORDS 键 → 中文词 (游戏本地化优先, 缺失用兜底常量)。"""
+    """KIN_WORDS key -> Chinese word (game localization first, else the fallback constant)."""
     if not key:
         return ""
     if key in _KIN_TEXT_CACHE:
@@ -612,7 +569,7 @@ def _rec_of(cache, cid):
 
 
 def _female_rec(rec):
-    """记录性别: True/False; 无记载返回 None (调用方据此回落中性词)。"""
+    """Recorded sex as True/False; None when unrecorded (callers then use a neutral word)."""
     v = (rec or {}).get("female")
     if v is None:
         return None
@@ -620,7 +577,7 @@ def _female_rec(rec):
 
 
 def _older_rec(ra, rb):
-    """ra 是否比 rb 年长; 任一方无生年返回 None。"""
+    """Whether ra is older than rb by birth year; None when either birth year is missing."""
     ba, bb = (ra or {}).get("birth"), (rb or {}).get("birth")
     if not ba or not bb:
         return None
@@ -631,11 +588,9 @@ def _older_rec(ra, rb):
 
 
 def spouses_now_family(fam, chars=None, spouse_back=None):
-    """该 family 记录的**现配偶** id 集 (v45): primary_spouse ∪ spouse ∪ concubine。
+    """Current spouse ids of one family record: primary_spouse ∪ spouse ∪ concubine.
 
-    前配偶 (former_spouses/former_concubines) **不算** —— 用户 2026-09-16 拍板;
-    反向边由调用方用 `spouse_back` 并入 (缓存里配偶边可能只写在对端记录上,
-    见 `Facts._spouse_back_index`)。"""
+    Former spouses do not count; the caller merges reverse edges in through `spouse_back`."""
     out = set()
     for k in ("primary_spouse", "spouse", "concubine"):
         for x in (fam.get(k) or []):
@@ -645,7 +600,7 @@ def spouses_now_family(fam, chars=None, spouse_back=None):
 
 
 def _married(fam_a, a_id, b_id, chars):
-    """a、b 是否**当前**配偶 (双向看: 任一方记录里列出对方即成立; 前配偶不算)。"""
+    """Whether a and b are currently married, checked in both directions; former spouses do not count."""
     for k in ("primary_spouse", "spouse", "concubine"):
         if b_id in (fam_a.get(k) or []):
             return True
@@ -657,16 +612,9 @@ def _married(fam_a, a_id, b_id, chars):
 
 
 def kin_rev_index(chars):
-    """反向边索引 (v45b): {sib: {cid: [对端…]}, kid: {cid: [对端…]}}。
+    """Reverse-edge index {sib: {cid: [others]}, kid: {cid: [others]}} over the character table.
 
-    缓存里同胞/子女边可能只写在对端记录上 (实测同向缺失不少), 故一律**双向并集**;
-    建一次 O(N) 供整次 build 复用 (由 `Facts._kin_rev` 持有)。
-    纯函数: 只读角色表。
-
-    **子女反查只认法理父/母 (`father`/`mother`), 不含 `real_father`** ——
-    与 v34 的公开谱系口径一致 (实父只在《家室列传》《阴私录》等内部档出现):
-    被托卵的孩子在公开篇目里不算「儿子」, 否则会与档案的「子A、B」行自相矛盾
-    (实测诺兰档: 黑罗尔德·沙特努瓦 real_father=主角而法理父是别人)。"""
+    Both directions are unioned (built once per build); child lookup ignores `real_father`."""
     sib, kid = {}, {}
     for k, rec in (chars or {}).items():
         if not str(k).isdigit() or not isinstance(rec, dict):
@@ -690,16 +638,9 @@ def kin_rev_index(chars):
 
 
 def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
-    """subject 相对 cid 的**亲缘关系键** (v45/v45b): 'father'/'cousin_pat_brother_older'…
+    """Kinship key of cid relative to subject ('father', 'cousin_pat_brother_older', ...).
 
-    判据见 `docs/研究_v45_亲缘定语.md` §2.3 与 `docs/研究_v45b_中式亲属.md` §1.2/§2.1;
-    **判不出返回 ''** (不猜)。纯函数: 只读缓存 (+ 可选的预建反向索引), 不依赖熔件,
-    可秒级断言。判定序 = 血亲优先 (序 A):
-      1 度 (父母 → 子女 → 同胞 → 配偶) → 孙辈 → 父母之同胞 → 同胞之子女 → 堂表
-      → 配偶之父母 → 女婿/儿媳 → 同胞之配偶 / 配偶之同胞 → 继子女
-    词形分两档由调用方取: `kin_text(key)` = 双音节定语词 (父亲/伯父/表姐),
-    `KIN_SHORT` = 史传单字 (供「其父」「其兄」这类旁称)。
-    subject 为 None、cid 为 None、或二者同一人时返回 ''。"""
+    Blood relations win over affinal ones; '' when undecidable. Pure over the cache."""
     if subject is None or cid is None:
         return ""
     try:
@@ -741,7 +682,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
         return set(_ids(_fam(x), "child")) | set(rev_kid.get(int(x)) or [])
 
     def _sp(x):
-        """x 的现配偶集 (含反向边)。"""
+        """x's current spouses, including reverse edges."""
         out = spouses_now_family(_fam(x))
         if spouse_back:
             out |= set(spouse_back.get(int(x)) or [])
@@ -751,11 +692,11 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
         return _female_rec(chars.get(str(x)) or {})
 
     def _older(a, b):
-        """a 是否年长于 b (生年比较); 任一方无生年返回 None。"""
+        """Whether a is older than b by birth year; None when either is missing."""
         return _older_rec(chars.get(str(a)) or {}, chars.get(str(b)) or {})
 
     def _cousin(side, female, older):
-        """堂/表词形: side ∈ {'pat','mat',None}; female=c 性别; older=c 是否年长于 s。"""
+        """Cousin word: side ∈ {'pat','mat',None}; female = c's sex; older = whether c is older than s."""
         if female is None:
             return ""
         if side is None:                      # 堂/表侧不可判 (连接人性别无记载)
@@ -774,10 +715,9 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
         return "cousin_mat_brother_older" if older else "cousin_mat_brother_younger"
 
     def _sib_blood(x):
-        """x 的**血缘同胞** (v80 点3 §2.5①): `family.siblings` ∪ 共享父/母者。
+        """x's blood siblings: family.siblings ∪ everyone sharing a parent.
 
-        缓存 `siblings` 会把子女也列进来 (CK3 数据如此), 只读它会让「同父异母的
-        伯叔」整支漏掉; 故并上「父/母的其它子女」并剔除自己。"""
+        CK3 also lists children under `siblings`, so that key alone would drop half-sibling branches."""
         out = set(_sibs(x))
         for _p in _fath(x) | _moth(x):
             out |= _kids(_p)
@@ -785,41 +725,38 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
         return out
 
     def _up_excl():
-        """旁系候选的排除集 (v80 点3 §2.3②): 我 / 我的同胞 / 我的后代 /
-        这些人的后代 / 我的父与母。
-
-        不排除会出现「我的兄长被判成伯父」「我的胞弟被判成祖辈同胞」这类错判
-        (规格探针实测: 祖辈同胞候选里混进了我的同胞)。"""
+        """Exclusion set for collateral candidates: me, my siblings, my descendants, their
+        descendants, and my parents; without it my own siblings read as uncles."""
         out = {int(s)} | _sibs(s) | _kids(s) | _fath(s) | _moth(s)
         for _y in list(out):
             out |= _kids(_y)
         return out
 
-    # 1) 父 / 母 (含实父)
+    # 1) parent (real father included)
     if c in _fath(s):
         return "father"
     if c in _moth(s):
         return "mother"
-    # 2) 子 / 女 (正反两向)
+    # 2) child (checked in both directions)
     if c in _kids(s):
         if c_female is None:
-            return ""            # 性别不可判 → 不标 (子/女二选一必错一半)
+            return ""            # sex unknown -> no label (son/daughter would be a coin flip)
         return "daughter" if c_female else "son"
-    # 3) 同胞 + 长幼 (生年缺失 → 回落游戏词「兄弟」/「姊妹」)
+    # 3) sibling with seniority (missing birth years fall back to the game words 兄弟/姊妹)
     if c in _sibs(s):
-        older = _older(c, s)                # c 是否年长于 subject
+        older = _older(c, s)                # is c older than the subject
         if older is None:
             return "sister" if c_female else "brother"
         if c_female:
             return "sister_older" if older else "sister_younger"
         return "brother_older" if older else "brother_younger"
     sp_s = _sp(s)
-    # 4) 配偶 (妻子/丈夫; 性别不可判 → 配偶) —— 双向看, 前配偶不算
+    # 4) spouse (unknown sex -> 配偶); checked both ways, former spouses excluded
     if _married(fs, s, c, chars):
         if c_female is None:
             return "spouse"
         return "wife" if c_female else "husband"
-    # 5) 孙辈 (我的子女的子女; 中间人性别定孙/外孙)
+    # 5) grandchildren (the middle person's sex picks 孙/外孙)
     for k in sorted(_kids(s)):
         if c in _kids(k):
             if c_female is None:
@@ -830,11 +767,9 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             if kf:
                 return "granddaughter_daughter" if c_female else "grandson_daughter"
             return "granddaughter_son" if c_female else "grandson_son"
-    # 5b) 祖父辈 (v80 点3, 用户: 「任何有亲属关系的角色都要有一个词」):
-    #     父之父/母 → 祖父/祖母; 母之父/母 → 外祖父/外祖母。
-    #     父系/母系只看**第一跳** (父系链上第一跳之后的每一跳男女皆收) ——
-    #     若要求整条链都走 father, 「祖母之父」这一整支会漏掉: 田所档定治的
-    #     曾祖母纪静子 (11634) 正是经祖母大和珍子 (16005) 的 `mother` 边找到的。
+    # 5b) Grandparents: the father's parents -> 祖父/祖母, the mother's -> 外祖父/外祖母. The side
+    #     is decided by the first hop only; requiring the whole chain to run through father would
+    #     drop the "grandmother's father" branch.
     for p in sorted(_fath(s)):
         if c in _fath(p):
             return "grandfather_pat"
@@ -845,35 +780,31 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             return "grandfather_mat"
         if c in _moth(m):
             return "grandmother_mat"
-    # 5c) 祖辈同胞 (v80 点3): 连接祖辈 (祖父/祖母, 以及曾祖辈) 的**血缘同胞**。
-    #     连接祖辈为**男** → 其兄弟 = 伯祖父、其姊妹 = 姑祖母;
-    #     连接祖辈为**女** → 其兄弟 = 舅祖父、其姊妹 = 姨祖母; 性别不可判 → 回落。
-    #     v80 取舍: 规格 (§5.2) 只要求「祖父/祖母」这一层; 为使「任何亲属都有词」
-    #     成立, 这里**多走一代** (曾祖辈的同胞也收) —— 该层中文另有叫法
-    #     (曾伯祖父/舅公等) 而不在本轮词表内, 故按同一条规则近似出词, 已在
-    #     docs/调研_v80_亲属称谓全覆盖.md §3.2 用例 6 标为「未确认」。
+    # 5c) Grandparent siblings: blood siblings of a linking grandparent (or great-grandparent).
+    #     Male linker -> 伯祖父/姑祖母, female linker -> 舅祖父/姨祖母, unknown sex -> fallback.
+    #     Great-grandparent siblings get the same approximation, as their Chinese terms are absent.
     _ex = _up_excl()
 
     def _grand_sib_word(g):
-        """连接祖辈 g 的同胞 → 词 (c 为外部变量)。"""
+        """Word for a sibling of the linking grandparent g (c is a closure variable)."""
         _gf = _female(g)
         if c_female is None:
-            return ""                    # 目标性别不可判 → 不标 (与子/女同口径)
-        if _gf is None:                  # 连接祖辈性别不可判 → 回落
+            return ""                    # target sex unknown -> no label (same rule as child)
+        if _gf is None:                  # linker sex unknown -> fallback
             return "grandaunt" if c_female else "granduncle"
         if c_female:
             return "grandaunt_pat" if _gf is False else "grandaunt_mat"
         return "granduncle_pat" if _gf is False else "granduncle_mat"
 
     for p in sorted(_fath(s)):
-        for g in sorted(_fath(p) | _moth(p)):        # 祖父 / 祖母
+        for g in sorted(_fath(p) | _moth(p)):        # grandfather / grandmother
             if c in (_sib_blood(g) - _ex):
                 return _grand_sib_word(g)
     for m in sorted(_moth(s)):
-        for g in sorted(_fath(m) | _moth(m)):        # 外祖父 / 外祖母
+        for g in sorted(_fath(m) | _moth(m)):        # maternal grandparents
             if c in (_sib_blood(g) - _ex):
                 return _grand_sib_word(g)
-    # 5d) 曾祖辈 (v80 点3): 父/母 → 祖辈 → 其父/母 (上行三代), 同 5b 只看第一跳。
+    # 5d) Great-grandparents (three generations up), first hop only as in 5b.
     for p in sorted(_fath(s)):
         for g in sorted(_fath(p) | _moth(p)):
             if c in _fath(g):
@@ -886,33 +817,30 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
                 return "great_grandfather_mat"
             if c in _moth(g):
                 return "great_grandmother_mat"
-    # 6) 父母之同胞: 父系 → 伯父/叔父 (比父生年) 或 姑母; 母系 → 舅父/姨母
+    # 6) Parent's siblings: paternal -> 伯父/叔父 (vs the father's birth year) or 姑母; maternal -> 舅父/姨母
     for p in sorted(_fath(s)):
         if c in _sibs(p):
             if c_female is None:
                 return ""
             if c_female:
                 return "aunt_pat"
-            older = _older(c, p)            # c 比 p (父) 年长 → 伯父
+            older = _older(c, p)            # older than the father -> 伯父
             if older is None:
-                return "uncle"              # 长幼不可判 → 叔舅
+                return "uncle"              # seniority unknown -> 叔舅
             return "uncle_pat_older" if older else "uncle_pat_younger"
     for p in sorted(_moth(s)):
         if c in _sibs(p):
             if c_female is None:
                 return ""
             return "aunt_mat" if c_female else "uncle_mat"
-    # 6b) 父母之堂表兄弟姊妹 (v80 点3, 用户点名「堂叔」):
-    #     t = 祖辈 (祖父/祖母/外祖父/外祖母) 的**血缘同胞之子女** —— 即我父/母的
-    #     堂/表兄弟姊妹, 于我则为堂伯/堂叔/堂姑/表伯/表叔/表姑/表舅/表姨。
-    #     堂 ⟺ 连接祖辈是**祖父**且该祖辈同胞为**男** (「父系父之兄弟之子女」);
-    #     祖父之姊妹 / 祖母 / 外祖父母 各支 → 表。
-    #     长幼: 经父者与**父**比生年 (伯/叔), 经母者不比较 (表舅/表姨无长幼);
-    #     长幼不可判时按「当作年长」出词 (与 `uncle` 回落到「叔舅」同性质)。
+    # 6b) Parents' cousins: children of a grandparent's blood siblings (my 堂伯/堂叔/堂姑/表伯/
+    #     表叔/表姑/表舅/表姨). 堂 needs a paternal grandfather whose sibling is male, every other
+    #     branch is 表; seniority is compared against the father for paternal lines only, and reads
+    #     as older when unknown.
     _fa = sorted(_fath(s))
     _f0 = _fa[0] if _fa else None
     _cands = []
-    for p in _fa:                                    # 父之父母 = 祖父 / 祖母
+    for p in _fa:                                    # the father's parents = 祖父 / 祖母
         for g in sorted(_fath(p)):
             for u in sorted(_sib_blood(g)):
                 for t in sorted(_kids(u)):
@@ -921,7 +849,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             for u in sorted(_sib_blood(g)):
                 for t in sorted(_kids(u)):
                     _cands.append((t, "biao_f"))
-    for m in sorted(_moth(s)):                       # 母之父母 = 外祖父 / 外祖母
+    for m in sorted(_moth(s)):                       # the mother's parents = maternal grandparents
         for g in sorted(_fath(m) | _moth(m)):
             for u in sorted(_sib_blood(g)):
                 for t in sorted(_kids(u)):
@@ -933,17 +861,17 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             return ""
         if kind == "tang":
             if c_female:
-                return "aunt_pat_cousin"             # 堂姑
+                return "aunt_pat_cousin"             # paternal cousin-aunt (堂姑)
             older = _older(c, _f0) if _f0 is not None else None
             return "uncle_pat_cousin_younger" if older is False \
                 else "uncle_pat_cousin_older"
         if kind == "biao_f":
             if c_female:
-                return "aunt_mat_cousin"             # 表姑
+                return "aunt_mat_cousin"             # maternal cousin-aunt (表姑)
             older = _older(c, _f0) if _f0 is not None else None
             return "uncle_side_younger" if older is False else "uncle_side_older"
         return "aunt_mat_cousin2" if c_female else "uncle_mat_cousin"
-    # 7) 同胞之子女: 兄弟之子女 → 侄; 姊妹之子女 → 甥
+    # 7) Siblings' children: a brother's child -> 侄, a sister's -> 甥
     for sb in sorted(_sibs(s)):
         if c in _kids(sb):
             if c_female is None:
@@ -954,7 +882,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             if sbf:
                 return "niece_sister" if c_female else "nephew_sister"
             return "niece_brother" if c_female else "nephew_brother"
-    # 7b) 同胞之孙 (v80 点3): 同胞 → 其子女 → 其孙; 同胞性别定 侄孙/外甥孙。
+    # 7b) Siblings' grandchildren; the sibling's sex picks 侄孙/外甥孙.
     for sb in sorted(_sibs(s)):
         for kid in sorted(_kids(sb)):
             if c not in _kids(kid):
@@ -967,7 +895,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             if sbf:
                 return "grandniece_sister" if c_female else "grandnephew_sister"
             return "grandniece_brother" if c_female else "grandnephew_brother"
-    # 8) 堂表: 父母的同胞之子女 (父之兄弟之子女 → 堂; 父之姊妹 / 母系 → 表)
+    # 8) Cousins: a parent's sibling's children (father's brother's -> 堂; father's sister's or maternal -> 表)
     for p in sorted(_fath(s)):
         for u in sorted(_sibs(p)):
             if u == s or c not in _kids(u):
@@ -980,8 +908,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             if u == s or c not in _kids(u):
                 continue
             return _cousin("mat", c_female, _older(c, s))
-    # 8b) 曾孙辈 (v80 点3): 子女 → 其子女 → 其孙 (下行三代);
-    #     中间人 (子女) 性别定 曾孙/外曾孙; 不可判 → 回落「（外）曾孙」。
+    # 8b) Great-grandchildren (three generations down); the middle child's sex picks 曾孙/外曾孙.
     for k in sorted(_kids(s)):
         for gk in sorted(_kids(k)):
             if c not in _kids(gk):
@@ -995,7 +922,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
                 return "great_granddaughter_daughter" if c_female \
                     else "great_grandson_daughter"
             return "great_granddaughter_son" if c_female else "great_grandson_son"
-    # 9) 配偶之父母 (按**配偶性别**取词: 女 → 岳父/岳母, 男 → 公公/婆婆)
+    # 9) Spouse's parents (word by the spouse's sex: female -> 岳父/岳母, male -> 公公/婆婆)
     for sid in sorted(sp_s):
         sf = _fam(sid)
         father_side = c in _fath(sid)
@@ -1003,30 +930,27 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
             continue
         sf_sex = _female(sid)
         if sf_sex is None:
-            # 配偶性别不可判 → 取传主性别的反面 (原版 CK3 为一男一女)
+            # spouse sex unknown -> take the opposite of the subject's (vanilla CK3 is one man, one woman)
             sf_sex = (not s_female) if s_female is not None else None
         if sf_sex is None:
-            return ""                       # 两方性别都不可判 → 不标
+            return ""                       # neither sex known -> no label
         if sf_sex:
             return "father_in_law" if father_side else "mother_in_law"
         return "husband_father" if father_side else "husband_mother"
-    # 10) 女婿 / 儿媳 (子女的配偶)
+    # 10) Children-in-law (a child's spouse)
     for k in sorted(_kids(s)):
         if _married(_fam(k), k, c, chars):
             return "daughter_in_law" if c_female else "son_in_law"
-    # 11) 同胞之配偶 (嫂/弟媳/姐夫/妹夫, 按同胞性别+长幼) 与 配偶之同胞 (姻亲)
-    #     v63 (问题7, 用户 2026-09-24 拍板): **姻亲称谓只由正妻之婚产生** ——
-    #     妾 (`concubine`) 与侧室 (`spouse`) 不产生「妹夫/姐夫/嫂/弟媳/姻亲」。
-    #     实测: 崔佛娶埃德伯之妹昆伯为**妾**, 旧稿因此把崔佛写成埃德伯的「妹夫」
-    #     (「英格兰女王埃德伯被妹夫维京人崔佛·菲利普强迫性交」); 妾婚无此关系。
-    #     判据 = 双方 `primary_spouse` 互见 (只看正妻键, 双向)。
+    # 11) Siblings' spouses (嫂/弟媳/姐夫/妹夫, by sibling sex and seniority) and the spouse's
+    #     siblings (affinal). Affinal terms arise only from a primary marriage, so a concubine's
+    #     brother is not a brother-in-law; the test is primary_spouse on both sides.
     def _primary_spouse(a, b):
         if b in _ids(_fam(a), "primary_spouse"):
             return True
         return a in _ids(_fam(b), "primary_spouse")
 
     def _primary_spouses(x):
-        """x 的正妻/正夫集 (反向边只收对端把 x 记在 `primary_spouse` 上的)。"""
+        """x's primary spouses (reverse edges count only when the other side lists x there)."""
         out = set(_ids(_fam(x), "primary_spouse"))
         if spouse_back:
             for y in (spouse_back.get(int(x)) or []):
@@ -1037,7 +961,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
     for sb in sorted(_sibs(s)):
         if _primary_spouse(sb, c):
             sbf = _female(sb)
-            older = _older(sb, s)           # 同胞比 subject 年长?
+            older = _older(sb, s)           # is the sibling older than the subject?
             if sbf is not None and older is not None:
                 if sbf:
                     return "brother_in_law_older" if older else "brother_in_law_younger"
@@ -1046,7 +970,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
     for sid in sorted(_primary_spouses(s)):
         if c in _sibs(sid):
             return "sister_in_law" if c_female else "brother_in_law"
-    # 12) 继子 / 继女 (配偶的子女, 且不是我的子女)
+    # 12) Stepchildren (the spouse's children that are not mine)
     for sid in sorted(sp_s):
         if c in _kids(sid) and c not in _kids(s):
             return "step_daughter" if c_female else "step_son"
@@ -1054,38 +978,29 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
 
 
 def kin_word(cache, subject, cid, chars=None, spouse_back=None, rev=None):
-    """`kin_key` 的**双音节定语词**形态 (v45): 父亲/伯父/表姐/姻亲姊妹…
-
-    用户 2026-09-16 拍板「有双音节词用双音节词」—— 定语一律走这一档;
-    旁称 (「其父」) 走 `kin_word_short`。判不出返回 '' (不猜)。"""
+    """Two-syllable attributive form of kin_key (父亲/伯父/表姐/姻亲姊妹...); indirect reference
+    ("其父") uses `kin_word_short`. Returns '' when undecidable."""
     return kin_text(kin_key(cache, subject, cid, chars=chars,
                             spouse_back=spouse_back, rev=rev))
 
 
 class KinScope:
-    """**单个板块**的亲缘定语登记表 (v45)。
+    """Per-section kin-attributive registry; each person gets at most one attributive per section.
 
-    `_article_facts` 是并发调用的（每篇一个线程）, 所以这张表只能是**局部对象**,
-    绝不能挂 `Facts` 实例 —— 否则板块之间串味、结果不可复现。
-    「首次」语义 (用户拍板): 同一人在本板块只加一次定语; **已带亲缘词**的点名
-    (传主档案的家世行「父X」「子A、B」「妻室Y」) 视为已交代, 由 `seed` 预先占用
-    名额 —— 于是「裸名先行」处 (朝中要员名录/廷中僚属任免/刺客死者行) 照加,
-    「子X」这类既有亲缘行则不重复。
-    `subject` = 该篇传主 (《列传》即好友/仇人本人); 传主本人不加定语。"""
+    Must stay a local object because `_article_facts` runs one thread per article."""
 
     __slots__ = ("subject", "seen", "stats", "held", "tagged")
 
     def __init__(self, subject=None):
         self.subject = int(subject) if subject is not None else None
         self.seen = set()
-        self.stats = {}      # 已加定语 {词: 次数} (计量用)
-        self.held = {}       # 家世行已交代、因而未再加的 {词: 次数} (计量用)
-        self.tagged = set()  # 已做过行内插词的块名 (档 B 幂等用)
+        self.stats = {}      # attributives added {word: count} (metrics only)
+        self.held = {}       # already stated by archive lines, so not added {word: count} (metrics only)
+        self.tagged = set()  # block names already given inline attributives (idempotence)
 
     def seed(self, ids, facts=None):
-        """预占名额: 这些人的亲缘**已经写明** (档案家世行), 本板块不再重复加定语。
-
-        返回 self 供串写。`facts` 给了才统计 `held` (计量用, 不影响出词)。"""
+        """Pre-claim slots for people whose kinship the archive already states, so this section
+        does not repeat it. Returns self; `facts` only enables the `held` metrics."""
         for cid in (ids or []):
             if not isinstance(cid, int):
                 try:
@@ -1102,13 +1017,9 @@ class KinScope:
         return self
 
     def word_for(self, cid, facts, subject=None):
-        """首次出现 → 返回该人的亲缘定语词并占名额; 否则返回 ''。
+        """On first occurrence return this person's kin attributive and claim the slot, else ''.
 
-        v45 (档 B) 的行内插词入口 (与 `mark` 共用一张名额表)。
-        v63: `subject` 可覆盖算词基准 —— 句子有自己的主语时 (家人档案/刺客列传
-        的逐人条目、隐事持有人的隐事句), 句中**第三方**人名的定语按该主语算,
-        否则会把「主角的岳父」插进讲妻子的句子里读成「她的岳父」。
-        名额 (`seen`) 仍按板块共用 —— 同一人每板块至多一处定语。"""
+        `subject` overrides the reference person for sentences with their own subject."""
         subj = self.subject if subject is None else subject
         if cid is None or subj is None:
             return ""
@@ -1126,7 +1037,7 @@ class KinScope:
         return w
 
     def mark(self, cid, base, facts, date=None):
-        """给 cid 的称谓 base 加定语 (首次才加); 返回最终文本。"""
+        """Prefix cid's term `base` with a kin attributive (first occurrence only); returns the final text."""
         if not base or cid is None or self.subject is None:
             return base
         try:
@@ -1144,19 +1055,8 @@ class KinScope:
 
 
 def _disease_dynamic_name(f, cid, typ, year):
-    """疾病特质 → **游戏算好的当代疫名** (v35, 问题5)。
-
-    游戏为每场疫情随机取名并写进存档 (`epidemics.database[*].name`), 例如伤寒一律
-    显示为「平原热」「丘陵热」「露营热」等 (see common/epidemics/00_epidemics.txt 的
-    `name` 块, 其中 `epidemic_terrain_fever` 即
-    `[ROOT.Epidemic.GetStartingOutbreakProvince.GetTerrain.GetNameNoTooltip|U]热`);
-    而特质静态名 `trait_typhus` 只是「伤寒」。旧稿渲染特质履历时用静态名, 于是
-    「第一次在法国得伤寒、第二次在瑞典得伤寒」都写成了「伤寒」, 动态名未生效。
-
-    取法: 在 cache["epidemics"] 里找同型 (type == 疾病特质键) 的疫情, 其存续期
-    (`creation_date` … `lost_at`) 覆盖该角色患病起点年 `year` 者;
-    优先「玩家属地/所在郡曾被该疫感染」的那一场 (`hit_prov`), 否则取同型中
-    起始最晚者。判不出返回 '' (调用方回退静态名, 行为与旧版一致)。"""
+    """Disease trait -> the epidemic name in `epidemics.database[*].name` whose lifetime covers the
+    infection year, preferring one that hit the character's provinces; '' when undecidable."""
     hist = f.cache.get("epidemics") or {}
     if not hist or not typ:
         return ""
@@ -1190,13 +1090,14 @@ def _disease_dynamic_name(f, cid, typ, year):
     hits = [c for c in cands if _hit(c[0])] if mine else []
     pool = hits or cands
     pool.sort(key=lambda c: c[1])
-    # v96 (问题3): 游戏自渲染的疫名会带「称号，名字」的逗号 (存档实测
-    # 「皇帝，洪天贵福热」), 直拼「染{名}而亡」会被读成断句 ⇒ 出词口去逗号。
+    # Game-rendered epidemic names may carry a "title, name" comma, which reads as a sentence
+    # break in 染{name}而亡, so the comma is dropped at emission.
     return _strip_title_comma(str(pool[-1][0].get("name") or ""))
 
 
 def _battlefield_provinces(f, cid):
-    """角色相关省份集 (封地首府 + 驻地 + 当前位置); 判疫情是否触及该角色。"""
+    """Provinces tied to a character (domain capitals, domicile, current location); used to test
+    whether an epidemic touched them."""
     out = set()
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     ld = rec.get("landed") or {}
@@ -1221,51 +1122,39 @@ def _battlefield_provinces(f, cid):
 
 
 def _dynasty_display(dn, hn):
-    """角色宗族显示名 (v14): 宗族名优先 (东方名序的姓 — 藤原/崔/金),
-    缺失回退家族名; 单字加「氏」(边氏)。"""
+    """Dynasty display name: the dynasty name first (the surname under eastern name order),
+    falling back to the house name; a single character gains 氏."""
     return house_display(dn or hn)
 
 
 def _house_branch(dn, hn):
-    """角色家族(分家)显示名 (v14 风味): 家族名与宗族名不同时给出
-    (北家/庆州崔/交州金 — 游戏只显示宗族姓, 分家作风味补充),
-    相同 (创始家=宗族同名) 时返回 ''。"""
+    """House (branch) display name, given only when it differs from the dynasty name — the game
+    shows the dynasty surname alone, so the branch is flavor; '' when the two are equal."""
     if not dn or not hn or dn == hn:
         return ""
     return house_display(hn)
 
 
-# v81 (问题1, 用户 2026-09-29 拍板): 家族名**按文化/名序组装**的单一出口。
-# 旧稿只有一条规则 (biography._house_text: 宗族名以「氏」结尾就直连分家名) ——
-# 对**家格词**成立 (藤原 + 北家 = 藤原北家; 源 + 黑子 = 源黑子), 对**地名型家名**
-# 就出非语 (平 + 下北沢 = 平下北沢; 施 + 斯卡利茨 = 施斯卡利茨)。四档口径:
-#   · 日本 (JAPANESE)                 → 本姓 + 氏 + 家名 (+「家」): 平氏下北沢家;
-#                                        家名已带家格词尾 (家/流/氏/…) 者不再补「家」:
-#                                        藤原氏式家 (藤原氏の式家)
-#   · 中华·朝鲜 (DYNASTY_ALWAYS_FIRST) → 家名已含姓者径作「家名＋氏」(庆州金氏 /
-#                                        关中李氏 / 庆州崔氏); 未含姓者「家名＋姓＋氏」
-#                                        (斯卡利茨施氏)
-#   · 西方·伊斯兰 (其余 / 名序未知)    → 「宗族，家族」(菲利普，顿巴斯 —— 现形不变;
-#                                        伊斯兰与西方同为名前姓后, 同此一档)
-#   · 宗族名与家族名同字 (创始家)      → 只出该名 (田所 / 诺兰 / 陆氏)
+# Single exit for assembling a house name by culture/name order:
+#   Japan (JAPANESE)                 -> surname + 氏 + house name (+ 家 unless the house name
+#                                       already ends in a house suffix such as 家/流/氏)
+#   China/Korea (DYNASTY_ALWAYS_FIRST) -> house name + 氏, plus the surname when missing from it
+#   West/Islam (other or unknown order) -> "dynasty, house"
+#   identical dynasty and house name (founding house) -> that name alone
 _JAPAN_HOUSE_TAILS = ("家", "流", "氏", "門", "门", "宫", "宮", "院", "寺", "方")
 
 
 def house_label(dn, hn, order=None, template=None):
-    """(宗族名, 家族名, 名序约定, 文化模板) → 全篇统一的家族称法 (v81)。
+    """(dynasty, house, name order, culture template) -> the house name used everywhere.
 
-    `order` 取自 `cache_lib.resolved_name_order` ('' = 西方默认, None = 无从判定;
-    两者都走西方档); `template` 目前只作记录, 判据全在名序约定上 —— 日本与中华
-    用的正是两个**不同**的约定值 (JAPANESE / DYNASTY_ALWAYS_FIRST), 不必再查文化 id。
-    判不出 (dn/hn 皆空) 返回 '' —— 调用方整项略去。"""
+    `order` comes from `cache_lib.resolved_name_order` ('' and None take the western branch)."""
     dn = str(dn or "").strip()
     hn = str(hn or "").strip()
     if not hn:
         return house_display(dn)
     if not dn or dn == hn:
         return house_display(dn or hn)
-    # 上游 (`_house_names_at`) 给的是**显示形** (单字已加「氏」: 平 → 平氏);
-    # 本函数自己补「氏」, 故先取回本姓, 免得拼出「平氏氏下北沢家」。
+    # The upstream display form already appends 氏 to a single-character surname, so strip it first.
     dn = dn[:-1] if dn.endswith("氏") else dn
     if order not in cl.EASTERN_NAME_ORDERS:
         return f"{house_display(dn)}，{house_display(hn)}"
@@ -1273,40 +1162,31 @@ def house_label(dn, hn, order=None, template=None):
         if hn.endswith(_JAPAN_HOUSE_TAILS):
             return f"{dn}氏{hn}"
         return f"{dn}氏{hn}家"
-    # DYNASTY_ALWAYS_FIRST: 中华/朝鲜 —— 家名已含姓者不再叠姓 (庆州金氏 / 关中李氏)
+    # DYNASTY_ALWAYS_FIRST (China/Korea): a house name already containing the surname is not doubled
     if dn in hn:
         return f"{hn}氏"
     return f"{hn}{dn}氏"
 
 
-# v30: 事实层「无据」占位词 — 族属不详/信仰不详/官制不详/（特质不详）/（死因不详）等
-# 一律视为无料, 由调用方整句略去 (修复方案_菲利普4.md 问题4: 缺料按语一律不进提示词,
-# 模型看不到「未载/不详」这类词, 也就无从照抄)。
+# "No evidence" placeholders (族属不详 / 信仰不详 / …) count as missing data and are dropped whole.
 _UNKNOWN_MARKS = ("不详", "无考", "未载", "不可考", "无从", "失考")
 
 
 def is_unknown(word):
-    """无料判定: 空串或含「不详/无考/未载/不可考/无从/失考」者为无据。"""
+    """Missing-data test: True for an empty string or one containing 不详/无考/未载/不可考/无从/失考."""
     s = str(word or "")
     return (not s) or any(m in s for m in _UNKNOWN_MARKS)
 
 
-# v29 (问题4): 「传主行迹」句首传主称谓剥离 — 块内主语恒为传主, 名字重复无信息。
-# 「868年9月25日，勇敢者程岩的亲属安南经略使程士庸去世。」→「…，亲属安南经略使程士庸去世。」
+# Leading subject designations are stripped: the subject is constant inside a block, so repeating
+# the name there carries no information.
 _SUBJ_DATE_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
 
 
 def _strip_subject_prefix(text, label, alt_labels=None, own_names=None):
-    """删去句首传主称谓 (含其后的「的」); 无可删处原样返回。
+    """Drop a leading subject designation (and a following 的); unchanged when nothing matches.
 
-    v32 (问题3): 夭折句形如「<传主>之妻<生母>产下死婴。」, 只删传主名会留下悬空的
-    「之妻…」; 故配偶称谓一并删去, 让生母自己作主语 (「<生母>产下死婴。」)。
-    v64 (问题5): `alt_labels` = 备选剥离键 (按序试) —— 勋号随时点变化, 档案称谓
-    与事件当日的主语形态可能只差一个勋号前缀, 备选键使那句仍能省主语。
-    v90 (问题3): `own_names` = **本人名** (档案名的裸形) —— 句首常是**当日官称**
-    (「南诏乡绅洪天曾」「桂郡主洪天姣」「岭南皇女洪天姣」), 与档案称谓 (篇末取,
-    「冀观察使洪天曾」) 不同形, 只按称谓逐字比对剥不掉, 逐人条目里于是通篇重复
-    姓名; 以本人名为锚即可连同前面的短称谓串一并剥去。"""
+    Consort designations go too, so a stillbirth line can make the birth mother its subject."""
     if not text:
         return text
     cands = [x for x in ([label] if label else []) + list(alt_labels or []) if x]
@@ -1332,25 +1212,24 @@ def _strip_subject_prefix(text, label, alt_labels=None, own_names=None):
     return head + rest
 
 
-# v90 (问题3): 本人名之前那段「短称谓串」的判据 —— 出现下列任一字即判为不是称谓
-# (「的」= 已进入正文; 「与/和/被/为/把/将」= 名字是宾语或从句主语; 标点 = 已断句)。
+# Test for the "short designation run" preceding a personal name: any of these characters means it
+# is not a designation (的 enters the prose; verbs make the name an object or clause subject;
+# punctuation means the sentence already broke).
 _SUBJ_TITLE_BAD = "的与和及被为把将又并而则、，。：；！？「」『』（）()《》"
 
 
 def _strip_own_prefix(rest, own_names):
-    """以**本人名**为锚剥句首「短称谓串 + 本人名」; 无可剥处返回 None (v90 问题3)。
-
-    起因 (用户 2026-10-02): 《家室列传》逐人条目形如「892年12月2日，南诏乡绅洪天曾
-    夺得兰溪。」—— 上头那句档案已经写明此人是谁, 这里再挂一遍官称全名没有信息。
-    判据: 本人名须出现在句首 12 字内, 且其前缀是纯粹的称谓串 (无谓词、无标点)。"""
+    """Strip a leading "short designation run + personal name" anchored on the personal name;
+    None when nothing matches. The name must appear within 12 characters behind a pure
+    designation run (no verb, no punctuation)."""
     for nm in (own_names or []):
         if not nm:
             continue
         i = rest.find(nm)
         if i < 0 or i > 12:
             continue
-        # 名字直接顶格时 (无称谓前缀) 要求本人名 ≥2 字 —— 单字名 (「云」) 会与
-        # 同字开头的地名 (「云州…」) 撞车, 那时宁可不剥 (留全名无害)。
+        # With no designation prefix a name needs at least 2 characters, or a single-character name
+        # would collide with a place name starting with the same character.
         if i == 0 and len(nm) < 2:
             continue
         pre = rest[:i]
@@ -1360,20 +1239,10 @@ def _strip_own_prefix(rest, own_names):
     return None
 
 
-# v52 (问题6, 用户拍板): 原 `_LEVEL_WORDS`（"一阶/二阶…"）已删 —— 游戏没有这套
-# 档位序数术语（游戏概念只有「特质路线 / 特质经验」），档位由年份跨度与按档改名的
-# 特质名承担; 见 `_trait_display` / `trait_level_history`。
-
-
 def _trait_level_name(key, xp):
-    """按角色在该特质各轨道上的 XP 求**当前档名** (v32)。
+    """Current level name of a trait, from the character's XP on each track; '' when none matches.
 
-    条件表来自 `localization.build_trait_names` 的 `level_names` (逐 `triggered_desc`
-    把 trigger 的 has_trait_xp 条款与 desc 配对)。条款未写 `track` 时按该特质的轨道
-    推定 (单轨简写 `track = {}` 的轨名＝特质键)。求不到返回 `''` (上层回退基础名)。
-
-    起因: 旧实现取 name 块里第一个 desc, 而游戏把**最高档**名写在最前 —— 54 个按 XP
-    换名的特质全部显示顶档名 (马克龙主角 reveler XP=0 却写成「传奇的狂欢者」)。"""
+    The level table comes from `localization.build_trait_names`, whose highest level comes first."""
     rows = (L.trait_names().get("level_names") or {}).get(key)
     if not rows or not isinstance(xp, dict):
         return ""
@@ -1397,14 +1266,8 @@ def _trait_level_name(key, xp):
 
 
 def _trait_name(table, key, xp=None):
-    """特质 key → 中文: **当前档名** (v32) → 基础名键 (v29) → trait_<key> → <key> →
-    兜底表; 未知返回 '' (跳过, 不外泄 key)。
-
-    v29: 旅行者 (lifestyle_traveler) 等特质的显示名由 common/traits 的 name 块指定
-    (desc = trait_traveler_1), 不再因 `trait_<key>` 缺键而整条丢失。
-    v32: 有 XP 轨道者先按角色实际 XP 取档名 (无 XP 数据时用基础名, 不再固定顶档名)。
-    v34 (问题4): 全链落空时记进 `_TRAIT_NAME_MISSES`, 由 `trait_name_miss_report()`
-    落日志 — 此前是静默丢弃, 新 Mod 特质 (Carnalitas) 消失而无从察觉。"""
+    """Trait key -> Chinese via current level name, base name key, trait_<key>, <key>, then the
+    fallback table; '' when unknown. Unresolved keys are counted in `_TRAIT_NAME_MISSES`."""
     if not key:
         return ""
     mapped = (L.trait_names().get("traits") or {}).get(key)
@@ -1425,13 +1288,12 @@ def _trait_name(table, key, xp=None):
     return fb
 
 
-# v34 (问题4): 未解析出中文名的特质 key → 出现次数 (静默丢弃的可见化)
+# Trait keys that resolved to no Chinese name -> occurrence count, making silent drops visible.
 _TRAIT_NAME_MISSES = {}
 
 
 def trait_name_miss_report(clear=True):
-    """未解析出中文名的特质清单 (问题4 的告警出口)。
-    返回 {trait_key: 出现次数}; `clear=True` 时清空累计。"""
+    """Unresolved trait keys -> occurrence counts; `clear=True` resets the counters."""
     out = dict(_TRAIT_NAME_MISSES)
     if clear:
         _TRAIT_NAME_MISSES.clear()
@@ -1439,7 +1301,7 @@ def trait_name_miss_report(clear=True):
 
 
 def _daynum(d):
-    """'935.11.5' → 天序号 (年×372+月×31+日, 短跨度够用)。"""
+    """'935.11.5' -> approximate day ordinal (year*372 + month*31 + day); enough for short spans."""
     try:
         y, m, dd = (int(x) for x in str(d).split(".")[:3])
         return y * 372 + m * 31 + dd
@@ -1448,7 +1310,7 @@ def _daynum(d):
 
 
 def _day_before(d):
-    """日期串的前一日 (v42 问题7: 卒日锚点用); 解析失败原样返回。"""
+    """Day before a date string (used as a death-day anchor); returned unchanged when unparseable."""
     try:
         y, m, dd = (int(x) for x in str(d).split(".")[:3])
         p = datetime.date(y, m, dd) - datetime.timedelta(days=1)
@@ -1458,10 +1320,9 @@ def _day_before(d):
 
 
 def _hist_value_at(hist, date, key):
-    """沿革表 `[{from, <key>}]` → date 当日之值 (v47, 供文化/信仰沿革共用)。
+    """Value of `key` on a date in a history table `[{from, <key>}]` (culture/faith lineage).
 
-    与 `_culture_id_at` 同语义: 早于首点的日期取首点 (族属/信仰沿革的首点即
-    已知最早之值); 无日期或无表返回 None (由调用方回退现值)。"""
+    A date before the first point takes the first point; no date or table returns None."""
     pts = [h for h in (hist or []) if h.get("from")]
     if not date or not pts:
         return None
@@ -1479,9 +1340,8 @@ def _hist_value_at(hist, date, key):
 
 
 def _death_reason(table, reason, public=False):
-    """死因 key → 中文: v11 先查雅化表 (游戏腔/坏文本), 再本地化, 最后兜底表。
-    v75: public=True 取**世人的说法** —— 点破式雅化 (如 death_mysterious →
-    「被秘密谋杀」) 让位给游戏本地化原词 (`PUBLIC_DEATH_ZH`)。"""
+    """Death reason key -> Chinese: flavor table, then localization, then the fallback table.
+    public=True takes the public wording listed in `PUBLIC_DEATH_ZH`."""
     if not reason:
         return "去世"
     if public:
@@ -1503,39 +1363,36 @@ def _death_reason(table, reason, public=False):
 
 
 
-# 东亚系文化模板 (近似的 asian heritage 支柱 — 存档不存文化支柱, 用熔件
-# culture_manager 实测模板 + 周边族系近似; 实际数据中行刑者以玩家(汉)与
-# 欧洲 AI 为主, 误判只影响 斩首/烧死 二选一, 影响有限)。
+# East Asian culture templates, standing in for the asian heritage pillar the save does not store
+# (the melt's culture_manager plus neighbouring families approximate it).
 _ASIAN_HERITAGE_TPL = frozenset({
-    # heritage_chinese 系 (熔件实测: han/bai/shatuo)
+    # heritage_chinese family (melt sample: han/bai/shatuo)
     "han", "bai", "shatuo", "yue", "wu", "shu", "chinese",
     # heritage_japonic
     "japanese", "ryukyuan",
     # heritage_korean / buyeo
     "korean", "silla", "goryeo", "baekje", "goguryeo", "balhae", "parhae",
-    # heritage_qiangic (西夏/党项/羌)
+    # heritage_qiangic (Tangut / Qiang)
     "qiang", "tangut", "xixia", "dangxiang", "sumpa",
     # heritage_tibetan
     "tibetan", "bodpa", "tsangpa", "wenmo",
     # heritage_viet
     "viet", "vietnamese", "muong",
-    # 北亚 (契丹/女真/蒙古)
+    # North Asia (Khitan / Jurchen / Mongol)
     "khitan", "jurchen", "manchu", "mongol", "nivkh",
-    # 中南半岛
+    # Mainland Southeast Asia
     "burmese", "mon", "shan", "thai", "dai", "lao", "khmer",
 })
 
 
 
-# v25: 暗杀死法池 (用户需求 2026-09-08) — 存档对暗杀只记四类泛化死因
-# (death_mysterious / death_murder / death_disappearance / death_poison), 传记
-# 因此只剩「被X秘密谋杀」「消失无踪」两句。此池以游戏本地化 death_*_killer 文案
-# 为主 (data/localization.json 中文原文), 辅以史实手写短语 — 中世纪至文艺复兴
-# 东西方暗杀手法的研究见 docs/修复方案_田所两问题.md 2.2。
-# 存档已记具体死法者 (death_defenestration 等) 仍按存档原样渲染, 池子只补泛化死因。
+# Assassination death-method pool: the save records only four generic causes
+# (death_mysterious / death_murder / death_disappearance / death_poison), which would leave a
+# biography with just "secretly murdered by X" or "vanished". Phrases come from the game's
+# death_*_killer localization plus hand-written historical ones.
 #
-# 痕迹标签: covert=不留伤痕可伪装病亡 / overt=见血张扬 / vanish=尸骨无踪 / poison=毒杀
-# 死因 → 允许的标签集 (方法标签须为其子集):
+# Trace tags: covert = no wound, can pass as illness / overt = bloody and public / vanish =
+# body never found / poison. Reason -> allowed tag set (a method tag must be a subset):
 _METHOD_REASON_TAGS = {
     "death_mysterious":     frozenset({"covert", "vanish", "poison"}),
     "death_disappearance":  frozenset({"vanish"}),
@@ -1544,10 +1401,10 @@ _METHOD_REASON_TAGS = {
     "death_assassination":  frozenset({"covert", "overt", "poison"}),
     "death_poison":         frozenset({"poison"}),
 }
-# 游戏本地化条目: (本地化键, 标签集, 文化圈, 幼童可用) — 短语由本地化表渲染,
-# 槽位 [TARGET_CHARACTER.GetUIName(Possessive)] → 凶手名, [CHARACTER.GetHerHis] → 其。
+# Game localization rows: (loc key, tag set, culture sphere, usable for young children). Slots
+# [TARGET_CHARACTER.GetUIName(Possessive)] -> killer name, [CHARACTER.GetHerHis] -> 其.
 _ASSASSINATION_GAME_KEYS = (
-    # 隐蔽 / 毒杀
+    # covert / poison
     ("death_poison_killer",                      frozenset({"covert", "poison"}), "any", True),
     ("death_drowned_killer",                     frozenset({"covert"}), "any", True),
     ("death_smothered_by_downy_robe_killer",     frozenset({"covert"}), "west", True),
@@ -1555,12 +1412,12 @@ _ASSASSINATION_GAME_KEYS = (
     ("death_strongest_potion_killer",            frozenset({"covert", "poison"}), "any", False),
     ("death_treatment_killer",                   frozenset({"covert", "poison"}), "any", False),
     ("death_hunting_mysterious_killer",          frozenset({"covert"}), "west", False),
-    # 失踪 (尸骨无踪) — 短语均含致死意 (传记句式为「死于…，X」)
+    # vanish (body never found); every phrase already implies death, as the sentence reads 死于…，X
     ("death_disappearance_killer",               frozenset({"vanish"}), "any", True),
     ("death_fall_in_hole_killer",                frozenset({"vanish"}), "any", True),
     ("death_nailed_in_cabinet_killer",           frozenset({"covert"}), "any", False),
     ("death_starved_killer",                     frozenset({"covert"}), "any", False),
-    # 张扬
+    # overt
     ("death_assassination_killer",               frozenset({"overt"}), "any", False),
     ("death_murder_killer",                      frozenset({"overt"}), "any", False),
     ("death_decapitated_killer",                 frozenset({"overt"}), "any", False),
@@ -1582,7 +1439,7 @@ _ASSASSINATION_GAME_KEYS = (
     ("death_bell_killer",                        frozenset({"overt"}), "west", False),
     ("death_burned_killer",                      frozenset({"overt"}), "west", False),
     ("death_viciously_dismembered_killer",       frozenset({"overt"}), "west", False),
-    # 需受害者身居高位 (宫廷政变 / 御座 / 凯旋道)
+    # require the victim to hold high rank (palace coup / throne / triumphal route)
     ("death_murder_feast_killer",                frozenset({"overt"}), "any", False),
     ("death_coup_successful_killer",             frozenset({"overt"}), "any", False),
     ("death_thrown_off_kathisma_killer",         frozenset({"overt"}), "west", False),
@@ -1593,9 +1450,9 @@ _METHOD_HIGH_RANK = frozenset({
     "death_thrown_off_kathisma_killer",
     "death_thrown_onto_chariot_track_killer",
 })
-# 史实补充条目: (键, 短语模板 {k}=凶手名, 标签集, 文化圈, 幼童可用)
-# 东方手法依据: 《史记·刺客列传》(荆轲图穷匕见/专诸鱼肠剑/豫让)、
-# 《资治通鉴》卷十二「使人持酖饮之」(鸩杀); 西方依据见 docs 2.2 所列诸源。
+# Historical additions: (key, phrase template with {k} = killer name, tag set, culture sphere,
+# usable for young children). Eastern methods follow the Shiji assassin biographies and the
+# Zizhi Tongjian.
 _ASSASSINATION_HISTORY = (
     ("hist_zhen_wine",     "被{k}遣人奉鸩酒赐死",             frozenset({"covert", "poison"}), "east", False),
     ("hist_silk_cord",     "被{k}使人以丝绳缢杀",             frozenset({"covert"}), "east", False),
@@ -1630,9 +1487,10 @@ _ASSASSINATION_HISTORY = (
 
 
 def _render_killer_loc(table, loc_key, kname):
-    """本地化死法文案 → 中文短语 (槽位替换凶手名)。
-    直接用原始表值 — L.loc 会把 [TARGET_CHARACTER.GetUIName] 一并剥掉; 此处先把
-    凶手/受害者槽位换成控制符, 剥完格式码再回填, 未解槽位/模板引用返回 ''。"""
+    """Localized death-method text -> Chinese phrase with the killer name substituted.
+
+    The raw table value is used because `L.loc` would strip the [TARGET_CHARACTER...] slots;
+    '' when a slot or template reference stays unresolved."""
     raw = table.get(str(loc_key))
     if not isinstance(raw, str) or not raw:
         return ""
@@ -1647,32 +1505,22 @@ def _render_killer_loc(table, loc_key, kname):
     return s
 
 
-# v75 (凶手点名): 死因**自带公开性** —— 游戏 `common/deathreasons/*.txt` 里标了
-# `public_knowledge = yes` 的死因, 游戏本身就把「谁下的手」算作人人皆知:
-#   · death_execution      (00_event_deaths.txt:150-153)
-#   · death_murder_known    (:367-368)
-# 其余死因 (death_murder / death_mysterious / death_disappearance / death_raid_estate /
-# death_hunting_accident) 都没有这一条 —— 它们是否公开取决于存档旗标
-# `dead_data.killer_known` (见 `Facts.killer_is_public`)。逐条取证见
-# docs/方案_v75_凶手点名收口.md §2.1。
+# Death reasons that are public by themselves: common/deathreasons/*.txt marks them with
+# `public_knowledge = yes` (death_execution, death_murder_known), so the killer counts as common
+# knowledge; the others depend on the save flag `dead_data.killer_known`.
 _PUBLIC_DEATH_REASONS = frozenset({"death_execution", "death_murder_known"})
 
-# v75 (凶手点名): **公开档**专用死因文案。v16 的雅化表 (`style.FLAVOR_DEATH_ZH`)
-# 是全知视角 —— 它明写「点破为谋杀」(`style.py:640-642`: death_mysterious →
-# 「被秘密谋杀」), 只配《刺客列传》。世人在存档里看到的是游戏本地化值
-# (death_reasons_l_simp_chinese.yml: death_mysterious = 「神秘死亡」)。
-# 只列与世人说法不同的那一条; 其余死因的现有中文不含凶手信息, 原样沿用。
+# Public-archive death wording. `style.FLAVOR_DEATH_ZH` is omniscient and belongs to the assassin
+# chapter only; the public reading is the game localization value, listed here when it differs.
 PUBLIC_DEATH_ZH = {
     "death_mysterious": "神秘死亡",
 }
 
 
 def _death_clause(table, reason_key, killer, name_of, public=False):
-    """死因 → 自然中文短句 (含施事者嵌入)。
-    reason_key: 原始死因 key; killer: 凶手/行刑者/对手角色 id 或 None;
-    name_of: 角色 id → 名字。返回「被XXX谋杀」「被XXX秘密谋杀」「与XXX决斗而亡」
-    「身首异处，凶手为XXX」或纯死因短句 (无施事或非动作型死因)。
-    v75: public=True 取世人说法 (`PUBLIC_DEATH_ZH` 优先于点破式雅化)。"""
+    """Death reason -> natural Chinese clause with the agent embedded (被XXX谋杀, 与XXX决斗而亡
+    or a bare cause when there is no agent); killer is a character id or None, name_of maps ids
+    to names, and public=True takes the public wording."""
     reason = _death_reason(table, reason_key, public=public)
     kname = name_of(killer) if killer is not None else ""
     if killer is not None and kname:
@@ -1688,18 +1536,17 @@ def _death_clause(table, reason_key, killer, name_of, public=False):
         role = _DEATH_AGENT_TAIL.get(reason_key)
         if role:
             return f"{reason}，{role}为{kname}"
-        return reason  # 战场/意外/病亡的击杀者不是「凶手」, 不点名
-    # 无施事: 裸动作死因补「被」字 (被处决/被谋杀/被毒杀)
+        return reason  # a battlefield/accident/illness killer is not a murderer, so no name
+    # no agent: a bare action cause gets 被 (被处决/被谋杀/被毒杀)
     if reason in ("处决", "谋杀", "毒杀"):
         reason = "被" + reason
     return reason
 
 
 def render_motto(motto, table):
-    """家训 → 中文 (v7)。存档 dynasty_house.motto 两种形态:
-    1) 字符串: 已渲染中文原样输出; 本地化键查表 (dynn_harrani_motto → 认识自己本质的人...)。
-    2) 模板 dict: {key, variables:[{key:'1', value:'motto_friendship'}]} →
-       key 查表得模板 (以$1$与$2$之名) → $N$ 按槽位填充 (以坚韧与安全之名) → 剥离动态引用。"""
+    """House motto -> Chinese. `dynasty_house.motto` is either a string (already-rendered
+    Chinese, or a localization key) or a template dict {key, variables:[...]} whose $N$ slots
+    are filled and whose remaining dynamic references are stripped."""
     if isinstance(motto, str):
         s = motto.strip()
         if not s:
@@ -1730,43 +1577,38 @@ def render_motto(motto, table):
 
 
 # ---------------------------------------------------------------------------
-# Facts 上下文
+# Facts context
 # ---------------------------------------------------------------------------
 
-# 名字已含国名/层级词后缀时不追加层级词 (v13 扩: 汗国/教宗国/属邦等,
-# 修复「黠戛斯汗国帝国」「教宗国王国」式叠加)。
+# A title-level word is not appended when the name already ends in a state suffix (汗国/教宗国/…).
 _STATE_SUFFIX_RE = re.compile(
     r"(帝国|王国|汗国|大公国|公国|侯国|伯国|苏丹国|哈里发国|酋长国|"
     r"教宗国|属邦|皇朝|王朝|行台|天朝|国|邦|朝)$")
 
-# v52 (问题1): 「出身自定、无谱系」的存档 flag (见 Facts.is_custom_start) ——
-# 脚本化无地冒险者/自建角色: 存档不给父母, 也没有 ruler_designer_characters 条目。
+# Save flags for a custom origin with no genealogy (see `Facts.is_custom_start`): scripted landless
+# adventurers and designed characters get no parents and no ruler_designer_characters entry.
 _NO_GENEALOGY_FLAGS = {
     "do_not_generate_starting_family",
     "special_laamp_char",
     "has_scripted_appearance",
 }
 
-# v16: 王子词覆盖 — 本地化表把封建王国之女写成「郡主」(唐制亲王之女的东亚
-# 封号), 西式王国/帝国之女在传记里一律写「公主」; 天朝制的 皇女/郡主/公女
-# 属刻意东亚风味, 不在覆盖之列 (见 _prince_word)。
+# Prince word overrides: localization renders a feudal kingdom's daughter as 郡主 (a Tang-style East
+# Asian title), while a western kingdom's or empire's daughter always reads 公主; the celestial
+# government's 皇女/郡主/公女 are deliberate flavor and are not overridden (see `_prince_word`).
 _PRINCE_WORD_OVERRIDE = {
     "princess_kingdom_feudal_chinese": "公主",
 }
 
 
-# v55 (问题6): 排序键里「该日期为空」的兜底值 —— 必须与 `cl.date_key` 的返回**同型**
-# (元组), 且其序为最大 (空日期排在本组最后)。旧稿三处写整数 `10 ** 12`, 与同组内
-# 另有日期的行的元组键相比时抛 `TypeError: '<' not supported between instances of
-# 'tuple' and 'int'` (沙米尔 944 第 2 个十年实测: 囚禁集群里同 rank 者一有空 since 即崩,
-# facts 构建阶段失败 → 十年传记永不生成)。`cl.date_key` 对非法输入同样返回 (9999,0,0)。
+# Fallback sort key for an empty date: it must share the type of `cl.date_key`'s return (a tuple)
+# and sort last, since comparing it against a tuple raises TypeError and would fail the facts build.
 _DATE_KEY_MAX = (9999, 0, 0)
 
 
 def _date_ord(d):
-    """日期近似天序 (year*372 + (month-1)*31 + day)。
-    只用于「相差 N 天以内」的宽松判断 (v34b 头衔事件日核对), 不做精确历法运算 —
-    月末跨月会多算 1~2 天, 对宽松阈值无影响。非法输入返回极小值。"""
+    """Approximate day ordinal (year*372 + (month-1)*31 + day); no calendar arithmetic, so
+    month-end crossings are off by a day or two. Invalid input returns a very small number."""
     try:
         y, m, dd = (int(x) for x in str(d).split(".")[:3])
     except (TypeError, ValueError):
