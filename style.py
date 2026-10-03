@@ -1,34 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Model-facing prompt text for the biography generator.
-
-Single source of truth for everything the model reads: the writing profiles,
-the system rule block, the article board titles and their requirements, the
-request wrappers, and the fact-layer wording tables used by facts.py.
-
-Pure data plus a few pure functions: this module imports nothing from the
-project, and biography.py / facts.py depend on it.
-
-Layout
-------
-1. STYLE_PROFILES   prose profile per biography style
-2. RULES            writing rules (system rule block)
-3. SECTION_TITLES   board titles of every article
-4. SECTION_REQ      per-board material requirements
-5. THEME_LABELS     module wording for office-rotation governments
-6. PROMPTS          request wrappers with named slots
-7. FACT_WORDING     fact-layer wording (consumed by facts.py)
-
-Two standing rules for new prompt text:
-  (1) state what to do, and keep negative phrasing out
-      (see .agents/skills/no-negative-prompts);
-  (2) keep every deterministic concern in code and leave only creative writing
-      to the prompt (prompt-last).
+"""Model-facing prompt text for the biography generator: the single source of truth
+for everything the model reads; biography.py and facts.py depend on it.
 """
+
+# Standing rules for new prompt text: state what to do and keep negative phrasing
+# out (see .agents/skills/no-negative-prompts); keep every deterministic concern in
+# code and leave only creative writing to the prompt (prompt-last).
 
 # ---------------------------------------------------------------------------
 # 1. Prose profile
 # ---------------------------------------------------------------------------
-# Both profiles ask for modern standard Chinese; they differ only in the
+# Both profiles require modern standard Chinese; they differ only in the
 # biographical tradition the prose follows.
 STYLE_PROFILES = {
     "east": {
@@ -53,8 +35,8 @@ DEFAULT_STYLE = "east"
 # ---------------------------------------------------------------------------
 RULES = {
     # Deterministic concerns stay in code: names, titles, dates and numbers are
-    # rendered by the facts layer, and anything the program can enforce is kept
-    # out of the prompt.
+    # rendered by the facts layer, and anything the program can enforce stays out
+    # of the prompt.
     "nonfiction": (
         "「写作依据」：人物、家族、官职、事件、日期与数字，一律照本篇给出的写法书写；"
         "由本篇人事生发的心理、对话与场景要写足，"
@@ -120,10 +102,9 @@ SECTION_TITLES = {
                 "tail": "纪事·枢机团与教宗选举"},
 }
 
-# Household article wording follows the material actually available: with no
-# spouse and no children, asking for marriage, divorce and childbirth pushes the
-# model to invent a family. The program picks the variant (see
-# biography._jiashi_variant) and every variant is phrased positively.
+# Household wording follows the material available: asked for marriage, divorce and
+# childbirth with no spouse and no children, the model invents a family. The program
+# picks the variant (biography._jiashi_variant); every variant is phrased positively.
 JIASHI_VARIANTS = {
     # Spouse or former spouse present.
     "spouse": {
@@ -207,10 +188,9 @@ SECTION_REQ = {
         "tail": None,
     },
     "chaoju": {
-        # Material is one line per ruler plus the current dynasty's wars and
-        # offices; each mid section covers one slice of dynasties, and the
-        # program states that slice's range in the requirement line
-        # (biography._chrono_mid_req).
+        # Material is one line per ruler plus the current dynasty's wars and offices;
+        # each mid section covers one slice of dynasties and the requirement line states
+        # that slice's range (biography._chrono_mid_req).
         "lead": "写王朝总说：逐朝写出起止与国号沿革、空位期的起止，并写出本朝疆域所及、治所、所辖与主角在本朝的任期。素材给出的年代、国号、人名与缘由请照原样写出。",
         "mid": "写各朝历代：素材已按「一人一行」给出该节每位统治者的生卒、继位日、继位缘由、在位年数与失位缘由，请逐人写出，继位缘由照素材写清。本节的战事行写出该朝兴兵、应战与胜负的经过，人名、年月与地名照素材给出的写法写出。本节只写素材列出的这几人、这几事，写到本节末位统治者在位终了为止。",
         "mid_last": "写本朝历代：素材已按「一人一行」给出本朝每位统治者的生卒、继位日、继位缘由、在位年数与失位缘由，逐人写出。本朝疆域、治所、所辖、战事与主角在本朝的任期一并写出，收束于传主在位的末年。本节只写素材列出的这几人、这几事（前朝已在其余各节写完）。",
@@ -342,14 +322,14 @@ PROMPTS = {
 }
 
 # ---------------------------------------------------------------------------
-# 7. 事实层措辞 (facts.py 取用)
+# 7. Fact-layer wording (read by facts.py)
 # ---------------------------------------------------------------------------
 FACT_WORDING = {
-    # 记忆句/统计/合并动词已在上文以顶层表给出 (MEMORY_TEMPLATES 等),
-    # 此处只放零散短语模板。
-    # 刺客列传开篇点名句 (v30 问题8: 篇内只点一次全称谓)
+    # Memory sentences, stats and merge verbs live in the top-level tables above
+    # (MEMORY_TEMPLATES etc.); this dict holds the loose phrase templates only.
+    # Assassin board lead line (the full name is named once per article).
     "assassin_lead": "刀下之魂共{n}人，皆死于{killer}之手。",
-    # 入狱时长量词
+    # Imprisonment-duration quantifiers.
     "prison_same_day": "当日",
     "prison_days": "{n}日",
     "prison_months": "{n}个月",
@@ -358,130 +338,122 @@ FACT_WORDING = {
     "prison_released": "，{span}后获释",
     "prison_release_on": "，{date}获释",
     "prison_released_same_day": "，当日获释",
-    # v60 (问题4): 未见释放时的收句 —— 旧措辞「，此后一直未见释放」把
-    # 「本传数据窗口内在押」写成一句**无限期**断言 (崔佛 881.1.1 卒, 四名囚犯
-    # 此后转归其妾埃尔梅辛达之手)。改以本档为界: {bound} 由 facts 给
-    # (十年档给该篇截止日, 终传给「末档」)。
-    # v34 (问题7): 程序把「此后如何」说全, 让模型有完整句子可依, 而非留一个
-    # 待补的空位 (旧稿此处留白, 模型遂把囚期留白补成「获释」)。
+    # No release recorded: {bound} comes from facts (the decade archive's cutoff
+    # date, or the last archive for the final biography). The program states the
+    # whole clause so the model has no blank to fill in.
     "prison_still_held": "，至{bound}仍在押",
-    # v32 (马克龙问题1): 出狱方式二分的另一支 — 逃脱 (escaped_from_prison_memory)
+    # Other branch of the release split: escape (escaped_from_prison_memory).
     "prison_escaped": "，{span}后越狱逃脱",
     "prison_escape_on": "，{date}越狱脱身",
     "prison_escape_same_day": "，当日越狱脱身",
     "prison_jailed": "{jailer}囚禁{victim}",
     "prison_held": "{victim}被囚",
-    # v63 (问题1, 用户 2026-09-24 拍板): 囚禁的**获取方式**只写有硬证的那几种。
-    # 追加调研的结论是「破城俘虏」与「战败俘虏」在本档**不可区分**(三者共用裸
-    # `imprison`, `melt["sieges"]` 只留在进行的攻城, 省份 occupant 只是当前状态),
-    # 故判不出时仍走 `prison_jailed` 的裸「囚禁」——**不写方式**, 模型也就没有
-    # 「在宴会上擒获」这类自造场景的落点了。
+    # Only capture modes with hard evidence get their own wording: siege and battle
+    # capture are indistinguishable in the save (both use the bare `imprison`, and
+    # `melt["sieges"]` keeps only ongoing sieges), so the undecidable case keeps the bare
+    # wording with no mode stated, leaving the model no room to invent a capture scene.
     "prison_captured_battle": "{jailer}于战阵俘获{victim}",
     "prison_captured_diarch": "{jailer}以摄政之权拘押{victim}",
     "prison_batch_seized": "{jailer}拘押{victim}",
-    # v63 (问题1 第二轮): ① 未成年人被囚 ⇒ 排除战败俘获 (战败池只有败方主指挥官
-    # 与骑士, 必为成年参战者; 正样本 9 处被俘主帅年龄 21–61 无未成年人)。
-    # 措辞只写「拘押」＋当时年龄 —— 年龄本身即事实, 且与「妇孺同俘」的场景自然相合。
+    # A minor prisoner rules out capture in battle: the defeat pool holds only the
+    # losing side's main commander and its knights, all adult combatants. The wording
+    # states the detention and the age at the time, and nothing more.
     "prison_note_age": "{victim}，时年{n}岁",
-    # ② 正证劫掠: 监禁者的 `landed_data.last_raid` 与入狱日同日 (游戏写明他那天
-    # 在劫掠) —— 这是唯一能确定性判出「劫掠掳人」的字段。
+    # Positive raid evidence: the jailer's `landed_data.last_raid` falls on the
+    # imprisonment date — the only save field that pins down a capture by raiding.
     "prison_raid_captured": "{jailer}劫掠中掳走{victim}",
-    # v56 (§10-D): 相恋缘由的**程序兜底** (拿不到游戏 reason 键时) —— 双方同囚于
-    # 同一监禁者、同为 house_arrest (软禁)、且关系起始日落在共同在押区间内。
-    # 措辞只陈述**可判定的事实** (「同在X的软禁中」), 不冒用游戏 lover_prison
-    # 的「地牢」文案。
+    # Program fallback for the cause of a love affair (game reason key unavailable):
+    # both held by the same jailer under house_arrest, the relationship starting
+    # inside their shared detention window. States only determinable facts.
     "lovers_same_prison": "{name}与{other}同在{jailer}的软禁中相恋",
     "lovers_same_prison_no_jailer": "{name}与{other}同在软禁中相恋",
-    # v56 (问题2, 用户拍板案 A): 同日「入狱＋获释」且同日该被囚者的战争结束 ——
-    # 这不是「抓了又放」, 而是**战末俘获**。v63 (问题1) 起该档改写为统一的
-    # 战阵俘获措辞 (`prison_captured_battle`), 本键停用 (保留仅供旧断言引用)。
+    # Same-day imprison+release on the day the prisoner's war ends means capture at the
+    # war's end, not a catch-and-release.
     "prison_war_end": "{jailer}战胜{victim}，俘之",
-    # v42 (问题3): 阉割/致盲**必然与释放同日**（存档 21/21 例实证）——
-    # 刑名不再另起一行, 而是充当出狱缘由并入囚禁句。{sp} = 「当日」或「14日后」。
+    # Castration/blinding always falls on the release day (21 of 21 saves), so the
+    # punishment becomes the release reason inside the imprisonment sentence instead
+    # of a line of its own; {sp} is the elapsed span (same day, or the elapsed days).
     "prison_punish_castrated": "，{sp}遭阉割而获释",
     "prison_punish_blinded": "，{sp}遭剜目而获释",
     "prison_punish_beardless":
         "，{sp}其在成年前被{jailer}阉割，终身无须，因而获释",
     "prison_punish_generic": "，{sp}受刑而获释",
-    # v42 (问题6): 囚期以**死亡**收口 —— 有死亡记录而无释放/越狱/狱史闭合者,
-    # 旧稿一律写「此后一直未见释放」(诺兰 1088 那 10 人其实 6 个月后被杀)。
+    # Prison terms closed by death: a death record with no release and no escape is
+    # written as an execution or a death in prison.
     "prison_died_executed": "，{sp}处决",
     "prison_died_in_prison": "，{sp}死于狱中",
-    # 热修 (2026-09-24, 用户报告): 囚期以**吃掉**收口 —— Mod「食人赋能」把吃掉写成
-    # `death_execution`, 遗骨 (`devour_bone_visual`, 见 `Facts._devour_bones`) 是唯一
-    # 确证。旧稿收口只判「刑杀/狱死」, 于是同一个人在本篇里年表写「处决」、
-    # 死者名录用 `EXECUTION_DEVOUR_BONE` 写「被其吃掉」, 自相矛盾。
-    # 「其」= 句首点名的监禁者 (「X囚禁Y，6个月后被其吃掉」), 与名录同词。
+    # Prison terms closed by being eaten: the cannibalism mod records eating as
+    # `death_execution`, and the bone object it leaves (`devour_bone_visual`, see
+    # `Facts._devour_bones`) is the only proof. The sentence's pronoun is the jailer it
+    # names at its start, matching the name roster's wording.
     "prison_died_devoured": "，{sp}被其吃掉",
-    # v31 (问题5): 牵制句 — 强牵制与普通牵制分档 (游戏 [strong_hook] / [hook] 同义);
-    # {name} 由 facts 传引号形态 (「干了我老婆」), 本地化查不到时为空串;
-    # {since} 为「（X年起）」或到期日, 对象只有一个时逐条写, 同类多条归并一行。
+    # Hook sentence: strong vs ordinary hook (game [strong_hook] / [hook]). {name}
+    # comes from facts in quoted form and is empty when localization misses; {since}
+    # is a start year or an expiry date. Single targets are written one per line,
+    # several of one kind are merged.
     "hook_held_strong": "{actor}握有对{target}的强牵制{name}{since}。",
     "hook_held_weak": "{actor}握有对{target}的牵制{name}{since}。",
     "hook_over_actor_strong": "{holder}握有对{actor}的强牵制{name}{since}。",
     "hook_over_actor_weak": "{holder}握有对{actor}的牵制{name}{since}。",
-    # 归并行 (同类多对象/多持有者): 方向各自的句式, 名字取前三 + 总人数
-    # v55 (问题2): 去括注 —— 「（共N人）」改为主句内的人数定语
+    # Merged line for many targets or holders: one pattern per direction, the first
+    # three names plus the total count carried inside the sentence, not in brackets.
     "hook_group_held": "{actor}握有对{names}共{n}人的{strength}牵制{name}。",
     "hook_group_over": "{names}共{n}人握有对{actor}的{strength}牵制{name}。",
-    # v41 (问题8): 删去「主角握有的牵制如下：」「他人握有对主角的牵制如下：」
-    # 两条块首标题行 —— 每条牵制句已自足, 标题行只会把该维度引成开放清单。
     "hook_strong_word": "强",
-    # v55 (问题2): 时间补注去括注 —— 作为句末小句附在牵制句后 (不再「（921年起）」)
     "hook_since": "，自{year}年起",
     "hook_expires": "，{date}届满",
-    # v38 (问题2): 牵制**白名单**判据 (见 FACT_WORDING["hook_keep_*"]) —
-    # 只下发「背后有一件具体事」的牵制; 通用人情/身份自带类一律不入事实层。
-    # 判据由程序在 cache_lib 入库前与 facts 读取时各执行一次 (旧缓存同样生效),
-    # 不写进提示词 (no-negative-prompts 的 prompt-last 铁律)。
+    # Hook whitelist criterion: only hooks with a concrete event behind them reach
+    # the fact layer, while generic favors and identity hooks do not. The test runs
+    # in cache_lib at ingest and again in facts on read (so old caches follow it too)
+    # and never appears in the prompt (prompt-last).
     "hook_keep_exact": frozenset({
-        # —— 勒索: 背后必有一桩隐事 (弱勒索另有 weak_prostitute_blackmail_hook) ——
+        # Blackmail: always backed by a secret (weak blackmail has its own key).
         "weak_blackmail_hook", "weak_blackmail_hook_no_secret",
         "weak_prostitute_blackmail_hook", "strong_prostitute_blackmail_hook",
-        # —— 捏造 / 罪案 / 比试: 各有具体由头 ——
+        # Fabrication / crime / trial by combat: each has a concrete cause.
         "fabrication_hook", "minor_crime_accomplice_hook",
         "sumptuary_crime_hook", "trial_by_combat_hook",
-        # —— 结拜 (献血为盟是一件具体事) ——
+        # Blood brotherhood / sisterhood: a concrete sworn act.
         "blood_brother_hook", "blood_sister_hook",
-        # —— Mod 内容牵制 (Carnalitas 奴役 / interracial_takeover 的奴隶 /
-        #    缺角作者包的「干了我老婆」) ——
+        # Mod-content hooks (Carnalitas slavery, interracial_takeover slaves,
+        # `ganlewodelaopo_hook`).
         "carn_slave_hook", "bno_slave_hook", "bno_cum_slave_hook",
         "ganlewodelaopo_hook",
     }),
-    # 通用人情类牵制的**族名片段** (含这些片段的类型键一律剔除):
-    # 人情 (favor_hook 本地化即「人情」)、义务、蒙恩、支持者、忠诚、威胁、
-    # 操控、家主/孝道 (身份自带)、可继承的感恩宣称、契约类。
+    # Type-key fragments of the generic-favor family; any key containing one is
+    # dropped: favor, obligation, indebted, supporter, loyalty, threat,
+    # manipulation, house head / filial piety (identity-owned), claim, contract.
     "hook_keep_drop_fragments": (
         "favor", "obligation", "indebted", "supporter", "loyalty",
         "threat", "manipulation", "suspicious", "house_head", "filial_piety",
         "oath_claimant", "contact_list", "influence", "hostage", "follower_oath",
     ),
-    # 引擎脚本关键字/测试钩子被 hook_types 解析器误收为「牵制类型」的部分:
-    # 白名单制天然排除, 此处只用于 `hook_type_name_ok` 判断显示名是否有意义。
+    # Engine script keywords and test hooks that the `hook_types` parser picks up as
+    # "hook types"; the whitelist already excludes them, so this set only feeds
+    # `hook_type_name_ok` when judging whether a display name is meaningful.
     "hook_keep_ignore": frozenset({
         "on_used", "send_interface_toast", "if", "limit", "NOT", "target", "OR",
         "stress_impact", "test_hook", "strong_test_hook", "perpetual_test_hook",
         "add_test_hook",
     }),
-    # v35: 奴役 (Carnalitas) — 存档里「释放」记忆正是「没为奴隶」这一步, 故出狱缘由
-    # 写「没为奴隶」而不是「获释」; 奴役本身不带日期, 年份取逐档差分的首见档
-    # (差分日期与囚期可能差一档, 故不写「同日」)。{year} 取自 Facts._year_only,
-    # **已含「年」字** (如「874年」)。
+    # Enslavement (Carnalitas): the save's "released" memory is exactly the enslavement
+    # step, so the release reason reads as enslavement rather than release. Enslavement
+    # carries no date; the year is the first archive a per-archive diff sees it in (diff
+    # and prison term may be one archive apart, hence no "same day"). {year} comes from
+    # `Facts._year_only` and already contains the year word.
     "prison_enslaved": "，没为奴隶",
     "enslaved_line": "{slave}没为{actor}的奴隶。",
     "enslaved_line_on": "{date}，{slave}没为{actor}的奴隶。",
-    # v55 (问题2): 去括注 —— 起年改为句首状语 (「X自874年起没为Y的奴隶。」)
     "enslaved_line_since": "{slave}自{year}起没为{actor}的奴隶。",
     "enslaved_group": "{year}起，{actor}的奴隶有{names}{extra}。",
     "enslaved_group_extra": "等{n}人",
     "enslaved_head": "主角的奴隶如下：",
-    # v38 (问题4): 「曾经是主角的奴隶」的收束句 —— 三档各有确定判据
-    # (cache_lib._diff_enslavements 的 end_owner / freed / 两者皆无):
-    #   _sold  失去那一刻已被**别人**奴役 = 转卖, 带出买家;
-    #   _freed 失去那一刻已无人奴役他   = 转为 former_slave (获释);
-    #   _lost  其余 (死亡 / 数据中断) — 只写到「没为…的奴隶」为止, 不外推缘由,
-    #          也不写「不再见于记载」式按语 (v80 点2: 这类缺席陈述会被模型照抄)。
-    # v55 (问题2): {since} 由调用方给成句首状语 (「自874年起，」/ 空串), 不再是括注
+    # Closing line for "was once the protagonist's slave"; three branches with definite
+    # criteria (`cache_lib._diff_enslavements` end_owner / freed / neither): _sold =
+    # resold with the buyer named, _freed = released, _lost = the rest (death or data
+    # break), which stops at the enslavement clause and adds no "no longer recorded" note,
+    # since the model copies such absence statements. {since} is a sentence-initial
+    # adverbial or an empty string.
     "enslaved_former_sold":
         "{since}{slave}没为{actor}的奴隶，至{year}转归{buyer}。",
     "enslaved_former_freed":
@@ -489,34 +461,33 @@ FACT_WORDING = {
     "enslaved_former_lost":
         "{since}{slave}没为{actor}的奴隶。",
     "enslaved_former_head": "主角昔日的奴隶如下：",
-    # v38 (问题1): 角色修正 carn_recently_raped (身上留五年) 的收束句 ——
-    # 与性事记忆互为佐证 (记忆给「谁做的」, 修正给「近来仍算近事」这一状态)。
+    # Closing line for the `carn_recently_raped` character modifier (it stays for
+    # five years); corroborates the sex memories — the memory says who, the modifier
+    # says it still counts as recent.
     "carnal_recently_raped": "主角近来遭人强暴，此事五年之内仍算近事。",
     "carnal_opinions_head": "人身侵害与旧主奴关系如下：",
-    # v38 (问题1 追修) / v39 的「强迫之事」事实行措辞 (harm_head/harm_line/
-    # harm_after_subject/harm_after_none) 已随 **v59 (问题2)** 删除 ——
-    # 用户拍板「性事只在《列传·好友》《列传·仇人》里用」, 该块不再下发。
-    # v40: 性病 (情人疱疹/大痘) 传播 —— 无源时写「染上」; 有源时写「X把病传染给了Y」。
-    # v59: 「补在性行为句末」的 `std_note` 随性事退出年表而停用, 故只留后两条。
-    # 病名由本地化表直取 (本体中文: trait_lovers_pox=情人的疱疹 / trait_great_pox=梅毒)。
+    # Venereal disease (lovers' pox / great pox) spread: with a known source "{src} gave
+    # the disease to {tgt}", otherwise the target simply caught it. Names come from the
+    # localization table (trait_lovers_pox, trait_great_pox).
     "std_line": "{src}把{disease}传染给了{tgt}。",
     "std_line_anon": "{tgt}染上{disease}。",
     "std_head": "疾病传染如下：",
-    # v32 (马克龙问题1): 强纳为妾 — 存档唯一带确切日期的纳妾记录
-    # (opinions.active_opinions 的 forced_me_concubine_marriage_opinion.start_date);
-    # 该脚本同一段落 `release_from_prison = yes`, 故「当日自狱中释出」是程序可断言的。
+    # Forced concubinage: the save's only concubinage record with an exact date
+    # (`opinions.active_opinions`, forced_me_concubine_marriage_opinion.start_date). The
+    # same script block sets `release_from_prison = yes`, so "released from prison the
+    # same day" is program-assertable.
     "concubine_forced": "{date}，{actor}强纳{name}为妾。",
     "concubine_forced_paroled": "{date}，{actor}强纳{name}为妾，同日自狱中释出。",
-    # v60 (问题3): 强纳有夫/有妇之人为妾时, 游戏对**原配**加
-    # `forced_spouse_concubine_marriage_opinion` 并 `divorce = scope:recipient`
-    # —— 崔佛档三名妾都是他人之妻, 这句把「谁是原配」写成事实, 免得模型
-    # 为「离异」另造一位不存在的妻子。
+    # Forcing a married person into concubinage makes the game add
+    # `forced_spouse_concubine_marriage_opinion` and run `divorce = scope:recipient` on
+    # the original spouse; this line states who that was, so the model does not invent a
+    # wife to divorce.
     "concubine_divorced":
         "{date}，{name}原为{ex}之妻，因{actor}纳之为妾而离异。",
-    # v31 (问题2): 配偶同月「同房＋相恋」并作一行
+    # Spouse records merge the same-month bedchamber and love memories into one line.
     "affair_pair_spouse": "{y}年{m}月，{a}与{b}夫妻情笃。",
-    # v31 (问题4): 妻室情事脉络 — 逐情人一句的关系弧用词 (弧内已点明是「与公主」,
-    # 各段不再重复对象名)
+    # Affair arc: one sentence per lover. The arc already names the partner, so the
+    # segments do not repeat it.
     "affair_entry": "{date}私通",
     "affair_lovers": "{date}相恋",
     "affair_soulmates": "{date}结为灵魂伴侣",
@@ -526,20 +497,20 @@ FACT_WORDING = {
     "affair_joined_court": "自{date}在主角廷中",
     "court_knight": "{actor}廷中骑士",
     "court_member": "{actor}廷臣",
-    # v36 (用户拍板3): 主角**获授**的朝廷职位 (太师/某部尚书…; employee=主角) —
-    # 传主档案与《朝局风云录》同时出词; 「至晚」口径与特质履历同源 (快照差分推失去时点)。
+    # Court offices granted to the protagonist (employee = the protagonist): used both
+    # in the subject dossier and in the court board. The loss date is an inferred
+    # "no later than" year taken from snapshot diffs, as the trait history does.
     "office_head": "朝廷职位：",
     "office_held": "任{employer}之{word}",
-    # v55 (问题2): 去括注 —— 授任日期作句首状语 (「自869年6月28日起任唐皇帝李漼之太师」);
-    # 多度受任改「N度受任…，分别在…」; 失去时点本就是分句 (「；至晚自885年起已卸任」)。
     "office_held_since": "自{date}起任{employer}之{word}",
     "office_held_multi": "{n}度受任{employer}之{word}，分别在{dates}",
     "office_lost_late": "；至晚自{year}起已卸任",
     "office_change_gain": "{date}：受{employer}之{gverb}为{word}",
     "office_change_lose": "{date}：已卸任{word}",
-    # v76 (问题1): 传主「在位终结但未死亡」的收句 (让位/剃发退位/去位) ——
-    # 由 pipeline._cross_check_reign_ends 从 played_character.legacy 接替链判出;
-    # 收在终传主角档案与共享前缀的【传位】行, 与「卒」句互斥 (同一人只出其一)。
+    # "Reign ended but not dead" closing line (abdication / tonsure / step-down), decided
+    # by `pipeline._cross_check_reign_ends` from the `played_character.legacy` succession
+    # chain. It appears in the subject dossier and the shared prefix's succession line
+    # (FACT_WORDING["reign_end_note"]) and is mutually exclusive with the death line.
     "reign_end_line": "{date}，{word}",
     "reign_end_line_successor": "{date}，{word}，传位于{succ}。",
     "reign_end_tonsured": "剃发退位",
@@ -550,8 +521,9 @@ FACT_WORDING = {
 }
 
 
-# v36 (用户拍板4): 头衔授予动词 — 按**授予方政体**取词 (天朝/行政=任命, 封建=册封,
-# 部落/宗族=授予…)。头衔记忆句补「被谁任命/授予」时用; 取不到政体用「任命」。
+# Title-grant verbs keyed by the granting polity (appointment / enfeoffment / grant),
+# used when a title memory names who appointed or granted it; an unknown polity falls
+# back to the appointment verb.
 TITLE_GRANT_VERBS = {
     "celestial": "任命",
     "administrative": "任命",
@@ -566,16 +538,18 @@ TITLE_GRANT_VERBS = {
     "mandala": "授予",
 }
 TITLE_GRANT_VERB_FALLBACK = "任命"
-# 去职动词: 自行去职 (stepped_down) 用「辞去」; 被夺 (revoked/usurped) 用「褫夺」/「篡夺」
+# Resignation verbs: a voluntary step-down uses the resign word, revoked / usurped
+# titles use the seize words.
 TITLE_RESIGN_VERB = "辞去"
 TITLE_REVOKE_VERB = "褫夺"
 TITLE_USURP_VERB = "篡夺"
 
 # ---------------------------------------------------------------------------
-# 8. 事实层措辞表 (v30 问题11 自 facts.py 搬入)
+# 8. Fact-layer wording tables (referenced by facts.py)
 # ---------------------------------------------------------------------------
-# 与「字」直接相关的死因/头衔/处决用词集中在此; facts.py 以别名引用
-# (调用点不变)。游戏键→词的**查表**仍留在 facts/localization (数据映射)。
+# Death-cause, title and execution wording used by the fact layer is collected
+# here; facts.py imports it by alias. Game-key → word lookup tables stay in
+# facts/localization (data mapping).
 
 DEATH_REASON_ZH = {
     "death_execution": "处决", "death_murder": "谋杀", "death_duel": "决斗",
@@ -590,10 +564,10 @@ DEATH_REASON_ZH = {
 }
 
 
-# v11: 游戏 UI 腔/坏文本死因 → 传记雅化 (优先于本地化值, 本地化文案是游戏内
-# 通知腔, 如 blind = 「因绊倒坠落而失去的生命」, 直接进传记会读起来像抄游戏)。
-# v16: 病弱/疾病类死因的本地化是 [GetTrait(...)] 模板 (查不出中文), 原样进
-# 传记会退化成千篇一律的「去世」, 一并雅化为自然短句。
+# Game-UI-flavored or broken death-cause text is refined here and takes precedence over
+# the localization value, which reads like an in-game notification (the `blind` reason,
+# for instance). Frail/illness deaths whose localization is an unresolved
+# `[GetTrait(...)]` template are refined as well.
 FLAVOR_DEATH_ZH = {
     "blind": "因绊倒坠落而亡",
     "death_fall": "因坠落而亡",
@@ -604,10 +578,11 @@ FLAVOR_DEATH_ZH = {
     "death_head_ripped_off": "身首异处",
     "death_apoplexy": "中风而亡",
     "death_drinking_passive": "酗酒而亡",
-    # 成功而未败露的谋杀: 游戏显示「神秘死亡」; v16 起点破为谋杀, 用
-    # 「被…秘密谋杀」与明面上败露的「被…谋杀」区分 (施事由 _death_clause 嵌入)
+    # Successful unexposed murder: the game shows it as a mysterious death, so it is
+    # worded as a secret murder to set it apart from the exposed "murdered by X" form;
+    # the agent is embedded by _death_clause.
     "death_mysterious": "被秘密谋杀",
-    # 病弱/疾病 (本地化为模板或缺失, 原会退化成「去世」)
+    # Frailty / illness (localization is a template or missing).
     "death_depressed": "忧郁而亡",
     "death_ill": "染疾而亡",
     "death_consumption": "染肺痨而亡",
@@ -633,7 +608,7 @@ FLAVOR_DEATH_ZH = {
     "death_physique_bad_1": "体弱不支",
     "death_physique_bad_2": "体弱不支",
     "death_physique_bad_3": "体弱不支",
-    # 游戏 UI 长句 → 自然短句
+    # Long game-UI sentences → short natural ones.
     "death_broken_bones": "摔折筋骨而亡",
     "death_stress": "忧惧而亡",
     "death_punishment": "处决",
@@ -642,23 +617,21 @@ FLAVOR_DEATH_ZH = {
 }
 
 
-# v95 (问题1): **宣战理由 (Casus Belli) 键 → 史传腔短语**。
+# Casus Belli key → historiography-style phrase.
 #
-# 游戏只为 126 个 CB 中的一部分写记忆本地化键 `war_memory_cb_*`
-# (`game/common/scripted_effects/03_bp1_scripted_effects.txt:877-996` 的硬编码白名单,
-# 中文见 `localization/simp_chinese/memories_l_simp_chinese.yml:981-1009`); 其余
-# **56 个 CB 一律落 `war_memory_cb_fallback`**(正文「战争」, 项目按约定丢弃)。
-# v95 起事实层改从缓存 `war_history` 回查真 CB 键 (该战进行时从存档闩下), 故这里补
-# 一张项目措辞表 —— 键即 `casus_belli_types` 里的 CB 键 (见
-# `docs/调研_v95_对立教宗战争理由.md` §5.3 的完整清单)。查不到的键仍按原口径省略
-# 「以…」分句 (宁缺不错); `war_memory_cb_*` 键不在此表、仍走游戏本地化表。
+# The game writes a `war_memory_cb_*` key for only part of its CB set (hardcoded whitelist,
+# `game/common/scripted_effects/03_bp1_scripted_effects.txt`; Chinese in
+# `localization/simp_chinese/memories_l_simp_chinese.yml`); the rest fall back to a plain war
+# word, discarded here. The fact layer instead reads the real CB key from the cached
+# `war_history`, latched from the save while the war ran: the keys below are
+# `casus_belli_types` keys, and a missing key omits the reason clause rather than guessing.
 WAR_CB_ZH = {
     # ---- By God Alone (pam_*) ----
-    "pam_challenge_hof_cb": "扶立对立教宗",     # 扶立者代其对立方挑战信仰领袖 (攻方是对立教宗本人时改「挑战信仰领袖」, 见 facts._war_start_clause)
+    "pam_challenge_hof_cb": "扶立对立教宗",     # when the attacker is the antipope himself facts._war_start_clause swaps in its own phrase
     "pam_antiking_cb": "废黜对立教宗",
     "pam_humiliation_cb": "折辱之战",
     "pam_investiture_conflict_cb": "叙任权之争",
-    # ---- 天命/中国 (tgp_*) ----
+    # ---- Mandate of Heaven / China (tgp_*) ----
     "claim_the_mandate_cb": "争夺天命",
     "chinese_reunification_cb": "统一天下",
     "chinese_consolidation_cb": "一统之战",
@@ -675,7 +648,7 @@ WAR_CB_ZH = {
     "mandala_plunder_cb": "掠地之战",
     "mandala_raze_capital_structure_cb": "焚都之战",
     "admin_barbarian_conquest_cb": "征讨蛮夷",
-    # ---- 日本/东亚其余 ----
+    # ---- Japan / rest of East Asia ----
     "raiktor_claim_cb": "夺位之战",
     "raiktor_conquest_cb": "征服之战",
     "mythical_ancestor_war": "先祖之仇",
@@ -683,7 +656,7 @@ WAR_CB_ZH = {
     "fp3_zanj_rebellion_war": "桑给叛乱",
     "greek_anarchy_cb": "希腊之乱",
     "ep3_hasan_assassin_war": "讨伐阿萨辛",
-    # ---- 通用/行政/游牧/fp3 ----
+    # ---- Generic / administrative / nomadic / fp3 ----
     "expansion_cb": "拓土之战",
     "duchy_expansion_cb": "拓郡之战",
     "naval_expansion_cb": "海疆拓土",
@@ -714,17 +687,13 @@ WAR_CB_ZH = {
 }
 
 
-# v28: 头衔得失动词 — 按 memory vars.reason (游戏给的缘由) 出词。
-# 旧口径一律「登位，得X」/「让出X」, 使天朝制/行政制的**官职任命轮转**
-# (reason=appointment_succession / stepped_down) 被读成「被人打败、又夺人领地」
-# (陆氏: 869 受任阶州、872 卸任阶州、875 受任商州 被写成 登位/让出)。
-# 政体无关: 封建的承袭/受封/攻取、行政制的受任/调任 一表覆盖; 未知 reason
-# 回退旧词 (登位/让出), 行为与旧版一致。
+# Title gain verbs taken from the memory's `vars.reason`. One table covers feudal
+# inheritance / grant / conquest and administrative appointment / transfer alike;
+# an unknown reason falls back to the generic ascension / cession words.
 TITLE_GAIN_VERBS = {
-    # v34b (柳特佩特): created = **本人创设头衔** —— 游戏自有文案即
-    # `ascended_throne_memory_desc_intro_created = 我创建了[landed_title]`
-    # (`game_concept_created = 创建`), 旧词「受封」(v28 为世族庄园所定) 把
-    # 玩家自创的萨莱诺亲王国写成受人册封。分两档见 TITLE_GAIN_CREATED_VERBS。
+    # `created` means this person founded the title themselves; the game's own text is
+    # `ascended_throne_memory_desc_intro_created` (and `game_concept_created`).
+    # Split into three kinds, see TITLE_GAIN_CREATED_VERBS.
     "created": "创建",
     "appointment": "受任",
     "appointment_succession": "受任",
@@ -748,15 +717,13 @@ TITLE_GAIN_VERBS = {
 }
 
 
-# v34b / v53: reason=created 分三档 —
-#   first    无前主 → 「创建」(游戏 desc_created_first「作为一个新头衔」)
-#   restored 前主同宗族 → 「重建」(真复辟, 游戏 desc_created「在一段废弃期后」)
-#   founded  前主异宗族且 hegemon 级 → 「开创」(天朝宣称天命、新朝坐旧头衔)
-# 判定入口 Facts.created_verb_kind。
+# `created` split three ways, entry point `Facts.created_verb_kind`: `first` = no previous
+# holder, `restored` = previous holder of the same house, `founded` = another house at
+# hegemon level.
 TITLE_GAIN_CREATED_VERBS = {
     "first": "创建",
     "restored": "重建",
-    "founded": "开创",   # v53: 异宗族重立 hegemon (h_china 宣称天命)
+    "founded": "开创",   # another house re-founding a hegemon (h_china claiming the mandate)
 }
 
 
@@ -780,7 +747,7 @@ TITLE_LOSS_VERBS = {
 }
 
 
-# 记忆类型 → 中文 (模板: {name}=记忆拥有者, {other}=参与者, {title}=头衔)
+# Memory type → Chinese ({name} = memory owner, {other} = participant, {title} = title).
 MEMORY_TEMPLATES = {
     "became_rivals": "{name}与{other}结仇。",
     "became_grudge": "{name}与{other}结怨。",
@@ -794,40 +761,38 @@ MEMORY_TEMPLATES = {
     "broke_up_lovers": "{name}与{other}分手。",
     "became_lovers": "{name}与{other}相恋。",
     "had_sex": "{name}与{other}有私情。",
-    # v31 (问题2): 配偶之间的床笫之事不写作「私通」——婚姻之内, 本无非分之义
-    # (旧文本把主角与公主的夫妻之实写成「私通四次」, 太史公曰亦随之失真)。
+    # Sex between spouses is not written as an illicit affair: within a marriage nothing
+    # is illicit.
     "had_sex_spouse": "{name}与{other}同房。",
-    # v38 (问题1): 双方自愿、但非配偶的床笫之事 (Carnalitas 的 consensual 族) ——
-    # 婚姻之外的相与; 配偶那一档仍走 `had_sex_spouse`。
+    # Consensual sex outside marriage (the Carnalitas consensual family); spouses
+    # still use `had_sex_spouse`.
     "had_sex_consensual": "{name}与{other}相与。",
     "became_friends": "{name}与{other}结为好友。",
     "became_soulmates": "{name}与{other}结为灵魂伴侣。",
     "became_blood_brother": "{name}与{other}结为血盟兄弟。",
     "imprisoned_other": "{name}囚禁{other}。",
-    # v32 (马克龙问题1): 被囚的记忆带 imprisoner 槽 (participants), 旧句「{name}被囚。」
-    # 把监禁者丢掉 —— 家室档案行只写「公主被囚」, 模型只好自己猜是谁囚的。
-    # 无对手方槽时回退 `_no_other` 版 (见 facts._mem_sentence 的兜底规则)。
+    # The imprisonment memory carries the imprisoner in its participants slot; with no
+    # counterpart slot it falls back to the `_no_other` version (facts._mem_sentence).
     "imprisoned": "{name}为{other}所囚。",
     "imprisoned_no_other": "{name}被囚。",
     "released_from_prison_memory": "{name}获释。",
-    # v32: 越狱 (escaped_from_prison_memory, participants=imprisoner) 此前无模板 →
-    # _mem_sentence 返回 None, 越狱整条不入事实面 (主角 869.10.16 即如此)。
+    # Escape memory (participants = the imprisoner).
     "escaped_from_prison_memory": "{name}从{other}的监禁中逃脱。",
     "escaped_from_prison_memory_no_other": "{name}越狱脱身。",
     "lost_title_memory": "{name}让出{title}。",
     "ascended_throne_memory": "{name}获得{title}。",
     "child_born": "{name}添子{other}。",
     "first_born": "{name}得长子{other}。",
-    # v32 (马克龙问题3): 夭折记忆的 participants 是 **mother** —— 旧句只有父名,
-    # 模型据此写出「未知其母, 只知为某人之血脉」(主角只一位妻子, 母亲其实早有数据)。
-    # 配偶词按持有人性别与关系取 (妻/夫; 妾另表, 见 facts._consort_word);
-    # 生母本人持有该记忆 (自指) 时用 `_no_other` 版, 不出「A之妻A」。
+    # The premature/stillbirth memories carry the **mother** in participants. The consort
+    # word follows the holder's sex and relation (wife/husband; concubines have their own
+    # table, facts._consort_word), and when the mother holds the memory herself the
+    # `_no_other` version avoids a self-referential "A's wife A".
     "child_premature": "{name}之{rel}{other}流产。",
     "child_premature_no_other": "{name}流产。",
     "child_stillborn": "{name}之{rel}{other}产下死婴。",
     "child_stillborn_no_other": "{name}产下死婴。",
     "twins_born": "{name}得孪生子。",
-    # v26: 出生按孩子性别分版 (女儿此前一律被写成「添子」— 田所2 睦/立希)
+    # Births are split by the child's sex.
     "child_born_female": "{name}添女{other}。",
     "first_born_female": "{name}得长女{other}。",
     "twins_born_female": "{name}得孪生女。",
@@ -840,9 +805,8 @@ MEMORY_TEMPLATES = {
     "passed_palace_exam_memory": "{name}殿试及第。",
     "tortured_memory": "{name}受刑。",
     "torturer_memory": "{name}施刑于人。",
-    # v30: 战斗胜负改用史笔中性词 (修复方案_菲利普4.md 问题3) — 原「打了胜仗/吃了败仗」
-    # 是游戏 UI 口语, 模型逐字照抄进正文 (「他吃了败仗」「佛罗西吃了败仗」);
-    # 「主动开战/被迫应战」保留 (用户决策)。
+    # Battle outcomes use neutral historiographic words, because game-UI phrasing gets
+    # copied verbatim by the model. The offensive/defensive distinction is kept.
     "battle_won_memory": "{name}取胜。",
     "battle_lost_memory": "{name}失利。",
     "offensive_war": "{name}主动开战。",
@@ -864,21 +828,16 @@ MEMORY_TEMPLATES = {
     "completed_rites_of_passage": "{name}完成成人礼。",
     "completed_adult_education": "{name}完成深造。",
     "became_acclaimed": "{name}获拥戴。",
-    # v56 (问题1b): 加冕类两条此前一条残缺、一条缺模板 ——
-    # witnessed 的参与者是 host (受冕者), 旧模板无 {other} 只出「见证加冕」;
-    # held (当事人自己受冕) 在表里**没有条目**, _mem_sentence 返回 None,
-    # 整件事不进事实面。加冕成的头衔由 facts 按加冕当日首要头衔填入 {title}
-    # (游戏文案 held_a_coronation_memory_desc: 「我被[coronator]正式加冕为
-    # [owner primary title]的合法[owner title]」)。
+    # Coronation: `witnessed_*` takes the crowned person as its participant, and the
+    # title in `held_*` is filled by facts from the primary title on the coronation day
+    # (game text `held_a_coronation_memory_desc`).
     "witnessed_a_coronation_memory": "{name}见证{other}的加冕。",
     "witnessed_a_coronation_memory_no_other": "{name}见证加冕。",
     "held_a_coronation_memory": "{name}受{other}加冕为{title}。",
     "held_a_coronation_memory_no_other": "{name}受加冕为{title}。",
-    # v78-5 (用户 D6): 加冕族其余 17 键 —— 旧稿只有上面四条, 故 `_mem_sentence_body`
-    # 对其余各键返回 None, 整条记忆不进事实面 (实测 25 份缓存里 22 键共 1640 条,
-    # 过 `_related_ids` 闸门后仍有个位数行能进年表)。模板一律正向史书式;
-    # 「须 `_no_other`」= 参与者槽可能缺失, 由 `_mem_sentence_body` 的 `_no_other`
-    # 回退兜住。详见 `docs/调研_v78_加冕记忆.md` §5.2。
+    # The remaining coronation-family keys, all positive historiographic templates.
+    # The `_no_other` pairs cover a missing participant slot through the
+    # `_mem_sentence_body` fallback.
     "crowned_by_hof_memory": "{name}受{other}祝圣，加冕为{title}。",
     "crowned_by_hof_memory_no_other": "{name}受祝圣而加冕为{title}。",
     "coronation_highlighted_memory": "{name}在{other}的加冕礼上领舞。",
@@ -925,16 +884,16 @@ MEMORY_TEMPLATES = {
         "{name}在加冕宴的斗酒中作弊，为{other}发现。",
     "was_caught_cheating_in_drinking_contest_memory_no_other":
         "{name}在加冕宴的斗酒中作弊。",
-    # v78-5: 流放/逐出宗族三型 (旧稿零接管; 三型同源, 由
-    # `common/events/dlc/mpo/mpo_nomad_events_1.txt` 的事件 .1020 一次写出)
+    # Exile / expulsion from the house: three forms written by one event branch
+    # (common/events/dlc/mpo/mpo_nomad_events_1.txt, event .1020).
     "exiled_kin_memory": "{name}放逐其亲属{other}，逐之出族。",
     "exiled_by_kin_memory": "{name}为亲属{other}所放逐，去族而居。",
     "defected_from_kin_memory": "{name}率部众离{other}自立，别为一族。",
     "grand_wedding_completed_guest": "{name}出席大婚。",
     "ignored_assault_memory": "{name}受辱未报。",
-    # v15: 成功谋杀 (主角视角, 神秘死亡味由受害者死亡记录句负责)
+    # Successful murder, from the protagonist's view; the mysterious flavour comes
+    # from the victim's death record.
     "successful_murder": "{name}谋杀{other}。",
-    # v38 (问题1 顺带): 同期未命中的普通游戏记忆 — 此前整条落不到事实面。
     "saved_from_assault_memory": "{name}自袭击中救下{other}。",
     "stopped_being_friends": "{name}与{other}断绝交谊。",
     "lover_died": "{name}的情人{other}去世。",
@@ -947,52 +906,39 @@ MEMORY_TEMPLATES = {
 
 
 # ---------------------------------------------------------------------------
-# v38 (问题1) / v39 (诺兰测试集): Carnalitas 性事记忆族 (had_sex_*) 的措辞表
+# Carnalitas sex-memory family (had_sex_*) wording
 # ---------------------------------------------------------------------------
-# 类型键由 Mod 按 `性别关系×主动/被动×体位×射精位置×自愿程度` 组合生成
-# (common/scripted_effects/carn_had_sex_memory_effect.txt, 共 24 键), 逐键写模板
-# 既不可能也不必要 —— 事实层取「谁对谁做了什么、什么体位、自愿到什么程度」。
+# Type keys are generated by the mod from sex × role × position × ejaculation target ×
+# consent (common/scripted_effects/carn_had_sex_memory_effect.txt, 24 keys), so the fact
+# layer takes "who did what to whom, in what position, with what degree of consent".
 #
-# 收录范围 (用户拍板 2026-09-14, 诺兰测试集复核): **只记录强迫与非自愿**两类 ——
-# 即 `_noncon` (强迫) 与 `_dubcon` (半强迫); `_consensual` 一律仍按旧口径
-# (`had_sex` / `had_sex_spouse` / `had_sex_consensual`) 由 `MEMORY_TEMPLATES`
-# 处理, 即**自愿的性行为不进事实面**。
+# Only the forced and half-willing families are recorded (`_noncon` / `_dubcon`);
+# `_consensual` goes through `MEMORY_TEMPLATES` instead, i.e. consensual sex does not reach
+# the fact layer, except for the disease case noted below.
 #
-# 方向铁律 (与 Mod 脚本逐条核对): 类型名里的 `giving_player` 即**施为方**,
-# `receiving_player` 即**受害方** —— 与男女无关 (女性施为时 Mod 写 `_fm_desc`
-# 「我逆强奸了X」, 仍是 giving 方为主使者)。因此:
-#   `_mem_sentence` 先看 `_actor_of_sex_mem()` 判出记忆持有人是施为方还是受害方,
-#   再在这里取对应句式。
-#
-# 体位词 (用户拍板 2026-09-14 二版, 诺兰测试集; v59 改 dubcon 译法): 句式统一为
-# 「自愿 / 半推半就 / 强迫 + Mod 体位词」, 不用「强奸/鸡奸」——
-#   `_noncon` 施为 = 「X强迫Y性交。」, 受害 = 「Y被X强迫性交。」;
-#   `_dubcon` 施为 = 「X半推半就，与Y性交。」, 受害 = 「Y半推半就，与X性交。」。
-# 体位词直取 Mod 记忆键: vaginal→性交 / anal→肛交 / oral→口交。
-# 女方施为的强迫档另取「逆强奸」句 (Mod 的 `_fm_desc` 文案即「我逆强奸了X」);
-# 插入语义只对阴道与肛两档成立, 口交档仍作「强迫…口交」。
-# 射精位置 (cum_inside/outside) 仍不进事实面 —— 那是游戏 UI 的露骨描述。
+# Direction: `giving_player` in the type name is the actor and `receiving_player` the victim,
+# regardless of sex; `_mem_sentence` resolves the holder's side via `_actor_of_sex_mem()` and
+# then picks the pattern here. Position words come from the mod keys (one act word per
+# vaginal/anal/oral key); a woman acting in the forced tier gets the reverse-rape pattern,
+# and the ejaculation target (cum_inside/outside) never reaches the fact layer.
 SEX_MEM_WORDING = {
-    # 施为方视角: {name}=持有人 (施为者), {other}=受害方
+    # Actor's view: {name} = holder (actor), {other} = victim.
     "actor_noncon": {
         "vaginal": "{name}强迫{other}性交。",
         "anal": "{name}强迫{other}肛交。",
         "oral": "{name}强迫{other}口交。",
         "base": "{name}强迫{other}性交。",
     },
-    # v59 (问题1): 措辞按用户 2026-09-23 拍板「保留自愿/半推半就/强迫三档」
-    # —— 游戏旗标 `dubcon` 的原义是「对方并不情愿，但也不到强迫」(Mod 自己的
-    # 中文文案即「半推半就」), 旧稿译作「半强迫」把配偶之间的床笫之事推成
-    # 人身侵害, 与同档位的「同房」(自愿) 并存时自相矛盾 (吉贝尔蒂 1075.5.31)。
-    # 故施为档改用「半推半就」—— 与受害档同一套词, 三档仍是
-    # 自愿(`同房`/`相与`) < 半推半就 < 强迫(`noncon`)。
+    # The game flag `dubcon` means the other party is reluctant without being forced
+    # (the mod's own Chinese text means "half-willing"); the scale stays consensual
+    # (bedchamber / consensual partner) < half-willing < forced (`noncon`).
     "actor_dubcon": {
         "vaginal": "{name}半推半就，与{other}性交。",
         "anal": "{name}半推半就，与{other}肛交。",
         "oral": "{name}半推半就，与{other}口交。",
         "base": "{name}半推半就，与{other}性交。",
     },
-    # 受害方视角: {name}=持有人 (受害者), {other}=施为方
+    # Victim's view: {name} = holder (victim), {other} = actor.
     "victim_noncon": {
         "vaginal": "{name}被{other}强迫性交。",
         "anal": "{name}被{other}强迫肛交。",
@@ -1005,24 +951,21 @@ SEX_MEM_WORDING = {
         "oral": "{name}半推半就，与{other}口交。",
         "base": "{name}半推半就，与{other}性交。",
     },
-    # 女方施为的强迫档 (施为方性别由存档确定性判定, 见 facts._sex_mem_sentence):
-    # Mod 的 `_fm_desc` 即「我逆强奸了X, 让他把鸡巴塞进我的小穴/屁眼」。
+    # Reverse-rape forced tier for a female actor (her sex is decided from the save,
+    # see facts._sex_mem_sentence).
     "actor_reverse_noncon": {
         "vaginal": "{name}逆强奸{other}，行阴道性交。",
         "anal": "{name}逆强奸{other}，行肛交。",
         "base": "{name}逆强奸{other}。",
     },
-    # 归并行 (同一受害者被同一人多次 / 同一施为者多次) — 两句各一
+    # Merged lines for repeated acts by one actor or against one victim.
     "group_actor": "{name}对{names}共{n}次行强迫之事。",
     "group_victim": "{name}为{names}共{n}次所强迫。",
 }
 
-# v40: 性病 (情人疱疹/大痘) 传播当次的**自愿**性事 —— 用户拍板 2026-09-15:
-# 「发生性病传播时, 在性行为后面加上一句（某某把疱疹/大痘传染给了某某）,
-#   此时不论该性行为是自愿或非自愿都记录（只有这一个特例）」。
-# 故自愿档只在「本次即传播当次」时出体位句, 其余自愿档仍走旧模板 (私情/同房)。
-# 措辞**不带方向**: Mod 对同一场性事给双方各写一条 (giving/receiving), 归一后
-# 同型同参与者, `_timeline` 的成对去重只留一条 —— 保留哪一条由缓存遍历次序决定。
+# The one consensual case that is recorded: when a venereal disease is transmitted, a
+# sentence naming who infected whom follows the act. The wording carries no direction —
+# the mod writes one memory per side and `_timeline`'s pair dedup keeps one.
 SEX_MEM_CONSENSUAL = {
     "vaginal": "{name}与{other}性交。",
     "anal": "{name}与{other}行肛交。",
@@ -1033,9 +976,10 @@ SEX_MEM_WORDING["actor_consensual"] = SEX_MEM_CONSENSUAL
 SEX_MEM_WORDING["victim_consensual"] = SEX_MEM_CONSENSUAL
 
 
-# v28: 隐事 (secrets) 主题短语 — 存档 secrets.secrets 的 type → 中文短语。
-# 类型名本地化 (L.loc(table, type)) 只是名词 (考试舞弊者/巫师/不信者), 提示词里
-# 需要可叙事的短语, 故按类型给模板; 未收录类型回退游戏本地化类型名。
+# Secret topic phrases: the `type` of save `secrets.secrets` → Chinese phrase. The type
+# localization (`L.loc(table, type)`) is only a noun (cheat, witch, non-believer) while the
+# prompt needs a narratable phrase, hence a template per type; an unknown type falls back
+# to the localized type name.
 SECRET_TOPICS = {
     "secret_murder": "谋杀{target}",
     "secret_murder_attempt": "谋杀{target}未遂",
@@ -1047,17 +991,15 @@ SECRET_TOPICS = {
     "secret_witch": "暗行巫术",
     "secret_embezzler": "侵吞库银",
     "secret_siphoned_treasury": "挪用国库",
-    # v31 (问题7): 血统类隐事指名所涉子女 — 旧文案「血统有争（涉及X）」是名词
-    # 括注同位语, 且与「见载年/知情者」的括注叠在一起, 读来含混。
-    # v41 (问题4): 再点名**实父** —— 《家室列传》《阴私录》要靠这一句把
-    # 「主角的女儿嫁的正是主角自己的私生子」接起来 (facts.secret_topic 传入
-    # {father}; 实父判不出时退 SECRET_TOPICS_NO_FATHER 的简式)。
+    # Lineage secrets name the child involved and the biological father, so the household
+    # and secret boards can connect "the protagonist's daughter married the protagonist's
+    # own illegitimate son" (facts.secret_topic passes {father}; an undetermined father
+    # falls back to the shorter SECRET_TOPICS_NO_FATHER form).
     "secret_unmarried_illegitimate_child":
         "所出{target}血脉存疑，亲生父亲为{father}",
     "secret_disputed_heritage": "所生{target}血统有争，亲生父亲为{father}",
-    # v42 (问题1): 乱伦走自然动词式 —— 旧稿是 facts 里的 `乱伦：与{target}`
-    # (全库唯一一条「标签：内容」式隐事主题), 嵌进「有隐事N桩：」成双层冒号;
-    # 判不出对象时退 SECRET_TOPICS_NO_TARGET 的「乱伦」。
+    # Incest uses a natural verb form; with no determinable counterpart it falls back
+    # to the short incest topic in SECRET_TOPICS_NO_TARGET.
     "secret_incest": "与{target}乱伦",
     "secret_homosexual": "断袖",
     "secret_cannibal": "食人",
@@ -1066,54 +1008,46 @@ SECRET_TOPICS = {
 }
 
 
-# 模板需要对象、而存档未给 target 时的简写
+# Short forms for templates that need a target the save does not supply.
 SECRET_TOPICS_NO_TARGET = {
     "secret_murder": "谋害人命",
     "secret_murder_attempt": "行刺未遂",
     "secret_lover": "与人私通",
-    # v42 (问题1): 乱伦判不出对方时的简式 (名词即事, 不点名)
     "secret_incest": "乱伦",
 }
 
-# v41 (问题4): 血统类隐事判不出实父时的简式 (无料不下发实父位)
+# Lineage secrets with no determinable biological father (that slot is left out).
 SECRET_TOPICS_NO_FATHER = {
     "secret_unmarried_illegitimate_child": "所出{target}血脉存疑",
     "secret_disputed_heritage": "所生{target}血统有争",
 }
 
-# v58 (问题2): **谓词型**隐事主题 —— 这些主题本身已是一个谓语短语（「与X私通」
-# 「谋害X」「暗行巫术」），再套「{owner}有一桩隐事：{topic}」会读成
-# 「玛蒂尔达·卡诺萨有一桩隐事：与阿普利亚公爵狐狸罗贝尔·欧特维尔私通。」
-# 故这类直接作谓语出句：「1072年，玛蒂尔达·卡诺萨与阿普利亚公爵狐狸罗贝尔·欧特维尔私通。」
-# 其余（名词型：科举舞弊 / 所生X血统有争 / 断袖…）保留原「有隐事」框架
-# （它们需要「这是他的隐事」这层语义，直接作谓语不通）。
+# Predicate-type secret topics: the topic is already a verb phrase (an affair, a killing, a
+# witch's rite), so the "{owner} has a secret: {topic}" frame would read badly and these are
+# used directly as the predicate. Noun-type topics (exam cheating, disputed lineage,
+# same-sex relations…) keep the "has a secret" frame, which they need.
 SECRET_PREDICATE_TYPES = frozenset({
     "secret_lover", "secret_incest", "secret_murder", "secret_murder_attempt",
     "secret_witch", "secret_embezzler", "secret_siphoned_treasury",
     "secret_adultery", "secret_coup_plotter", "secret_cannibal",
-    # v92 (用户 2026-10-02 报): 科举舞弊的主题本身就是完整的谓语短语
-    # (「在天皇帝穿刺者洪秀全主持的乡试中舞弊」), 套「有隐事：」框架后成为
-    # 「崔穆有一桩隐事：在…乡试中舞弊。」—— 用户要的是「谁做了什么」:
-    # 「崔穆在天皇帝穿刺者洪秀全主持的乡试中舞弊。」
+    # The exam-cheating topic is itself a complete predicate phrase (it names the exam
+    # and the cheating act), so it belongs in this set too.
     "secret_exam_cheater",
 })
 
 
 def secret_topic_is_predicate(tp):
-    """该隐事类型的主题短语能否直接作谓语 (v58 问题2)。"""
+    """Whether this secret topic can stand as the predicate itself."""
     return str(tp or "") in SECRET_PREDICATE_TYPES
 
 
-# v16: 动作型死因 → 施事句式 (原始 reason key → 动词)。有凶手/行刑者/对手
-# 记录时, 把施事者直接嵌进句内 (被XXX谋杀 / 被XXX处决 / 与XXX决斗而亡),
-# 不再另起「凶手为…」尾巴 — 更短, 也更像自然语言; 战场/意外/病亡的击杀者
-# 不是「凶手」, 一律不点名。
-# v75 (凶手点名): 该表是**内情档**用词 (《刺客列传》), 不再等于「世人看到的」——
-# `death_mysterious` 的世人说法是游戏本地化的「神秘死亡」, 是否点名取决于
-# 存档旗标 `dead_data.killer_known` (见 facts.Facts.killer_is_public);
-# 旧注「death_murder 是败露的谋杀」在田所 878 年孝子 (death_murder 但未败露,
-# 秘密仍在世) 上是错的。
-DEATH_KILLER_VERB = {  # 凶手: 被{凶手}{动词}
+# Action-type death causes → agent patterns (raw reason key → verb). With a
+# killer/executor/opponent on record the agent goes straight into the sentence instead of a
+# separate "the killer was…" tail; battlefield, accident and illness deaths name no one.
+# This is the insider wording (assassin board), not what the world saw: the public version
+# of `death_mysterious` is the game's mysterious-death text, and naming the killer depends on
+# the save flag `dead_data.killer_known` (facts.Facts.killer_is_public).
+DEATH_KILLER_VERB = {  # agent = the killer, worded in the passive
     "death_murder": "谋杀",
     "death_murder_known": "谋杀",
     "death_mysterious": "秘密谋杀",
@@ -1139,7 +1073,7 @@ DEATH_KILLER_VERB = {  # 凶手: 被{凶手}{动词}
 }
 
 
-DEATH_EXECUTOR_VERB = {  # 行刑者: 被{行刑者}{动词}
+DEATH_EXECUTOR_VERB = {  # agent = the executor, worded in the passive
     "death_execution": "处决",
     "death_punishment": "处决",
     "death_hostage_execution": "处决",
@@ -1150,7 +1084,7 @@ DEATH_EXECUTOR_VERB = {  # 行刑者: 被{行刑者}{动词}
 }
 
 
-DEATH_OPPONENT_VERB = {  # 对手: 与{对手}{动词}而亡
+DEATH_OPPONENT_VERB = {  # agent = the opponent; "died duelling with X"
     "death_duel": "决斗",
     "death_fight": "斗殴",
     "death_fight_killer": "斗殴",
@@ -1159,60 +1093,62 @@ DEATH_OPPONENT_VERB = {  # 对手: 与{对手}{动词}而亡
 }
 
 
-DEATH_AGENT_TAIL = {  # 死因自带惨状/情状, 施事者用「凶手/行刑者为…」点出
-    "death_head_ripped_off": "凶手",   # 身首异处，凶手为XXX
-    "death_eradicated": "行刑者",      # 连同全族被处决，行刑者为XXX
+DEATH_AGENT_TAIL = {  # causes that carry their own manner; the agent gets its own clause
+    "death_head_ripped_off": "凶手",   # e.g. head ripped off, the killer being XXX
+    "death_eradicated": "行刑者",      # e.g. executed with the whole house, the executor being XXX
 }
 
 
-# v22: 处决方式 (用户需求 2026-09-02) — 存档不记录行刑者实际选择的方式,
-# 受害死因键恒为 death_execution; 依 execute_prisoner_interaction 的
-# send_option 可用条件 (见游戏 common/character_interactions/00_prison_interactions.txt),
-# 用传记所用熔件/缓存的行刑者状态近似判定可用方式, 再按 (行刑者, 受害者,
-# 死亡日期) 稳定伪随机取一 — 不同处决有变化, 同一处决重跑不漂移。
-# (顺序即游戏界面顺序; 措辞按 EXECUTION_* 本地化与 death_* 死因雅化。)
+# Execution methods: the save does not record which one the executor chose (the victim's
+# reason key is always `death_execution`). Available methods are approximated from the
+# executor's state in the biography's melt/cache using the `send_option` conditions of
+# `execute_prisoner_interaction` (common/character_interactions/00_prison_interactions.txt),
+# then one is picked by a stable hash of (executor, victim, death date), so executions vary
+# while a re-run does not drift. Order is the game UI order.
 EXECUTION_OPTIONS = (
-    ("beheaded",   "斩首"),                     # EXECUTION_BEHEADED 砍头
-    ("devour",     "砍头后吃掉"),               # EXECUTION_DEVOUR 砍头……然后吃掉!
-    ("burned",     "烧死"),                     # EXECUTION_BURNED 烧死在火刑柱上
-    ("sacrifice",  "献祭给神灵"),               # EXECUTION_SACRIFICE 献祭
-    ("kennel",     "处以犬决"),                 # EXECUTION_KENNEL 犬决
-    ("provisions", "做成神秘的肉充作口粮"),     # EXECUTION_PROVISIONS 做成神秘的肉
+    ("beheaded",   "斩首"),                     # EXECUTION_BEHEADED
+    ("devour",     "砍头后吃掉"),               # EXECUTION_DEVOUR
+    ("burned",     "烧死"),                     # EXECUTION_BURNED
+    ("sacrifice",  "献祭给神灵"),               # EXECUTION_SACRIFICE
+    ("kennel",     "处以犬决"),                 # EXECUTION_KENNEL
+    ("provisions", "做成神秘的肉充作口粮"),     # EXECUTION_PROVISIONS
 )
 
-# v53 (问题4): 诛灭世族专用, 不进 EXECUTION_OPTIONS 随机池。
+# House purge only; not part of the EXECUTION_OPTIONS random pool.
 EXECUTION_PURGE = ("purge", "连坐处死")
-# v60 (问题2): 遗骨存证的**吃掉** —— Mod「食人赋能」的
-# `devour_single_character_effect` 是另一条动作 (直接 `death = { reason =
-# death_execution }`, 不经处决交互、不斩首), 却因共用死因键落进上面的随机池。
-# 该 Mod 的每个受害者都会留下「…之骨」遗骨 (`devour_bone_visual`, 成物时
-# recipient = 下口者), 故死法由存档确定性给出, 用本条措辞。
+# Bone-proven eating: the mod's `devour_single_character_effect` sets
+# `death = { reason = death_execution }` without going through the execution interaction,
+# but shares the reason key and so fell into the random pool above. Every victim leaves a
+# bone object named after him (`devour_bone_visual`, its recipient at creation being the
+# eater), so the method is proven by the save.
 EXECUTION_DEVOUR_BONE = ("devour_bone", "吃掉")
 
 EXECUTION_ORDER = {k: i for i, (k, _v) in enumerate(EXECUTION_OPTIONS)}
 
 
-# v15: 概览统计标签 (记忆类型 → 中文标签; death 记录按模块另表)。
-# 只统计有戏剧意义的类型, 供【概览】块程序直算「本十年结怨9次、谋杀5次…」。
+# Overview stat labels (memory type → label; death records use another table). Only
+# dramatically meaningful types are counted, so the overview block can state its counts
+# directly (rivalries this decade, murders, bereavements, …).
 STATS_LABEL = {
     "became_rivals": "结仇", "became_grudge": "结怨", "became_nemesis": "结为死敌",
     "child_born": "添丁", "first_born": "添丁", "twins_born": "添丁",
     "child_premature": "夭折", "child_stillborn": "夭折",
     "successful_murder": "谋杀",
     "had_sex": "私通", "became_lovers": "私通",
-    # v31 (问题2): 配偶之间的情事另立一档 — 概览不再把夫妻之实计入「私通」
+    # Spousal intimacy has its own tier; the overview does not count it as an affair.
     "had_sex_spouse": "夫妻之情", "became_lovers_spouse": "夫妻之情",
     "relative_died": "丧亲", "spouse_died": "丧偶", "friend_died": "丧友",
     "rival_died": "仇人死亡",
     "married": "成婚", "broke_up_lovers": "分手",
     "imprisoned": "被囚", "imprisoned_other": "囚禁他人",
-    # v32 (马克龙问题1): 越狱单列一档 — 与「被囚」不同, 它是主动脱身
+    # Escape is its own tier: unlike imprisonment it is a voluntary break-out.
     "escaped_from_prison_memory": "越狱",
     "offensive_war": "开战", "defensive_war": "应战",
     "war_won": "获胜", "war_lost": "战败",
     "battle_won_memory": "取胜", "battle_lost_memory": "失利",
     "faith_changed": "改信",
-    # v78-5 (用户 D6): 加冕只计三条 —— 19k 条 `witnessed_*` 若逐条计会把概览撑爆
+    # Only three coronation keys are counted; counting every `witnessed_*` would blow
+    # the overview up.
     "held_a_coronation_memory": "受冕",
     "crowned_by_hof_memory": "受冕",
     "witnessed_a_coronation_memory": "见证加冕",
@@ -1224,8 +1160,8 @@ DEATH_STAT_LABEL = {
     "丧友之恸": "丧友", "仇人死亡": "仇人死亡",
 }
 
-# v31 (问题1): 特质类别词 — 游戏 common/traits 的 `category` → 中文。
-# 空键 = 游戏未给 category 的先天特质 (beauty_*/intellect_*/physique_*/dwarf…)。
+# Trait category words: `category` in game `common/traits/*.txt` → Chinese. The empty
+# key covers innate traits the game gives no category (beauty_*/intellect_*/physique_*/dwarf…).
 TRAIT_GROUP_WORDS = {
     "personality": "性情", "education": "才具", "lifestyle": "阅历",
     "commander": "将略", "fame": "名声", "health": "体况",
@@ -1234,18 +1170,8 @@ TRAIT_GROUP_WORDS = {
 
 
 def hook_type_kept(tp):
-    """牵制类型是否进入事实层 (v38, 问题2)。
-
-    白名单制 (见 FACT_WORDING["hook_keep_exact"] / `hook_keep_drop_fragments`):
-    只有「背后有一件具体事」的牵制才下发 —— 勒索族 (背后是隐事)、捏造、罪案共犯、
-    违反禁奢令、比武审判、Mod 内容牵制 (Carnalitas 奴役等), 以及全部以 `strong_`
-    开头且不在通用人情类的强牵制 (黑函/重罪共犯/救命恩/血盟/神命/影响力…)。
-
-    通用人情类一律剔除: 人情 (favor)、义务 (obligation)、蒙恩 (indebted)、
-    支持者、忠诚、威胁、操控、可疑活动、家主、孝道 —— 这些是「某些角色欠了你
-    一个人情」这类机制关系, 不构成叙事事件; 模型拿到它们只能编出「握有把柄」。
-    实测德圣塔/周氏档: 全档 7259 条牵制里 `house_head_hook` 5243、`filial_piety_hook`
-    1069、`favor_hook` 548, 而涉主角的只有 4 条 (全是这三类)。"""
+    """Whether a hook type reaches the fact layer: whitelist, plus any `strong_` type
+    that is not a generic favor (see FACT_WORDING["hook_keep_exact"])."""
     t = str(tp or "")
     if not t:
         return False
@@ -1259,13 +1185,13 @@ def hook_type_kept(tp):
     return t.startswith("strong_")
 
 
-# v56 (问题3): 出狱缘由的两路数据源 —— `cache_lib._latch_prison_manners` 按这两张表
-# 逐档闩存, `facts.Facts.release_manner` 按同一数据读回 (措辞表在 facts 侧的
-# `_PRISON_MANNER_MODS` / `_PRISON_KIND_WORD`, 其键集必须与下表一致, 见
-# tools/tests/verify_v56_unit.py 的不变量断言)。
-# ① 出狱类好感修饰符 (存档自带 start_date, 精确到日; 10 年衰减且随持有者死亡消失);
-# ② 赎金·人情分支的牵制 —— 不在 `hook_type_kept` 白名单内 (不下发《阴私录》),
-#    只在出狱缘由这一处使用; 其到期日 = 创建日 + 10 个日历年 (实测 15/15 逐日吻合)。
+# Two data sources for release reasons; `cache_lib._latch_prison_manners` latches them per
+# archive and `facts.Facts.release_manner` reads them back (the key sets of its
+# `_PRISON_MANNER_MODS` / `_PRISON_KIND_WORD` must match the tables here).
+# ① release opinion modifiers: the save carries `start_date` to the day, decaying over 10
+#    years and vanishing with the holder's death;
+# ② ransom/favor hooks: outside the `hook_type_kept` whitelist (so they never reach the
+#    secret board), used only for the release reason; expiry = creation date + 10 years.
 PRISON_MANNER_OPINION_MODS = frozenset({
     "released_from_prison", "merciful_opinion", "ransomed_from_prison",
     "demanded_my_conversion_opinion", "compelled_me_to_convert_opinion",
