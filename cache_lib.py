@@ -1,27 +1,18 @@
 # -*- coding: utf-8 -*-
-"""CK3 记忆缓存库 v4 (由 expck3/cache_lib.py v2 升级移植)。
+"""CK3 memory cache library.
 
-记忆系统真实结构 (经 exp6/exp7/exp8 实测验证):
-  - character_memory_manager.database : 键 = **记忆 ID** (与角色共享 id 池)。
-  - 每个角色的 alive_data.memories = { 记忆ID列表 } : 角色 → 记忆的多对多映射。
-  - 角色**死亡时 memories 列表被清空**, 记忆对象也从 database 移除
-    (实测: 868 活有记忆→869 已死 141 人全部清空; 对照活人保留)。
-  - 因此必须在角色死前的年度存档里抓取记忆 → 缓存库是唯一可靠方案。
+Save structure and the reason this cache exists:
+  - character_memory_manager.database maps memory id -> memory object
+    (memory ids come from the same id pool as characters).
+  - alive_data.memories on each character lists that character's memory ids.
+  - Both the list and the memory objects are dropped when the character dies,
+    so memories are only recoverable from yearly snapshots taken before death.
 
-v4 变更 (相对 v3):
-  1. **本地化接入**: 名字/姓氏/头衔名查 localization.py 的本地化表
-     (Daria → 达丽娅; dynasty_house.localized_name → 冯·大马士革)。
-  2. **特质日期**: 每快照 diff 特质 → rec["trait_history"] 记录
-     {特质key: [{from, to, first}]} (获得/消失区间, 供「自某日起获得」)。
-  3. **反向亲属索引**: 存档子女 family_data 常为空, 父女关系只在父/母侧的
-     child 列表 (实测 33367.child 含妻 37898) → 每快照构建全档亲属图,
-     补出 rec["family"] 的 father/mother/siblings; 目标集扩展含亲属的亲属,
-     保证妻父(宋帝赵曙)/妻兄(今上赵煦)等入缓存。
-  4. **头衔/朝局历史**: cache["player_title_history"] 记录玩家主头衔名变化
-     (复兴党流亡委员会 1067.6.20 起); cache["realm_history"] 逐年记录
-     帝国/王国级头衔与相关角色头衔的持有者, 供《朝局风云录》数据驱动。
-  5. **输出文件夹绑定**: cache["output_folder"] 记录会话文件夹,
-     watch/continue 据此分文件夹 (重名 → 哈布斯堡2, 见 pipeline)。
+Records also carry localized names (localization.py), trait date ranges
+(rec["trait_history"]), a reverse kinship index (rec["family"] father/mother/
+siblings, needed because family_data is often empty while the parent side of a
+marriage keeps the child list), title/realm history, and the session's
+output folder.
 """
 import copy
 import gc
@@ -36,15 +27,15 @@ from collections import OrderedDict
 
 import localization
 import llm
-import style as _style   # v38: 牵制白名单判据 (style.hook_type_kept) 与措辞表
+import style as _style   # hook whitelist predicate (style.hook_type_kept) and wording tables
 
 # ---------------------------------------------------------------------------
-# 名称解码
+# Name decoding
 # ---------------------------------------------------------------------------
 
 _CP_RE = re.compile(r"_([0-9A-Fa-f]{3,5})(?=_|$)")
 
-# 常见繁体→简体映射 (姓氏与常用名用字; 缺字可在此扩充)
+# Common traditional -> simplified map (surname and given-name characters).
 _SIMPLIFY = {
     "誠": "诚", "邊": "边", "師": "师", "綽": "绰", "繫": "系", "係": "系",
     "楊": "杨", "孫": "孙", "張": "张", "蕭": "萧", "羣": "群", "韻": "韵",
@@ -144,14 +135,14 @@ _SIMPLIFY = {
 
 
 def zh(s):
-    """繁体/码点混合文本 → 简体 (按 _SIMPLIFY 表逐字替换)。"""
+    """Convert traditional/mixed text to simplified via the _SIMPLIFY table."""
     if not s:
         return s
     out = []
     i = 0
     n = len(s)
     while i < n:
-        # 先试双字 (复姓/双字词), 再试单字
+        # Two-character entries (compound surnames) first, then single characters.
         two = s[i:i + 2]
         if two in _SIMPLIFY:
             out.append(_SIMPLIFY[two])
@@ -164,8 +155,9 @@ def zh(s):
 
 
 def decode_codepoints(key):
-    """'Cheng_8AA0' → '诚'; 'dynn_Bian_908A' → '边' (只返回码点拼出的汉字;
-    无码点或结果非汉字时原样返回)。"""
+    """Return the characters spelled by the key's hex codepoints ('Cheng_8AA0' -> the
+    character 8AA0 denotes), or the key unchanged when it has no codepoints or spells
+    no Chinese."""
     if not key:
         return key
     parts = _CP_RE.findall(key)
@@ -178,8 +170,8 @@ def decode_codepoints(key):
 
 
 def loc_name(fn):
-    """名字 key → 中文: 本地化表 → 码点解码 → 原样。
-    实测: 'Daria' → '达丽娅'; 'A_zu_963F_8DB3' → '阿足'。"""
+    """Name key -> Chinese display name: localization table, then codepoint decode,
+    then the key unchanged."""
     if not fn:
         return fn
     v = localization.loc(localization.table(), fn)
@@ -192,14 +184,14 @@ def loc_name(fn):
 
 
 def name_zh(char_obj):
-    """角色对象 first_name (名表键) → 中文名。"""
+    """Character object's first_name key -> Chinese given name."""
     fn = (char_obj or {}).get("first_name") or ""
     return zh(loc_name(fn))
 
 
 def _dynn_lookup(table, name):
-    """'abbasid' → 'dynn_Abbasid' → '阿拔斯' (大小写不敏感, v8.2)。
-    CK3 家族名本地化键形如 dynn_<Name> (dynn_Abbasid/dynn_Tulunid)。"""
+    """'abbasid' -> 'dynn_Abbasid' localization key -> name (case-insensitive).
+    CK3 family name keys look like dynn_<Name> (dynn_Abbasid/dynn_Tulunid)."""
     if not name:
         return ""
     global _DYNN_INDEX
@@ -213,12 +205,12 @@ _DYNN_INDEX = None
 
 
 # ---------------------------------------------------------------------------
-# 宗族/家族定义表解析 (v14: AUH 东亚人名 — 存档只有 key, 显示名查游戏定义文件)
+# Dynasty/house definition-table parsing (the save stores only a key)
 # ---------------------------------------------------------------------------
 
 def _dynasty_name_of_dynn(nm, table):
-    """dynn_X (dynn_Fujiwara / dynn_Li_674E) → 中文 (本地化表 → 码点兜底)。
-    与 house_name_zh 取值链一致: 表值优先于键内码点 (游戏造键笔误兼容)。"""
+    """dynn_X key -> Chinese, localization table first, then key codepoints.
+    Same chain as house_name_zh: a table value wins over in-key codepoints."""
     if not nm:
         return ""
     for cand in (nm, nm[len("dynn_"):] if nm.startswith("dynn_") else nm):
@@ -232,8 +224,8 @@ def _dynasty_name_of_dynn(nm, table):
 
 
 def dynasty_name_of_key(key):
-    """宗族 key (japanese_fujiwara / korean_choe_gyeongju) → 中文宗族名 (藤原 / 崔)。
-    key → 游戏定义表 name=dynn_X → 本地化; 未知返回 ''。"""
+    """Dynasty key (japanese_fujiwara) -> Chinese dynasty name via the game
+    definition table; '' when unknown."""
     if not key:
         return ""
     nm = (localization.dynasty_table().get("dynasties") or {}).get(str(key)) or ""
@@ -241,8 +233,8 @@ def dynasty_name_of_key(key):
 
 
 def house_name_of_key(key):
-    """家族 key (house_fujiwara_kajuji) → 中文家族名 (勧修寺)。
-    key → 游戏定义表 name=dynn_X → 本地化; 未知返回 ''。"""
+    """House key (house_fujiwara_kajuji) -> Chinese house name via the game
+    definition table; '' when unknown."""
     if not key:
         return ""
     nm = (localization.dynasty_table().get("houses") or {}).get(str(key)) or ""
@@ -250,21 +242,17 @@ def house_name_of_key(key):
 
 
 # ---------------------------------------------------------------------------
-# v58 (问题4): 贵族地面前缀 (意大利 di／法兰西 de／德意志 von…)
+# Nobility place-name prefixes (Italian di, French de, German von...)
 # ---------------------------------------------------------------------------
-# 游戏把「以地名为氏」的家族/宗族前缀写在 common/dynasty_houses/*.txt 与
-# common/dynasties/*.txt 的 `prefix = "dynnp_X"`（如 house_canossa → dynnp_di，
-# house_ghiberti → dynnp_de，house_wigeriche 无前缀），中文文案在
-# localization/<lang>/dynasties/dynasty_names_l_<lang>.yml（dynnp_di = "迪· "）。
-# 存档也会自带（dynasty_house[].prefix / dynasties[].prefix），以存档为准。
-# 显示名 = 名 + 「·」+ 前缀 + 家族名（西方名序），即游戏的「罗伯托·迪·卡诺萨」。
+# The game writes them as prefix = "dynnp_X" in common/dynasty_houses|dynasties/*.txt with
+# the wording under localization/, and the save's dynasty_house[].prefix wins.
 
 _PREFIX_ZH_CACHE = {}
 
 
 def _prefix_zh(pkey, table=None):
-    """dynnp_X → 中文前缀 (迪·/德·/冯·)。取不到 / 占位符 / 未译 → ''。
-    值尾的排版空格一律去掉（「迪· 」→「迪·」）。"""
+    """dynnp_X -> Chinese prefix; '' when missing, a placeholder or untranslated.
+    Trailing layout spaces are trimmed."""
     if not pkey:
         return ""
     if pkey in _PREFIX_ZH_CACHE:
@@ -280,7 +268,8 @@ def _prefix_zh(pkey, table=None):
 
 
 def _prefix_of_key(kind, key):
-    """家族/宗族定义表里的前缀键。kind ∈ {"house", "dynasty"}; 未知返回 ''。"""
+    """Prefix key from the house/dynasty definition table; kind is "house" or
+    "dynasty"; '' when unknown."""
     if not key:
         return ""
     tb = localization.dynasty_table()
@@ -289,8 +278,8 @@ def _prefix_of_key(kind, key):
 
 
 def house_prefix_zh(melt, house_id):
-    """家族 id → 前缀中文 (迪·)。取值链: 存档 dynasty_house[].prefix → 游戏定义表。
-    无前缀家族返回 ''。"""
+    """House id -> Chinese prefix: the saved dynasty_house[].prefix first, then the
+    game definition table; '' for houses without a prefix."""
     if house_id is None:
         return ""
     try:
@@ -303,7 +292,8 @@ def house_prefix_zh(melt, house_id):
 
 
 def dynasty_prefix_zh(melt, dynasty_id):
-    """宗族 id → 前缀中文。取值链: 存档 dynasties[].prefix → 游戏定义表。"""
+    """Dynasty id -> Chinese prefix: the saved dynasties[].prefix first, then the
+    game definition table."""
     if dynasty_id is None:
         return ""
     try:
@@ -320,42 +310,37 @@ def dynasty_prefix_zh(melt, dynasty_id):
 
 
 def house_name_zh(melt, house_id):
-    """家族 id → 姓氏中文。取值链 (实测):
-      1) dynasty_house[<id>].localized_name  (存档自带, 如 冯·大马士革 / 北家 / 庆州崔)
-      2) 游戏家族定义表 (house key → dynn_Y → 本地化, v14: house_fujiwara_kajuji → 勧修寺)
-      3) 本地化表 (name / dynn_ 键, 与其他文化一致 — 简体中文显示为准, 如
-         dynn_Dou_9B26 → 斗; 表值优先于键内码点, 键码点 9B26=鬦 是游戏造键笔误)
-      4) .name 的码点兜底 (dynn_Bian_908A → 边, 表缺键时的最后手段)
-      5) .key 字段 (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
-      全部失败返回 ''。"""
+    """House id -> Chinese surname, trying in order:
+      1) dynasty_house[<id>].localized_name carried by the save
+      2) the game house definition table (house key -> dynn_Y -> localization)
+      3) the localization table (a table value beats in-key codepoints, because a
+         hand-made key such as dynn_Dou_9B26 can spell a wrong character)
+      4) codepoint decoding of .name when the table lacks the key
+      5) the .key field as dynn_<Key> (house_abbasid -> dynn_Abbasid)
+    '' when every step fails."""
     if house_id is None:
         return ""
     try:
         dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
         e = dh.get(str(house_id)) or {}
-        # 1) 存档自带本地化名
         loc_name = e.get("localized_name") or ""
         if loc_name and any("\u3400" <= ch <= "\u9fff" for ch in loc_name):
             return zh(loc_name)
-        # 2) 游戏家族定义表 (house key → dynn_Y → 本地化, v14)
         hkey = e.get("key")
         if isinstance(hkey, str):
             v = house_name_of_key(hkey)
             if v:
                 return v
-        # 3) 本地化表 (与其他文化同名取值链: 表优先)
         name = e.get("name") or ""
         t = localization.table()
         for cand in (name, name[len("dynn_"):] if name.startswith("dynn_") else name):
             v = localization.loc(t, cand)
             if v and v != cand:
                 return v
-        # 4) name 字段码点兜底 (dynn_ 前缀码点解码; 表缺键时用)
         if name.startswith("dynn_"):
             dec = zh(decode_codepoints(name[len("dynn_"):]))
             if dec and any("\u3400" <= ch <= "\u9fff" for ch in dec):
                 return dec
-        # 5) house key (house_abbasid → dynn_Abbasid → 阿拔斯, v8.2)
         if isinstance(hkey, str) and hkey.startswith("house_"):
             v = _dynn_lookup(t, hkey[len("house_"):])
             if v:
@@ -366,10 +351,10 @@ def house_name_zh(melt, house_id):
 
 
 def house_found_date(melt, house_id):
-    """家族 id → 建立日 (dynasty_house[<id>].found_date); 无则 ''。
+    """House id -> dynasty_house[<id>].found_date; '' when absent.
 
-    v44 (问题1): 私生女别立家族时, 逐档差分只能在**下一档**发现变更, 而
-    建立日是存档直给的权威日期 (阿德尔海德 1118.4.2) — 沿革点用它对表。"""
+    Yearly diffing only sees a new house in the following snapshot, while the
+    saved found_date is the authoritative day, so the house timeline uses it."""
     if house_id is None:
         return ""
     try:
@@ -380,7 +365,7 @@ def house_found_date(melt, house_id):
 
 
 def dynasty_id_of(melt, house_id):
-    """家族 id → 所属宗族 id (dynasty_house[<id>].dynasty); 无则 None。"""
+    """House id -> owning dynasty id (dynasty_house[<id>].dynasty); None when absent."""
     if house_id is None:
         return None
     try:
@@ -390,27 +375,25 @@ def dynasty_id_of(melt, house_id):
         return None
 
 
-# v56 (性能): 宗族名/家族名取值链的按档缓存槽 (thread-local, 单槽 —— 换熔件即失效)。
-# 见 `dynasty_name_zh` 与 `_dyn_caches`。
+# Per-melt memo slot for the dynasty/house name lookup chains: thread-local and
+# single-slot, so it is dropped as soon as the melt changes (see _dyn_caches).
 _TL = threading.local()
 
 
 def dynasty_name_zh(melt, dynasty_id):
-    """宗族 id → 宗族名中文。取值链 (实测):
-      1) dynasties[<id>].localized_name    (Mod 档自带, 如 冯·大马士革 / 崔佛)
-      2) 游戏宗族定义表 (key → dynn_X → 本地化, v14: japanese_fujiwara → 藤原;
-         存档只存 key, 显示名在 common/dynasties/*.txt)
-      3) .name 字段 → 本地化表 (dynn_Lithokristes → 利索克里斯蒂斯)
-      4) .key 字符串 → 本地化表 (dynn_<key> / <key>, v8.2)
-      5) 创始家族兜底: 同宗族内 found_date 最早的 house 取名 (边 / 奥尔西尼…)
-      全部失败返回 '' (由调用方回退家族名)。
+    """Dynasty id -> Chinese dynasty name, trying in order:
+      1) dynasties[<id>].localized_name (carried by the save)
+      2) the game dynasty definition table (key -> dynn_X -> localization; the
+         save stores only the key, the display name is in common/dynasties/*.txt)
+      3) .name -> localization table
+      4) .key -> localization table (dynn_<key> / <key>)
+      5) the earliest-founded house of the dynasty
+    '' when every step fails, so callers fall back to the house name.
 
-    v56 (性能): 5 号兜底原先**每次调用**全表扫 `dynasty_house` (本档 6332 条) ——
-    单档重建里本函数调用 2.2 万次即 1.39 亿次 dict.get, cProfile 实测占
-    `extract_snapshot` 总时的 **44%**。现按熔件缓存「宗族 → 最早 house」索引与
-    逐 id 结果 (thread-local 单槽, 换熔件即失效), 复杂度由 O(宗族数 × house 数)
-    降为 O(house 数 + 宗族数)。缓存只持有**当前档**熔件的引用, 由
-    `extract_snapshot` 换档时清空 (见 `_dyn_caches`)。"""
+    Step 5 scans the whole dynasty_house table, and this function runs tens of
+    thousands of times per snapshot, so both the dynasty -> earliest-house index
+    and the per-id results are memoized per melt in a thread-local single slot
+    (see _dyn_caches)."""
     if dynasty_id is None:
         return ""
     c = _dyn_caches(melt)
@@ -421,29 +404,24 @@ def dynasty_name_zh(melt, dynasty_id):
     try:
         dyn = (melt.get("dynasties") or {}).get("dynasties") or {}
         e = dyn.get(str(dynasty_id)) or {}
-        # 1) 存档自带本地化名
         ln = e.get("localized_name") or ""
         if ln and any("\u3400" <= ch <= "\u9fff" for ch in ln):
             val = zh(ln)
         else:
             t = localization.table()
-            # 2) 游戏宗族定义表 (v14: key → dynn_X → 本地化)
             key = e.get("key")
             if isinstance(key, str):
                 val = dynasty_name_of_key(key)
-            # 3) name 字段 (dynn_X) → 本地化表 / 码点兜底
             if not val:
                 name = e.get("name") or ""
                 if isinstance(name, str):
                     val = _dynasty_name_of_dynn(name, t)
-            # 4) key 字符串 → 本地化表变体
             if not val and isinstance(key, str):
                 for cand in ("dynn_" + key, key):
                     v = localization.loc(t, cand)
                     if v and v != cand:
                         val = v
                         break
-            # 5) 创始家族兜底: 同宗族内 found_date 最早的 house (索引化)
             if not val:
                 hid = _earliest_house_index(melt, c).get(dynasty_id)
                 if hid is not None:
@@ -456,10 +434,11 @@ def dynasty_name_zh(melt, dynasty_id):
 
 
 def _dyn_caches(melt):
-    """本线程当前的 (melt, 宗族→最早 house 索引, 宗族→名字 memo)。
+    """This thread's (melt, dynasty -> earliest house index, dynasty -> name memo).
 
-    单槽: 熔件对象一变即重建 (身份判定 `is`)。thread-local 保证并发重建
-    (pipeline 的后台传记线程与主线程) 不互相串味。"""
+    Single slot keyed on the melt object's identity, so a new melt rebuilds it.
+    Thread-local, so the pipeline's background biography thread and the main
+    thread keep separate state."""
     c = getattr(_TL, "dyn", None)
     if c is None or c[0] is not melt:
         c = [melt, None, {}]
@@ -468,17 +447,17 @@ def _dyn_caches(melt):
 
 
 def clear_dyn_caches():
-    """释放本线程缓存的熔件引用 (换档/收尾时调; 见 `extract_snapshot`)。"""
+    """Drop this thread's cached melt reference (called when switching snapshots)."""
     _TL.dyn = None
 
 
 def _earliest_house_index(melt, c):
-    """{宗族 id: 该宗族 found_date 最早的 house id} —— 每个熔件只扫一遍。"""
+    """{dynasty id: id of that dynasty's earliest-founded house}; built once per melt."""
     if c[1] is None:
         dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
         best = {}
         for hid, h in dh.items():
-            if not isinstance(h, dict):     # v7: none 条目防护
+            if not isinstance(h, dict):     # guard against a "none" entry
                 continue
             did = h.get("dynasty")
             if did is None:
@@ -492,19 +471,15 @@ def _earliest_house_index(melt, c):
 
 
 # ---------------------------------------------------------------------------
-# 加载
+# Loading
 # ---------------------------------------------------------------------------
 
 def _sanitize_none(o):
-    """递归把 Clausewitz 空值字符串 'none' 替换为 None (v7)。
+    """Recursively replace the Clausewitz empty-value string 'none' with None.
 
-    rakaly json 把 `= none` 渲染成字符串 'none'; 而代码里的 `x or {}` 防护
-    对真值字符串 'none' 无效 ('none' or {} → 'none'), 随后 .get() 即崩溃
-    (实测 881.1.11 熔件含 6938 个 'none', living 4508 / dead 262 / 标题 1...)。
-    'none' 语义上等同字段缺失, 替换为 None 后所有 or {} 防护恢复正常。
-
-    v49 (O2): 该清扫已折进 `_merge_dup_pairs` 的同一趟遍历 (实测省 2.7 s/档),
-    本函数保留供外部脚本对照/兜底, 不再出现在 `load_melt` 的热路径上。"""
+    rakaly renders `= none` as the string 'none', which defeats the `x or {}` guards
+    ('none' is truthy) and makes the next .get() crash. The cleanup is folded into
+    _merge_dup_pairs' pass now; this function stays for external scripts."""
     if isinstance(o, dict):
         for k, v in list(o.items()):
             if v == "none":
@@ -521,7 +496,7 @@ def _sanitize_none(o):
 
 
 def _clean_none_list(lst):
-    """把列表元素里的 'none' 换成 None (递归进嵌套列表)。v49 (O2)。"""
+    """Replace the string 'none' with None inside a list, recursing into nested lists."""
     for i, v in enumerate(lst):
         t = type(v)
         if t is str:
@@ -532,25 +507,16 @@ def _clean_none_list(lst):
 
 
 # ---------------------------------------------------------------------------
-# v86: 角色桶的重复块校正 (CK3 1.20)
+# Duplicate character-block repair (CK3 1.20 saves)
 # ---------------------------------------------------------------------------
-# 1.20 的存档把 dead_unprunable 里**每个角色块写两遍** (同键同值):
-#   dead_unprunable={\n3={…}\n…\n3={…}\n}  (870 档实测 11698 条里 11642 条如此,
-#   868/869 档同形; living 与 characters.dead_prunable 无此现象)。
-# rakaly 逐字转 JSON ⇒ 同一对象内出现重复键; 本文件的 `_merge_dup_pairs`
-# (v15, 为 agent_slots / family_data.spouse / variables.item 等**需要 list 语义**
-# 的键设计) 于是把角色对象并成 `[obj, obj]`, 而下游 20+ 处 (mem_ids_of /
-# family_of / all_characters / facts 与 pipeline 的直接取用) 一律按 dict 取用,
-# 于是整档在 extract_snapshot 抛 `'list' object has no attribute 'get'`
-# (实测 870 档: cache_lib.py:855 mem_ids_of ← _extract_snapshot:2183)。
-#
-# 修法: **只对三个角色桶**做一次折叠 (全同取首; 有差异则「后份只补空值」浅合并),
-# 不动 `_merge_dup_pairs` 的全局语义 (那会波及依赖 list 的键, v15 的教训)。
+# 1.20 writes every dead_unprunable block twice, which rakaly copies verbatim into JSON.
+# _merge_dup_pairs turns such a character object into [obj, obj] (some keys need list
+# semantics) while 20+ call sites expect a dict, so these values are collapsed here.
 _CHAR_BUCKETS = ("living", "dead_unprunable")
 
 
 def _char_buckets(melt):
-    """三个角色桶的 (名字, 桶) 列表: living / dead_unprunable / characters.dead_prunable。"""
+    """(name, bucket) pairs for living, dead_unprunable and characters.dead_prunable."""
     out = []
     for name in _CHAR_BUCKETS:
         b = (melt or {}).get(name)
@@ -563,15 +529,15 @@ def _char_buckets(melt):
 
 
 def _collapse_char_value(v):
-    """角色桶的一个值: 重复键并成的 list → 单 dict。非此形态原样返回。
+    """One value in a character bucket: a duplicate-key list -> a single dict.
 
-    全同取首份 (实测 11642/11642 全同); 有差异则浅合并, 后份只补空值
-    (None / '' / [] / {}), 不覆盖已有内容 —— 宁可少料也不猜。"""
+    Identical copies keep the first; differing copies are shallow-merged, later copies
+    only filling empty values (None / '' / [] / {}); other shapes are returned as-is."""
     if type(v) is not list:
         return v
     parts = [p for p in v if type(p) is dict]
     if not parts or len(parts) != len(v):
-        return v          # 形态异常 (含非 dict 元素): 原样留给下游兜底
+        return v          # unexpected shape (non-dict element): keep for the caller
     first = parts[0]
     if all(p == first for p in parts[1:]):
         return first
@@ -585,7 +551,7 @@ def _collapse_char_value(v):
 
 
 def _collapse_char_buckets(melt):
-    """把三桶里「重复键并成的 list」折回单 dict; 返回折叠条数 (0 = 无需校正)。"""
+    """Collapse duplicate-key lists back to dicts in the three buckets; returns how many."""
     n = 0
     for _name, bucket in _char_buckets(melt):
         c = 0
@@ -601,26 +567,21 @@ def _collapse_char_buckets(melt):
 
 
 def _as_char(v):
-    """角色条目 → dict。形态异常 (list/None…) 时给空 dict ——
-    让上层「少一条料」而不是整档崩在流程里。"""
+    """Character entry -> dict; an unexpected shape gives {} so callers lose one
+    fact instead of failing the whole snapshot."""
     return v if type(v) is dict else {}
 
 
 def _merge_dup_pairs(pairs):
-    """json object_pairs_hook: 重复键合并 + 空值清扫 (一趟做两件事)。
+    """json object_pairs_hook: merge duplicate keys and clean empty values in one pass.
 
-    v15: Clausewitz/rakaly 常把同一键渲染多遍 (agent_slots / family_data.spouse /
-    temporary_opinion / variables.item 等), `json.load` 默认只留最后一个 → 丢数据
-    (阴谋参与者即因此全部丢失)。故重复键按出现顺序并成列表, 单次出现的键原样返回。
-
-    v49 (O2) 两处提速 (244 MiB 档实测 13.35 s → 11.9 s):
-      - **快路**: 先走 C 级 `dict(pairs)` + 键数判定 —— 实测 3626941 个对象里只有
-        75746 个 (2.09%) 真有重复键, 其余不必进 Python 慢路 (旧实现给每个键都建
-        list 再收敛);
-      - **顺势清扫**: 同一趟把值 'none' 换成 None (v7 的 `x or {}` 防护依赖它),
-        取代原先整树重走的 `_sanitize_none` (实测 2.7 s/档)。
-    文档根是 dict (熔件必是), 故每个对象都过这里; 字典值构成的列表由
-    `_clean_none_list` 递归覆盖 —— 与旧 `_sanitize_none` 覆盖面等价。"""
+    Clausewitz/rakaly renders the same key several times (agent_slots, family_data.spouse,
+    temporary_opinion, variables.item ...) and json.load would keep only the last one, so
+    duplicates become a list in encounter order while singly-seen keys stay unchanged. The
+    fast path relies on a C-level dict(pairs) plus a key-count check, since only a couple
+    of percent of objects really have duplicates. The same pass replaces the value 'none'
+    with None (which the `x or {}` guards rely on); lists of dicts are covered by
+    _clean_none_list."""
     d = dict(pairs)
     if len(d) != len(pairs):
         out = {}
@@ -638,14 +599,8 @@ def _merge_dup_pairs(pairs):
 
 
 def open_melt_text(path):
-    """以文本模式打开熔件/边车文件 (兼容 `.json` / `.json.gz` / `.json.xz`)。
-
-    v44 (问题5): 冷熔件 gzip 归档后, 全部读取口统一走这里 —— 调用方不必关心
-    后缀 (实测 gzip-6 压到 15.3%, 读取只多 0.6s)。
-    v49 (方案①): 再加 `.json.xz` (冷档默认压缩格式, 体积为 gzip 的 61.5%,
-    解压 1.22 s vs 0.46 s/244 MiB)。
-    v49 (O2): 只要 dict 的读取口 (`load_melt` / `load_melt_index`) 改走二进制
-    `_read_melt_bytes` (快 0.5 s/档); 需要文本句柄的调用方仍用本函数。"""
+    """Open a melt/sidecar file as text, accepting .json, .json.gz and .json.xz; callers
+    that want a dict use the faster binary readers below."""
     low = str(path).lower()
     if low.endswith(".xz"):
         return lzma.open(path, "rt", encoding="utf-8")
@@ -655,8 +610,7 @@ def open_melt_text(path):
 
 
 def _melt_binary(path):
-    """熔件/边车的**二进制**句柄 (`.json` / `.json.gz` / `.json.xz` 都认)。
-    v66: 从 `_read_melt_bytes` 里抽出来, 供流式截段 (`load_melt_section`) 复用。"""
+    """Binary handle for a melt/sidecar (.json / .json.gz / .json.xz all accepted)."""
     low = str(path).lower()
     if low.endswith(".xz"):
         return lzma.open(path, "rb")
@@ -666,17 +620,13 @@ def _melt_binary(path):
 
 
 def _read_melt_bytes(path):
-    """二进制整读熔件/边车 (`.json` / `.json.gz` / `.json.xz` 都认)。v49 (O2):
-    `json.loads(bytes)` 由 C 解析器自己解 UTF-8, 比文本模式少一层增量解码器
-    (实测省 ≈0.5 s/244 MiB 档)。"""
+    """Read a whole melt/sidecar as bytes, so the C parser handles UTF-8 itself."""
     with _melt_binary(path) as fp:
         return fp.read()
 
 
 def melt_file_exists(path):
-    """给定熔件基准路径 (`...melt_<日期>.json`), 返回**实际存在**的那一份
-    (明文优先, 其次 `.gz`, 再次 `.xz`); 都不在返回 None。
-    供拼接路径的调用方收口后缀差异 (v49 方案①: 三种后缀)。"""
+    """Return the melt file that exists for a base path (plain, then .gz, then .xz)."""
     for cand in (str(path), str(path) + ".gz", str(path) + ".xz"):
         if os.path.isfile(cand):
             return cand
@@ -684,24 +634,15 @@ def melt_file_exists(path):
 
 
 def load_melt_section(path, key):
-    """只取熔件顶层 `key` 段的 JSON 对象 (流式截段; v66)。
+    """Return the top-level `key` object of a melt by streaming only that section.
 
-    为什么: 熔件顶层 `landed_titles` 段起于解压流 3.4 MB 处 (全量 206 MB), 只取
-    这一段比 `load_melt` (实测 1–3 min/档) 快两个数量级 (0.3 s/档)。逐档回填
-    `cache["title_dyn_names"]` 只用到这一段 (见 `_latch_title_dyn_names`), 故单独
-    开一个读取口, 而不为 84 档跑 84 次全量载入。
-
-    取法: 先流式找到 `"<key>":`, 再按 JSON 的字符串/转义规则做花括号配对, 截到该
-    对象闭合即止; 段落字节仍交 `json.loads` 解析, 且**与 `load_melt` 同一个
-    `object_pairs_hook=_merge_dup_pairs`** (Clausewitz 会把同一键渲染多遍, 默认的
-    last-wins 会丢数据) —— 故结果与 `load_melt(path)[key]` **逐键相同** (调用方可用
-    load_melt 复核, 见 tools/backfill_title_dyn_names.py 的 `--check`)。取不到该段
-    返回 None。
-
-    v95: 同名键未必是顶层段 —— 角色段里也有 `"wars": [1,1,0,0]` (军事技能) 这类**数组**
-    字段, 旧稿取第一个同名出现即撞上它 (于是 `load_melt_section(path,"wars")` 恒返回
-    None)。现在逐候选查验: 值不是**对象**（跳过空白后首字符非 `{`）就继续找下一个同名
-    候选, 直到取到对象段或读尽。故本函数只服务「顶层是对象的那一段」。"""
+    A full load_melt() costs 1-3 minutes on a 100-125 MB melt while the section starts a
+    few MB into the stream, so streaming is two orders of magnitude faster. The matched
+    bytes still go through json.loads with the same object_pairs_hook=_merge_dup_pairs as
+    load_melt, making the result key-for-key identical to load_melt(path)[key]; braces are
+    matched with JSON string and escape rules. A same-named key is not always a section --
+    character blocks also hold array fields such as "wars": [1,1,0,0] -- so candidates are
+    checked and non-object values skipped. Returns None when no object section is found."""
     pat = ('"%s":' % key).encode("utf-8")
     buf = b""
     eof = False
@@ -716,7 +657,7 @@ def load_melt_section(path, key):
             buf += chunk
             return True
 
-        pos = 0                       # buf 内的搜索起点 (已判定非对象段的候选之后)
+        pos = 0                       # search start in buf, past rejected candidates
         while True:
             i = buf.find(pat, pos)
             if i < 0:
@@ -724,7 +665,7 @@ def load_melt_section(path, key):
                     continue
                 return None
             j = i + len(pat)
-            # 跳过空白, 看值的首字符
+            # Skip whitespace to inspect the value's first character
             while True:
                 k = j
                 while k < len(buf) and buf[k:k + 1] in (b" ", b"\r", b"\n", b"\t"):
@@ -734,7 +675,7 @@ def load_melt_section(path, key):
                 if not _fill():
                     return None
             if buf[k:k + 1] != b"{":
-                pos = i + 1           # 同名但是数组/标量 (角色技能等): 换下一个候选
+                pos = i + 1           # same name but an array/scalar: try the next candidate
                 continue
             start, depth, i = k, 0, k
             while True:
@@ -769,8 +710,8 @@ def load_melt_section(path, key):
 
 
 def load_melt_landed_titles(path):
-    """熔件 → `landed_titles.landed_titles` 段 (v66 便捷口, 与 `_db(melt)` 口径的
-    头衔字典同构)。段缺失返回 {}。"""
+    """Melt -> the landed_titles.landed_titles section (same shape as _db(melt)
+    titles); {} when the section is missing."""
     sect = load_melt_section(path, "landed_titles")
     if not isinstance(sect, dict):
         return {}
@@ -778,7 +719,7 @@ def load_melt_landed_titles(path):
 
 
 def melt_stem(path):
-    """熔件/边车路径去掉压缩后缀 (`x.json.xz` → `x.json`; 无后缀原样)。v49。"""
+    """Strip the compression suffix from a melt/sidecar path (x.json.xz -> x.json)."""
     p = str(path)
     low = p.lower()
     for suf in (".xz", ".gz"):
@@ -788,16 +729,11 @@ def melt_stem(path):
 
 
 # ---------------------------------------------------------------------------
-# v49 (O4): 进程内熔件记忆
+# In-process melt memo
 # ---------------------------------------------------------------------------
-# 同一进程内反复载入**同一份**熔件的路径实测不少:
-#   - 后台传记线程对同一位传主的 N 篇十年传记, 每篇都 load_latest_melt 同一份
-#     最新档 (5 篇 = 5 × 6 s 白读);
-#   - 终传先读 last_date 那一档, 再读"死亡尾年"那一档 (两份不同档, LRU=2 兜住);
-#   - watch 刚并入的档 (临时路径 → 归位后路径, 靠 melt_memo_move 跟过去)。
-# 键 = (绝对路径, 大小, mtime_ns): 文件被重压/替换/改写后自动失效。
-# 上限 2 份: 单份 244 MiB 档的 dict ≈ 1.3 GB 工作集 (实测), 两份 ≈ 2.6 GB。
-# 内存吃紧的机器可设环境变量 ROMAN_MELT_MEMO=0 关闭 (或调 set_melt_memo()).
+# One process loads the same melt repeatedly (per article, per final biography, after watch
+# moves a merged melt); the cap of 2 matches one large melt's ~1.3 GB working set.
+# ROMAN_MELT_MEMO=0 disables it.
 _MELT_MEMO = OrderedDict()          # key -> (size, mtime_ns, dict)
 _MELT_MEMO_MAX = 2
 _MELT_MEMO_ON = os.environ.get("ROMAN_MELT_MEMO", "1").lower() not in ("0", "false", "no")
@@ -805,7 +741,7 @@ _MELT_MEMO_LOCK = threading.Lock()
 
 
 def set_melt_memo(enabled):
-    """开关熔件记忆 (关闭时清空已缓存的两份)。返回新状态。"""
+    """Enable or disable the melt memo (disabling clears it); returns the new state."""
     global _MELT_MEMO_ON
     _MELT_MEMO_ON = bool(enabled)
     if not _MELT_MEMO_ON:
@@ -814,7 +750,7 @@ def set_melt_memo(enabled):
 
 
 def melt_memo_clear():
-    """清空熔件记忆, 返回清掉的份数。"""
+    """Clear the melt memo; returns how many entries were dropped."""
     with _MELT_MEMO_LOCK:
         n = len(_MELT_MEMO)
         _MELT_MEMO.clear()
@@ -822,7 +758,7 @@ def melt_memo_clear():
 
 
 def melt_memo_stats():
-    """(是否启用, 已缓存份数, 上限)。"""
+    """(enabled, number of cached melts, cap)."""
     return _MELT_MEMO_ON, len(_MELT_MEMO), _MELT_MEMO_MAX
 
 
@@ -852,10 +788,10 @@ def _melt_memo_put(key, data):
 
 
 def melt_memo_move(old_path, new_path):
-    """熔件归位/改名后把记忆里的键跟过去 (os.replace 保 mtime 与内容)。
+    """Follow a memo key to a melt's new path after a rename or move.
 
-    必须在 `os.replace` **之前**调用 (那时源文件还在, 才能取到 size/mtime)。
-    返回是否跟成功。"""
+    Call it *before* os.replace, while the source still exists and its size/mtime can be
+    read; returns whether the entry was moved."""
     if not _MELT_MEMO_ON:
         return False
     old_key = _melt_memo_key(old_path)
@@ -871,7 +807,7 @@ def melt_memo_move(old_path, new_path):
 
 
 def melt_memo_drop(path):
-    """丢掉某路径的熔件记忆 (压缩归档后源文件消失, 键已不可达 —— 顺手释放)。"""
+    """Drop the memo entry for a path (its key is unreachable once archived)."""
     if not _MELT_MEMO_ON:
         return False
     key = _melt_memo_key(path)
@@ -882,16 +818,16 @@ def melt_memo_drop(path):
 
 
 def load_melt(path, use_memo=True):
-    """读熔件 → dict。重复键合并与 'none'→None 都在 `_merge_dup_pairs` 一趟完成。
+    """Read a melt file into a dict; duplicate-key merging and 'none' -> None happen
+    inside _merge_dup_pairs.
 
-    v49 (O2): **解析期间关掉自动 GC** —— 干净进程单次加载实测 244 MiB 档
-    10.7 s → 5.9 s (峰值内存不变, 2325 MiB)。原因: object_pairs_hook 是 Python
-    函数时, C 扫描器要为每个对象建 pair 列表并回调, 途中反复触发 gen0/1/2 回收,
-    而此刻对象图已上千万节点, 每次 gen2 都要遍历全图; 纯 C 解析只在末尾承担一次。
-    出栈立刻恢复; JSON 无环, 途中产生的都是引用计数即可释放的垃圾, 无泄漏风险。
+    Automatic GC is off while parsing, because with a Python object_pairs_hook the C
+    scanner calls back once per object and would trigger repeated gen0/1/2 passes over
+    tens of millions of nodes, while a pure C parse pays once at the end. The interpreter
+    state is restored on return, and JSON has no cycles, so nothing leaks.
 
-    v49 (O4): `use_memo` 时走进程内熔件记忆 (命中直接返回同一份 dict, 见
-    `_MELT_MEMO` 注释) —— 熔件内容只读 (全树无一处回写), 故可安全共享。"""
+    With use_memo the in-process memo is consulted and the same read-only dict is shared
+    (see _MELT_MEMO)."""
     key = _melt_memo_key(path) if (use_memo and _MELT_MEMO_ON) else None
     if key is not None:
         hit = _melt_memo_get(key)
@@ -903,7 +839,7 @@ def load_melt(path, use_memo=True):
         gc.disable()
     try:
         data = json.loads(raw, object_pairs_hook=_merge_dup_pairs)
-        _collapse_char_buckets(data)   # v86: 1.20 角色块同键双写 → 折回单 dict
+        _collapse_char_buckets(data)   # 1.20 duplicate character blocks -> one dict
     finally:
         if gc_was_on:
             gc.enable()
@@ -913,7 +849,7 @@ def load_melt(path, use_memo=True):
 
 
 def _db(melt):
-    """记忆对象库: {记忆ID(str): {type, participants, creation_date, ...}}"""
+    """Memory database: {memory id (str): {type, participants, creation_date, ...}}"""
     return melt.get("character_memory_manager", {}).get("database") or {}
 
 
@@ -930,19 +866,17 @@ def _dead_prunable(melt):
 
 
 # ---------------------------------------------------------------------------
-# v86: 信仰 / 礼仪 取词口 (CK3 1.20 把信仰库与礼仪库换了位置)
+# Faith / rite accessors (CK3 1.20 moved the faith and rite databases)
 # ---------------------------------------------------------------------------
-# 1.19: 信仰定义在 `religion.faiths[<fid>]`, 角色带 `faith` (id)。
-# 1.20: 信仰定义搬到**顶层** `faiths.database[<fid>]` (另有 `faiths.saints`),
-#       礼仪定义在**顶层** `rites.database[<rid>]`; 角色**不再有 `faith`**,
-#       只有 `rite` —— 信仰由 `rites.database[rite].faith` 反查
-#       (实测 870 档 living 29528 人 100% 能在礼仪库里找到自己的 rite)。
-#       礼仪/信仰的显示名**存档里已汉化** (`data.name` / `name`), 不必查本地化表。
-#       另: 1.20 的 `faith.religious_head` 已是空值 (4294967295), 宗教领袖改记在
-#       `rites.database[rite].head_of_rite` —— 判「此人是否宗教领袖」必须走 rite。
+# Before 1.20, faiths live in religion.faiths[<fid>] with a faith id on each character; in
+# 1.20 they sit at faiths.database[<fid>] and rites at rites.database[<rid>], with
+# characters carrying only rite, so the faith is found via rites.database[rite].faith.
+# Display names are already localized in the save, and faith.religious_head is empty in
+# 1.20 because a head is recorded in rites.database[rite].head_of_rite.
 
 def faith_entry(melt, fid):
-    """信仰定义 dict: 1.20 `faiths.database` → 旧档 `religion.faiths`。取不到给 {}。"""
+    """Faith definition dict: 1.20 faiths.database, older saves religion.faiths;
+    {} when absent."""
     if fid is None:
         return {}
     e = (((melt or {}).get("faiths") or {}).get("database") or {}).get(str(fid))
@@ -953,12 +887,12 @@ def faith_entry(melt, fid):
 
 
 def faith_name_of(melt, fid):
-    """信仰显示名: 1.20 存档自带中文 `name`; 旧档无名字段, 返回 '' (调用方查本地化)。"""
+    """Faith display name from the save's own name field (1.20); '' for older saves."""
     return str(faith_entry(melt, fid).get("name") or "")
 
 
 def rite_entry(melt, rid):
-    """礼仪定义 dict: 1.20 `rites.database`。取不到给 {}。"""
+    """Rite definition dict from rites.database (1.20); {} when absent."""
     if rid is None:
         return {}
     e = (((melt or {}).get("rites") or {}).get("database") or {}).get(str(rid))
@@ -966,31 +900,32 @@ def rite_entry(melt, rid):
 
 
 def rite_data(melt, rid):
-    """礼仪的展示块 (`rites.database[<rid>].data`): name/adjective/desc/fervor/tenets…"""
+    """Rite display block (rites.database[<rid>].data): name/adjective/desc/fervor/tenets..."""
     d = rite_entry(melt, rid).get("data")
     return d if type(d) is dict else {}
 
 
 def rite_name_of(melt, rid):
-    """礼仪显示名 (存档已汉化, 如「罗马礼」); 取不到给 ''。"""
+    """Rite display name (already localized in the save); '' when absent."""
     d = rite_data(melt, rid)
     return str(d.get("name") or d.get("adjective") or "")
 
 
 def faith_id_of_rite(melt, rid):
-    """礼仪所属信仰 id (1.20 角色信仰的唯一权威来源)。"""
+    """id of the faith a rite belongs to (the authoritative faith source in 1.20)."""
     f = rite_entry(melt, rid).get("faith")
     return f if isinstance(f, int) else None
 
 
 def rite_id_of_char(char_obj):
-    """角色所奉礼仪 id (1.20 `rite` 字段); 旧档无此字段 → None。"""
+    """Character's rite id (the 1.20 rite field); None for older saves."""
     r = _as_char(char_obj).get("rite")
     return r if isinstance(r, int) else None
 
 
 def faith_id_of_char(melt, char_obj):
-    """角色信仰 id: 旧档读 `faith` 字段 → 1.20 经其礼仪反查。取不到给 None。"""
+    """Character's faith id: the faith field in older saves, else via the rite;
+    None when neither yields one."""
     c = _as_char(char_obj)
     f = c.get("faith")
     if isinstance(f, int):
@@ -999,7 +934,8 @@ def faith_id_of_char(melt, char_obj):
 
 
 def head_of_rite(melt, rid):
-    """礼仪之首 (1.20 的宗教领袖所在): 角色 id; 无 (4294967295) → None。"""
+    """Head of the rite, where 1.20 records a religious head: character id, or None
+    for the empty value 4294967295."""
     h = rite_entry(melt, rid).get("head_of_rite")
     if isinstance(h, int) and h != 4294967295:
         return h
@@ -1007,11 +943,11 @@ def head_of_rite(melt, rid):
 
 
 def all_characters(melt):
-    """全档角色表 (living + dead_unprunable + dead_prunable)。
+    """Every character in the save (living + dead_unprunable + dead_prunable).
 
-    v86: 每个条目都过一道 `_collapse_char_value` 与 `_as_char` —— 1.20 存档的
-    同键双写 (见 `_collapse_char_buckets`) 若在别处再次出现, 这里保证调用方
-    拿到的一律是 dict。"""
+    Each entry goes through _collapse_char_value and _as_char so callers always get
+    a dict, even where the 1.20 duplicate-key doubling (see _collapse_char_buckets)
+    appears again."""
     out = {}
     for _name, bucket in _char_buckets(melt):
         for k, v in bucket.items():
@@ -1020,9 +956,10 @@ def all_characters(melt):
 
 
 def mem_ids_of(char_obj):
-    """角色 alive_data.memories (记忆ID列表); 死者 alive_data 被移除时,
-    回退 dead_data.memories (v8: 曾为玩家 was_playable 的角色死亡时,
-    游戏把记忆复制进 dead_data.memories 保留, 实测崔佛死档 6 条全在)。"""
+    """Character's alive_data.memories id list, falling back to dead_data.memories.
+
+    A character who was once playable (was_playable) keeps a copy of the memories
+    in dead_data.memories after dying, which is why the fallback exists."""
     c = _as_char(char_obj)
     ids = (c.get("alive_data") or {}).get("memories") or []
     if ids:
@@ -1031,10 +968,11 @@ def mem_ids_of(char_obj):
 
 
 def nickname_at(rec, as_of=None):
-    """v49 (O5): 该角色在 as_of 时点的绰号 (查 `nickname_history` 变更点)。
+    """The character's nickname at as_of, from the nickname_history change points.
 
-    返回 ''=该时点无绰号, None=无沿革/时点早于首点 (调用方回退读熔件)。
-    as_of 为空时取沿革末值 (现值)。"""
+    '' means no nickname at that date; None means no history, or a date before the
+    first point (callers fall back to the melt). An empty as_of returns the last
+    value, i.e. the current nickname."""
     nh = (rec or {}).get("nickname_history") or []
     if not nh:
         return None
@@ -1074,7 +1012,7 @@ def family_of(char_obj):
 
 
 def kills_of(char_obj):
-    """角色击杀 id 列表: 在世读 alive_data.kills, 死后读 dead_data.kills。"""
+    """Character's kill ids: alive_data.kills while alive, dead_data.kills after death."""
     c = char_obj or {}
     out = list((c.get("alive_data") or {}).get("kills") or [])
     out += list((c.get("dead_data") or {}).get("kills") or [])
@@ -1082,7 +1020,7 @@ def kills_of(char_obj):
 
 
 def date_key(s):
-    """'869.2.22' → (869, 2, 22); 非法输入 → (9999, 0, 0)。"""
+    """'869.2.22' -> (869, 2, 22); invalid input -> (9999, 0, 0)."""
     try:
         return tuple(int(x) for x in str(s).split("."))
     except Exception:
@@ -1090,18 +1028,19 @@ def date_key(s):
 
 
 def date_filekey(s):
-    """'869.2.22' → '869_02_22' (与 melt 文件命名一致)。"""
+    """'869.2.22' -> '869_02_22' (matches melt file naming)."""
     return "_".join(f"{int(x):02d}" for x in str(s).split("."))
 
 
 # ---------------------------------------------------------------------------
-# 记忆条目
+# Memory entries
 # ---------------------------------------------------------------------------
 
 def memory_brief(mem_id, e):
-    """记忆对象 → 精简条目 (附记忆ID; vars 带 {flag,type,identity} 以便取关联对象)。
-    v21: 变量类型为 flag 时补存其值 (data.flag) — 刑虐记忆的
-    castrated / castrated_beardless 标志此前被丢弃, 阉割无从渲染。"""
+    """Memory object -> compact entry with its id.
+
+    vars keep {flag,type,identity} so related objects resolve, and a var of type "flag"
+    also stores its value from data.flag (e.g. the castration markers)."""
     vars_out = []
     for f in (e.get("variables") or {}).get("data") or []:
         d = f.get("data") or {}
@@ -1122,119 +1061,90 @@ def memory_brief(mem_id, e):
 
 
 # ---------------------------------------------------------------------------
-# 缓存库 (schema 5: 每玩家一份缓存)
+# Cache library (schema 5: one cache file per player)
 # ---------------------------------------------------------------------------
 
 EMPTY_CACHE = {
     "schema": 5,
     "player_id": None,
     "player_name": None,
-    "house_name": None,       # 家族名 (边), 姓名字显示用
-    "dynasty_id": None,       # 宗族 id (v6: 文件夹按宗族划分)
-    "dynasty_name": None,     # 宗族名 (边), 输出文件夹名依据
-    "playthrough_id": None,   # 战役标识 (存档 playthrough_id; 同一战役的存档共享)
+    "house_name": None,       # house name (bare, no prefix), used when building the display name
+    "dynasty_id": None,       # dynasty id (output folders are grouped by dynasty)
+    "dynasty_name": None,     # dynasty name (bare), basis of the output folder name
+    "playthrough_id": None,   # playthrough id from the save; one playthrough's saves share it
     "game_version": None,
     "sources": [],
     "last_date": None,
-    "player_death": None,     # 首次检测到玩家 dead_data 即写入 {date, reason, killer, kills}
-    # v76 (问题1): 在位终结但**未死亡** —— 剃发退位/让位/被废/转无地等「换扮演角色」的
-    # 终了档 {date, kind, alive, successor, successor_name, successor_title, evidence}。
-    # 由 pipeline._cross_check_lineage 从 `played_character.legacy` 接替链判出
-    # (前任未入 dead_unprunable、且仍在 living 段)。终传触发条件 = player_death ∨ reign_end；
-    # 两者都有时**reign_end 优先**(用户 2026-09-27 拍板: 让位即终了, 日后死亡只进缓存)。
+    "player_death": None,     # written when the player's dead_data first appears: {date, reason, killer, kills}
+    # Reign ended without death: {date, kind, alive, successor, successor_name,
+    # successor_title, evidence} from pipeline._cross_check_lineage; outranks player_death
     "reign_end": None,
-    "bio_generated": False,   # 终传是否已生成 (每次玩家角色死亡只生成一篇)
-    "bio_decades": [],        # v8: 已生成的十年传记序号 [1,2,...] (每活满10年一篇)
-    "output_folder": None,    # 会话输出文件夹名 (watch/continue 绑定, 见 pipeline)
-    "player_title_history": [],  # [{date, name}] 玩家主头衔名变化 (复兴党流亡委员会等)
-    "realm_history": [],         # [{date, holders:{title_id: holder_id}}] 关键头衔持有者逐年
-    # v95 (问题1): 玩家参与的战争逐档闩存 —— 存档只为 126 个 CB 中的一部分写
-    # `war_memory_cb_*` (硬编码白名单), 其余落 `war_memory_cb_fallback`(正文「战争」,
-    # 项目按约定丢弃); 真 CB 只在 `wars.active_wars[].casus_belli.type`, 而**战争一结束
-    # 就从存档移除** ⇒ 必须像 realm_history 一样在合并期落盘 (见 `_latch_war_history`)。
+    "bio_generated": False,   # whether the final biography is written (once per player death)
+    "bio_decades": [],        # decades of the generated ten-year biographies [1,2,...], one per 10 years lived
+    "output_folder": None,    # session output folder name, bound by watch/continue (see pipeline)
+    "player_title_history": [],  # [{date, name}] changes of the player's primary title name
+    "realm_history": [],         # [{date, holders:{title_id: holder_id}}] holders of key titles, year by year
+    # Wars of the player, latched per snapshot: war_memory_cb_* covers only part of the 126
+    # casus belli, the real CB is only in wars.active_wars[].casus_belli.type, and a war
+    # leaves the save when it ends.
     "war_history": [],           # [{id, seen, start_date, cb, attacker, defender, claimant, titles, atk_parts, dfd_parts, name}]
-    # v66: 头衔动态名沿革 {tid: [{from, name}]} —— `specific_title_name` 是"只有该
-    # 日期那一档才有的现值" (v48 §4B 同类), 逐档只记变化点 (实测 84 档 ≈ 215 KB)。
-    # 供 facts._dyn_name_at / _site_name 按日期取「用地名」用 (游牧迁移改名)。
+    # Dynamic title names {tid: [{from, name}]}: specific_title_name is a present-day
+    # value that only that date's snapshot carries (read by facts._dyn_name_at/_site_name).
     "title_dyn_names": {},
-    "court_positions": [],       # [{date, positions:[{type, employee, hire_date, task}]}] 玩家营/廷内僚属任职逐年 (v7; employer==玩家, 非玩家自身官职)
-    "court_office_history": [],  # v36 (问题2): [{date, offices:[{type, employer, hire_date}]}] 主角**获授**的朝廷职位逐年 (employee==玩家, employer==他人)
-    "house_motto": None,         # 玩家家族家训 (dynasty_house.motto, 字符串或模板 dict) (v7)
+    "court_positions": [],       # [{date, positions:[{type, employee, hire_date, task}]}] the player's court staff, year by year (employer == player, not the player's own office)
+    "court_office_history": [],  # [{date, offices:[{type, employer, hire_date}]}] court positions granted TO the protagonist, year by year (employee == player, employer == someone else)
+    "house_motto": None,         # player house motto (dynasty_house.motto, a string or a template dict)
     "characters": {},
     "relations": {},
-    # v28b: 叛乱派系 (农民/民粹/游牧 起义) 领袖逐档差分 — 称谓用
-    # (「农民起义领袖叠溪寋」; 存档只存当前派系, 无起止日期)
+    # Rebel faction leaders for titles; the save holds only current factions, with no dates
     "factions": {},
-    # v31: 牵制逐档差分 (relations.active_relations.active_hook_*) — 只收
-    # 持有者或对象为玩家者; 存档不给创建日, 逐档差分即得「首次见于记载」。
+    # Hooks diffed per snapshot (active_hook_*), kept when the player is holder or target
     "hooks": {},
-    # v32: 纳妾类关系好感逐档差分 (opinions.active_opinions 的 temporary_opinion) —
-    # 存档里「强行纳为侧室」带确切 start_date (forced_me_concubine_marriage_opinion),
-    # 这是「劫掠掳人 → 强纳为妾」唯一带日期的记录 (纳妾本身不留记忆)。
+    # Concubinage opinions diffed per snapshot: forced_me_concubine_marriage_opinion is the
+    # only dated record of "taken by raid -> forced concubine"
     "opinions": {},
-    # v35: 奴役关系逐档差分 (opinions.active_opinions[*].scripted_relations.slave) —
-    # Carnalitas 的 carn_enslave_effect 在奴役的同一刻 `release_from_prison = yes`
-    # (见 Mod common/scripted_effects/carn_slave_effects.txt), 故存档里那句
-    # 「释放」记忆正是「没为奴隶」这一步; 该关系是唯一能把两者区分开的权威数据。
-    # v38 (问题4): 记录**全部**主奴关系 (不再只收主角为主的那部分), 并记下每档
-    # 每名奴隶的主人 (`owner` 随档刷新) —— 「被卖给谁」由此可查 (见
-    # `enslavement_traces`)。key = "<主人id>><奴隶id>"。
+    # Slave relations diffed per snapshot (scripted_relations.slave): carn_enslave_effect
+    # sets release_from_prison = yes at the moment of enslavement, so the save's "released"
+    # memory IS that step, and recording all masters traces a resale.
+    # key = "<master id>><slave id>".
     "enslavements": {},
-    # v38 (问题4/问题1): Carnalitas 关系好感逐档差分 (强奸/奴役/逼良为娼/前主奴)。
-    # 这些好感**自带 start_date** (比逐档差分精确), 且覆盖「不留记忆」的互动:
-    # 出售与释放奴隶只留一条 `carn_former_slave_or_slave_owner_opinion`。
-    # 只收涉主角者 (key = "<持有者id>><对象id>><modifier>")。
+    # Carnalitas relation opinions diffed per snapshot (rape, enslavement, prostitution,
+    # former slave/owner), which carry start_date and cover memoryless interactions.
+    # key = "<holder id>><target id>><modifier>".
     "carnal_opinions": {},
-    # v38 (问题1): 角色修正 `carn_recently_raped`(最近被强奸, 5 年) 逐档差分 —
-    # 受害方身上唯一带「何时」的信号 (key = "<角色id>>carn_recently_raped")。
+    # Character modifier carn_recently_raped (5 years) diffed per snapshot: the only dated
+    # signal on the victim's side (key = "<character id>>carn_recently_raped")
     "carnal_modifiers": {},
-    # v43: 母系婚 (入赘) 婚姻对 —— 存档里婚姻线系只在 relations.active_relations
-    # 的 `{"first":A,"second":B,"matrilineal":true}` 条目上出现 (游戏简中把这一档
-    # 叫「母系婚姻」, 交互界面写作「切换入赘」; 规则: 所生子女属**母方**家族)。
-    # 逐档闩存, 一旦见到永久保留 —— 婚姻离异/丧偶后该条目会从存档消失, 而传记要
-    # 写的是当年那桩婚事。key = "<小id>><大id>", value = 首次见于记载的档期。
+    # Matrilineal (uxorilocal) marriage pairs from active_relations
+    # {"first":A,"second":B,"matrilineal":true}: children belong to the mother's house, and
+    # the entry vanishes when the marriage ends, so it is latched once seen forever.
     "matrilineal_pairs": {},
-    # v50 (v47 方案 B): 结仇/结交缘由闩存 —— 游戏只在 `opinions.active_opinions`
-    # 里为**当前仍存在**的关系保留 `scripted_relations.<kind>.reason` (成因键,
-    # 本地化模板见 `data/localization.json` → `relation_templates`), 关系一方死亡
-    # 或关系解除后条目连同 reason 一起从存档消失: 诺兰 1126.12.4 的结仇在
-    # 1127/1130 档带 `rival_called_me_a_disgrace`, 1143 档 (对象 1142.9.8 卒) 起
-    # 0 条; 田所2 战役四对 rival/grudge 的 reason 也分别在 1~13 年后随条目消失。
-    # 生成所用熔件恒为**最新**档, 故「结仇早、对方已死」的仇人一律读不到缘由 ——
-    # 逐档并入时把涉主角的 reason 闩存 (首见即留, 不覆盖), 生成时作熔件的回退源。
-    # key = "<owner>|<target>|<kind>" (方向与存档一致, 互为仇敌时两条各存)。
+    # Feud/friendship causes latched during the merge (first sighting wins), since the game
+    # keeps scripted_relations.<kind>.reason only while the relation exists.
+    # key = "<owner>|<target>|<kind>".
     "relation_reasons": {},
-    # v60 (问题3): 婚配闩存 —— 主角一方的 `family_data` 在死亡档会被清空
-    # (崔佛 881/882 档 family_data=[]), 而**对方**身上的反向指针
-    # (`concubinist` / `former_concubinists` / `spouse` / `former_spouses`)
-    # 逐档在册。逐档扫全角色把「与主角的婚配」闩存下来, 首见即留,
-    # 供 facts 在主角自身 family 为空时回读 (见 `_latch_spouses`)。
-    # key = "<主角id>><对方id>", value = {"kind","first_seen","source"}。
+    # Spouse latch: the subject's own family_data is cleared in the death snapshot while the
+    # reverse pointer on the other side remains. key = "<subject id>><other id>".
     "spouse_latch": {},
-    # v60 (问题4): 囚禁交接闩存 —— {"<被囚者id>": {"from","to","since","first_seen"}}。
-    # 传主死后其在押囚犯的监禁者转归继位者 (崔佛卒于 881.1.1, 四人改归 15179),
-    # 而该类档期的 `find_player` 已是继位者 —— 传主这一侧只有靠同战役后继档
-    # 闩存, 才能在传记里写出「转归其妾埃尔梅辛达」(见 `_latch_prison_succession`)。
+    # Prisoner hand-over latch: {"<prisoner id>": {"from","to","since","first_seen"}}, since
+    # the successor's snapshots no longer report the subject as find_player.
     "prison_succession": {},
-    # v56 (问题3): 出狱缘由闩存 — {"<被囚者>><监禁者>><日期>": {"kind","src","first_seen"}}。
-    # 源数据 = 出狱当日新得的出狱类好感 (自带 start_date) 与 `favor_hook`/`indebted_hook`
-    # (到期日减 10 个日历年即创建日)。出狱类好感 10 年衰减且随持有者死亡消失, 而终传
-    # 只载末档熔件 ⇒ 十年前那批释放的缘由只能靠逐档闩存回读 (见 _latch_prison_manners)。
+    # Release-reason latch: {"<prisoner>><jailer>><date>": {"kind","src","first_seen"}} from
+    # release opinions (which carry start_date) and favor_hook / indebted_hook (creation =
+    # expiry minus 10 calendar years), since such opinions decay within a decade.
     "prison_manners": {},
-    # v44 (问题2): 存档 played_character.legacy = **玩家角色接替链** (有序带日期):
-    # [{"cid": 62045, "date": "1066.9.15"}, {"cid": 16852591, "date": "1117.6.19"}]
-    # 末条即当前传主, 起算日 = 继位日 (前一任死亡当日)。新版本玩家可从宗族里
-    # 挑人继位, 亲缘判定不足以还原「怎么连起来的」, 故此链以存档为准。
+    # Player succession chain from played_character.legacy: [{cid, date}], the last entry
+    # being the current subject with its accession day; kinship cannot reconstruct it.
     "played_legacy": [],
-    # v53 (问题1): 封臣合同变化点 {cid: [{date, liege, flags}]}
+    # Vassal contract change points {cid: [{date, liege, flags}]}
     "char_vassal_history": {},
-    # v53 (问题3): 天命循环阶段变化点 [{date, phase, start}]
+    # Mandate-of-Heaven cycle phase change points [{date, phase, start}]
     "dynastic_cycle_history": [],
 }
 
 
 def new_cache():
-    """全新空缓存 (深拷贝, 避免 dict(EMPTY_CACHE) 浅拷贝共享 sources/characters 等容器)。"""
+    """A brand-new empty cache (deep copy, so the containers are not shared)."""
     return copy.deepcopy(EMPTY_CACHE)
 
 
@@ -1242,8 +1152,8 @@ def cache_path_for(cache_dir, player_id):
     return os.path.join(cache_dir, f"player_{player_id}.json")
 
 
-# 同路径缓存写互斥锁 (主线程并入 与 后台传记线程回写 可能并发写同一缓存文件,
-# 共享固定 .tmp 会互相截断 → 缓存损坏 + WinError 32, 见 2026-08-28 23:30 事件)
+# Per-path write mutex: the main thread's merge and the background biography thread can
+# write the same cache file at once, and a shared fixed .tmp name would truncate it.
 _SAVE_LOCKS = {}
 _SAVE_LOCKS_GUARD = threading.Lock()
 
@@ -1257,14 +1167,16 @@ def _save_lock(path):
         return lock
 
 
-# v13 (性能): 缓存文件 mtime 记忆 — watch 每轮 poll 都要重读全部玩家缓存
-# (4 份 × 60–160MB JSON), 不变化的缓存直接复用, 避免处理速度赶不上游戏推进。
+# Cache-file mtime memo: without it every watch poll re-reads all player caches
+# (several files of 60-160 MB of JSON).
 _CACHE_LOAD_MEMO = {}   # path -> (mtime, cache_dict)
 
 
 def load_cache(path, fresh=False):
-    """读玩家缓存 (v13: mtime 记忆, fresh=True 强制重读 — 提取/写入路径用)。
-    注意: 返回的 dict 可能被调用方修改; 修改路径一律传 fresh=True 取独立副本。"""
+    """Read a player cache (mtime-memoized); fresh=True forces a re-read.
+
+    The returned dict may be modified by the caller, so any path that writes back
+    passes fresh=True to get its own copy."""
     if not os.path.isfile(path):
         return new_cache()
     if not fresh:
@@ -1278,7 +1190,7 @@ def load_cache(path, fresh=False):
     try:
         with open(path, encoding="utf-8") as fp:
             cache = json.load(fp)
-        # 兼容旧 schema: 补齐 v4 字段
+        # older schemas: fill in the fields they lack
         for k, v in EMPTY_CACHE.items():
             cache.setdefault(k, v)
         if not fresh:
@@ -1288,8 +1200,9 @@ def load_cache(path, fresh=False):
                 pass
         return cache
     except Exception as e:
-        # 缓存文件损坏 (并发写共享 .tmp 遗留): 改名留证并告警, 不再静默当空缓存用
-        # (空缓存会以 seq=0 参与选路, 把本会话数据误并进旧会话文件夹, 见 2026-08-28 事件)
+        # Corrupt cache file: rename it aside and warn, since treating it as empty is
+        # worse (an empty cache joins session selection with seq=0 and would merge this
+        # session's data into an older folder).
         try:
             corrupt = f"{path}.corrupt.{time.strftime('%Y%m%d_%H%M%S')}"
             os.replace(path, corrupt)
@@ -1301,17 +1214,14 @@ def load_cache(path, fresh=False):
 
 
 def save_cache(cache, path):
-    """原子写玩家缓存。
-
-    v49 (O3): 改紧凑分隔符 (旧为 `indent=1`) —— 实测诺兰 153 MB 缓存
-    8.47 s/146.3 MiB → 5.84 s/86.8 MiB (写快 2.6 s, 体积 -40.7%);
-    读者一律 json.load, 不依赖缩进。"""
+    """Write a player cache atomically, with compact separators (readers all use
+    json.load and do not depend on indentation)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with _save_lock(path):
         tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fp:
             json.dump(cache, fp, ensure_ascii=False, separators=(",", ":"))
-        os.replace(tmp, path)  # 原子替换, 防并发读写撕裂
+        os.replace(tmp, path)  # atomic replace, prevents torn concurrent reads
 
 
 def char_record(cache, cid):
@@ -1321,44 +1231,40 @@ def char_record(cache, cid):
             "id": cid,
             "first_name": None,
             "name_zh": None,
-            "house_name": None,     # 家族名 (边 / 北家), v14: 西方名序的姓
-            "dynasty_name": None,   # 宗族名 (边 / 藤原), v14: 东方名序的姓
-            "name_full": None,      # 姓+名 (边诚)
+            "house_name": None,     # house name; the surname in Western name order
+            "dynasty_name": None,   # dynasty name; the surname in Eastern name order
+            "name_full": None,      # surname + given name
             "birth": None,
             "death": None,
-            "female": False,       # v26: 性别 (熔件 female 字段只在女性身上出现)
+            "female": False,       # sex: the melt's female field appears only on women
             "dynasty_house": None,
-            # v44 (问题1): [{from, house_id, house_name, dynasty_id, dynasty_name}]
-            # 家族沿革变更点 (首见即记)。私生女另立家族 (如阿德尔海德 1118.4.2
-            # 别立冯·亚琛氏) 与家族改名 (冯·亚琛 → 冯) 都只体现在这里 ——
-            # 逐档差分是唯一来源, 游戏不为改名留任何记忆。
+            # [{from, house_id, house_name, dynasty_id, dynasty_name}] house change points;
+            # a founding or rename shows up only here, since the game keeps no memory of it.
             "house_history": [],
             "culture": None,
-            "culture_history": [],  # v30: [{from, culture}] 族属变更点 (首见即记)
+            "culture_history": [],  # [{from, culture}] culture change points (first sighting wins)
             "faith": None,
-            "faith_history": [],   # v26: [{from, faith}] 改信变化点 (首见即记)
-            # v49 (O5): [{from, nickname}] 绰号变化点 (首见即记, 含空串 = 无绰号)。
-            # 十年传记的「按时代取绰号」原要为此整份载入该时代末档熔件 —— 244 MiB
-            # 档实测 6–18 s 只为取一个字符串; 锁存后直接读缓存。实测 living 角色
-            # 恒有 nickname_text 键 (空串=无绰号), 故目标集里每人至少一点。
+            "faith_history": [],   # [{from, faith}] conversion change points (first sighting wins)
+            # [{from, nickname}] nickname change points (an empty string means none); reading
+            # an era's nickname would otherwise need that era's whole melt file.
             "nickname_history": [],
             "traits": [],
-            "trait_history": {},    # {特质key: [{from, to, first}]} 获得/消失区间 (v4)
-            "trait_xp": [],         # v32: [{from, traits, xp}] 轨道 XP 样本 (与 traits 对齐)
-            "family": {},           # 亲属 id 集; v31 另积 ever_spouses (历史上所有配偶)
-            "court": {},            # v31: {employer, knight, join_court_date} 宫廷身份
+            "trait_history": {},    # {trait key: [{from, to, first}]} gained/lost intervals
+            "trait_xp": [],         # [{from, traits, xp}] trait-track XP samples (aligned with traits)
+            "family": {},           # related-character ids, plus ever_spouses (all spouses in history)
+            "court": {},            # {employer, knight, join_court_date} court affiliation
             "landed": {},
             "memories": [],
-            "kills": [],        # v8: 击杀 id 列表 (alive_data.kills ∪ dead_data.kills, 跨年累积)
-            # v34 (问题7): 囚禁区间 [{from, to, imprisoner, type, since}]
-            # to 为 null = 仍在押; 释放记忆缺失时凭此判定「已出释」
+            "kills": [],        # kill ids (alive_data.kills ∪ dead_data.kills, accumulated across years)
+            # Imprisonment intervals [{from, to, imprisoner, type, since}]: a null "to" means
+            # still imprisoned, which resolves a missing release memory.
             "prison_history": [],
         }
     return cache["characters"][key]
 
 
 # ---------------------------------------------------------------------------
-# 姓名解析
+# Name resolution
 # ---------------------------------------------------------------------------
 
 _NAMES = None
@@ -1366,12 +1272,11 @@ _NAMES_META = {}
 
 
 def _load_names(names_path, melt=None):
-    """全档人名表 {角色id: {name_zh, house_name, dynasty_name}}。
+    """Whole-save name table {character id: {name_zh, house_name, dynasty_name}}.
 
-    v28: 角色 id 只在**同一存档/战役内**有意义 —— 该表是「某一次 build_names
-    时那一份 melt」的快照 (payload.source), 跨战役复用同名 id 会给出别人的名字
-    (实测: 陆氏战役 16293 本名「郑良士」, 表里同名 id 是另一战役的「藤原利仁」)。
-    故表内 playthrough_id 与当前熔件不一致时返回空表; 两边都有战役号才校验。"""
+    Character ids are meaningful only inside one save/playthrough, and the table is a
+    snapshot of the melt build_names last ran on (payload.source), so the table comes back
+    empty when its playthrough_id differs from the melt's."""
     global _NAMES, _NAMES_META
     if _NAMES is None:
         payload = {}
@@ -1391,21 +1296,21 @@ def _load_names(names_path, melt=None):
 
 
 def resolve_full_name(cache, cid, names_path=None, melt=None):
-    """角色 id → 完整中文名 (v13: 统一走 display_name, 名序/父名按游戏规则)。
-    仅剩调用方兼容 (summarize_relations 等), 新代码一律用 display_name。"""
+    """Character id -> full Chinese name, delegating to display_name; kept for existing
+    callers such as summarize_relations."""
     return display_name(cache, cid, melt=melt, names_path=names_path)
 
 
 # ---------------------------------------------------------------------------
-# 文化姓名顺序 (v5: 东方姓在前, 西方名在前)
+# Cultural name order (Eastern surname first, Western given name first)
 # ---------------------------------------------------------------------------
 
 EASTERN_NAME_ORDERS = {"DYNASTY_ALWAYS_FIRST", "JAPANESE"}
 
 
 def name_order_of(melt, culture_id):
-    """文化 id → name_order_convention ('' = 西方默认; DYNASTY_ALWAYS_FIRST/
-    JAPANESE = 姓在前)。melt 缺失或文化未知返回 ''。"""
+    """Culture id -> name_order_convention ('' = Western default;
+    DYNASTY_ALWAYS_FIRST / JAPANESE = surname first); '' when unknown."""
     if melt is None or culture_id is None:
         return ""
     cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
@@ -1413,28 +1318,23 @@ def name_order_of(melt, culture_id):
     return e.get("name_order_convention") or ""
 
 
-# v71 (用户拍板「父系优先到底」): 名序亲属推断的**两段式**键序。
-#   · 父系侧 (PATERNAL): 命名文化沿父系继承 (CK3 子女随父文化) —— 父与同胞同源最可靠;
-#     **不含 `child`**: 子女随的是**父亲**的文化, 对一位女性来说子女的文化来自丈夫,
-#     不是她自己的证据 (实测 占婆公主 苏伦陀罗提毗·苾力瞿: 本人与父兄都无 culture 字段,
-#     她的子女是和皇帝所出、在册为 大和人 ⇒ 旧式「父→母→同胞→子女」把子女当证据会
-#     判成 JAPANESE, 出「苾力瞿苏伦陀罗提毗」, 而她本家是占人 ⇒ 应作西方名序)。
-#   · 母系侧 (MATERNAL): 姻亲/下辈跨族, 证据最弱 —— 只有在「父系侧无解 **且** 宗族模板
-#     也推不出」时才问, 否则会像 汶娘 (李氏、父系汉人, 但本人与父兄的存档记录都不带
-#     culture 字段) 那样被母亲的诺斯文化顶成西方名序, 出「汶娘·李」。
+# Two-stage key order for inferring name order from relatives: the paternal side first
+# (the naming culture is inherited through the father, and child is deliberately absent
+# because a woman's children carry their father's culture), then the maternal side only if
+# the paternal side and the dynasty template both fail.
 KIN_ORDER_PATERNAL = ("father", "siblings")
 KIN_ORDER_MATERNAL = ("mother", "child", "primary_spouse", "spouse",
                       "former_spouses")
 
 
 def _family_name_order(cache, rec, melt, chars=None, keys=KIN_ORDER_PATERNAL):
-    """角色自身文化缺失 (死后清空/幼年未录/游戏未落该字段) 时, 依亲属文化推断名序。
+    """Infer the name order from relatives' cultures when the character's own culture is
+    missing (cleared at death, not yet recorded, or never set by the game).
 
-    v71: 增 `keys` 参数 —— 默认只走**父系侧** (父 → 同胞); 母系/配偶/子女由
-    `resolved_name_order` 在宗族模板推断之后才问 (旧口径把母亲排在第二位,
-    父系字段一缺就取到母系, 见上方 KIN_ORDER_* 注释)。
-    返回 name_order_convention 字符串 ('' = 西方默认); 该组亲属文化全缺时返回 None。
-    v19: 亲属不在玩家缓存时兼查熔件全量角色 (chars — display_name 已持有全角色索引)。"""
+    keys defaults to the paternal side only; resolved_name_order asks the maternal side,
+    spouses and children later, after the dynasty template. Returns a
+    name_order_convention string, or None when none of those relatives has a culture.
+    chars is the full-character index held by display_name."""
     if melt is None:
         return None
     cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
@@ -1452,21 +1352,21 @@ def _family_name_order(cache, rec, melt, chars=None, keys=KIN_ORDER_PATERNAL):
 
 
 def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None):
-    """角色名序判定 (**v71 全项目唯一链**, `display_name` 与 `Facts.name_order` 同源)。
+    """Resolve a character's name order (the single chain shared by display_name and
+    Facts.name_order).
 
-    次序 (每一步都只看「能不能解析出文化」, 不看结果是不是东方 ——
-    西方的 '' 同样是定案, 不得再往下走):
+    Every step asks only whether a culture resolves, never whether the result is Eastern,
+    since a Western '' is equally final:
 
-      1) 本人: 族属沿革该日之文化 (v44) → 缓存 culture 字段 → 熔件 `culture_manager`
-         的 `name_order_convention`。**有文化 id 者一律在此定案**, 条目缺失按西方默认
-         (与旧 `name_order_of` 同值);
-      2) 文化不可解析 → **父系侧**亲属 (父 → 同胞) 的文化;
-      3) 仍无解 → 宗族模板推断 (`_culture_template_of`: 父系线 → 同胞 → 同宗族 →
-         母 → 语言) → 取**同模板**文化的名序 (游戏里同一 culture_template 名序一致);
-      4) 最后才问母系/配偶/子女 (姻亲与下辈跨族, 证据最弱);
-      5) 全无解返回 None —— 调用方宁缺勿错序 (display_name 退化为只写给定名)。
+      1) the character's culture at that date (history, then the cached field), giving
+         culture_manager's name_order_convention or the Western default;
+      2) otherwise the paternal relatives' cultures;
+      3) otherwise the dynasty template and the name order of a culture sharing it;
+      4) only then the maternal side, spouses and children;
+      5) None when nothing resolves, so display_name writes the given name alone.
 
-    返回 ''=西方默认, 'DYNASTY_ALWAYS_FIRST'/'JAPANESE'=姓在前, None=无从判定。"""
+    Returns '' = Western default, DYNASTY_ALWAYS_FIRST / JAPANESE = surname first, None =
+    undecidable."""
     if cid is None:
         return None
     rec = (cache.get("characters") or {}).get(str(cid)) or {}
@@ -1492,19 +1392,19 @@ def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None)
 
 
 def name_display(cache, cid, melt=None, names_path=None):
-    """(v13 统一出口) 按游戏规则的显示名 — 等价于 display_name, 保留为兼容别名。"""
+    """Game-rule display name; an alias of display_name kept for compatibility."""
     return display_name(cache, cid, melt=melt, names_path=names_path)
 
 
 # ---------------------------------------------------------------------------
-# v13: 统一姓名函数 (游戏同规则) — 全项目唯一出口
+# Unified name function (same rules as the game) - the single entry point
 # ---------------------------------------------------------------------------
 
 _PATRONYM_RULES_CACHE = None
 
 
 def _patronym_rules_table():
-    """data/patronym_rules.json 惰性加载 (facts 同源文件)。"""
+    """Lazily load data/patronym_rules.json (the same file facts reads)."""
     global _PATRONYM_RULES_CACHE
     if _PATRONYM_RULES_CACHE is None:
         try:
@@ -1518,7 +1418,7 @@ def _patronym_rules_table():
 
 
 def _template_of_culture(melt, cul):
-    """文化 id → culture_template (norse/han…); 未知返回 ''。"""
+    """Culture id -> culture_template (norse/han...); '' when unknown."""
     if melt is None or cul is None:
         return ""
     cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
@@ -1527,17 +1427,13 @@ def _template_of_culture(melt, cul):
 
 
 def _culture_template_of(cache, cid, melt, chars=None, memo=None):
-    """角色文化模板 (norse/han…), 供父名与名序推断 (v13)。
+    """A character's culture template (norse/han...), used for patronymics and name order.
 
-    命名文化沿父系继承 (CK3 子女随父文化), 推断优先级 (各步只看「自身 culture」,
-    递归只走父系线; 同胞/母/宗族一律取自身, 防姻亲/继亲文化经深链泄漏):
-      1) 自身 culture (缓存 → 熔件角色);
-      2) 父系线: 父 → 祖父 → 曾祖父 (各自自身 culture);
-      3) 同胞 (各自自身 culture — 同父系, 不经子树);
-      4) 宗族成员 (同 dynasty_house, 父系血亲最可靠兜底 — 先于母系);
-      5) 母 (自身 culture);
-      6) 语言反查。
-    chars: 预构建的全角色索引 (Facts 已持有), memo: 本次推断的缓存 dict。"""
+    The naming culture follows the paternal line, so every step reads a character's OWN
+    culture and only the paternal line recurses; siblings, mother and house members are
+    read without recursing, which keeps in-law and step-parent cultures out. Order: own
+    culture, paternal line, siblings, house members, mother, language lookup. chars is the
+    prebuilt full-character index, memo the cache for this inference run."""
     if melt is None or cid is None:
         return ""
     memo = memo if memo is not None else {}
@@ -1552,7 +1448,7 @@ def _culture_template_of(cache, cid, melt, chars=None, memo=None):
 
 def _culture_template_impl(cache, cid, melt, chars, memo):
     def self_tpl(x):
-        """自身 culture (缓存 → 熔件) 的文化模板。"""
+        """Culture template from the character's own culture (cache, then melt)."""
         k = str(x)
         r = (cache.get("characters") or {}).get(k) or {}
         t = _template_of_culture(melt, r.get("culture"))
@@ -1560,7 +1456,7 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
             return t
         return _template_of_culture(melt, (chars.get(k) or {}).get("culture"))
 
-    # 1) 自身
+    # 1) the character
     t = self_tpl(cid)
     if t:
         return t
@@ -1588,7 +1484,7 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
                     out.append(y)
         return out
 
-    # 2) 父系线 (父 → 祖父 → 曾祖父, 各自自身 culture)
+    # 2) paternal line: father -> grandfather -> great-grandfather, each own culture
     cur = cid
     for _ in range(3):
         fs = fathers_of(cur)
@@ -1598,12 +1494,12 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
         t = self_tpl(cur)
         if t:
             return t
-    # 3) 同胞 (各自自身 culture, 不经子树 — 防姻亲/继亲文化泄漏)
+    # 3) siblings, own culture only and no recursion (keeps in-law cultures out)
     for sib in fam_of(cid, ("siblings",)):
         t = self_tpl(sib)
         if t:
             return t
-    # 4) 宗族成员 (同 dynasty_house, 父系血亲最可靠兜底 — 先于母系)
+    # 4) house members: the most reliable paternal fallback, ahead of the mother
     dh = rec.get("dynasty_house")
     if dh is not None:
         hkey = f"__house_{dh}__"
@@ -1617,9 +1513,9 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
                     found = t
                     break
         if not found and chars is not None:
-            # v19: 缓存扫不到时扩展到全量熔件同宗族成员 (惰性建 house→成员索引,
-            # 索引放共享 memo 内, 一次 build_facts 只建一遍; 田村子这类
-            # 「有宗族、自身/亲属文化全被游戏清空」的角色因此可推回名序)。
+            # Nothing in the cache: widen to every melt character of the same house,
+            # building the index lazily inside the shared memo. This resolves name order
+            # for characters whose own and relatives' cultures were all cleared.
             idx_key = "__house_idx__"
             hindex = memo.get(idx_key)
             if hindex is None:
@@ -1638,12 +1534,12 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
                     break
         memo[hkey] = found
         return found
-    # 5) 母 (自身 culture)
+    # 5) mother
     for m in fam_of(cid, ("mother",)):
         t = self_tpl(m)
         if t:
             return t
-    # 6) 语言反查 (亲属链全空时的最后一步)
+    # 6) language lookup, the last step when the kinship chain is empty
     c = chars.get(str(cid)) or {}
     langs = rec.get("languages") or (c.get("alive_data") or {}).get("languages") or []
     cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
@@ -1656,8 +1552,8 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
             tpl = _e.get("culture_template")
             if not tpl:
                 continue
-            # v28: 多文化共享同一语言时优先有父名规则的模板 (language_norse → norse
-            # 而非 norman), 与 facts.culture_template 同口径。
+            # Cultures can share one language: prefer the template with patronymic rules
+            # (language_norse -> norse, not norman), matching facts.culture_template.
             if tpl in rules:
                 return tpl
             fallback = fallback or tpl
@@ -1667,7 +1563,7 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
 
 
 def _father_name_of(cache, cid, melt, names_path, chars=None):
-    """角色父的给定名 (父名拼接用): 缓存 → 熔件 → names.json (v28 顺序)。"""
+    """The father's given name, for patronymic composition: cache, then melt, then names.json."""
     if melt is None:
         return ""
     key = str(cid)
@@ -1684,7 +1580,7 @@ def _father_name_of(cache, cid, melt, names_path, chars=None):
     fr = (cache.get("characters") or {}).get(str(fid)) or {}
     fn = fr.get("name_zh") or ""
     if not fn:
-        # v28: 熔件角色优先于跨战役的 names.json
+        # the melt character wins over the cross-playthrough names.json
         fc = (chars if chars is not None else all_characters(melt)).get(str(fid)) or {}
         fn = name_zh(fc) if fc else ""
     if not fn and names_path:
@@ -1693,8 +1589,9 @@ def _father_name_of(cache, cid, melt, names_path, chars=None):
 
 
 def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None):
-    """父名 (中间名): 父名制文化且父名已知 → 前缀+父名+后缀 (崔佛松/崔佛斯多蒂尔)。
-    文化模板经亲属链推断 (玩家/死者 culture 缺失时经子女等反推)。"""
+    """Patronymic middle name: prefix + father's name + suffix for patronymic cultures
+    (a distinct form for sons and for daughters); the culture template comes from the
+    kinship chain."""
     if melt is None:
         return ""
     key = str(cid)
@@ -1726,12 +1623,10 @@ def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None):
 
 
 def _house_names_at(rec, melt, date, h, dn, memo=None):
-    """(家族名, 宗族名) —— 按 date 取家族沿革 (v44 问题1)。
+    """(house name, dynasty name) for a date, from rec["house_history"].
 
-    私生女另立家族 (阿德尔海德 1118.4.2 别立冯·亚琛氏) 与家族改名
-    (冯·亚琛 → 冯) 只记在 `rec["house_history"]`; 无沿革 (旧缓存) 或未指定
-    日期时取**熔件现值** —— 缓存里的 house_name/dynasty_name 是首见冻结值,
-    家族改名后即过期, 只作最后兜底。"""
+    Without history or a date the melt's current values win, since the cached names are
+    frozen at first sighting and go stale on a rename."""
     hid = rec.get("dynasty_house")
     hist = [e for e in (rec.get("house_history") or []) if e.get("from")]
     pick = None
@@ -1765,11 +1660,9 @@ def _house_names_at(rec, melt, date, h, dn, memo=None):
 
 
 def _culture_id_at_rec(rec, date):
-    """角色记录在 date 的文化 id (族属沿革点优先); 无沿革/无日期返回 None。
-
-    v44 (问题4): 名序随文化翻档 —— 阿德尔海德 1132 年由法兰克尼亚人转汉人,
-    此前是「名·姓」(阿德尔海德·冯·亚琛), 此后才是「姓+名」(冯阿德尔海德)。
-    只按末档文化取名序, 早年事件会一律按东方名序排。"""
+    """The character's culture id at a date, from the culture change points; None without
+    a history or a date. Name order follows the culture, so reading only the last
+    snapshot's culture would order every earlier event by the wrong convention."""
     hist = [h for h in (rec.get("culture_history") or []) if h.get("from")]
     if date and hist:
         dk = date_key(date)
@@ -1789,21 +1682,19 @@ def _culture_id_at_rec(rec, date):
 
 def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
                  date=None):
-    """(v13 唯一出口) 按游戏规则的显示名, 全项目统一调用:
-    - 父名制文化 (patronym_rules 有模板) → 「名·父名」(富兰克林·崔佛松), 父名替代家族名;
-    - 其它文化按名序: 东方姓在前 (藤原道真/边诚/赵阿足), 西方名·姓 (崔佛·菲利普/巴沙尔·冯·大马士革);
-    - v14: 东方名序 (dynasty_always_first/japanese) 的姓取**宗族名** (游戏 $DYNASTY$ 模板:
-      中国李金/日本藤原/韩国崔, 家族名如 北家/庆州崔/交州金 只作分家不显示);
-      西方仍用**家族名** ($HOUSE$ 模板);
-    - 文化缺失时沿 父系线→同胞→宗族→母→语言 推断 (玩家/死者均覆盖);
-    - 推断失败: 只返回给定名, 绝不输出错序的「姓+名」拼接。
-    v28: 名字取值链 = 缓存 → **熔件角色** → names.json (跨战役兜底, 战役不符即弃用)。
-    v44 (问题1): date 传本篇截止日 → 家族名按 `house_history` 取该日之值
-    (阿德尔海德 1118-1132 作「阿德尔海德·冯·亚琛」, 1133 起「冯阿德尔海德」);
-    date 缺省取熔件现值。文化变更 (法兰克尼亚人→汉人) 决定名序取家族名还是宗族名,
-    故同一人在东西名序下会换形 (与游戏一致)。
-    chars: 预构建的全角色索引 (Facts 已持有), memo: 跨调用共享推断缓存
-    (同一次 build_facts 内复用, 避免重复全量宗族扫描)。"""
+    """The game-rule display name used project-wide.
+
+    A patronymic culture gives "given·patronymic", which replaces the house name;
+    otherwise the name order applies, where an Eastern order takes the DYNASTY name as
+    surname (the game's $DYNASTY$ template) and a Western order the HOUSE name
+    ($HOUSE$). Inference runs along paternal line, siblings, house, mother and language,
+    and when it fails only the given name is returned, never a wrongly ordered
+    "surname+given".
+
+    Name lookup chain: cache, then the melt character, then names.json (dropped when the
+    playthrough differs). date selects the house name of that day and, through the culture
+    at that date, which surname is used. chars is the prebuilt full-character index, memo
+    the inference cache shared across one build_facts run."""
     if cid is None:
         return ""
     key = str(cid)
@@ -1812,17 +1703,15 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
     h = rec.get("house_name") or ""
     dn = rec.get("dynasty_name") or ""
     h, dn = _house_names_at(rec, melt, date, h, dn, memo=memo)
-    # v28: **熔件角色优先于 names.json** —— 该表按角色 id 索引且可能来自另一场
-    # 战役 (角色 id 只在同一存档内有意义), 熔件里明明有这个人时以本人为准
-    # (实测: 陆氏档 16293 本人是汉人「郑良士」, names.json 里同名 id 是
-    # 另一战役的「藤原利仁」, 旧顺序会把他写成日本关内路领主)。
+    # The melt character wins over names.json: that table is indexed by character id
+    # and may come from another playthrough, where the same id is a different person.
     if not nm:
         c = (chars or {}).get(key) or {}
         if c:
             nm = name_zh(c)
             hid = c.get("dynasty_house")
             if hid is not None:
-                # v28: 熔件同源补齐家族/宗族名 (旧代码只补家族名且不补宗族名)
+                # fill in house and dynasty names from the same melt
                 h = h or (house_name_zh(melt, hid) or "")
                 if not dn:
                     did = dynasty_id_of(melt, hid)
@@ -1835,9 +1724,8 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
             dn = dn or n.get("dynasty_name") or ""
     if not nm:
         return rec.get("name_full") or ""
-    # v87 (问题1/P2): 继位改名 (教宗圣名 / 出家法名) —— 角色带 `regnal_name` 时
-    # 游戏显示该名 (`Sergius_regnal` → 色尔爵; 名字本体换掉, 且**不带**姓/父名,
-    # 与游戏里「教宗色尔爵三世」同形)。取不到中文 (裸键/占位串) 时照旧用本名。
+    # A regnal name (papal or monastic) replaces the personal name and drops surname and
+    # patronymic, as the game shows it; a key with no wording falls back to the personal name.
     _rn = rec.get("regnal_name")
     if not _rn:
         _rn = ((chars or {}).get(key) or {}).get("regnal_name")
@@ -1846,18 +1734,18 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
         if _rz and not _rz.startswith("$") and not _rz.startswith("["):
             return _rz
     memo = memo if memo is not None else {}
-    # 1) 父名制文化 → 名·父名 (v70: 与本名同词时只写一次, 同东方/西方姓两条路径)
+    # 1) patronymic culture: given·patronymic, written once when it equals the given name
     ptn = _patronym_of(cache, cid, melt, names_path, chars=chars, memo=memo)
     if ptn:
         return nm if ptn == nm else f"{nm}·{ptn}"
-    # 2) 名序: v71 起走 `resolved_name_order` 单条链 (本人文化 → 父系侧 → 宗族模板 →
-    # 母系/配偶), 与 `Facts.name_order` 同源 —— 旧代码在此内联「父→母→同胞→…」的
-    # 亲属推断, 父系字段一缺就取到母系 (汶娘·李 即由此而来, 见该函数注释)。
+    # 2) name order through the single resolved_name_order chain (own culture,
+    # paternal side, dynasty template, maternal side), shared with Facts.name_order
     order = resolved_name_order(cache, cid, melt=melt, chars=chars,
                                 memo=memo, date=date)
     if order in EASTERN_NAME_ORDERS:
-        # v14: 东方名序姓 = 宗族名 (游戏 $DYNASTY$ 模板: 藤原/崔/金);
-        # 缓存/names 缺失时 (旧缓存) 按家族 id 惰性从熔件解析, 同 house 记忆化。
+        # Eastern order: the surname is the dynasty name; older caches lacking it resolve
+        # it lazily from the melt. A surname equal to the given name is written once. If
+        # there is no dynasty name, the house name is used.
         if not dn and melt is not None:
             hid = rec.get("dynasty_house")
             if hid is not None:
@@ -1868,45 +1756,42 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
                     dn = dynasty_name_zh(melt, did) if did is not None else ""
                     if memo is not None:
                         memo[mkey] = dn
-        # 宗族名缺失 (解析失败/无宗族) 回退家族名 (旧行为)
-        # v70 (用户 2026-09-27 拍板「姐姐姐姐一类的重复一起改掉」): 姓与名同为
-        # 一个词时只写一次 —— 游戏生成的家族名偶尔与该人本名同源 (存美 存美 /
-        # 朮里者 朮里者), 旧稿拼成「存美存美」, 模型照抄进正文。
+        # no dynasty name: fall back to the house name
         surname = dn or h
         if surname == nm:
             return nm
         return surname + nm if surname else nm
-    # v58 (问题4): 西方名序拼上前缀 (迪·/德·/冯·) —— 游戏显示「罗伯托·迪·卡诺萨」。
-    # 家族名若已自带前缀 (存档 localized_name 如「冯·大马士革」) 则不重复加。
+    # Western order prepends the place-name prefix (Italian di, French de, German von)
+    # unless the house name already contains it in its saved localized_name.
     pfx = house_prefix_zh(melt, rec.get("dynasty_house")) if melt is not None else ""
     if pfx and h and (h.startswith(pfx) or h.startswith(pfx.rstrip("·"))):
         pfx = ""
 
     def _west_surname(surname):
-        # v70: 姓与该人本名同词时只写一次 (「朮里者·朮里者」→「朮里者」;
-        # 见上 `EASTERN_NAME_ORDERS` 分支同源注释)
+        # a surname identical to the given name is written once
         if surname and surname.strip("·") == nm:
             return nm
         return f"{nm}·{pfx}{surname}" if (surname and pfx) else \
             (f"{nm}·{surname}" if surname else nm)
 
     if order is not None and order == "":
-        # 亲属/模板推断为西方默认: 名·姓
+        # inferred Western default: given·surname
         return _west_surname(h)
-    # 3) 无从推断: 只给给定名 (宁缺勿错序)
+    # 3) nothing resolved: the given name alone, rather than a wrong order
     return nm
 
 
 # ---------------------------------------------------------------------------
-# 亲属图 (v4: 反向亲属索引)
+# Kinship graph (reverse index)
 # ---------------------------------------------------------------------------
 
 def _family_graph(chars):
-    """全档角色 → (parent_map, child_map, sibling_map)。
-    - parent_map: {角色: [父/母 id...]}  由 family_data.child 反查 + 直接 father/mother 字段
-    - child_map:  {角色: [子女 id...]}   直接 child 字段 + father/mother 字段反查
-    - sibling_map:{角色: [兄弟姐妹 id...]} 直接 siblings 字段 (双向)
-    实测: 子女 family_data 常为空, 父女关系只在父侧 child 列表 (33367.child 含妻 37898)。"""
+    """Whole-save characters -> (parent_map, child_map, sibling_map).
+
+    parent_map comes from family_data.child plus the direct father/mother fields,
+    child_map from the direct child field plus father/mother back-references, and
+    sibling_map from the siblings field (both directions). A child's family_data is
+    often empty, so a parent/child link may exist only on the parent's child list."""
     parent_map = {}
     child_map = {}
     sibling_map = {}
@@ -1927,7 +1812,7 @@ def _family_graph(chars):
                 sibling_map.setdefault(x, []).append(owner)
 
     for cid, c in chars.items():
-        if not isinstance(c, dict):  # v7: none 条目防护
+        if not isinstance(c, dict):  # guard against a "none" entry
             continue
         fd = c.get("family_data") or {}
         for key in ("child", "father", "mother", "siblings"):
@@ -1936,7 +1821,8 @@ def _family_graph(chars):
 
 
 def _parents_of(chars, cid, parent_map, direct):
-    """角色父母 (直接字段 + 反查合并, 按性别分 father/mother)。"""
+    """A character's parents, merging the direct fields with back-references and
+    splitting them into father/mother by sex."""
     fathers = [int(x) for x in (direct.get("father") or [])]
     mothers = [int(x) for x in (direct.get("mother") or [])]
     for p in parent_map.get(cid, []):
@@ -1951,7 +1837,7 @@ def _parents_of(chars, cid, parent_map, direct):
 
 
 def _siblings_of(cid, parent_map, child_map, sibling_map, direct):
-    """角色兄弟姐妹: 直接字段 + 共享父母派生。"""
+    """A character's siblings: the direct field plus those derived from shared parents."""
     out = set(int(x) for x in (direct.get("siblings") or []))
     out.update(sibling_map.get(cid, []))
     for p in parent_map.get(cid, []):
@@ -1962,13 +1848,14 @@ def _siblings_of(cid, parent_map, child_map, sibling_map, direct):
 
 
 def _secret_father_candidates(melt):
-    """预索引秘密生父: {target_id: [[候选父id...], ...]}。
+    """Pre-indexed secret fathers: {target_id: [[candidate father ids...], ...]}.
 
-    两类秘密 (secret_unmarried_illegitimate_child / secret_disputed_heritage) 按
-    原对象顺序分组保存候选列表; 组内已排除 target 自身与 owner。保持与逐条扫描
-    完全相同的返回语义: 首个含候选的秘密组优先, 组内先返回非女性候选人。
-    v11: extract_snapshot 主循环对每个目标角色调 real_father_of, 旧实现每次
-    全量遍历 secrets → O(目标×秘密), 预建后 O(1) 查询。"""
+    The two secret types (secret_unmarried_illegitimate_child /
+    secret_disputed_heritage) keep their candidate groups in the original object
+    order, with the target itself and the owner already removed, so the return
+    semantics match a per-record scan: an empty group is skipped, the first group
+    with candidates wins, and a non-female candidate is preferred inside a group.
+    real_father_of would otherwise walk every secret for every target character."""
     out = {}
     sec = (melt.get("secrets") or {}).get("secrets") or {}
     for s in sec.values():
@@ -1986,19 +1873,19 @@ def _secret_father_candidates(melt):
         cands = [x for x in cands if x != tgt]
         if owner is not None and isinstance(owner, int):
             cands = [x for x in cands if x != owner]
-        if cands:  # 空候选组在原逻辑中会被跳过, 不建索引
+        if cands:  # an empty candidate group is skipped, so it is not indexed
             out.setdefault(tgt, []).append(cands)
     return out
 
 
 def real_father_of(melt, cid, chars=None, sec_candidates=None):
-    """角色真正父亲 (v5): family_data.real_father 直接字段;
-    缺失时查秘密 (secret_unmarried_illegitimate_child / secret_disputed_heritage:
-    target=子女, participants 中非 owner 的男性候选人)。
+    """A character's real father: the family_data.real_father field, else the secret
+    data (secret_unmarried_illegitimate_child / secret_disputed_heritage, whose
+    target is the child and whose non-owner male participants are the candidates).
 
-    v11: chars / sec_candidates 由调用方预建一次传入 (extract_snapshot 主循环每个
-    目标角色调用一次, 旧实现每次重建全角色字典 → O(目标×世界) 二次方,
-    实测 913.1.1 并入 129s; 预建后 O(1) 查询)。"""
+    chars and sec_candidates are prebuilt once by the caller, because
+    extract_snapshot calls this for every target character and rebuilding the full
+    character dict each time would be quadratic."""
     cid = int(cid)
     if chars is None:
         chars = all_characters(melt)
@@ -2007,7 +1894,8 @@ def real_father_of(melt, cid, chars=None, sec_candidates=None):
     rf = fd.get("real_father")
     if rf is not None:
         return int(rf)
-    # 秘密推导: participants 中非 owner 的男性候选人 (女眷=owner 时第二人为父)
+    # From secrets: the non-owner male participants (with the mother as owner, the second
+    # participant is the father)
     if sec_candidates is None:
         sec_candidates = _secret_father_candidates(melt)
     for cands in sec_candidates.get(cid, []):
@@ -2021,23 +1909,23 @@ def real_father_of(melt, cid, chars=None, sec_candidates=None):
 
 
 # ---------------------------------------------------------------------------
-# 单档提取 (v4: 每玩家缓存 + 姓名合并 + 亲属/特质/朝局)
+# Single-snapshot extraction (per-player cache, name merge, kinship/traits/court)
 # ---------------------------------------------------------------------------
 
-# v53 (问题1): 天朝封臣合同组 `celestial_vassal` 的 contracts 顺序
-# (subject_contract_groups.txt) — 索引 2 = celestial_provinces。
+# Index order of the celestial_vassal contract group (subject_contract_groups.txt), where
+# index 2 = celestial_provinces and each level maps to an obligation tier
 _CELESTIAL_PROVINCE_INDEX = 2
 _CELESTIAL_PROVINCE_FLAGS = (
-    "celestial_province_standard",       # 0 观察使
-    "celestial_province_industrial",     # 1 观察使
-    "celestial_province_metropolitan",   # 2 观察使
-    "celestial_province_military",       # 3 经略使
-    "celestial_province_protectorate",   # 4 都护
+    "celestial_province_standard",       # 0 circuit inspector tier
+    "celestial_province_industrial",     # 1 circuit inspector tier
+    "celestial_province_metropolitan",   # 2 circuit inspector tier
+    "celestial_province_military",       # 3 military commissioner tier
+    "celestial_province_protectorate",   # 4 protector-general tier
 )
 
 
 def _contract_levels_map(levels):
-    """熔件 `levels: [N, {"3": 2}, …]` → {int index: int value}。"""
+    """Melt levels [N, {"3": 2}, ...] -> {int index: int value}."""
     out = {}
     if not isinstance(levels, list):
         return out
@@ -2053,10 +1941,10 @@ def _contract_levels_map(levels):
 
 
 def vassal_obligation_flags(contract):
-    """一份封臣合同 → 义务旗标列表 (目前只解码 celestial_provinces)。
+    """One vassal contract -> obligation flags (only celestial_provinces is decoded).
 
-    熔件常省略默认档 (index 2 缺失 = 0 = celestial_province_standard)。
-    非天朝合同组返回 []。"""
+    The melt usually omits the default level, so a missing index 2 means 0
+    (celestial_province_standard); any other contract group gives []."""
     if not isinstance(contract, dict):
         return []
     group = str(contract.get("contract_group") or "")
@@ -2070,7 +1958,7 @@ def vassal_obligation_flags(contract):
 
 
 def _vassal_snapshot(melt):
-    """本档封臣合同 → {vassal_id: {liege, flags}}。"""
+    """This snapshot's vassal contracts -> {vassal_id: {liege, flags}}."""
     out = {}
     db = (melt.get("vassal_contracts") or {}).get("database") or {}
     for rec in db.values():
@@ -2093,10 +1981,10 @@ def _vassal_snapshot(melt):
 
 
 def dynastic_cycle_phase(melt):
-    """当前天命循环阶段 {phase, start}；无局势返回 None。
+    """Current Mandate-of-Heaven cycle phase {phase, start}; None without a situation.
 
-    路径: situation_manager.database 里 type=dynastic_cycle 的条目,
-    再经 sub_region_refs 落到 situation_sub_region_manager.database.<id>.phase。"""
+    Path: the type=dynastic_cycle entry in situation_manager.database, then through
+    its sub_region_refs into situation_sub_region_manager.database.<id>.phase."""
     sm = (melt.get("situation_manager") or {}).get("database") or {}
     sit_id = None
     for k, v in sm.items():
@@ -2129,9 +2017,10 @@ def dynastic_cycle_phase(melt):
 
 
 def player_domicile(melt, domain, cid):
-    """玩家毡帐/庄园条目 (v26): 牧群(herd)/口粮(provisions) 只存于
-    domiciles.database, landed_data 里没有 — 按 owner_title 命中玩家领地
-    (或该头衔持有人即玩家) 取条目。返回 dict 或 None。"""
+    """The player's domicile entry: herd and provisions live only in
+    domiciles.database and not in landed_data, so the entry is matched by owner_title
+    against the player's domain (or by the title's holder being the player). Returns
+    a dict or None."""
     db = (melt.get("domiciles") or {}).get("database") or {}
     domset = {x for x in (domain or []) if isinstance(x, int)}
     lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
@@ -2147,10 +2036,10 @@ def player_domicile(melt, domain, cid):
 
 
 def _war_side_id(side):
-    """war 的 attacker/defender 段 → 主战方角色 id (取不到返回 None)。
+    """A war's attacker/defender section -> the leading character id, or None.
 
-    946 档实测两段都是 `{participants:[{character:…, date:…}], casualties:[…]}` 的 dict
-    (主战方 = 第一个 participant); 兼容少数档把该段写成裸 id 的形态。"""
+    That section is a dict of participants whose first entry leads the side, though a few
+    snapshots store a bare id instead."""
     if isinstance(side, int):
         return side
     if isinstance(side, dict):
@@ -2161,7 +2050,8 @@ def _war_side_id(side):
 
 
 def _war_side_parts(side, cap=32):
-    """war 的 attacker/defender 段 → 参与角色 id 升序列表 (含盟友; 截断 cap)。"""
+    """A war's attacker/defender section -> sorted participant ids (allies included),
+    truncated to cap."""
     out = []
     if isinstance(side, dict):
         for p in (side.get("participants") or []):
@@ -2173,23 +2063,20 @@ def _war_side_parts(side, cap=32):
 
 
 def _latch_war_history(cache, wars, date_label, player_id=None):
-    """v95 (问题1): 玩家参与的战争**宣战理由**逐档闩存 —— `cache["war_history"]`。
+    """Latch the casus belli of the player's wars into cache["war_history"].
 
-    为什么必须落盘: 游戏只为 126 个 CB 中的一部分写记忆键 `war_memory_cb_*`
-    (`03_bp1_scripted_effects.txt:877-996` 的硬编码白名单), 未列出的 CB —— 含全部
-    4 个 pam 系与多数 tgp 中国系 —— 一律落 `war_memory_cb_fallback` (正文「战争」,
-    项目按约定丢弃, 见 `facts._war_cb_word`)。**真 CB 只在
-    `melt["wars"]["active_wars"][<id>].casus_belli.type`, 而战争一结束就从 active_wars
-    移除** (本档对立教宗那战 946.2.24 结束, 947 档起无踪) ⇒ 只有在「该场战争仍进行」
-    的那几档把它闩下来, 事实层才可能补出「以…开战」。
+    The game writes the war_memory_cb_* memory key for only part of the 126 casus belli
+    (a hard-coded whitelist) and uses war_memory_cb_fallback for the rest, whose text is
+    just "war" and is discarded (see facts._war_cb_word). The real CB lives only in
+    melt["wars"]["active_wars"][<id>].casus_belli.type, and a war leaves active_wars as
+    soon as it ends, so it can only be latched while still running.
 
-    形状: `[{id, seen, start_date, cb, attacker, defender, claimant, titles,
-    atk_parts, dfd_parts, name}]` —— 按 war id 去重 (同一场战争跨多档只留一行,
-    后来档只**合并**参与人名单); 只收攻守任一方**含玩家**的战争 (含玩家加盟的盟友战)。
-    `attacker/defender/claimant` 取 `casus_belli` 段 (war 段的同名键是 participant
-    dict, 不是 id); `claimant` 的 4294967295 = 无宣称者哨兵, 归一为 None。
-    `name` 是存档已本地化的战名 (含 0x15 内联标记), 只作取证参考。
-    幂等: 同一档重复并入不会重复追加。"""
+    Rows are [{id, seen, start_date, cb, attacker, defender, claimant, titles, atk_parts,
+    dfd_parts, name}], deduplicated by war id with later snapshots merging in more
+    participants, and kept only when either side includes the player.
+    attacker/defender/claimant come from casus_belli, since those names in the war section
+    are participant dicts; a claimant of 4294967295 is the no-claimant sentinel. name is
+    the save's localized war name and is evidence only. Idempotent."""
     if not isinstance(wars, dict) or player_id is None:
         return 0
     aw = wars.get("active_wars") or {}
@@ -2232,7 +2119,8 @@ def _latch_war_history(cache, wars, date_label, player_id=None):
             by_id[str(wid)] = row
             added += 1
         else:
-            # 同一场战争的后档: 主战方与 CB 首见即定, 只补后来加入的参与人
+            # later snapshot of the same war: leaders and CB are fixed at first
+            # sight, so only participants that joined later are merged in
             row["atk_parts"] = sorted(set((row.get("atk_parts") or []) + atk_parts))
             row["dfd_parts"] = sorted(set((row.get("dfd_parts") or []) + dfd_parts))
             if not row.get("cb") and cb.get("type"):
@@ -2241,22 +2129,17 @@ def _latch_war_history(cache, wars, date_label, player_id=None):
 
 
 def _latch_title_dyn_names(cache, lt, date_label):
-    """v66: 头衔**动态名**逐档闩存 (只记变化点) —— `cache["title_dyn_names"]`。
+    """Latch dynamic title names per snapshot into cache["title_dyn_names"].
 
-    `title_name_data.specific_title_name` 是**该日期那一档才有的现值** (属《方案 v48》
-    §4 B 那一类; 同类的家族/政体/朝职/领地早已闩存)。它是游牧/宗族命名领域的游戏
-    显示名「文化集合词+宗族名+部」(如「库曼顿巴斯部」「可萨希西家部」), 随持有者
-    逐档变; 而末档熔件只留最后一版 —— 于是同一块地被后来的持有者改名后, 历任/年表/
-    驻地会把**后来的名字**用在早年事件上。实测 (卡尔 60836, 84 档): 936 年的
-    `c_kherson` 被读成 954 年才有的「马扎尔迈杰希部」; `c_uman` / `d_barsuki` /
-    `d_chah` / `k_dzungaria` 四块**不同**头衔全被读成「库曼顿巴斯部」, 模型据此写出
-    「四度得库曼顿巴斯部而四度迁离」这类伪史。详见 docs/方案_v66_游牧迁移用地名.md。
+    title_name_data.specific_title_name is a present-day value carried only by the
+    snapshot of that date (the game's nomadic/dynasty display name, which follows the
+    holder), while the last melt keeps the final version only, so a later rename would be
+    applied to earlier events.
 
-    形状随项目既有沿革 (`[{from, name}]`, 同 `culture_history`): 只在**值变化**时
-    追加一点, 故体量极小 (实测 84 档 ≈ 215 KB / 6158 点)。名字**消失**也记一次空值,
-    否则旧名会一直生效 (取值口要区分「当时无名」与「本档未收」)。
-
-    只记非空动态名 —— 静态地名 (`title_name_data.name`) 不逐档变, 由熔件末档免费提供。"""
+    Shape: {tid: [{from, name}]}, appending a point only when the value changes. A name
+    DISAPPEARING also gets an empty point, or the old name would stay in force. Only
+    dynamic names are recorded; static ones (title_name_data.name) come from the last
+    melt."""
     dn = cache.setdefault("title_dyn_names", {})
     dk = date_key(date_label)
 
@@ -2264,7 +2147,7 @@ def _latch_title_dyn_names(cache, lt, date_label):
         h = dn.setdefault(key, [])
         if h:
             if date_key(h[-1]["from"]) > dk:
-                return          # 乱序并档 (他传主熔件回并): 保沿革表单调
+                return          # out-of-order merge: keep the history monotonic
             if h[-1].get("name") == name:
                 return
         h.append({"from": date_label, "name": name})
@@ -2286,11 +2169,12 @@ def _latch_title_dyn_names(cache, lt, date_label):
 
 
 def _record_vassal_and_cycle(cache, melt, date_label):
-    """记下本档封臣合同变化点与天命阶段 (v53)。
+    """Record this snapshot's vassal contract change points and Mandate phase.
 
-    同战役他传主熔件也要走这条路: 马丁早年节度使合同只存在于亨利档,
-    重建马丁缓存时那些熔件因 player_id 不一致被整档跳过, 不在这里落盘
-    终传就拼不出 910 的封臣史。"""
+    Other subjects' melts of the same playthrough also go through here: their early
+    contracts exist only in those snapshots, which are skipped wholesale when
+    player_id differs, so without this the final biography could not reconstruct that
+    period's vassal history."""
     _vassal_now = _vassal_snapshot(melt)
     _phase = dynastic_cycle_phase(melt)
     if _phase:
@@ -2299,7 +2183,8 @@ def _record_vassal_and_cycle(cache, melt, date_label):
             _ph.append({"date": date_label, "phase": _phase.get("phase") or "",
                         "start": _phase.get("start") or date_label})
     _vh_all = cache.setdefault("char_vassal_history", {})
-    # 只记本传主 + 已入库角色 + 已有封臣史的人, 不把全天朝封臣写进缓存。
+    # Record only this subject, already-cached characters and those with existing
+    # vassal history, rather than every celestial vassal.
     want = {int(k) for k in _vh_all if str(k).isdigit()}
     pid = cache.get("player_id")
     if pid is not None:
@@ -2329,15 +2214,17 @@ def _record_vassal_and_cycle(cache, melt, date_label):
 
 
 def extract_snapshot(cache, melt, date_label, _new_deaths=None):
-    """把一个存档快照并入缓存。返回 False 表示玩家不一致被拒绝。
-    _new_deaths: 可选列表, 本次并入「首次记录死亡」的角色 id (int) 会追加进来,
-    供调用方只对「新死亡」角色做死档记忆回溯, 避免每轮全量扫描 (v9)。
+    """Merge one save snapshot into the cache; False when the player does not match.
 
-    v56 (性能): 本函数在**关掉自动 GC** 的窗口里跑 (出栈恢复原状态) ——
-    缓存对象图到后期上千万节点, 本函数每档新建/改写数十万对象, 途中反复触发
-    gen0/1/2, 每次 gen2 都要遍历全图。实测单档 `extract_snapshot`
-    7.75 s → 3.22 s (**-58%**, 斯卡利茨 melt_940)。数据全是 dict/list,
-    引用计数即可释放, 无环; 与 `load_melt` 的同类处理同源 (v49 O2)。"""
+    _new_deaths: optional list that receives the ids of characters whose death is
+    first recorded here, so the caller can backtrack memories for the newly dead
+    only instead of rescanning everything.
+
+    Runs inside a window with automatic GC disabled: by the later snapshots the cache
+    graph holds tens of millions of nodes and this function creates or rewrites
+    hundreds of thousands of objects per snapshot, which would trigger repeated
+    gen0/1/2 passes that each walk the whole graph. The data is all dicts and lists
+    with no cycles, so reference counting frees it."""
     _gc_was_on = gc.isenabled()
     if _gc_was_on:
         gc.disable()
@@ -2349,11 +2236,10 @@ def extract_snapshot(cache, melt, date_label, _new_deaths=None):
 
 
 def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
-    """`extract_snapshot` 的实现体 (GC 窗口由外层负责)。"""
+    """Implementation body of extract_snapshot; the wrapper owns the GC window."""
     player_id = find_player(melt)
-    # v28: 战役校验 — 角色 id 跨战役复用 (867 自定义角色恒为 38701/38682),
-    # 仅凭玩家 id 无法拦住「另一场战役的熔件并进本缓存」。两边都有战役号
-    # 且不同即拒收 (调用方一律按 playthrough_id 选缓存, 这里是最后一道防线)。
+    # Playthrough check: character ids are reused across playthroughs, so the player id
+    # alone cannot stop another playthrough's melt from merging here (last line of defence).
     _cpt = cache.get("playthrough_id")
     _mpt = melt.get("playthrough_id")
     if _cpt and _mpt and str(_cpt) != str(_mpt):
@@ -2361,15 +2247,14 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         return False
     if cache["player_id"] is not None and player_id is not None \
             and cache["player_id"] != player_id:
-        # v53: 同战役他传主熔件仍记封臣史/天命 (马丁终传要用亨利档的早年合同)
+        # Another subject's melt of the same playthrough still contributes vassal and
+        # Mandate history.
         _record_vassal_and_cycle(cache, melt, date_label)
-        # v60 (问题4): 同战役**后继玩家**的档也要用来记囚禁交接 ——
-        # 传主死后其在押囚犯的监禁者转归继位者, 而那之后的档
-        # `find_player` 已换成继位者, 本传主这一侧永远看不到 (崔佛 881/882 档
-        # 的 find_player 是 15179, 他的缓存只到 880 档)。
+        # The successor's snapshots also feed the prisoner hand-over latch, since
+        # find_player returns the successor from then on.
         _latch_prison_succession(cache, melt, date_label)
-        # v95 (问题1): 同战役后继玩家的档里仍可能带着**本缓存传主**参与的战争
-        # (战争跨任), 故按本缓存的玩家 id 也闩一道 (见 `_latch_war_history`)。
+        # A successor's snapshot can still carry wars the cached subject took part in
+        # (wars span reigns), so latch once more with this cache's player id.
         _latch_war_history(cache, melt.get("wars"), date_label,
                            cache.get("player_id"))
         return False
@@ -2380,12 +2265,12 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
     if meta.get("meta_player_name") and not cache.get("player_name"):
         cache["player_name"] = meta["meta_player_name"]
     cache["game_version"] = meta.get("version") or cache["game_version"]
-    # 战役标识: 同一战役(含继承人继位)的存档共享 playthrough_id
+    # Playthrough id: a playthrough's saves (succession included) share it.
     if cache.get("playthrough_id") is None and melt.get("playthrough_id"):
         cache["playthrough_id"] = melt.get("playthrough_id")
     if date_label not in cache["sources"]:
         cache["sources"].append(date_label)
-    # last_date 单调更新: 防旧档/跨战役误并把日期回拨
+    # last_date only moves forward, so a stale or foreign snapshot cannot rewind it
     if date_key(date_label) > date_key(cache.get("last_date") or "0.0.0"):
         cache["last_date"] = date_label
 
@@ -2393,12 +2278,11 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
     db = _db(melt)
     lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
     tl = melt.get("traits_lookup") or []
-    # v56 (性能): 换档即释放上一档在 `_TL` 里留下的引用 (宗族名索引/结果 memo)
+    # Release the previous snapshot's references left in _TL (dynasty name index/memo)
     clear_dyn_caches()
-    # v13: 本快照内共享的姓名推断缓存 (一次 rebuild 数万角色只算一遍)
+    # Name-inference memo shared within this snapshot, so one rebuild computes each once
     _name_memo = {}
-    # v14: 宗族名解析记忆化 (旧缓存自愈用)
-    # v44: 家族名与宗族名分表记忆化 (house id 与 dynasty id 各自成池, 同表会互撞)
+    # House and dynasty names use separate memos, since their ids come from different pools
     _hname_memo = {}
     _dname_memo = {}
 
@@ -2419,7 +2303,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             return tl[t]
         return str(t)
 
-    # 玩家死亡检测 (首次写入后不再覆盖; v8: 同时记录 dead_data.kills)
+    # Player death detection, written once and never overwritten (kills included)
     if player_id is not None:
         pdead = (chars.get(str(player_id)) or {}).get("dead_data")
         if pdead and cache.get("player_death") is None:
@@ -2429,10 +2313,9 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 "killer": pdead.get("killer"),
                 "kills": pdead.get("kills") or [],
             }
-        # v44 (问题2): 玩家角色接替链 (存档 played_character.legacy)。
-        # 每档一存 (后档含前档), 条目 = {cid, date}; 末条即当前传主, 其 date =
-        # 继位日 = 前任死亡当日。新版本玩家可从宗族里挑人继位, 故此链是
-        # 「传主之间怎么连起来的」的唯一权威来源。
+        # Player succession chain (played_character.legacy), taken from every snapshot: the
+        # last entry is the current subject, its date the accession day. Since players can
+        # pick any dynasty member as successor, kinship cannot reconstruct this chain.
         _lg = (melt.get("played_character") or {}).get("legacy") or []
         _chain = []
         for _e in _lg:
@@ -2445,7 +2328,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         if _chain:
             cache["played_legacy"] = _chain
 
-    # 目标角色集: 玩家 + 家族/家庭 + 记忆参与者 (两轮)
+    # Target character set: player + house/family + memory participants
     targets = set()
     if player_id is not None:
         targets.add(player_id)
@@ -2456,7 +2339,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             house = p.get("dynasty_house")
             if house is not None:
                 for cid, c in chars.items():
-                    if not isinstance(c, dict):  # v7: none 条目防护
+                    if not isinstance(c, dict):  # guard against a "none" entry
                         continue
                     if c.get("dynasty_house") == house:
                         targets.add(int(cid))
@@ -2475,12 +2358,12 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
 
     if player_id is not None:
         add_participants(player_id)
-    # 后续轮: 目标集角色的记忆参与者 (三轮扩展, 覆盖同僚圈: 铎妻/狱卒/好友等)
+    # Further rounds bring in the colleague circle (three rounds of memory participants)
     for _round in range(3):
         snapshot = list(targets)
         for cid in snapshot:
             add_participants(cid)
-    # 全库: 记忆参与者含玩家的记忆拥有者 (交叉读取)
+    # Whole database: memory owners whose participants include the player
     if player_id is not None:
         for cid, c in chars.items():
             for mid in mem_ids_of(c):
@@ -2493,8 +2376,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                         if isinstance(v, int):
                             targets.add(v)
 
-    # 亲属闭包 (v4): 两轮, 把已收角色的一级亲属 (父母/子女/兄弟姐妹/配偶) 纳入目标,
-    # 保证妻父 (宋帝赵曙)/妻兄 (今上赵煦) 等入缓存, 名字可解析。
+    # Kinship closure over two rounds: first-degree relatives of collected characters join
+    # the target set so their names and records resolve too.
     parent_map, child_map, sibling_map = _family_graph(chars)
     for _round in range(2):
         snapshot = list(targets)
@@ -2510,10 +2393,11 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 targets.update(child_map.get(p, []))
             targets.update(sibling_map.get(cid, []))
 
-    # 朝局持有者 (v4): 帝国(h_/e_)级头衔 + 相关角色持有的头衔, 逐年记录
+    # Realm holders, recorded yearly: empire/kingdom (e_/h_) titles plus titles of related
+    # characters
     realm_holders = {}
     for tid, t in lt.items():
-        if not isinstance(t, dict):  # v7: 空值条目 (none) 防护
+        if not isinstance(t, dict):  # guard against a "none" entry
             continue
         holder = t.get("holder")
         key = t.get("key") or ""
@@ -2528,21 +2412,20 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         cache.setdefault("realm_history", []).append(
             {"date": date_label, "holders": realm_holders})
 
-    # v66: 头衔动态名逐档闩存 (与 realm_history 同位 —— 同属"只有该日期那一档才有
-    # 的现值"; 见 _latch_title_dyn_names docstring)
+    # Dynamic title names latched per snapshot, beside realm_history (both are present-day
+    # values only that date carries; see _latch_title_dyn_names)
     _latch_title_dyn_names(cache, lt, date_label)
 
-    # v95 (问题1): 玩家参与的战争**宣战理由**逐档闩存 —— 见 `_latch_war_history`。
+    # Casus belli of the player's wars, latched per snapshot (see _latch_war_history)
     _latch_war_history(cache, melt.get("wars"), date_label, player_id)
 
-    # 玩家营/廷内僚属任职 (v7): court_positions.database 中 employer == 玩家,
-    # 逐年记录 (含营地军官与宫廷职位 — 这些岗位由玩家麾下僚属担任, **不是玩家
-    # 自身的官职**; 玩家自身官职走 player_title_history/历任头衔, v23 语义重申)。
+    # Court staff of the player from court_positions.database (employer == player): camp
+    # officers and positions held by the player's subordinates, NOT the player's own offices
     if player_id is not None:
         cpd = (melt.get("court_positions") or {}).get("database") or {}
         mine = []
         for _pos_id, e in cpd.items():
-            if not isinstance(e, dict):  # v7: none 条目防护
+            if not isinstance(e, dict):  # guard against a "none" entry
                 continue
             try:
                 if e.get("employer") is None or int(e.get("employer")) != player_id:
@@ -2554,7 +2437,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 continue
             emp_id = e.get("employee")
             if isinstance(emp_id, int):
-                targets.add(emp_id)  # 官职任职者入目标集, 保证姓名可解析
+                targets.add(emp_id)  # office holder joins the target set, so the name resolves
             mine.append({
                 "type": ptype,
                 "employee": emp_id,
@@ -2564,11 +2447,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         if mine:
             cache.setdefault("court_positions", []).append(
                 {"date": date_label, "positions": mine})
-        # v36 (问题2, 用户拍板3): 主角**获授**的朝廷职位 — court_positions.database 中
-        # employee == 玩家、employer == 他人 (太师/某部尚书这类朝廷命官)。方向与上面的
-        # 「僚属」相反, 故分列一键, 语义互不混: 上面是「谁在我廷中任职」, 这里是
-        # 「我在谁的朝中任职」。失去时点在 facts 侧按快照差分推断
-        # (太师 881 受任、884 档仍在、885 档已无 → 至晚自885年起已卸任)。
+        # Court positions granted TO the protagonist (employee == player, employer == another
+        # person): the opposite direction from the staff list above, hence its own key
         own = []
         for _pos_id, e in cpd.items():
             if not isinstance(e, dict):
@@ -2584,22 +2464,21 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             ptype = e.get("court_position")
             if not ptype:
                 continue
-            targets.add(employer)   # 雇主入目标集, 保证「唐皇帝李漼」这类称谓可解析
+            targets.add(employer)   # employer joins the target set, so titles resolve
             own.append({"type": ptype, "employer": employer,
                         "hire_date": e.get("hire_date")})
-        # v36: 逐档都记一条 (空集也记) — 失去时点靠「后一档已无此职位」差分推断
-        # (与 court_positions 只在非空时记录不同: 那里是花名册, 这里是任期)。
+        # Every snapshot appends a row, empty set included, since the losing date comes
+        # from diffing (court_positions records non-empty lists only: a roster, not a term).
         cache.setdefault("court_office_history", []).append(
             {"date": date_label, "offices": own})
-        # 玩家家族家训 (v7): dynasty_house[<id>].motto (字符串或模板 dict)
+        # Player house motto: dynasty_house[<id>].motto (a string or a template dict)
         pobj = chars.get(str(player_id))
         if isinstance(pobj, dict) and pobj.get("dynasty_house") is not None:
             dh_ = (melt.get("dynasties") or {}).get("dynasty_house") or {}
             he = dh_.get(str(pobj.get("dynasty_house"))) or {}
             if isinstance(he, dict) and he.get("motto"):
                 cache["house_motto"] = he.get("motto")
-        # v31: 牵制对手方 (holder/target) 入目标集, 保证姓名/档案可解析
-        # (牵制把柄常指向宫廷外角色: 「安乔握有对主角的强牵制」)。
+        # Both sides of a hook join the target set so their names and records resolve
         for _e in (melt.get("relations") or {}).get("active_relations") or []:
             if not isinstance(_e, dict):
                 continue
@@ -2609,12 +2488,10 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             if player_id in (_h, _t):
                 targets.add(_h)
                 targets.add(_t)
-        # v35: 主角的奴隶入目标集 — 否则姓名/宅第/生卒解析不出, 事实层只剩光名
-        # (德圣塔档实测: 不进目标集时 9 名奴隶里数人退化成「哈迪雅」这样的单名)。
+        # The protagonist's slaves join the target set, or their names and dates stay bare
         targets.update(enslaved_ids(melt, player_id))
-        # v35: 隐事的持有人与知情人也入目标集 —— 《阴私录》的「把柄」行要用他们的
-        # 全称谓; 不进目标集时 `person_label` 落空, 事实层整行被丢
-        # (德圣塔档实测: 贞子的把柄行时有时无)。
+        # Secret owners and knowers join the target set, since the secrets section needs
+        # their full labels and person_label would otherwise come up empty
         for _sid, _rec in ((melt.get("secrets") or {}).get("secrets") or {}).items():
             if not isinstance(_rec, dict):
                 continue
@@ -2625,7 +2502,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 if isinstance(_p, int):
                     targets.add(_p)
 
-    # 玩家主头衔名变化 (v4): 主头衔 title_name_data (custom → name) 或信封名
+    # Player primary title name changes: title_name_data (custom -> name) or envelope
     if player_id is not None:
         tname = ""
         thn = []
@@ -2634,8 +2511,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         if dom:
             t = lt.get(str(dom[0])) or {}
             tnd = t.get("title_name_data") or {}
-            # v26: 游戏算好的动态头衔名 (游牧/宗族命名领域) 优先 —
-            # 「可萨田所部」而不是静态地名「也勒克河」
+            # The game-computed dynamic title name wins over the static place name
             tname = (tnd.get("specific_title_name")
                      or tnd.get("custom") or tnd.get("name") or "")
             thn = tnd.get("title_history_names") or []
@@ -2649,9 +2525,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     if h.get("name") == tname and h.get("date"):
                         d = h["date"]
                         break
-                # v41 (问题1/2): 改名史与**夺位日**取真事件日 —— 主头衔在
-                # title history 里由玩家取得的日期 (1086.1.1) 早于本档快照日
-                # (1087.1.1); 旧稿写快照日, 十年传记里的登位年份因此晚一年。
+                # The rename and accession dates use the real event day from the
+                # title history, which can predate this snapshot by up to a year.
                 for _tid in dom:
                     _h = (lt.get(str(_tid)) or {}).get("history") or {}
                     if not isinstance(_h, dict):
@@ -2674,12 +2549,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                         break
                 hist.append({"date": d, "name": tname})
 
-    # v41 (问题1): 玩家政体变更史 (改行行政官制等) — 只记变化点 (与
-    # player_locations / camp_purposes 同范式, 体量极小); facts 据此出
-    # 「1095年，诺兰由封建采邑制改行行政官制」这句事实。
-    # 日期取**本档快照日** —— 变更是逐档差分发现的 (实测主角 1087–1094 为
-    # feudal_government, 1095.1.1 档起为 administrative_government);
-    # 早年曾误取主头衔的夺位日 (1086.1.1), 把「夺得神罗」与「改行政制」混成一天。
+    # Player government changes (feudal to administrative, etc.), change points only; the
+    # date is this snapshot's, since the change is discovered by diffing.
     if player_id is not None:
         _ld = (chars.get(str(player_id)) or {}).get("landed_data") or {}
         _gov = _ld.get("government") or ""
@@ -2688,12 +2559,9 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             if not _gh or _gh[-1].get("government") != _gov:
                 _gh.append({"date": date_label, "government": _gov})
 
-    # v89 (问题4): **礼仪本身的教义沿革** —— 游戏不存档「某条教义何时被换掉」
-    # (调研_v89_礼仪教义变更留痕: `rites.database[rid].data.tenets[]` 每条只有
-    # `{tenet, status}`, 无日期/无历史/无 on_action 记忆; 只有本礼 `head_of_rite`
-    # 能改, 且一生一次)。故按**传主当档所奉礼仪**逐档锁存教义分档与当时的礼仪领袖,
-    # 渲染端 (facts.rite_tenet_changes) 差分出「何时换出、换入, 谁改的」。
-    # 只锁传主一人: 教义是**礼仪级**对象, 与谁持有无关, 其余角色共享同一份 (省体积)。
+    # Tenet history of the rite itself: the game records no date for a change (tenets[] holds
+    # only {tenet, status} and only the rite's head_of_rite can change it), so the tenets and
+    # current head are latched per snapshot and facts.rite_tenet_changes diffs them.
     if player_id is not None:
         _prid = rite_id_of_char(chars.get(str(player_id)))
         if _prid is not None:
@@ -2712,14 +2580,14 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     _th.append({"from": date_label, "tenets": _ten,
                                 "head": _head})
 
-    # v8: 击杀受害者入目标集 (保证刺客列传能取到姓名/档案)
+    # Kill victims join the target set so their names and records resolve
     for _cid in list(targets):
         _c = chars.get(str(_cid))
         for _v in kills_of(_c):
             targets.add(int(_v))
 
-    # v8: 妾的反向索引 {男主id: [妾id...]} (family_data.concubinist);
-    # 实测正向 family_data.concubine 只列 1 人, 反向才有 2 人 (崔佛: 艾丽丝+ED_la)。
+    # Reverse concubine index {man id: [concubine ids...]} from family_data.concubinist,
+    # which is more complete than the forward concubine list
     concubinist_map = {}
     for _cid, _c in chars.items():
         if not isinstance(_c, dict):
@@ -2727,17 +2595,15 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         _m = (_c.get("family_data") or {}).get("concubinist")
         if isinstance(_m, int):
             concubinist_map.setdefault(_m, []).append(int(_cid))
-    # v11: 秘密生父索引预建一次 (real_father_of 对每个目标调用, 避免重复全量扫描)
+    # Build the secret-father index once, since real_father_of runs per target
     sec_candidates = _secret_father_candidates(melt)
 
-    # v37 (问题8): 起义领袖预扫进目标集 —— 他们活着时的所在 (last_location) 必须落库。
-    # 此前领袖只在循环**之后**的 _diff_factions 里登记、且不入 targets, 于是死后
-    # 「死于X / 起于X」全无数据 (周氏2 实测 12 名死者 11 人无地点, 模型只能把他们
-    # 就近安放到主角家业所在 —— 旧稿「居慈州境内」/新稿「宾州人」)。
+    # Uprising leaders are pre-scanned into the target set so their last_location while
+    # alive is stored; registering them afterwards would lose their death and origin.
     for _base in uprising_title_bases(melt).values():
         targets.add(int(_base["holder"]))
 
-    # v53 (问题1/3): 封臣合同 + 天命阶段 (本传主熔件完整并入时也走同一入口)
+    # Vassal contracts and the Mandate phase, through the same entry point as a merge
     _record_vassal_and_cycle(cache, melt, date_label)
 
     for cid in sorted(targets):
@@ -2750,16 +2616,15 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             rec["first_name"] = c.get("first_name")
             rec["name_zh"] = name_zh(c)
             rec["dynasty_house"] = c.get("dynasty_house")
-            # 家族名 + 宗族名 (v3/v4; v14: 东方名序的姓取宗族名, 游戏 $DYNASTY$ 模板);
-            # v13: name_full 按 display_name 正确名序生成
+            # House and dynasty names; name_full follows display_name's name order
             if rec["dynasty_house"] is not None:
                 h = house_name_zh(melt, rec["dynasty_house"])
                 rec["house_name"] = h
-                # v14: 宗族名: 家族 → 宗族 → 解析 (存档只存 key, 显示名查游戏定义表)
+                # dynasty name: house -> dynasty lookup (the save stores only keys)
                 _did = dynasty_id_of(melt, rec["dynasty_house"])
                 if _did is not None:
                     rec["dynasty_name"] = dynasty_name_zh(melt, _did) or None
-                # v44 (问题1): 首见即记家族沿革第一点
+                # first sighting: the first house-history point
                 rec["house_history"] = [{
                     "from": date_label,
                     "house_id": rec["dynasty_house"],
@@ -2768,14 +2633,13 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     "dynasty_name": rec.get("dynasty_name") or "",
                 }]
             if rec["name_zh"]:
-                # v13: name_full 按 display_name 正确名序生成 (chars/memo 复用本快照索引)
+                # name_full follows display_name's order, reusing this snapshot's index
                 rec["name_full"] = display_name(cache, cid, melt=melt, chars=chars,
                                                 memo=_name_memo) \
                     or (rec.get("house_name", "") + rec["name_zh"])
             rec["birth"] = c.get("birth")
             rec["female"] = bool(c.get("female"))
-            # v87 (问题1/P2): 继位改名 (教宗圣名/法名) —— 显示名的权威字段,
-            # 见 `display_name`; 无该字段者为 None (与 female 同式, 由下面同步)。
+            # The display name's authoritative rename field (see display_name)
             rec["regnal_name"] = (str(c["regnal_name"]) if c.get("regnal_name")
                                   else None)
             rec["culture"] = c.get("culture")
@@ -2786,28 +2650,20 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             if rec["faith"] is not None:
                 rec["faith_history"] = [{"from": date_label,
                                          "faith": rec["faith"]}]
-        # v26: 性别自愈 — 旧缓存无该字段时按熔件补 (女性才有 female 键, 男性补 False)
+        # Sex self-heal: older caches lack the field, and only women carry the melt key
         if rec.get("female") is None:
             rec["female"] = bool(c.get("female"))
-        # v87 (问题1/P2): 继位改名同步 (逐档现值; 游戏另有 remove_regnal_name 效果,
-        # 故按末档现值写, 不做「只记首次」的闩存) —— 显示名的取值见 `display_name`。
+        # Regnal name sync: the current snapshot's value, since the game can also remove it
         _rn_now = str(c.get("regnal_name") or "")
         if _rn_now != (rec.get("regnal_name") or ""):
             rec["regnal_name"] = _rn_now or None
-            # v95 (问题7, 用户 2026-10-02 报「教皇用的是他的本名」): 继位改名
-            # (教宗圣名/法名) 是**引擎在即位那一档**才写进存档的
-            # (`landed_titles/00_landed_titles.txt:99-103` 的 holding_regnal_male_names),
-            # 而 `name_full` 是**首见那一档**算好的 (上面 `first_time` 块) —— 于是
-            # 出现不一致态: `regnal_name` 已是 `Anastasius_regnal`, `name_full` 还停在
-            # 本名「恂」。任何走 `name_full` 的回退路径 (facts._chain_person /
-            # _chrono_nm 等跨缓存窗口处) 就会把本名写进正文。改名一出现即重算一次
-            # `name_full` —— 与下面「家格改名重算 name_full」(:2838/:2865) 同式。
+            # The engine writes the regnal name only in the snapshot where the character takes
+            # office, while name_full was set at first sighting, so recompute it here or a
+            # fallback through name_full would print the personal name.
             rec["name_full"] = display_name(cache, cid, melt=melt, chars=chars,
                                             memo=_name_memo) \
                 or rec.get("name_full") or ""
-        # v44 (问题1): 家族沿革 — 私生女另立家族 (阿德尔海德 1118.4.2 别立冯·亚琛氏)
-        # 与家族/宗族改名 (冯·亚琛 → 冯) 都不是记忆, 逐档差一是唯一来源。
-        # 旧语义 (首见冻结) 使改名后全档人名停在旧名, 此处改为「末档现值 + 变更点」。
+        # House history: a founding or rename leaves no memory, so only the diff can find it
         _hid_now = c.get("dynasty_house")
         if isinstance(_hid_now, int):
             _h_now = _house_now(_hid_now)
@@ -2822,8 +2678,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     rec["house_name"] = _h_now
                 if _dn_now:
                     rec["dynasty_name"] = _dn_now
-                # 别立家族那一点用游戏 found_date (逐档差分只能在下一档发现变更,
-                # 建立日比快照日精确: 阿德尔海德 1118.4.2 而非 1119.1.1)
+                # A new house uses the game's found_date, exact where the diff would notice it
+                # only in the next snapshot
                 _pt_date = date_label
                 if _new_house:
                     _fd = house_found_date(melt, _hid_now)
@@ -2847,21 +2703,16 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                                            memo=_name_memo)
                     if _nm_new:
                         rec["name_full"] = _nm_new
-        # v14: 旧缓存自愈 — dynasty_name 缺失 (v14 前缓存) 时按当前 dynasty_house
-        # 补解析 (东方名序的姓); 按 house 记忆化, 同宗族数千人只解析一次。
+        # Self-heal older caches: resolve a missing dynasty_name from the current house
         if rec.get("dynasty_name") is None and rec.get("dynasty_house") is not None:
             _hid = rec["dynasty_house"]
             _did = dynasty_id_of(melt, _hid)
             _dn_fix = _dyn_now(_did)
             if _dn_fix:
                 rec["dynasty_name"] = _dn_fix
-        # 文化/信仰 (v7): 熔件有值即更新 (覆盖文化改信); 缺失时保留最近已知值。
-        # 角色死后游戏清空 culture/faith (实测死档约半数被清, 含前代玩家),
-        # 缓存里存活期直接读到的 id 即为最直接的来源, facts 层缓存优先读取。
-        # v44 (问题4): **此处不再预赋值** —— 预赋值会让紧随其后的差分恒为假,
-        # 族属沿革 (culture_history) 于是永远只有首点 (实测阿德尔海德
-        # 1132 年法兰克尼亚人→汉人, 缓存里 culture=47 而沿革只有 {1118, 39})。
-        # 信仰沿革无此预赋值, 故一直正常 —— 两处对照即根因。
+        # Culture/faith: update when the melt has a value and keep the last known one when it
+        # is missing (the game clears both at death); nothing is pre-assigned here, since that
+        # would make the diff below always false.
         _cid_cul = c.get("culture")
         if _cid_cul is not None:
             if rec.get("culture") != _cid_cul:
@@ -2875,23 +2726,20 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     if _nm_cul:
                         rec["name_full"] = _nm_cul
         _fid = c.get("faith")
-        # v26: 改信记入 faith_history — 游戏不为玩家改信留任何记忆, 逐档差分是唯一
-        # 来源 (田所2: 法华宗→艾什尔里派); 快照日一律 1月1日, 渲染只取年份。
+        # Conversions go into faith_history, since the game keeps no memory of them
         if _fid is not None:
             if rec.get("faith") != _fid:
                 fh = rec.setdefault("faith_history", [])
                 if not fh or fh[-1].get("faith") != _fid:
                     fh.append({"from": date_label, "faith": _fid})
             rec["faith"] = _fid
-        # v86: 礼仪沿革 —— 1.20 角色只带 `rite` (信仰由 rites.database[rite].faith
-        # 反查, 见 faith_id_of_char)。与 faith_history 同构逐档差分: 游戏另有
-        # converted_rite_memory (带 old_rite/new_rite + conversion_date), 是更准的
-        # 来源, 由 facts 侧优先取用; 这里兜住「记忆已 prune / 游戏未留记忆」的情形。
+        # Rite history: a 1.20 character carries only rite (the faith comes through
+        # rites.database[rite].faith); facts prefers the game's converted_rite_memory.
         _rid = rite_id_of_char(c)
         if _rid is not None:
             _rid_fid = faith_id_of_rite(melt, _rid)
             if _rid_fid is not None:
-                # 1.20: 信仰现值由礼仪反查, 供既有的 faith/faith_history 口径继续可用
+                # 1.20: the faith comes from the rite, keeping faith/faith_history usable
                 if rec.get("faith") != _rid_fid:
                     fh = rec.setdefault("faith_history", [])
                     if not fh or fh[-1].get("faith") != _rid_fid:
@@ -2902,10 +2750,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 if not rh or rh[-1].get("rite") != _rid:
                     rh.append({"from": date_label, "rite": _rid})
             rec["rite"] = _rid
-        # v86: 个人教义 / 灵性满足 / 宗教知识 (1.20 `playable_data`) ——
-        # 用户 2026-09-30 指名的「角色自己个人的礼仪转变」(实验档里点的
-        # 「你们要生育繁殖」= tenet_be_fruitful_and_multiply 即此)。
-        # 只有有地统治者与玩家带 playable_data (870 档 2197/29528), 无者整句略去。
+        # Personal tenets, spiritual fulfillment and religious knowledge (1.20
+        # playable_data), carried only by landed rulers and the player.
         _pd = c.get("playable_data")
         if type(_pd) is dict and "tenets" in _pd:
             _pt = [t for t in (_pd.get("tenets") or []) if type(t) is str]
@@ -2917,12 +2763,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     if _t not in _seen:
                         _pth.append({"from": date_label, "tenet": _t})
                         _seen.add(_t)
-                # v87 (问题6): **变更点快照** —— 个人教义可「放弃/替换」(槽位随虔诚
-                # 等级增长, 实测 289 人 1 条 / 35 人 2 条 / 6 人 3 条), 而游戏不留
-                # 「何时采信/何时放弃」的记忆 ⇒ 旧稿只记「新增」, 渲染便写成
-                # 「868 起奉A。871 起奉B。」并列, 模型读成同时供奉两条。此处按数组
-                # **变化点**记下完整集合, 渲染端 (facts.personal_tenet_lines) 据此
-                # 写出「放弃…改奉…」。
+                # Change points: personal tenets can be dropped or replaced (slots grow with
+                # piety) and the game records no date, so the whole set is stored.
                 _psh = rec.setdefault("personal_tenets_history", [])
                 if not _psh or list(_psh[-1].get("tenets") or []) != _pt:
                     _psh.append({"from": date_label, "tenets": list(_pt)})
@@ -2940,42 +2782,35 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 _sfh = rec.setdefault("sf_history", [])
                 if not _sfh or _sfh[-1].get("value") != float(_sf):
                     _sfh.append({"from": date_label, "value": float(_sf)})
-        # v49 (O5): 绰号变化点 —— 游戏只在**当前**存档的 nickname_text 里给绰号,
-        # 旧档一旦被压缩/清理, 十年前那篇传记就只能拿到末档绰号 (v20/v21 的老问题:
-        # 郭靖 1197 年才得「欺诈者」, 第 1 个十年不得出现)。原实现靠"重读该时代
-        # 末档熔件"解决, 代价是整份解析; 此处按档锁存, 之后十年传记直接查沿革。
-        # 键存在即记 (含空串: 该时代无绰号时清空, 与 v21 同日径)。
+        # Nickname change points: the game gives a nickname only in the current save, so an
+        # older article would otherwise see the latest one ('' means "no nickname then").
         if "nickname_text" in c:
             _nick = c.get("nickname_text")
             _nick = "" if _nick is None else str(_nick)
             _nh = rec.setdefault("nickname_history", [])
             if not _nh or _nh[-1].get("nickname") != _nick:
                 _nh.append({"from": date_label, "nickname": _nick})
-        # v11: 语言 (alive_data.languages): 同 culture 处理 — 有值即更新,
-        # 缺失 (死后 alive_data 被清) 保留最近已知值, 供父名/族属推断与「语言」行。
+        # Languages (alive_data.languages) follow the culture rule: update when present,
+        # keep the last known value when the game clears them at death.
         langs = (c.get("alive_data") or {}).get("languages") or []
         if langs:
             rec["languages"] = list(langs)
-        # v24: 角色最近已知所在省份 (存活期每快照更新; 死亡写入时复制进
-        # rec.death.location_province, 供刺客列传/时间线的受害者所在地标注)。
+        # Last known province, copied into the death record for the assassin section
         _loc = (c.get("alive_data") or {}).get("location") or {}
         _prov = _loc.get("location") if isinstance(_loc, dict) else _loc
         if isinstance(_prov, int):
-            # v81 (问题6, 用户 2026-09-29): **首见快照**的所在 —— 唯一的出生地依据。
-            # 游戏不持久化出生地 (取证 docs/调研_v81_宝物所在地与出生地游戏口径.md:
-            # 新生儿落在母亲所在地, 落盘节点只有 born_in_the_purple 特质), 而
-            # `last_location` 只留最后一次观测; 故此处另闩首点, `facts.birth_place`
-            # 只在「首见距出生 ≤400 天」时把它当出生地 (婴幼期不会自行走动)。
+            # The first-sighting province is the only evidence for a birthplace (the game
+            # persists none); facts.birth_place uses it only within 400 days of birth.
             if first_time:
                 rec["first_location"] = {"date": date_label, "province": _prov}
             rec["last_location"] = {"date": date_label, "province": _prov}
-        # 特质与 trait_history (v4): 每快照 diff
+        # Traits and trait_history, diffed per snapshot
         new_traits = c.get("traits") or []
         old_traits = rec.get("traits") or []
         if first_time or old_traits != new_traits:
             th = rec.setdefault("trait_history", {})
             if first_time:
-                # 角色首见: 全部特质记 first=True (至晚自本档起已具)
+                # First sighting: every trait gets first=True (held at least from here)
                 for t in new_traits:
                     k = trait_key(t)
                     if k not in th:
@@ -2993,10 +2828,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                         if iv.get("to") is None:
                             iv["to"] = date_label
             rec["traits"] = new_traits
-        # v32: 特质 XP 轨道样本 — 存档 `trait_xp_amounts` 是与 traits **顺序对齐**的扁平
-        # 数组 (每条轨道一个数, 多轨特质按定义声明顺序占位; 实测马克龙档 3987/3987
-        # 角色全对), 故样本必须与同档 traits 成对保存, 否则轨道对不上号。
-        # 只在 (traits, xp) 之一变化时追加, 供 as_of 求当时档位名与进档履历。
+        # Trait XP samples: trait_xp_amounts is positionally aligned with traits, so a
+        # sample must be paired with that snapshot's traits or the tracks misalign.
         new_xp = list(c.get("trait_xp_amounts") or [])
         samples = rec.setdefault("trait_xp", [])
         if new_xp and (not samples
@@ -3004,10 +2837,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                        or samples[-1].get("xp") != new_xp):
             samples.append({"from": date_label, "traits": list(new_traits),
                             "xp": new_xp})
-        # v34 (问题7): 囚禁状态区间 — 存档 `alive_data.prison_data` 是「此刻是否在押」
-        # 的权威字段 (释放会使它消失/换主), 而 `released_from_prison_memory` 只在
-        # 囚禁者主动释放时才有记忆。两者互补: 有 prison_data 才能区分
-        # 「仍在押」与「已出释而游戏未记」。
+        # Imprisonment intervals: prison_data is the authoritative "currently imprisoned"
+        # field while released_from_prison_memory exists only for a voluntary release.
         _pd = (c.get("alive_data") or {}).get("prison_data")
         if isinstance(_pd, dict) and _pd.get("imprisoner") is not None:
             ph = rec.setdefault("prison_history", [])
@@ -3019,15 +2850,12 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                           and ph[-1].get("since") == cur["since"])
             if _same_span and ph[-1].get("imprisoner") == cur["imprisoner"] \
                     and ph[-1].get("type") == cur["type"]:
-                # 与上一段同囚禁者/同类型 → 视为同一段 (换档不新开)
+                # same jailer and type as the previous span: keep it as one span
                 pass
             elif _same_span:
-                # v60 (问题4): 同一段囚禁**换了监禁者** —— 前一位监禁者死亡后
-                # 囚禁转归其继承人, 游戏把 prison_data.date 留在原入狱日。
-                # 崔佛 880.10.20 关押四人, 881.1.1 卒, 四人的监禁者即变为
-                # 继位玩家 15179; 旧稿就地改写 imprisoner, 「谁关的→谁接着关」
-                # 这条交接在事实面完全消失。改记 `from_imprisoner` 保留下手者,
-                # `imprisoner` 仍作「到本档为止的监禁者」。
+                # The same span under a NEW jailer: a jailer's death passes the prisoners
+                # to the successor while the game keeps prison_data.date at the original
+                # day, so the first jailer is kept in from_imprisoner.
                 ph[-1]["from_imprisoner"] = ph[-1].get("from_imprisoner") \
                     or ph[-1].get("imprisoner")
                 ph[-1]["imprisoner"] = cur["imprisoner"]
@@ -3037,9 +2865,9 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     ph[-1]["to"] = date_label
                 ph.append(cur)
         elif rec.get("prison_history") and rec["prison_history"][-1].get("to") is None:
-            # 本档已无 prison_data → 上一段在此档之前结束 (获释/换主)
+            # no prison_data in this snapshot: the previous span ended before it
             rec["prison_history"][-1]["to"] = date_label
-        # 家庭: 直接字段 + 反查亲属 (v4)
+        # Family: direct fields plus back-referenced relatives
         fam = family_of(c)
         fathers, mothers = _parents_of(chars, cid, parent_map, fam)
         if fathers:
@@ -3049,22 +2877,17 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         sib = _siblings_of(cid, parent_map, child_map, sibling_map, fam)
         if sib:
             fam["siblings"] = sib
-        # 真正父亲 (v5): 直接字段 + 秘密推导 (v11: 预建索引, O(1) 查询)
+        # Real father: direct field plus secret derivation, via the prebuilt index
         rf = real_father_of(melt, cid, chars, sec_candidates)
         if rf is not None:
             fam["real_father"] = [rf]
-        # v8: 妾 (正向字段 + 反向 concubinist 并集, 去重)
+        # Concubines: the forward field unioned with the reverse concubinist map
         rev_cons = concubinist_map.get(cid, [])
         if rev_cons:
             fam["concubine"] = list(dict.fromkeys(
                 (fam.get("concubine") or []) + rev_cons))
-        # v60 (问题3): 亲属集**逐键合并, 空值不覆盖**。
-        # 旧稿 `rec["family"] = fam` 无条件覆写: 死亡档的 `family_data` 已被游戏
-        # 清空 (崔佛 881/882 档 family_data=[]), 880 档抓到的 `concubine: 15899`
-        # 连同 `ever_spouses` 的来源一并丢掉, 模型于是自己造出「结缡三次、离异
-        # 两次」的家室列传。亲属集是**曾有过**的事实 (婚配、父母、同胞、子女),
-        # 旧值保留正确; 唯 `primary_spouse` 是单值指针 (新档给了新值即换代)。
-        # 项目对母系婚/出狱缘由/结仇缘由都有闩存, 唯独婚配没有 —— 此处补齐。
+        # The family set is merged key by key and empty values never overwrite, since a dead
+        # character's family_data has been cleared while the set records what once existed.
         _fam_prev = rec.get("family") or {}
         _fam_new = dict(_fam_prev)
         for _k, _v in fam.items():
@@ -3076,16 +2899,14 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 _fam_new[_k] = list(dict.fromkeys(
                     list(_fam_prev.get(_k) or []) + list(_v)))
         rec["family"] = _fam_new
-        # v31: 历史上所有配偶 (含离异/丧偶后被移出当前字段者) — 婚姻对判定用
-        # (「与配偶同房」不写私通; 妻子后来的情人身份对照也靠它)。
+        # All spouses ever held, including those dropped after a divorce or death
         ever = set(rec["family"].get("ever_spouses") or [])
         for _k in ("primary_spouse", "spouse", "former_spouses",
                    "concubine", "former_concubines"):
             ever.update(int(x) for x in (fam.get(_k) or []))
         if ever:
             rec["family"]["ever_spouses"] = sorted(ever)
-        # v31: 宫廷身份 (court_data) — 雇主/骑士/入宫日; 存档在角色身上给出,
-        # 此前完全未收 («配偶的情人是主角廷中骑士» 这一关键身份无处可取)。
+        # Court affiliation (court_data), stored on the character by the save
         cd = c.get("court_data") or {}
         if isinstance(cd, dict) and cd:
             cur = rec.get("court") or {}
@@ -3098,10 +2919,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             if jd:
                 cur["join_court_date"] = jd
             rec["court"] = cur
-        # v41 (问题1): 逐档记录**每个入目标集角色的政体变化点** ——
-        # 神罗 1087–1094 是封建制 (领主显示公爵/伯爵), 1095 起才改行政官制
-        # (军区/分区/将军); 事实层按 as_of 取词时必须知道当时的政体。
-        # 只记变化点 ({cid: [{date, government}]}), 与 camp_purposes 同范式。
+        # Government change points per target character ({cid: [{date, government}]}), since
+        # the wording a date needs depends on the government then in force.
         _ld_all = c.get("landed_data") or {}
         _gov_all = _ld_all.get("government") or ""
         if _gov_all:
@@ -3109,7 +2928,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             _h = _chg.setdefault(str(cid), [])
             if not _h or _h[-1].get("government") != _gov_all:
                 _h.append({"date": date_label, "government": _gov_all})
-        # v8: 击杀 (alive_data.kills / dead_data.kills, 跨年累积去重)
+        # Kills (alive_data.kills and dead_data.kills), accumulated and deduplicated
         kills = kills_of(c)
         if kills:
             rec["kills"] = sorted(set(rec.get("kills") or []) | set(kills))
@@ -3127,30 +2946,29 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 "strength": ld.get("strength"),
                 "max_power": ld.get("max_power"),
             }
-            # v26: 毡帐/庄园 (游牧牧群与口粮) — domiciles.database 条目
+            # Domicile (nomadic herd and provisions) from domiciles.database
             _dom = player_domicile(melt, ld.get("domain"), cid)
             if _dom:
                 rec["landed"]["herd"] = _dom.get("herd")
                 rec["landed"]["provisions"] = _dom.get("provisions")
                 rec["landed"]["domicile_type"] = _dom.get("domicile_type")
                 rec["landed"]["domicile_province"] = _dom.get("province")
-            # 玩家所在地历史 (v5: 游侠列传·行纪用): 只记位置变化点
+            # Player location history, change points only
             loc = (c.get("alive_data") or {}).get("location") or {}
             prov = loc.get("location") if isinstance(loc, dict) else loc
             if isinstance(prov, int):
                 hist = cache.setdefault("player_locations", [])
                 if not hist or hist[-1].get("province") != prov:
                     hist.append({"date": date_label, "province": prov})
-            # v57 (问题3, 用户拍板): **首都沿革** —— realm_capital 是会搬的 (斯卡利茨实测
-            # 924–945 在 b_long_hung/郡口, 946 起 b_dantu/丹徒), 而 cache.landed 只留末档值。
-            # 处决地点一律取「主角当时的首都」(见 facts.victim_place), 故按变化点闩存。
+            # Capital history: realm_capital moves while cache.landed keeps only the final
+            # value, and an execution place uses the capital of that moment.
             _cap = ld.get("realm_capital")
             if _cap is not None:
                 _ch = cache.setdefault("capital_history", [])
                 if not _ch or _ch[-1].get("title") != _cap:
                     _ch.append({"date": date_label, "title": _cap})
-            # v24: 营地宗旨史 (历任营地阶段称呼词用: 头目/领袖/队长…);
-            # 营地宗旨是持有者律法 (camp_purpose_*), 只记变化点防膨胀。
+            # Camp purpose history (stage wording: chief/leader/captain), a holder law
+            # (camp_purpose_*) kept as change points only.
             if ld.get("government") == "landless_adventurer_government":
                 _purpose = next(
                     (str(x).split("_", 2)[2] for x in (ld.get("laws") or [])
@@ -3159,12 +2977,12 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                     _ph = cache.setdefault("camp_purposes", [])
                     if not _ph or _ph[-1].get("purpose") != _purpose:
                         _ph.append({"date": date_label, "purpose": _purpose})
-            # 玩家所属家族名 (姓名字显示用, v4: 存纯家族名)
+            # The player's house name (stored bare, used in the display name)
             if rec.get("dynasty_house") is not None:
                 h = house_name_zh(melt, rec["dynasty_house"])
                 if h:
                     cache["house_name"] = h
-                # 玩家所属宗族 (v6: 文件夹按宗族划分, 新建家族不新开文件夹)
+                # The player's dynasty: output folders are grouped by dynasty
                 did = dynasty_id_of(melt, rec["dynasty_house"])
                 if did is not None:
                     cache["dynasty_id"] = did
@@ -3181,12 +2999,12 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 "liege_title": dd.get("liege_title"),
                 "named_title": dd.get("named_title"),
             }
-            # v24: 死前最近已知所在省份 (存活期快照捕获; 旧缓存/死后才入缓存无则缺省)
+            # Last known province before death, captured from living snapshots
             if (rec.get("last_location") or {}).get("province") is not None:
                 rec["death"]["location_province"] = rec["last_location"]["province"]
             if _new_deaths is not None:
                 _new_deaths.append(cid)
-        # 记忆: alive_data.memories → database
+        # Memories: alive_data.memories -> database
         seen = {(m.get("id"), m.get("creation_date")) for m in rec["memories"]}
         for mid in mem_ids_of(c):
             e = db.get(str(mid))
@@ -3198,87 +3016,52 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 b["first_seen"] = date_label
                 rec["memories"].append(b)
                 seen.add(key)
-    # v28: 隐事 (secrets) 逐档差分 — 存档只存「当前秘密」, 无日期; 逐档比对即得
-    # 「首次见于记载」的年份, 供《阴私录》写时间锚点。只收与相关集/朝廷要员
-    # 有关的秘密以控体积 (实测每档相关 4–30 条)。
+    # Secrets, factions, epidemics, disease edges, hooks, marriage pairs, enslavement,
+    # opinions, relation reasons, spouse/prison latches and Carnalitas traces: each helper
+    # diffs or latches its slice of the snapshot into the cache (see its docstring).
     _diff_secrets(cache, melt, date_label)
-    # v28b: 叛乱派系领袖 (农民/民粹/游牧 起义) — 供人物称谓写
-    # 「农民起义领袖叠溪寋」(存档 faction_manager 只存当前派系, 逐档差分)
     _diff_factions(cache, melt, date_label)
-    # v29: 瘟疫/疫病 (epidemics) 逐档差分 — 存档给的是**游戏算好的动态名**
-    # (「李黯之火」「撒丁痘」「东罗马痘」), 供《本纪》《家室列传》写疫病风味
     _diff_epidemics(cache, melt, date_label)
-    # v40: 性病 (情人疱疹/大痘) 传播边逐档差分 —— 存档 triggered_event 队列里
-    # 明确记着「谁把病传给了谁」(日精度), 供在性行为句后补「（某某把…传染给了某某）」
     _diff_disease_edges(cache, melt, date_label)
-    # v31: 牵制 (hooks) 逐档差分 — 存档只存当前持有的牵制且无创建日
     _diff_hooks(cache, melt, date_label)
-    # v43: 母系婚 (入赘) 婚姻对闩存 — 婚姻线系是《家室列传》「谁入谁家、子女随谁」
-    # 的唯一依据, 存档只在 active_relations 上给这一个标记
     _latch_matrilineal(cache, melt, date_label)
-    # v35: 奴役关系逐档差分 — 把「抓人 → 没为奴隶 → 放出牢房」与「真获释」分开
     _diff_enslavements(cache, melt, date_label)
-    # v32: 纳妾类好感 (opinions) 逐档差分 — 「强行纳为侧室」是纳妾唯一带日期的记录
     _diff_opinions(cache, melt, date_label)
-    # v50 (v47 方案 B): 结仇/结交缘由闩存 (同一数据源 opinions.active_opinions) —
-    # 游戏只在关系存续期保留 `scripted_relations.<kind>.reason`, 关系一方死亡后
-    # 条目连同缘由一起消失, 而生成只用最新一份熔件 → 见过即留, 供 facts 回退读
     _latch_relation_reasons(cache, melt, date_label)
-    # v60 (问题3): 婚配闩存 —— 主角自身 family_data 在死亡档被清空, 而配偶/妾
-    # 身上的反向指针逐档在册; 逐档扫下来, 生成期才有「一生有过哪些妻妾」可依
     _latch_spouses(cache, melt, date_label)
-    # v56 (问题3): 出狱缘由闩存 —— 出狱类好感 10 年衰减且随持有者死亡消失, 而终传
-    # 只载末档熔件 (斯卡利茨 924 年那批释放的「以人情获释」因此读不到)
     _latch_prison_manners(cache, melt, date_label)
-    # v38 (问题1/问题4): Carnalitas 事件好感 (强奸/奴役/逼良为娼/前主奴) 与
-    # `carn_recently_raped` 修正逐档差分 — 它们自带 start_date, 也是「出售奴隶」
-    # 这种不留记忆的互动唯一的痕迹
     _diff_carnal_opinions(cache, melt, date_label)
     _diff_carnal_modifiers(cache, melt, date_label)
-    # v44: 返回 True (此前 return cache —— 调用方 `if not ok:` 靠「非空 dict 恒真」
-    # 侥幸成立; 打印/日志里则会把整份缓存 dump 出来)
+    # Returns True rather than the cache, so callers' "if not ok:" holds and logs stay small
     return True
 
 
-# v35: 牵制类型黑名单 —— `house_head_hook`(家主权) 是**身份自带**的机制牵制,
-# 不是「握有把柄」这一叙事事件: 家主对每个族人天然持有, 玩家档常见 2~8 条
-# (德圣塔对两个儿子各一条)。facts.hook_notable 早已把它判为「不足以单开一篇隐事」,
-# 但 hook_lines 仍会原样下发, 两处口径矛盾 → 《阴私录》里塞满「家主牵制」。
-# 入库前即跳过, 省体积、省差分, 也杜绝下游复用。
-# v38 (问题2, 用户拍板): 黑名单升级为**白名单** —— 判据见 `style.hook_type_kept`。
-# 全档 7259 条牵制里 `house_head_hook` 5243、`filial_piety_hook` 1069、
-# `favor_hook` 548, 而涉主角的只有 4 条 (全是这三类); 通用人情/身份自带牵制
-# 不下发, 模型才不会拿「握有对元宗的牵制『人情』」当把柄去编。
+# Hook type filter: house_head_hook comes with a position rather than a narrative hold
+# (a house head holds it over every kinsman), and filial_piety_hook and favor_hook are
+# generic obligations; almost every hook in a save is one of those three, so only
+# whitelisted types are stored and generic ones never reach the model as leverage.
 def hook_type_kept(tp):
-    """牵制类型是否入库 (v38, 问题2) —— 判据与 facts 侧同源 (style.hook_type_kept)。"""
+    """Whether a hook type is stored; the predicate is style.hook_type_kept, shared with
+    facts."""
     return _style.hook_type_kept(tp)
 
 
 def matrilineal_pair_key(a, b):
-    """婚姻对 → 缓存键 (小 id 在前, 与方向无关)。"""
+    """Marriage pair -> cache key (smaller id first, so direction does not matter)."""
     return f"{min(int(a), int(b))}>{max(int(a), int(b))}"
 
 
 def _latch_prison_succession(cache, melt, date_label):
-    """囚禁交接闩存 (v60 问题4) —— 「甲关的人, 甲死后归乙关」。
+    """Prisoner hand-over latch: "the prisoners A jailed, B jails after A's death".
 
-    崔佛 880.10.20 把四人下狱; 881.1.1 崔佛卒, 四人的
-    `alive_data.prison_data.imprisoner` 随即变成继位者 15179, 而 `date` 仍是
-    880.10.20 (游戏只换监禁者, 不改入狱日)。传主这一侧的缓存只并入到 880 档
-    (881/882 档 `find_player` 已是继位者), 于是「谁接着关」这条交接在传记里
-    完全消失, 只剩一句无限期的「此后一直未见释放」。
+    A jailer's death passes the prisoners to the successor while the game keeps
+    prison_data.date at the original day of imprisonment, and those later snapshots
+    belong to the successor, so the subject's own cache never sees the transfer.
 
-    本函数在**传主与熔件玩家不一致**时被调用 (即同战役后继玩家的档), 判据:
-    ① 某人在押 (`prison_data.imprisoner` = 乙); ② 其 `imprisoned` 记忆里的
-    `imprisoner` = 甲 (本缓存传主)。两条同时成立即记一条交接。
-
-    记录形如::
-
-        cache["prison_succession"]["46208"] = {
-            "victim": 46208, "from": 38660, "to": 15179,
-            "since": "880.10.20", "first_seen": "881.1.1"}
-
-    首见即留 (不覆盖), 返回本档新增条数。"""
+    Called when the melt's player differs from the cached subject, it records
+    cache["prison_succession"]["<victim>"] = {"victim", "from", "to", "since",
+    "first_seen"} whenever someone is imprisoned under jailer B while their imprisoned
+    memory names jailer A (the cached subject). First sighting wins."""
     pid = cache.get("player_id")
     if pid is None:
         return 0
@@ -3313,21 +3096,14 @@ def _latch_prison_succession(cache, melt, date_label):
 
 
 def _latch_matrilineal(cache, melt, date_label):
-    """母系婚 (入赘) 婚姻对闩存 (v43)。
+    """Matrilineal (uxorilocal) marriage pairs latched.
 
-    存档形如::
-
-        relations.active_relations = [
-            {"first": 33219, "second": 34000, "matrilineal": true}, …]
-
-    语义 (游戏本地化原文):
-      · `game_concept_matrilineal` = 母系; `MARRIAGE_MATRILINEAL_TOGGLE_TOOLTIP`
-        = 「切换入赘」;
-      · `game_concept_matrilineal_desc` = 在母系婚姻中, 出生的孩子将属于
-        **母亲的家族**而不是父亲的。
-
-    条目只在婚姻存续期出现, 故一律闩存 (见过即留): 离异/丧偶后仍能写出当年那桩
-    入赘婚。返回本档新增对数。"""
+    The save shapes them as
+    relations.active_relations = [{"first": 33219, "second": 34000,
+    "matrilineal": true}, ...], where matrilineal means the children belong to the
+    MOTHER's house rather than the father's. An entry exists only while the marriage
+    lasts, so every sighting is kept and a later divorce or death still leaves that
+    marriage writable. Returns the number of new pairs."""
     pairs = cache.setdefault("matrilineal_pairs", {})
     added = 0
     for e in (melt.get("relations") or {}).get("active_relations") or []:
@@ -3343,13 +3119,11 @@ def _latch_matrilineal(cache, melt, date_label):
     return added
 
 
-# v60 (问题3): 存档 `family_data` 里「关系持有者 → 对方」的键 → 对方所处的位分。
-# 方向语义按存档实测 (崔佛档三名强纳之妾): `concubinist` 是**对方键**, 值 = 其
-# 主人; 其余键都是**本人键**, 值 = 配偶/前配偶。位分优先序 `_SPOUSE_KIND_RANK`
-# 保证同一对关系被两档以不同键记下时, 以最强的一位分为准 (正妻 > 侧室 > 妾 >
-# 前配偶 > 前妾), 例如先为妾、后成正妻者最终记「primary_spouse」。
+# family_data keys -> the other party's status: concubinist is a reverse key whose value is
+# the owner, while the others sit on the person and point at the spouse; the strongest rank
+# wins when two snapshots record the same pair under different keys.
 _SPOUSE_LATCH_KEYS = (
-    # (键, 对方位分, 是否反向键)
+    # (key, status of the other party, is a reverse key)
     ("concubinist", "concubine", True),
     ("former_concubinists", "former_concubine", True),
     ("primary_spouse", "primary_spouse", False),
@@ -3364,36 +3138,22 @@ _SPOUSE_KIND_RANK = {
 
 
 def spouse_latch_key(player_id, other_id):
-    """婚配闩存键 —— 方向固定为「主角 > 对方」(v60)。"""
+    """Spouse latch key, always oriented as "subject > other"."""
     return f"{int(player_id)}>{int(other_id)}"
 
 
 def _latch_spouses(cache, melt, date_label):
-    """主角婚配闩存 (v60 问题3)。
+    """Spouse latch for the subject.
 
-    为什么需要: 主角**自己**的 `family_data` 在死亡档被游戏清空 —— 崔佛 868–879
-    各档 `family_data = null`、880 档 `{"concubine": 15899}`、881/882 档 `[]`,
-    而生成只用最新一份熔件, 于是「一生有过三名强纳之妾」在事实面变成**一无所有**,
-    模型为填满《家室列传》的骨架遂自行虚构妻室 (实测虚构出「阿斯特里德」)。
+    The subject's OWN family_data is cleared in the death snapshot while generation reads
+    only the newest melt, so a lifetime of marriages would vanish; what survives is the
+    reverse pointer on the other party. Every merge scans all characters' family_data and
+    latches anything involving the subject, first sighting wins, taking the strongest
+    status by _SPOUSE_KIND_RANK.
 
-    真正逐档在册的是**对方身上的反向指针** —— 三名妾在 882 档都写着
-    `former_concubinists: [38660]`。故每次并档扫一遍全角色的 `family_data`,
-    凡与主角相关者一律闩存; 首见即留 (不覆盖), 位分按 `_SPOUSE_KIND_RANK`
-    取最强的一档。
-
-    `since` (v60) 取**最早**的已知日期: `family_data` 只逐档可见, 首见档会
-    晚于成婚日最多一年 (崔佛三名妾: 首见 880.1.1/881.1.1, 而成婚在
-    879.9.1/880.2.1/880.5.9)。命名类好感 (`forced_me_concubine_marriage_opinion`
-    等) 自带 `start_date`, 故同一档里按好感记录把日期前移。
-
-    记录形如::
-
-        cache["spouse_latch"]["38660>15899"] = {
-            "player": 38660, "other": 15899, "kind": "concubine",
-            "source": "concubinist" | "former_concubinists" | "spouse" | …,
-            "since": "879.9.1", "first_seen": "880.1.1"}
-
-    返回本档新增对数。"""
+    Keys are "<subject>><other>" with {player, other, kind, source, since, first_seen};
+    since is the EARLIEST known date, since a first sighting can be up to a year late (see
+    _latch_spouse_dates). Returns how many pairs this snapshot added."""
     pid = cache.get("player_id")
     if pid is None:
         return 0
@@ -3405,23 +3165,19 @@ def _latch_spouses(cache, melt, date_label):
     return sum(1 for v in latch.values() if v.get("first_seen") == date_label)
 
 
-# 命名类好感 (owner = 被纳者, target = 强纳者) → 与主角的婚配起始日。
-# `forced_spouse_concubine_marriage_opinion` 不在本表: 它记在**原配**身上,
-# 语义是「原配被离断」, 起始日的所指另算 (见 `_latch_spouse_dates`)。
+# Naming opinions (owner = the person taken, target = the taker) that date a marriage with
+# the subject; forced_spouse_concubine_marriage_opinion sits on the ORIGINAL spouse instead.
 _SPOUSE_OPINION_START = ("forced_me_concubine_marriage_opinion",
                          "concubine_with_monogamous_faith_opinion")
 
 
 def _latch_spouse_dates(latch, melt, pid):
-    """把命名类好感的 `start_date` 用作婚配起始日 (v60 问题3; 见 `_latch_spouses`)。
+    """Use a naming opinion's start_date as the marriage start date (see _latch_spouses).
 
-    `family_data` 只在年度熔件里出现, 首见档可比真实成婚日晚一年; 而
-    `active_opinions` 的 `start_date` 是游戏自记的**当日**。两路取最早者。
-
-    方向须与存档实测一致 (崔佛档三名强纳之妾): 纳妾类好感记在**被纳者**身上
-    (`owner` = 被纳者, `target` = 强纳者); 而离断原配那一档记在**原配**身上
-    (`owner` = 原配, `target` = 强纳者), 其 `start_date` 是被纳者与他人成婚的日子,
-    **不是**与主角的起始日 —— 故那一档反过来取「owner 的配偶」中被纳者。"""
+    A first sighting can miss the marriage by a year while active_opinions' start_date is
+    the exact day the game recorded, so the earlier of the two wins. Concubinage opinions
+    sit on the person TAKEN, whereas the one on the original spouse dates the taken person's
+    marriage to someone else, so that case looks up the subject's latch instead."""
     for o in (melt.get("opinions") or {}).get("active_opinions") or []:
         if not isinstance(o, dict):
             continue
@@ -3437,7 +3193,7 @@ def _latch_spouse_dates(latch, melt, pid):
         if not dates:
             continue
         if target == pid:
-            # 主角强纳 owner 为妾
+            # the subject took owner as a concubine
             rec = latch.get(spouse_latch_key(pid, owner))
             if rec is not None:
                 st = min(dates.values(), key=date_key)
@@ -3445,7 +3201,8 @@ def _latch_spouse_dates(latch, melt, pid):
                 if not cur or date_key(st) < date_key(cur):
                     rec["since"] = st
         elif owner != pid:
-            # owner 的原配被主角夺走: 取其前配偶中与主角闩存过的那一位
+            # the owner's original spouse was taken by the subject: use the former spouse
+            # that already has a latch with the subject
             ex_fd = _as_char((melt.get("living") or {}).get(str(owner))
                              or (melt.get("dead_unprunable") or {}).get(str(owner)))
             ex_fd = ex_fd.get("family_data") or {}
@@ -3464,7 +3221,7 @@ def _latch_spouse_dates(latch, melt, pid):
 
 
 def _latch_spouses_of(char_obj, cid, latch, pid, date_label):
-    """单个角色的 `family_data` → 婚配闩存 (v60; 见 `_latch_spouses`)。"""
+    """One character's family_data -> spouse latch entries (see _latch_spouses)."""
     if not isinstance(char_obj, dict):
         return
     try:
@@ -3500,40 +3257,23 @@ def _latch_spouses_of(char_obj, cid, latch, pid, date_label):
 
 
 def relation_reason_key(owner, target, kind):
-    """关系缘由闩存键 (v50) —— 方向与存档一致 (<owner>|<target>|<kind>)。"""
+    """Relation-reason latch key, oriented like the save ("<owner>|<target>|<kind>")."""
     return f"{int(owner)}|{int(target)}|{kind}"
 
 
 def _latch_relation_reasons(cache, melt, date_label):
-    """关系缘由闩存 (v50, v47 方案 B; 纯程序, 不碰提示词)。
+    """Latch the cause behind feuds and friendships (pure code, no prompt involvement).
 
-    存档形如::
-
-        opinions.active_opinions = [
-            {"owner": 16852591, "target": 33595411,
-             "scripted_relations": {"rival": {"flags": "AA==",
-                                              "reason": "rival_called_me_a_disgrace"}}}, …]
-
-    `reason` 是游戏自己写下的成因键 (本地化模板见 `data/localization.json` →
-    `relation_templates`: `rival_called_me_a_disgrace` = 「X指责Y是他们家族的
-    耻辱」), 但它只在**关系存续期**存在: 关系一方死亡或关系解除后, 条目连同
-    reason 一起从存档消失 (诺兰 1127/1130 档有、1143 档起无; 田所2 四对
-    rival/grudge 实测 reason 分别在 1~13 年后随条目消失)。传记生成只载**最新**
-    一份熔件供全部十年使用, 于是「结仇早、对方已死」的缘由永久读不到 —— 故在
-    逐档并入时闩存: 首见即留, 之后只刷新 `last_seen`, 不覆盖最早的 reason。
-
-    只收**涉主角**的条目 (控体积: 全档 5.6 万条 scripted_relations, 涉主角个位数);
-    无 `reason` 的条目 (potential_rival / elder / disciple 等, 全档约 0.2% 的
-    rival 亦无) 不入库 —— 「有因由」与「确无因由」的区别留给生成侧判据。
-    返回本档新增条数。
-
-    v56 (§10, 用户拍板「范围 A+B+C+D」): 收录面由「涉主角」放宽为「**双方都在
-    本战役角色表内**」—— 缘由不只出现在主角身上: 斯卡利茨 郑思齐↔任宗本 的
-    `lover_prison` (「…在X的地牢里相爱了」) 双方都不是玩家, 旧判据一条不收,
-    于是传记里只剩「相恋」这个结果。代价实测可控 (本档累计 ≈6320 条 / ≈1.2 MiB)。
-    同档一并记下 `province` (事发省份 id) —— v47 方案 B 原本要求, v50 漏落,
-    导致 60 个含 `[PROVINCE.GetName]` 的 reason 模板渲染成病句
-    (「…在的酒馆中共享了一顿美餐…」)。"""
+    scripted_relations.<kind>.reason is the cause key the game itself wrote (localization
+    templates in data/localization.json under relation_templates), but it exists only
+    while the relation does: once one side dies or the relation ends, entry and reason
+    leave the save, and generation sees only the newest melt, so an early feud would lose
+    its cause. Every merge latches it (first sighting wins, later snapshots refresh
+    last_seen), keeping rows whose sides are the subject or are both in this
+    playthrough's character table -- a lover_prison cause can belong to two non-players.
+    Rows without a reason are skipped, leaving "has a cause" versus "has none" to the
+    generation side, and province is recorded because some reason templates interpolate a
+    province name. Returns the number added."""
     pid = cache.get("player_id")
     if pid is None:
         return 0
@@ -3574,25 +3314,11 @@ def _latch_relation_reasons(cache, melt, date_label):
 
 
 def hook_slot_holder(first, second, field):
-    """`relations.active_relations` 的一条牵制字段 → (持有者, 对象) (v33)。
+    """One hook field in relations.active_relations -> (holder, target).
 
-    **方向在槽号，不在 first/second**：引擎把成对关系按键规范化存储
-    （实测全档 6950 条 `active_hook_*` 记录 **first < second 恒成立**，
-    一条反例也没有），方向由字段名 `active_hook_<N>` 承载：
-    N 偶 → `first` 持有对 `second`；N 奇 → `second` 持有对 `first`。
-
-    实证（马克龙 879 档）：
-      · `house_head_hook`（家主权，持有者必为家主，而家主通常年长）——
-        槽 0：4919/4920 条 `first` 年长；槽 1：44/55 条 `second` 年长；
-      · Mod `longju_exent` 的 8 处 `add_hook = {target = scope:npc_2}` 全在
-        `root`（＝丈夫；`npc_1` 是 `random_spouse`、`npc_2` 是通奸者）作用域内，
-        即「干了我老婆」恒由丈夫持有 —— 与该档 opinions 的当事人标记
-        （通奸者→丈夫的 `xiangyongletadeqizi_opinion`）逐条吻合：
-        玩家(38677)对乔乔(43961)那条落在槽 0，对 15982/10851/12278（id 比玩家小、
-        故排在 first）三条落在槽 1，**四条都是玩家自己的牵制**。
-
-    v31 曾据单例推断「first 即持有者」——那只是玩家 id 恰好小于乔乔的巧合，
-    导致同一批双向可读的记录里把玩家自己的牵制读成了「他人握有对主角的牵制」。"""
+    The DIRECTION comes from the slot number, not from first/second: the engine normalizes
+    paired relations so that first < second, and active_hook_<N> carries the direction
+    (even N = first holds it over second, odd N = the reverse)."""
     slot = str(field).rsplit("_", 1)[-1]
     try:
         n = int(slot)
@@ -3602,9 +3328,8 @@ def hook_slot_holder(first, second, field):
 
 
 def _minus_years(date_str, n):
-    """'934.4.2' 减 n 个日历年 → '924.4.2'; 取不到返回 '' (v56 问题3)。
-
-    永久牵制的哨兵到期日 (9999.1.1) 一并返回 '' —— 它不是真日期。"""
+    """'934.4.2' minus n calendar years -> '924.4.2'; '' when it cannot be computed, which
+    includes a permanent hook's sentinel expiry (9999.1.1)."""
     s = str(date_str or "")
     if not s or s.startswith("9999") or s == "none":
         return ""
@@ -3616,30 +3341,19 @@ def _minus_years(date_str, n):
 
 
 def _latch_prison_manners(cache, melt, date_label):
-    """出狱缘由闩存 (v56 问题3)。
+    """Latch the reason behind each release from prison.
 
-    为什么需要: `facts.release_manner` 原先只读**当次熔件**的 active_opinions,
-    而出狱类好感一律 10 年衰减 (`ransomed_from_prison` 被脚本覆盖为 1 年), 且随
-    持有者死亡立即从存档消失 —— 终传只载末档熔件, 十年前那批释放的缘由永久读不到,
-    逐条回落「获释」(斯卡利茨 923.11.6 那 12 人于是全成「尽数获释」)。
+    facts.release_manner sees only the current melt, but release opinions decay over 10
+    years and vanish with their holder, so a decade-old release would fall back to a bare
+    "released". Two sources feed the latch: release-type modifiers in
+    opinions.active_opinions, which carry start_date to the day (owner = prisoner,
+    target = releaser, except the ransom case whose target is the payer), and
+    favor_hook / indebted_hook, whose expiry is creation + 10 calendar years (outside
+    hook_type_kept's whitelist, so they serve the latch only).
 
-    两路证据 (口径见 docs/方案_v56_斯卡利茨四问题.md §4):
-      ① `opinions.active_opinions` 里的出狱类修饰符 —— 自带 start_date, 精确到日;
-         `owner` = 被囚者, `target` = 释放者 (唯赎金那档的 target 是付款人)。
-      ② `relations.active_relations` 里的 `favor_hook` / `indebted_hook` ——
-         赎金·人情分支的留痕。它**没有创建日**, 但到期日 = 创建日 + 10 个日历年
-         (实测 melt_925/927 共 15 条与 ① 的 start_date 逐日吻合), 故按到期日反推。
-         这两类牵制不在 `hook_type_kept` 白名单内 (不下发《阴私录》), 只在本闩存里用。
-
-    记录形如::
-
-        cache["prison_manners"]["<被囚者>><监禁者>><日期>"] = {
-            "victim": …, "jailer": …, "date": "924.4.2",
-            "kind": "demanded_hook" | "hook",   # 好感来源记修饰符名, 牵制来源记结局族
-            "src": "opinion" | "hook", "first_seen": "925.1.1"}
-
-    首见即留 (不覆盖) —— 与熔件新旧无关, 故终传也能回读。只收「涉玩家」的条目
-    (控体积; 全档涉主角的出狱类好感/牵制各十余条)。返回本档新增条数。"""
+    Keys are "<prisoner>><jailer>><date>" with {victim, jailer, date, kind, src,
+    first_seen}; first sighting wins regardless of melt age and only rows involving the
+    player are kept."""
     pid = cache.get("player_id")
     if pid is None:
         return 0
@@ -3657,7 +3371,7 @@ def _latch_prison_manners(cache, melt, date_label):
                      "kind": kind, "src": src, "first_seen": date_label}
         added += 1
 
-    # ---- ① 出狱类好感修饰符 ----
+    # ---- 1) release-type opinions ----
     for o in (melt.get("opinions") or {}).get("active_opinions") or []:
         if not isinstance(o, dict):
             continue
@@ -3672,7 +3386,7 @@ def _latch_prison_manners(cache, melt, date_label):
                 continue
             _put(ow, tg, str(v.get("start_date") or ""), mod, "opinion")
 
-    # ---- ② 赎金·人情牵制 (到期日反推创建日) ----
+    # ---- 2) ransom and favour hooks (creation date derived from the expiry) ----
     for e in (melt.get("relations") or {}).get("active_relations") or []:
         if not isinstance(e, dict):
             continue
@@ -3695,26 +3409,13 @@ def _latch_prison_manners(cache, melt, date_label):
 
 
 def _diff_hooks(cache, melt, date_label):
-    """把本档牵制并入 cache["hooks"] (逐档差分)。
+    """Merge this snapshot's hooks into cache["hooks"] (a per-snapshot diff).
 
-    存档形如::
-
-        relations.active_relations = [
-            {"first": 38677, "second": 43961,
-             "active_hook_0": {"type": "ganlewodelaopo_hook",
-                               "expiration_date": "9999.1.1"}}, …]
-
-    方向由槽号定（见 `hook_slot_holder`）：槽 0 = first 持有对 second，
-    槽 1 = second 持有对 first；first/second 本身只是**按键规范化的成对编号**
-    （小 id 在前），不带方向义。
-    只收「持有者或对象为玩家」的牵制 (控体积; 全档 6950 条 → 玩家相关 14 条)。
-    记录形如::
-
-        {"38677>43961>ganlewodelaopo_hook":
-            {"holder": 38677, "target": 43961, "type": "ganlewodelaopo_hook",
-             "expiration": "9999.1.1", "first_seen": "870.1.1", "first": false}}
-
-    `first` = 首档即见 (数据起点前已有); 本档消失即记 `lost_at`。"""
+    active_hook_<N> entries on relations.active_relations carry {type, expiration_date};
+    the direction comes from the slot number (see hook_slot_holder), since first and
+    second are only a normalized pair of ids. Keys are "<holder>><target>><type>" with
+    {holder, target, type, expiration, first_seen, first, last_seen, lost_at}, kept only
+    when the holder or target is the player. first means the hook predates the data."""
     pid = cache.get("player_id")
     if pid is None:
         return
@@ -3757,16 +3458,12 @@ def _diff_hooks(cache, melt, date_label):
 
 
 def enslaved_ids(melt, owner_id):
-    """本档被 owner_id 奴役的角色 id 集 (Carnalitas)。
+    """Ids enslaved by owner_id in this snapshot (Carnalitas).
 
-    存档形如::
-
-        opinions.active_opinions = [
-            {"owner": 38670, "target": 14590,
-             "scripted_relations": {"slave": {"flags": "AA=="}}}, …]
-
-    `owner` = 奴隶主, `target` = 奴隶 (与 `slave_owner` 成对, 见 Mod
-    common/scripted_relations/carnal_slave_relations.txt)。"""
+    The save shapes them as opinions.active_opinions entries with
+    scripted_relations = {"slave": {...}}, where owner = the slave owner and
+    target = the slave (paired with slave_owner; see Mod
+    common/scripted_relations/carnal_slave_relations.txt)."""
     out = set()
     for o in (melt.get("opinions") or {}).get("active_opinions") or []:
         if not isinstance(o, dict) or o.get("owner") != owner_id:
@@ -3779,12 +3476,13 @@ def enslaved_ids(melt, owner_id):
 
 
 def all_enslavements(melt):
-    """本档**全部**主奴关系 {奴隶 id: 主人 id} (v38, 问题4)。
+    """Every master/slave relation in this snapshot {slave id: master id}.
 
-    与 `enslaved_ids` 同源 (`scripted_relations.slave`), 但不再限定主人是玩家 ——
-    主角把奴隶卖出后, 奴隶会带着 `slave` 关系转到买家名下, 只有看全档才能读出
-    「卖给了谁」; 这也是把「被出售」与「被释放」分开的判据 (被释放者换成
-    `former_slave` 特质, 不再有 slave 关系)。"""
+    Same source as enslaved_ids (scripted_relations.slave) but not limited to a player
+    owner: after a slave is sold the relation follows them to the buyer, so only the
+    whole save reveals who they were sold to. This is also what separates "sold" from
+    "freed", since a freed person gains the former_slave trait and loses the slave
+    relation."""
     out = {}
     for o in (melt.get("opinions") or {}).get("active_opinions") or []:
         if not isinstance(o, dict):
@@ -3798,30 +3496,27 @@ def all_enslavements(melt):
 
 
 def _diff_enslavements(cache, melt, date_label):
-    """把本档主奴关系并入 cache["enslavements"] (逐档差分)。
+    """Merge this snapshot's master/slave relations into cache["enslavements"].
 
-    Carnalitas 的 `carn_enslave_effect` 在奴役的**同一刻**对已被囚的奴隶执行
-    `release_from_prison = yes` (Mod common/scripted_effects/carn_slave_effects.txt),
-    所以存档里那句 `released_from_prison_memory` 正是「没为奴隶」这一步 ——
-    只有这层关系能把它与「真获释」区分开。关系本身不带创建日, 逐档差分即得
-    「首次见于记载」的档期。
+    Carnalitas' carn_enslave_effect also runs release_from_prison = yes on an already
+    imprisoned slave at the exact moment of enslavement (Mod
+    common/scripted_effects/carn_slave_effects.txt), so the save's
+    released_from_prison_memory IS the enslavement step, and only this relation
+    separates it from a genuine release. The relation carries no creation date, so the
+    snapshot diff yields the first recorded one.
 
-    记录形如::
+    Records look like::
 
         {"38670>14590": {"owner": 38670, "slave": 14590,
                          "first_seen": "873.1.1", "first": false,
                          "last_seen": "888.1.1", "lost_at": null}}
 
-    `first` = 首档即见 (数据起点前已为奴隶); 本档不再出现即记 `lost_at`
-    (被解放 / 转卖 / 死亡)。
-
-    v38 (问题4, 用户拍板「全部做完」): 三点改动 ——
-    ① 收**全部**关系 (不再只收主角为主者): 奴隶被卖出后仍进缓存, 才有痕迹可查;
-    ② 主人变化时把前任主人记进 `prev_owners`, `owner` 随档刷新 ——
-       「转卖给了谁」由此可考;
-    ③ 关系消失时记录 `end_owner` (消失那一刻仍在奴役他的人是买家) 或
-       `freed` (那一刻已无人奴役他 = 转为 `former_slave`)。
-    """
+    first means the slave already was one in the first snapshot; a relation that stops
+    appearing gets lost_at. Every relation is kept so a sold slave leaves a trace, and
+    when the owner changes the previous owner goes into prev_owners while owner tracks
+    the current one, which is how a resale is traced. When a relation disappears,
+    end_owner records whoever still enslaved them at that moment (the buyer), or freed
+    records that nobody did (the former_slave trait)."""
     pid = cache.get("player_id")
     if pid is None:
         return
@@ -3857,10 +3552,8 @@ def _diff_enslavements(cache, melt, date_label):
             rec["freed"] = True
 
 
-# v32: 纳妾类关系好感 — 存档里「强行纳为侧室」唯一带确切日期的记录
-# (本地化: forced_me_concubine=将我强行纳为侧室、concubine_with_monogamous_faith=
-#  身为侧室却信从一夫一妻、forced_spouse_concubine=将我的配偶强行纳为侧室、
-#  stole_concubine=偷走了我的侧室)
+# Concubinage opinions (forced_me_concubine, concubine_with_monogamous_faith,
+# forced_spouse_concubine, stole_concubine): the only place it carries an exact date
 _CONCUBINE_OPINIONS = {
     "forced_me_concubine_marriage_opinion",
     "concubine_with_monogamous_faith_opinion",
@@ -3868,14 +3561,10 @@ _CONCUBINE_OPINIONS = {
     "stole_concubine_opinion",
 }
 
-# v38 (问题1/问题4): Carnalitas 关系好感族 — 与前缀/后缀匹配, 只收涉主角者。
-# 前缀族取自 Mod common/opinion_modifiers/*.txt:
-#   carn_raped_*（曾强奸我/我的情人/我的朋友/家庭成员）— 受害方与其亲友持有;
-#   carn_enslaved_*（奴役了我/亲族/近亲/宗族/目标/宾客, 含 crime 变体）;
-#   carn_former_slave_or_slave_owner_opinion（曾经是主奴关系）— **出售与释放
-#     都留这一条**, 是「人被卖掉之后」在存档里最直接的痕迹。
-# 后缀族 (v32 纳妾同表之外单列): 被要求解放、被逼卖淫 —— 两者也都是指向主角的
-# 单条事件好感。
+# Carnalitas opinion families (Mod common/opinion_modifiers/*.txt), matched by prefix or
+# suffix: carn_raped_* and carn_enslaved_* cover acts against the subject or their circle,
+# carn_former_slave_or_slave_owner_opinion is left by BOTH a sale and a release, and the
+# suffixes are single-event opinions (forced prostitution, demanded manumission).
 _CARNAL_OPINION_PREFIXES = ("carn_raped_", "carn_enslaved_")
 _CARNAL_OPINION_SUFFIXES = (
     "carn_former_slave_or_slave_owner_opinion",
@@ -3885,7 +3574,8 @@ _CARNAL_OPINION_SUFFIXES = (
 
 
 def _carnal_opinion_kind(mod):
-    """关系好感 modifier 是否属 Carnalitas 事件族 (v38); 是则返回族名。"""
+    """Whether an opinion modifier belongs to a Carnalitas event family; returns the
+    family name or ''."""
     m = str(mod or "")
     for p in _CARNAL_OPINION_PREFIXES:
         if m.startswith(p):
@@ -3901,20 +3591,12 @@ def _carnal_opinion_kind(mod):
 
 
 def _diff_carnal_opinions(cache, melt, date_label):
-    """Carnalitas 关系好感逐档差分 → cache["carnal_opinions"] (v38, 问题1/问题4)。
+    """Diff Carnalitas relation opinions into cache["carnal_opinions"].
 
-    存档形如::
-
-        opinions.active_opinions = [
-            {"owner": 50473, "target": 15601,
-             "temporary_opinion": {"modifier": "carn_former_slave_or_slave_owner_opinion",
-                                   "start_date": "881.4.17",
-                                   "expiration_date": "882.1.12"}}, …]
-
-    方向: `owner` = 持有该好感的人, `target` = 施加者 (与 `_diff_opinions` 同口径)。
-    这些好感**自带 start_date**, 比逐档差分精确 —— 出售奴隶那一刻 (881.4.17)
-    正是由此坐实。只收 `owner`/`target` 有一方是主角的记录 (控体积):
-    全档 7000+ 条好感里 Carnalitas 的不过百余条。"""
+    Rows are keyed owner>target>modifier and hold {owner, target, modifier, kind, start,
+    expiration, first_seen, first, last_seen, lost_at}, with owner holding the opinion as
+    in _diff_opinions. These opinions carry start_date, so the moment a slave was sold is
+    pinned exactly; only rows with the subject on one side are kept."""
     pid = cache.get("player_id")
     if pid is None:
         return
@@ -3956,16 +3638,10 @@ def _diff_carnal_opinions(cache, melt, date_label):
 
 
 def _char_modifier_names(c):
-    """角色条目里的**临时修正**名列表 (v38)。
+    """The temporary modifier names on a character entry.
 
-    存档实测 (`alive_data` 段内, 与 stress/gold 同级)::
-
-        modifier={
-            modifier=carn_recently_raped        expiration_date=886.8.28
-        }
-
-    解析后的 melt 里位于 `alive_data` 下, 键名单复数按 rakaly 归一, 故同时兼容
-    `modifiers` / `modifier` / `character_modifiers`。"""
+    They sit inside alive_data beside stress and gold; rakaly normalizes singular and
+    plural key names, so all three spellings are accepted."""
     if not isinstance(c, dict):
         return []
     out = []
@@ -3988,12 +3664,11 @@ def _char_modifier_names(c):
 
 
 def _diff_carnal_modifiers(cache, melt, date_label):
-    """角色修正 `carn_recently_raped` 逐档差分 → cache["carnal_modifiers"] (v38)。
+    """Diff the carn_recently_raped modifier into cache["carnal_modifiers"].
 
-    Mod `common/modifiers/carn_rape_modifiers.txt` 的 `carn_recently_raped`
-    (本地化「最近被强奸」, health −0.25, **5 年**) 由 `carn_rape_victim_stress_effect`
-    加在受害方身上 —— 与性事记忆相比它多一层「此事确实被按强迫处理」的语义,
-    且是受害方在无记忆时的兜底信号。只收缓存已知角色与主角 (控体积)。"""
+    Mod common/modifiers/carn_rape_modifiers.txt adds carn_recently_raped (health -0.25,
+    5 years) to the victim through carn_rape_victim_stress_effect; it shows the act was
+    treated as forced and is the victim's fallback signal when no memory exists."""
     pid = cache.get("player_id")
     if pid is None:
         return
@@ -4024,7 +3699,7 @@ def _diff_carnal_modifiers(cache, melt, date_label):
 
 
 def _opinion_values(o):
-    """条目里的 temporary_opinion → 列表 (同键重复被 _merge_dup_pairs 并成 list)。"""
+    """An entry's temporary_opinion as a list (duplicate keys merge into one)."""
     v = o.get("temporary_opinion")
     if isinstance(v, dict):
         return [v]
@@ -4034,32 +3709,16 @@ def _opinion_values(o):
 
 
 def _diff_opinions(cache, melt, date_label):
-    """把本档纳妾类关系好感并入 cache["opinions"] (逐档差分)。
+    """Merge this snapshot's concubinage opinions into cache["opinions"].
 
-    存档形如::
-
-        opinions.active_opinions = [
-            {"owner": 17039, "target": 38691,
-             "temporary_opinion": {"modifier": "forced_me_concubine_marriage_opinion",
-                                   "start_date": "880.1.1",
-                                   "expiration_date": "900.1.1", "days": 7300}}, …]
-
-    方向: `owner` = 持有该好感的当事人, `target` = 施加者 (实测菲利普档妾 17039
-    → 主角 38691)。`forced_me_concubine_marriage_opinion` 由脚本
-    `concubine_on_accept_effect` 在该人**身陷囹圄或守贞**时给予, 同一段脚本紧接着
-    `release_from_prison = yes` —— 即「强纳为妾当日即出狱」, 这是「劫掠掳人 →
-    强纳为妾」在存档里**唯一带确切日期**的记录 (纳妾本身不留记忆, family_data
-    只给当前状态)。只收涉主角者 (控体积)。
-
-    记录形如::
-
-        {"17039>38691>forced_me_concubine_marriage_opinion":
-            {"owner": 17039, "target": 38691,
-             "modifier": "forced_me_concubine_marriage_opinion",
-             "start": "880.1.1", "expiration": "900.1.1",
-             "first_seen": "881.1.1", "first": false}}
-
-    `first` = 首档即见 (数据起点前已有); 本档消失即记 `lost_at`。"""
+    active_opinions entries carry temporary_opinion = {"modifier", "start_date",
+    "expiration_date", "days"} where owner holds the opinion and target caused it. The
+    script concubine_on_accept_effect gives forced_me_concubine_marriage_opinion to
+    someone imprisoned or chaste and then runs release_from_prison = yes, so the day of
+    the forced concubinage is the day they left prison -- the only dated record of
+    "raided and taken -> forced concubine", since taking a concubine leaves no memory.
+    Rows are keyed owner>target>modifier; first marks presence in the first snapshot and a
+    row that stops appearing gets lost_at."""
     pid = cache.get("player_id")
     if pid is None:
         return
@@ -4097,15 +3756,11 @@ def _diff_opinions(cache, melt, date_label):
 
 
 def _diff_epidemics(cache, melt, date_label):
-    """把本档 epidemics.database 并入 cache["epidemics"] (逐档差分)。
+    """Merge this snapshot's epidemics.database into cache["epidemics"].
 
-    记录形如::
-
-        {"83886080": {"name": "卡利甫痢", "type": "dysentery", "intensity": "minor",
-                      "start_province": 4248, "provinces": 20,
-                      "first_seen": "888.1.1", "first": true, "lost_at": None}}
-
-    `first` = 首档即见 (数据起点前已存在, 因此其起年取游戏给的 creation_date)。"""
+    Rows are keyed by epidemic id and hold {name, type, intensity, creation_date,
+    start_province, provinces, infections, first_seen, first, lost_at}. first means the
+    epidemic was already present at the data start, so its start year is creation_date."""
     db = (melt.get("epidemics") or {}).get("database") or {}
     hist = cache.setdefault("epidemics", {})
     for eid, e in db.items():
@@ -4120,9 +3775,9 @@ def _diff_epidemics(cache, melt, date_label):
                 "creation_date": e.get("creation_date") or date_label,
                 "start_province": e.get("start_province"),
                 "provinces": len(e.get("infections") or {}),
-                # v35 (问题5): 感染省份集 — 判「这场疫是否触及此人属地/所在郡」,
-                # 供疾病特质取该场疫的游戏动态名 (平原热/丘陵热…)。只留前 400 个,
-                # 与 tools/tests/snap.py 的 melt_tables 同口径, 控缓存体积。
+                # Infected province set, used to decide whether an epidemic reached a
+                # person's domain or county and to take its dynamic disease name; only
+                # the first 400 are kept to limit the cache size.
                 "infections": sorted(
                     (int(x) for x in (e.get("infections") or {})
                      if str(x).isdigit()))[:400],
@@ -4131,7 +3786,7 @@ def _diff_epidemics(cache, melt, date_label):
                 "lost_at": None,
             }
             continue
-        # 逐档刷新: 名称/规模/强度可能变 (疫情蔓延), 名称按最新档
+        # Refresh per snapshot: name, size and intensity change as the epidemic spreads
         for k, v in (("name", e.get("name") or ""), ("intensity", e.get("intensity") or ""),
                      ("provinces", len(e.get("infections") or {}))):
             if v not in (None, ""):
@@ -4143,7 +3798,7 @@ def _diff_epidemics(cache, melt, date_label):
         rec["first"] = False
         rec["last_seen"] = date_label
         rec["lost_at"] = None
-    # 本档不再出现的疫情 → 记 lost_at (不再在传播)
+    # An epidemic absent from this snapshot gets lost_at (no longer spreading)
     ids = {str(k) for k, v in db.items() if isinstance(v, dict)}
     for sid, rec in hist.items():
         if isinstance(rec, dict) and sid not in ids and not rec.get("lost_at"):
@@ -4151,42 +3806,25 @@ def _diff_epidemics(cache, melt, date_label):
 
 
 # ---------------------------------------------------------------------------
-# v40: 性病 (情人疱疹 / 大痘) 传播边 —— 存档 triggered_event 队列
+# Venereal disease transmission edges (lover's pox / great pox) - triggered_event
 # ---------------------------------------------------------------------------
-# 用户 2026-09-15 需求: 「发生性病传播时, 在性行为后面加上一句
-# （某某把疱疹/大痘传染给了某某）; 此时不论该性行为是自愿或非自愿都记录
-# （只有这一个特例）; 如果不是调用行动传播的则单独在记忆中记录」。
-#
-# 数据来源: 每条熔件顶层 `triggered_event` (load_melt 后是**列表**) 的隐藏事件::
-#
-#     {"event": "health.1200",
-#      "scope": {"root": {"type": "char", "identity": 50852}, "seed": …,
-#                "event_targets": {
-#                    "sick_character": {"type": "char", "identity": 74421},
-#                    "disease_type": {"type": "flag", "flag": "lovers_pox"},
-#                    "infecting_partner": {"type": "char", "identity": 74418}}},
-#      "date": "1093.1.6"}
-#
-# 语义 (游戏 20_health_effects.txt / events/health_events.txt 逐行核对):
-#   · Carnalitas 性事当场调 `risk_of_std_from_effect` (carn_had_sex_with_effect:
-#     50% 情人疱疹 / 30% 大痘), `contract_*_from` 把**已患病的 partner** 存进
-#     `infecting_partner`、病人自己存进 `sick_character`;
-#   · 得病后立刻排 `health.1200`(情人疱疹 days={60 1000}) / `health.1201`
-#     (大痘 days={250 1500}) 的**复检**, 队列里的 `date` 是复检日, 故
-#     感染日 ∈ [复检日−上限, 复检日−下限] (由 facts 侧按病种换算);
-#   · 本体的 `health.1200` 也会在 lover/consort 之间**按期**传播 —— 这类没有
-#     性事行动, 事实层单独成行 (「不是调用行动传播」那一档)。
-# `infecting_partner` 缺省 (卖淫/先天) 或等于 `sick_character` (本人复检) 时
-# 不构成传播边; 前者由事实层记「染上X」, 后者丢弃。
+# Source: hidden events in each melt's triggered_event list, whose event_targets carry
+# sick_character, disease_type (a flag) and infecting_partner plus a date. Carnalitas
+# stores the already infected partner in infecting_partner and the patient in
+# sick_character, then schedules a recheck (health.1200, days={60 1000} for lover's pox;
+# health.1201, days={250 1500} for great pox), so the queue date is the recheck day and the
+# infection day falls within [recheck - max, recheck - min], which facts converts per
+# disease. An entry without infecting_partner (prostitution or congenital) or equal to
+# sick_character (the patient's own recheck) is not an edge.
 _STD_DISEASES = ("lovers_pox", "great_pox", "early_great_pox")
 
 
 def _iter_triggered(melt):
-    """triggered_event → 事件 dict 列表 (load_melt 把重复键并成 list)。"""
+    """triggered_event -> list of event dicts (duplicate keys merge into a list)."""
     te = melt.get("triggered_event")
     if isinstance(te, list):
         return [e for e in te if isinstance(e, dict)]
-    if isinstance(te, dict):   # 兜底: 未合并的单条/字典形
+    if isinstance(te, dict):   # fallback for an unmerged single/dict shape
         out = []
         for v in te.values():
             if isinstance(v, dict):
@@ -4198,7 +3836,7 @@ def _iter_triggered(melt):
 
 
 def _char_identity(v):
-    """事件槽位 ({"type":"char","identity":N}) → 角色 id; 取不到返回 None。"""
+    """An event slot ({"type":"char","identity":N}) -> character id; None when absent."""
     if isinstance(v, dict):
         i = v.get("identity")
         return i if isinstance(i, int) else None
@@ -4206,9 +3844,8 @@ def _char_identity(v):
 
 
 def _std_edges_of(melt):
-    """本档 triggered_event → [(disease, source, target, fire_date)] (只收真传播边)。
-
-    `sick_character` 缺失的条目 (存档退化) 丢弃。"""
+    """This snapshot's triggered_event -> [(disease, source, target, fire_date)] for real
+    transmission edges only; entries missing sick_character are dropped."""
     out = []
     for e in _iter_triggered(melt):
         tgt = ((e.get("scope") or {}).get("event_targets") or {})
@@ -4221,23 +3858,16 @@ def _std_edges_of(melt):
         if sick is None:
             continue
         if src is not None and src == sick:
-            continue          # 本人按期复检: 不是传播
+            continue          # the patient's own scheduled recheck: not a transmission
         out.append((str(flag), src, sick, str(e.get("date") or "")))
     return out
 
 
 def _diff_disease_edges(cache, melt, date_label):
-    """性病传播边逐档差分 → ``cache["disease_edges"]`` (v40)。
+    """Diff venereal disease transmission edges into cache["disease_edges"].
 
-    记录形如::
-
-        {"lovers_pox>74418>74421>1092.6.3":
-            {"disease": "lovers_pox", "source": 74418, "target": 74421,
-             "fire_date": "1092.6.3", "first_seen": "1093.1.1",
-             "first": True, "last_seen": "1093.1.1"}}
-
-    同一条边会连续出现在多档 (排期 → 复检), 故按「病种>源>目标>复检日」去重,
-    `first_seen`/`last_seen` 记首末次见到的快照日; `first=True` 表示数据起点即见。"""
+    Rows are keyed disease>source>target>fire_date and hold {disease, source, target,
+    fire_date, first_seen, last_seen, first}; first=True means the data start showed it."""
     hist = cache.setdefault("disease_edges", {})
     for disease, src, tgt, fire in _std_edges_of(melt):
         key = f"{disease}>{src}>{tgt}>{fire}"
@@ -4252,8 +3882,8 @@ def _diff_disease_edges(cache, melt, date_label):
 
 
 def _court_holder_ids(melt):
-    """本档高位头衔 (h_/e_/k_) 与朝廷职司 (e_minister_*) 的持有者 id 集
-    (《朝局风云录·要员隐事》取材范围)。"""
+    """Ids holding a high title (h_/e_/k_) or a court office (e_minister_*) in this
+    snapshot: the source range for the court-officials section."""
     out = set()
     lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
     for t in lt.values():
@@ -4269,15 +3899,15 @@ def _court_holder_ids(melt):
 
 
 def _diff_secrets(cache, melt, date_label):
-    """把本档 secrets 并入 cache["secrets_history"] (逐档差分)。
+    """Merge this snapshot's secrets into cache["secrets_history"] (a per-snapshot diff).
 
-    记录形如::
+    Records look like::
 
         {"102": {"type": "secret_exam_cheater", "owner": 38682,
                  "target": 10914, "participants": [38682],
-                 "first_seen": "868.1.1", "first": true,   # 首档即见 = 之前已有
+                 "first_seen": "868.1.1", "first": true,   # seen in the first snapshot
                  "known_by": [{"id": 38682, "from": "868.1.1", "first": true}],
-                 "lost_at": "879.1.1"}}                    # 此后不再见于档
+                 "lost_at": "879.1.1"}}                    # no longer in any snapshot
     """
     sec_root = melt.get("secrets") or {}
     secs = sec_root.get("secrets") or {}
@@ -4296,7 +3926,7 @@ def _diff_secrets(cache, melt, date_label):
         related.add(int(pid))
     if not related:
         return
-    # 相关判定: owner/target/participant 属相关集, 或相关者知情 (把柄维度)
+    # Relevance: owner/target/participant is in the related set, or a related person knows it
     want = {}
     for sid, v in secs.items():
         if not isinstance(v, dict):
@@ -4342,7 +3972,7 @@ def _diff_secrets(cache, melt, date_label):
                 rec["relation_type"] = v.get("relation_type")
             hist[sid] = rec
         else:
-            # 复现/换主: 记录最新 owner 与 target (秘密可因原主死亡转归他人)
+            # Reappearing or transferred: a secret can pass to someone else on the owner's death
             if isinstance(v.get("owner"), int):
                 rec["owner"] = v.get("owner")
             if isinstance(tid, int):
@@ -4355,23 +3985,22 @@ def _diff_secrets(cache, melt, date_label):
             rec.setdefault("known_by", []).append({
                 "id": o, "from": date_label, "first": first_snap})
             known_ids.add(o)
-    # 消失: 本档已不见 -> 记 lost_at (仅在记录仍属相关时)
+    # Gone from this snapshot: record lost_at
     for sid, rec in hist.items():
         if sid in want or rec.get("lost_at"):
             continue
         rec["lost_at"] = date_label
 
 
-# v28b: 起义类派系 (领袖即叛军之首) — 游戏 faction_manager.type 的取值。
-# 其余 (independence/claimant/liberty/nation_fracturing/replace_regent) 是
-# 封臣派系, 其领袖本身有领地头衔, 不另给起义称谓。
+# Uprising faction types (game faction_manager.type); the others (independence,
+# claimant, liberty, nation_fracturing, replace_regent) belong to vassal factions whose
+# leaders already hold landed titles.
 _UPRISING_TYPES = ("peasant_faction", "escalated_peasant_faction",
                    "populist_faction", "nomadic_faction")
 
-# v37 (问题8): 起义头衔名 → 派系类型 (游戏 title_name_data.name 的取值)。
-# 起义头衔由剧本创建 (key = x_script_*/x_mc_*), 带 capital (起事州府)、date (起事日)
-# 与 holder (领袖); `delete_on_destroy` 使它在领袖死后从存档消失 —— 故必须在
-# 其存活期的档里取, 或由 refresh_uprising_bases.py 按时代熔件补档。
+# Uprising title names -> faction type, from the game's title_name_data.name. The game
+# creates these from script with a capital, a date and a holder, and delete_on_destroy
+# removes the title after the leader dies, so it must be read while the leader lives.
 _UPRISING_TITLE_NAMES = {
     "农民叛乱": "peasant_faction",
     "民粹暴动": "populist_faction",
@@ -4383,19 +4012,16 @@ _UPRISING_TITLE_NAMES = {
 
 
 def _title_name_of(t):
-    """头衔显示名: title_name_data.name → key。"""
+    """Title display name: title_name_data.name, falling back to key."""
     tnd = (t or {}).get("title_name_data") or {}
     return (tnd.get("name") or "").strip() or ((t or {}).get("key") or "")
 
 
 def uprising_title_bases(melt):
-    """本档起义头衔 → {holder_cid: base} (v37, 问题8)。
-
-    base = {"holder", "title", "county", "county_name", "name", "type", "from"}:
-    头衔 id / 起事州府 id (title.capital, 实为 c_ 头衔 id) / 州府名 / 头衔名
-    (农民叛乱…, 也是起义词来源) / 派系类型 / 起事日 (title.date)。
-    判据: 头衔键为剧本键 (x_script_/x_mc_/x_ho_) 且头衔名在 _UPRISING_TITLE_NAMES 内。
-    """
+    """This snapshot's uprising titles -> {holder_cid: base}, where base = {"holder",
+    "title", "county", "county_name", "name", "type", "from"}: the title id, the revolt's
+    county (title.capital), the title name (which supplies the uprising word), the faction
+    type and title.date. A title qualifies when its key is x_script_/x_mc_/x_ho_."""
     lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
     out = {}
     for tid, t in lt.items():
@@ -4424,26 +4050,18 @@ def uprising_title_bases(melt):
 
 
 def _diff_factions(cache, melt, date_label):
-    """把本档起义派系的**领袖**并入 cache["factions"] (逐档差分)。
+    """Merge this snapshot's uprising LEADERS into cache["factions"].
 
-    记录形如::
+    Rows are keyed by leader id and hold {type, first_seen, last_seen, first, target,
+    counties, faith, culture, base}, where base = {"title", "county", "county_name",
+    "name", "from", "type"}. Only uprising factions are kept, since other vassal
+    faction leaders already hold landed titles, and the save gives no faction dates, so
+    first_seen/last_seen come from the diff.
 
-        {"43603": {"type": "peasant_faction", "first_seen": "870.1.1",
-                   "last_seen": "871.1.1", "first": false,
-                   "target": 10529, "counties": [14534, 14538],
-                   "faith": 136, "culture": 166,
-                   "base": {"title": 18606, "county": 15246, "county_name": "渠州",
-                            "name": "农民叛乱", "from": "870.9.26"}}}
-
-    只收起义类派系 (其余封臣派系领袖本有领地头衔)。存档无派系起止日期,
-    首见档即记 first_seen, 最后一次出现记 last_seen。
-    领袖一律记录 (不按相关集过滤): 逐档差分是时序的, 叛乱领袖常在身故后才因
-    隐事/谋杀进入传主视野 (陆氏 43603 即 870–871 在党、872 才见于隐事档),
-    先按相关集过滤会漏掉其起义身份; 每档约 40–55 名领袖, 体积可忽略。
-
-    v37 (问题8): 另并**起义头衔**路线 —— 起义头衔 (x_script_* 且名为「农民叛乱」等)
-    带真实 base 州府 (capital)、建立日与持有者; 派系记录缺失者 (周氏2 的王伯玉/
-    张知微: 同持「农民叛乱」头衔却无 faction 记录) 由此补上领袖身份与起事地。
+    Every leader is recorded rather than filtered by relevance: rebel leaders often
+    enter the subject's view only after their death, through secrets or murders. Script
+    titles whose name is in _UPRISING_TITLE_NAMES are merged in too, which supplies a
+    leader identity and a place of origin for leaders absent from the faction records.
     """
     facs = (melt.get("faction_manager") or {}).get("factions") or {}
     hist = cache.setdefault("factions", {})
@@ -4483,7 +4101,7 @@ def _diff_factions(cache, melt, date_label):
             r["faith"] = vars_["faction_faith"]
         if "faction_culture" in vars_:
             r["culture"] = vars_["faction_culture"]
-    # v37: 起义头衔路线 (含无 faction 记录的领袖)
+    # Uprising titles as a second route (covers leaders absent from faction records)
     for _holder, base in uprising_title_bases(melt).items():
         r = hist.get(str(_holder))
         if r is None:
@@ -4497,15 +4115,14 @@ def _diff_factions(cache, melt, date_label):
 
 
 # ---------------------------------------------------------------------------
-# 死角色记忆回溯 (v5: 死后记忆被清空 → 从死前最近一份存档恢复)
+# Memory backtracking for dead characters (restored from the last snapshot while alive)
 # ---------------------------------------------------------------------------
 
 def recover_dead_memories_from(melt, cache, cid, chars=None):
-    """从某档 melt 恢复角色 cid 的记忆 (死前最后一份存档)。
-    记忆对象存于该档 character_memory_manager.database, 角色 alive_data.memories
-    引用之。返回恢复条数。
-    v11: chars 由调用方按熔件预建一次传入 (回溯对每个死者调用, 旧实现每次重建
-    全角色字典)。"""
+    """Restore character cid's memories from one melt (the last snapshot before death).
+
+    Memory objects live in that snapshot's character_memory_manager.database and
+    alive_data.memories references them; chars is prebuilt once by the caller."""
     rec = cache["characters"].get(str(cid))
     if rec is None:
         return 0
@@ -4532,36 +4149,30 @@ def recover_dead_memories_from(melt, cache, cid, chars=None):
 
 
 # ---------------------------------------------------------------------------
-# 记忆归档 (v12: 边车索引, 回溯不再整份加载旧熔件)
+# Memory archive (a sidecar index, so backtracking never loads a whole old melt)
 # ---------------------------------------------------------------------------
-# 死角色记忆回溯需要「死前最近一份存档」里该角色的记忆。旧实现每次回溯都要
-# json.load 一份 160 MB 全量熔件 (实测 13 份 ≈ 87s, 占每年合并的大头)。
-# 归档 = 每份熔件的瘦身边车 melt_<日期>_idx.json, 只含回溯需要的:
-#   - chars: {cid: [记忆ID...]} (alive_data.memories, 死者回退 dead_data.memories)
-#   - db:    {记忆ID: 精简条目} (仅 memory_brief 用到的字段)
-# 全量熔件仍是权威源 (extract_snapshot/传记/rebuild-cache 继续用), 归档只在
-# 回溯缺失时惰性构建一次并持久化, 之后回溯直接读归档 (0.1s 级)。
+# Backtracking needs one dead character's memories from the last snapshot before death, and
+# loading a full melt each time is the bulk of a yearly merge, so each melt gets a slim
+# sidecar melt_<date>_idx.json holding only {chars: {cid: [memory ids...]}, db: {memory id:
+# compact entry}} — the fields memory_brief uses. Built lazily once and persisted.
 
 
 def _index_stem(melt_path):
-    """熔件路径 → 边车命名基准 (去掉压缩后缀与 `.json`)。`a/melt_900_01_01.json.gz`
-    → `a/melt_900_01_01`。v49。"""
+    """Melt path -> sidecar naming base, without the compression suffix or .json."""
     p = melt_stem(melt_path)
     return p[:-5] if p.lower().endswith(".json") else p
 
 
 def _melt_index_variants(melt_path):
-    """熔件 → 归档边车的三种可能路径 (`.json` / `.json.gz` / `.json.xz`), 读取时都试。"""
+    """Melt -> the three possible sidecar paths (.json / .json.gz / .json.xz)."""
     stem = _index_stem(melt_path)
     return [stem + "_idx.json", stem + "_idx.json.gz", stem + "_idx.json.xz"]
 
 
 def melt_index_path(melt_path):
-    """全量熔件 → 记忆归档边车路径: melt_913_01_01.json → melt_913_01_01_idx.json。
-    命名含 _idx, 不会被 _iter_melts / melt_file_in 等按 melt_<日期>(_p<id>)?.json
-    匹配的代码误当成全量熔件。
-    v44: 熔件为 `.json.gz` 时边车同名 `.json.gz` (归档随熔件一起压)。
-    v49 (方案①): `.json.xz` 时边车同名 `.json.xz`。"""
+    """Full melt -> memory archive sidecar path (melt_913_01_01.json ->
+    melt_913_01_01_idx.json). The _idx keeps code that globs melt_<date>.json from
+    mistaking the sidecar for a melt; the sidecar follows the melt's suffix."""
     p = str(melt_path)
     low = p.lower()
     for suf in (".xz", ".gz"):
@@ -4571,13 +4182,11 @@ def melt_index_path(melt_path):
 
 
 def build_melt_index(melt):
-    """从全量熔件构建记忆归档 dict (不入库)。
+    """Build the memory archive dict from a full melt, without persisting it.
 
-    v40: 变量元组补上第 4 位 = flag 类变量的值 (`data.flag`) —— 与
-    `memory_brief` v21 同口径。旧版只存 [flag, type, identity], 于是**走边车
-    恢复的记忆**丢掉 `reason` (头衔授予/丧失缘由) 等标志值, 头衔得失句从
-    「受X册封为Y」退化成「登位，得Y」(2026-09-15 诺兰重建实测: 边车一旦生成,
-    重建即走 `_brief_from_index` 这条有损路径)。"""
+    Each variable tuple keeps a 4th slot, the value of a flag-type variable
+    (data.flag), matching memory_brief; without it, memories restored through the
+    sidecar lose flag values such as a title-grant reason."""
     out = {"date": melt.get("date"), "chars": {}, "db": {}}
     chars = out["chars"]
     db = out["db"]
@@ -4606,13 +4215,11 @@ def build_melt_index(melt):
 
 
 def save_melt_index(melt_path, melt):
-    """构建并持久化记忆归档边车 (原子写), 返回边车路径。
+    """Build and persist the memory archive sidecar (atomic write); returns its path.
 
-    v44: 随熔件后缀 —— 熔件是 `.json.gz` 时边车也写 `.json.gz`。
-    v49 (O8): 边车是派生件, **一律写压缩档** —— 最新熔件为明文时旧的写法会落下
-    一份明文边车 43 MiB (写 2.1 s), 现在写 `.json.gz` (5.6 MiB, 写 1.2 s, 读 +0.07 s);
-    冷档的边车随熔件后缀, 之后 compact 后台再升成 xz。
-    v49: 紧凑分隔符 (与玩家缓存同口径; 读者一律 json.loads)。"""
+    A sidecar is always written compressed, since a plain one for the newest melt would
+    be tens of MiB; a cold melt's sidecar follows the melt's suffix. Compact separators
+    are used, as for player caches."""
     base = melt_index_path(melt_path)
     low = base.lower()
     path = base if low.endswith((".gz", ".xz")) else base + ".gz"
@@ -4629,9 +4236,10 @@ def save_melt_index(melt_path, melt):
 
 
 def load_melt_index(melt_path):
-    """读取记忆归档边车; 不存在/损坏返回 None。
-    v44: 两种后缀都试 —— 归档可能先于熔件被压缩 (或反之)。
-    v49 (O2): 改走二进制整读 (省一层解码器)。"""
+    """Read the memory archive sidecar; None when it is missing or corrupt.
+
+    All suffixes are tried, since the archive and the melt can be compressed in either
+    order, and the bytes are read whole to skip a decoder layer."""
     for p in _melt_index_variants(melt_path):
         if not os.path.isfile(p):
             continue
@@ -4643,9 +4251,8 @@ def load_melt_index(melt_path):
 
 
 def _brief_from_index(mid, e):
-    """归档条目 → memory_brief 同构精简条目 (vars 用 [flag,type,identity,value] 元组)。
-
-    v40: 兼容旧边车的三元组 (无 value) —— 缺第 4 位时 value 记 None。"""
+    """Archive entry -> the same compact entry memory_brief produces, with vars as
+    [flag, type, identity, value] tuples; older sidecars store three-element tuples."""
     return {
         "id": mid,
         "type": e.get("type"),
@@ -4659,8 +4266,10 @@ def _brief_from_index(mid, e):
 
 
 def recover_dead_memories_from_index(index, cache, cid):
-    """从记忆归档恢复角色 cid 的记忆 (与 recover_dead_memories_from 等价,
-    数据来自边车索引而非全量熔件)。返回恢复条数。"""
+    """Restore character cid's memories from the archive.
+
+    Equivalent to recover_dead_memories_from, reading the sidecar index instead of a
+    full melt; returns how many were restored."""
     rec = cache["characters"].get(str(cid))
     if rec is None:
         return 0
@@ -4685,11 +4294,11 @@ def recover_dead_memories_from_index(index, cache, cid):
 
 
 # ---------------------------------------------------------------------------
-# 关系汇总
+# Relation summaries
 # ---------------------------------------------------------------------------
 
 def summarize_relations(cache):
-    """与主角结仇/结怨/死敌清单 (双方视角)。"""
+    """Rival/grudge/nemesis list against the subject, from both points of view."""
     pid = cache["player_id"]
     out = []
     if pid is None:
