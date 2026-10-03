@@ -626,14 +626,14 @@ def kin_rev_index(chars):
         fam = rec.get("family") or {}
         for x in (fam.get("siblings") or []):
             if isinstance(x, int) and x != cid:
-                sib.setdefault(x, []).append(cid)   # x 的同胞里有 cid
+                sib.setdefault(x, []).append(cid)   # x has cid among his siblings
         for x in (fam.get("child") or []):
             if isinstance(x, int):
-                kid.setdefault(cid, []).append(x)   # cid 的子女里有 x
+                kid.setdefault(cid, []).append(x)   # cid has x among his children
         for key in ("father", "mother"):
             for x in (fam.get(key) or []):
                 if isinstance(x, int):
-                    kid.setdefault(x, []).append(cid)   # cid 是 x 的子女
+                    kid.setdefault(x, []).append(cid)   # cid is a child of x
     return {"sib": sib, "kid": kid}
 
 
@@ -699,7 +699,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
         """Cousin word: side ∈ {'pat','mat',None}; female = c's sex; older = whether c is older than s."""
         if female is None:
             return ""
-        if side is None:                      # 堂/表侧不可判 (连接人性别无记载)
+        if side is None:                      # paternal/maternal side unknown (linking person's sex unrecorded)
             return "cousin_female" if female else "cousin_male"
         pat = side == "pat"
         if older is None:
@@ -1571,7 +1571,7 @@ def render_motto(motto, table):
         text = tpl
         for sk, sv in slots.items():
             text = text.replace("${" + sk + "}", sv)
-        text = re.sub(r"\$\d+\$", "", text)  # 未填充的空槽清理
+        text = re.sub(r"\$\d+\$", "", text)  # drop unfilled $N$ slots
         return L.strip_ck3_format(text).strip()
     return ""
 
@@ -7588,7 +7588,7 @@ class Facts:
         return exact or same_year or nearest
 
     def secret_sentence(self, rec, owner_label=None, self_cid=None):
-        """Secret sentence: "陆荣廷有一桩隐事：科举舞弊，事涉唐皇帝李漼，873年见于记载。"
+        """Secret sentence: "甲有一桩隐事：科举舞弊，事涉乙，873年见于记载。"
         (no year for a secret present at the start of the data); target and year are clauses.
 
         Predicate-type topics (私通/乱伦/谋害/暗行巫术…) are written bare as "{owner}{topic}"."""
@@ -7709,8 +7709,8 @@ class Facts:
     def secret_lines(self, recs, owner_label=None, self_cid=None, with_knowers=True,
                      owner=None):
         """Merge one holder's secrets into one line (saves tokens), e.g.
-        "陆荣廷有隐事二桩：科举舞弊（涉及樊骥）；会试舞弊（涉及唐皇帝李漼，873年见载），
-        知情者：卢从度（自875年起）。"
+        "甲有隐事二桩：科举舞弊（涉及乙）；会试舞弊（涉及丙，873年见载），
+        知情者：丁（自875年起）。"
 
         Each secret keeps its own year and knowers; a single secret matches `secret_line`.
         Returns [str], [] when no topic is usable."""
@@ -8264,7 +8264,7 @@ class Facts:
 
     def concubine_divorce_lines(self):
         """Facts about a concubine's existing marriage being broken, one line each: e.g.
-        "879年9月1日，希尔德加德原为萨洛蒙之妻，主角强纳为妾而离异。".
+        "879年9月1日，甲原为乙之妻，主角强纳为妾而离异。".
 
         Source is `forced_spouse_concubine_marriage_opinion` in `cache["opinions"]` (owner = the
         divorced spouse, target = the one taking the concubine); the game grants it with
@@ -19021,8 +19021,7 @@ def _protagonist(f):
         # only when it differs from the clan
         "house": _dynasty_display(_dn, _hn),
         "house_branch": _house_branch(_dn, _hn),
-        # the single house wording used throughout, assembled from culture and name
-        # order (平氏下北沢家 / 斯卡利茨施氏 / 菲利普，顿巴斯)
+        # the single house wording used throughout, assembled from culture and name order
         "house_label": house_label(_dn, _hn, f.name_order(pid),
                                    (f._culture_entry(pid, f.as_of) or {})
                                    .get("culture_template")),
@@ -19622,7 +19621,7 @@ def _character_profiles(f):
         _cor = f.co_ruler_note(cid, date=f.as_of)
         if _cor:
             prof["co_ruler"] = _cor
-        # patronymic (patronymic cultures such as Norse: 崔佛松 / 崔佛斯多蒂尔)
+        # patronymic byname (patronymic cultures, e.g. Norse "Xson" / "Xdottir" forms)
         ptn = f.patronym(cid)
         if ptn:
             prof["patronym"] = ptn
@@ -20175,7 +20174,7 @@ def _chrono_nm(f, cid, date=None):
 
 def _chrono_acc_text(f, cid, date, word, prev, from_prev=False,
                        prev_date=None):
-    """Accession clause: "953年6月6日从珉·奄美处被派系拥立" / "874年7月7日自立建国".
+    """Accession clause: "953年6月6日从甲处被派系拥立" / "874年7月7日自立建国".
 
     `from_prev` is set only for inheritance-type reasons (the same rule as
     `_SUCC_FROM_PREV`): "从X处建立天命" and "从X处被派系拥立" are not idiomatic."""
@@ -22206,7 +22205,7 @@ def _killed_by_player(f):
             # became the game's own cause line ("…相爱了"), keyword filtering matched
             # nothing and dropped the whole line
             "event_types": [],
-            "role": "",   # 与主角的关系 (子/友/敌...) 由 biography 侧根据记忆推断
+            "role": "",   # relationship to the protagonist (child/friend/enemy...) is inferred by biography.py from memories
         }
         # uniform appellation: the dead's label (office/title + name) is assembled once here,
         # so biography._assassin_kill_lines and the opening roster no longer build it
