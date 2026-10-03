@@ -1529,12 +1529,28 @@ def _article_facts(facts, cache, key, section=None):
                 _set_block(blocks, "王朝历代·纪事", "\n".join(rows))
             if wars:
                 _set_block(blocks, "本朝战事", "\n".join(_chrono_dedup_wars(wars)))
+            if (section or {}).get("is_last"):
+                # The closing section's own requirement promises this reign's capital, territory and
+                # the protagonist's tenure in it, so those reach the section that has to write them
+                # rather than only the opening. The current holder goes with them: the rows stop at the
+                # last accession, and without a name on the seat the closing has nothing to go on.
+                _close = [x for x in (dc.get("subs") or []) if x]
+                _tenure = next((ln for ln in (realm.get("top_title_history") or [])
+                                if ln.startswith("主角本朝任期：")), "")
+                if _tenure:
+                    _close.append(_tenure)
+                if _close:
+                    _set_block(blocks, "本朝疆域", "\n".join(_close))
+                if dc.get("holder_now"):
+                    _set_block(blocks, "本朝现任", dc["holder_now"])
         else:
             for ln in (realm.get("top_title_history") or []):
                 dashi.append(ln)
             for _x in (dc.get("subs") or []):
                 if _x:
                     dashi.append(_x)
+            if dc.get("holder_now"):
+                dashi.append(dc["holder_now"])
             _set_block(blocks, "王朝历代", "\n".join(dashi))
     elif key == "assassins":
         killed = facts.get("killed") or []
@@ -2607,15 +2623,41 @@ def _same_period(a, b):
     return (a.get("name"), a.get("start")) == (b.get("name"), b.get("start"))
 
 
+def _chrono_keep_rows(p):
+    """One reign with the rows its material gate keeps: `rows` and the three parallel arrays
+    (`rows_detail` / `rows_dates` / `rows_ids`) filtered together, so a chunk is never planned around
+    a row the fact block will drop. Rows with no recorded flag (`None`, older caches) are kept.
+
+    Returns `p` itself when nothing changes, so the caller's identity checks still work."""
+    rows = list(p.get("rows") or [])
+    dets = list(p.get("rows_detail") or [])
+    if len(dets) < len(rows) or all(d is None for d in dets):
+        return p
+    keep = [i for i, d in enumerate(dets) if d is None or d]
+    if len(keep) == len(rows):
+        return p
+    out = dict(p)
+    out["rows"] = [rows[i] for i in keep]
+    out["rows_detail"] = [dets[i] for i in keep]
+    for k in ("rows_dates", "rows_ids"):
+        arr = list(p.get(k) or [])
+        out[k] = [arr[i] for i in keep] if len(arr) >= len(rows) else []
+    return out
+
+
 def _chrono_usable(p):
     """True when a reign can stand as its own chronicle chunk: at least 2 rulers, since one
     ruler leaves nothing beyond accession/birth/death to write and invites invention."""
-    return len([r for r in (p.get("rows") or []) if r]) >= 2
+    return len([r for r in (_chrono_keep_rows(p).get("rows") or []) if r]) >= 2
 
 
 def _chrono_row_chunks(p, per=None):
-    """Split one reign into chunks of at most `per` rulers (default F.CHRONICLE_ROWS_PER_SECTION);
-    a whole-reign request overruns one reply, and each chunk ends at the next chunk's `rows_dates` accession."""
+    """Split one reign into `per`-row chunks (default F.CHRONICLE_ROWS_PER_SECTION) spread as evenly
+    as possible; a whole-reign request overruns one reply, and each chunk ends at the next chunk's
+    `rows_dates` accession. Even spreading keeps the last chunk from degenerating into a single row —
+    that lone row used to be the biographee's own, and losing it to the material gate left the
+    closing section with nothing to write."""
+    p = _chrono_keep_rows(p)
     rows = [r for r in (p.get("rows") or [])]
     if not rows:
         return [p]
@@ -2625,21 +2667,25 @@ def _chrono_row_chunks(p, per=None):
     dates = list(p.get("rows_dates") or [])
     ids = list(p.get("rows_ids") or [])
     dets = list(p.get("rows_detail") or [])
-    out = []
-    for i in range(0, len(rows), per):
-        chunk = rows[i:i + per]
+    n = -(-len(rows) // per)                    # ceil: 9 rows / 4 -> 3 chunks of 3
+    base, extra = divmod(len(rows), n)
+    out, i = [], 0
+    for k in range(n):
+        m = base + (1 if k < extra else 0)
+        chunk = rows[i:i + m]
         seg = dict(p)
         seg["rows"] = chunk
-        seg["rows_detail"] = dets[i:i + per] if len(dets) >= len(rows) \
+        seg["rows_detail"] = dets[i:i + m] if len(dets) >= len(rows) \
             else [None] * len(chunk)
-        seg["rows_dates"] = dates[i:i + per] if len(dates) >= len(rows) else []
-        seg["rows_ids"] = ids[i:i + per] if len(ids) >= len(rows) else []
+        seg["rows_dates"] = dates[i:i + m] if len(dates) >= len(rows) else []
+        seg["rows_ids"] = ids[i:i + m] if len(ids) >= len(rows) else []
         if seg["rows_dates"]:
             seg["start"] = seg["rows_dates"][0]
-        j = i + per
+        j = i + m
         if j < len(rows) and len(dates) >= j + 1:
             seg["end"] = dates[j]
         out.append(seg)
+        i += m
     if out:
         out[-1]["end"] = p.get("end")
     return out
@@ -2988,15 +3034,15 @@ def build_articles(facts, cache, cfg):
                 _prev_cut = None
                 for _i, _p in enumerate(_parts):
                     _last = _i == _n - 1
+                    _is_last = bool(_last and _n > 1 and _p is _parts[-1]
+                                    and _cur.get("rows"))
                     _base = (_section_req(style.SECTION_REQ.get(key, {}).get(
                         "mid_last"), facts) if (_last and _n > 1) else _mid_base)
                     _sec = {
                         "key": "mid%d" % (_i + 1),
                         "title": _ttl.get("mid%d" % (_i + 1)) or f"纪事·王朝历代·{_i + 1}",
-                        "req": _chrono_mid_req(_base, _i, _n, [_p],
-                                               last=(_last and _n > 1 and _p is _parts[-1]
-                                                     and bool(_cur.get("rows")))),
-                        "periods": [_p], "prev_cut": _prev_cut}
+                        "req": _chrono_mid_req(_base, _i, _n, [_p], last=_is_last),
+                        "periods": [_p], "prev_cut": _prev_cut, "is_last": _is_last}
                     secs.append(_sec)
                     _prev_cut = _p.get("end") or _prev_cut
             return secs

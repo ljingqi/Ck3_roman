@@ -7082,10 +7082,10 @@ class Facts:
         # (`religious_head_word` is a generic word with no locating prefix).
         apw = self.antipope_label(cid, date)
         if apw:
-            return f"{apw}{pn}"
+            return self._join_office(cid, apw, pn)
         rhw = self.religious_head_word(cid)
         if rhw:
-            return f"{rhw}{pn}"
+            return self._join_office(cid, rhw, pn)
         off = self._event_office(cid, date) if style == "event" \
             else self.official_title(cid, date)
         if not off:
@@ -7099,7 +7099,7 @@ class Facts:
                 off = f"{word}领袖"
         if style == "full":
             return self._full_label(cid, date, off, pn)
-        return f"{off}{pn}" if off else pn
+        return self._join_office(cid, off, pn)
 
     def event_name(self, cid, date=None):
         """Subject name for timeline/fact lines: the name only for the player, a brief label
@@ -7129,6 +7129,19 @@ class Facts:
                                  date=date)
         return f"{tname}{word}" if word else tname
 
+    def _join_office(self, cid, off, nm):
+        """Office word + display name, comma-separated when the name opens with a nickname.
+
+        The game always separates the two (`CHARACTER_NAME_NICKNAMED: "$TITLE$$TIER$，$NAME$“$NICK$”"`,
+        character_l_simp_chinese.yml:51, and every titled variant at :45-56). This project keeps the
+        nickname ahead of the name and unquoted, so the comma is what stops the office from reading as
+        one word with the nickname: 前礼部尚书 + 书吏洪地保 glued together looks like a single office
+        「前礼部尚书书吏」."""
+        if not off:
+            return nm
+        nick = self.nickname(cid)
+        return f"{off}，{nm}" if (nick and nm.startswith(nick)) else f"{off}{nm}"
+
     def _full_label(self, cid, date, cur, nm):
         """full-style label: a former title is prefixed only when its tier is higher than the
         current one; the same tid held now and then is not a former title.
@@ -7152,17 +7165,17 @@ class Facts:
         if cur and former_tid is not None and f_rank > cur_rank:
             ft = self._former_title_text(cid, former_tid, anchor)
             if ft and ft != cur:
-                return f"前{ft}，{cur}{nm}"
-            return f"{cur}{nm}"
+                return f"前{ft}，{self._join_office(cid, cur, nm)}"
+            return self._join_office(cid, cur, nm)
         if cur:
-            return f"{cur}{nm}"
+            return self._join_office(cid, cur, nm)
         if former_tid is not None:
             ft = self._former_title_text(cid, former_tid, anchor)
             if ft:
-                return f"前{ft}{nm}"
+                return self._join_office(cid, f"前{ft}", nm)
         pw = self.prince_title(cid, anchor)
         if pw:
-            return f"{pw}{nm}"
+            return self._join_office(cid, pw, nm)
         return nm
 
     def kin_label(self, cid, date=None):
@@ -10361,9 +10374,40 @@ class Facts:
     # prisoner (guaranteed when the prisoner is a nemesis) and a skull goblet when a nemesis dies
     # (Friends & Foes). Both are common/masterwork grade, which is why part artifacts have their own
     # rarity list instead of the 名望级-only threshold.
-    ARTIFACT_PART_VISUALS = {"skull_goblet", "human_skull", "devour_bone_visual"}
+    #
+    # Three signals, in this order, all read from the artifact record: the model the game picked for
+    # the item (`visuals.type`), the artifact template (`template`, present only on scripted relics),
+    # and the relic's own Chinese name/description. The visual is the strongest signal — the game has
+    # one model per body part (`bone` 指骨, `buddha_tooth` 佛牙, `pocket_severed_head`/`head` 首级,
+    # `human_skull` 髑髅) — while a container visual (`reliquary`, `pedestal_*_relic`, `small_box`)
+    # says only that the item is a shrine, so what is inside has to come from the words.
+    ARTIFACT_PART_VISUALS = {"skull_goblet", "human_skull", "devour_bone_visual",
+                             "bone", "buddha_tooth", "pocket_severed_head", "head"}
+    # Templates whose every product is body-derived, so the template alone decides: the
+    # Legends-of-the-Dead mummy and its canopic heart jar (`mummy_artifact` /
+    # `mummy_jar_artifact_desc`, funeral_events_l_simp_chinese.yml:260-263), and the two severed-head
+    # trophies (`tgp_cranial_trophy_artifact`, tgp_interactions_l_simp_chinese.yml:397).
+    ARTIFACT_PART_TEMPLATES = {"ce1_mummy_template", "tgp_severed_head_template",
+                               "mpo_severed_head_template"}
+    # Body-part vocabulary, taken from the game's own relic name tables:
+    # court_artifacts_l_simp_chinese.yml:704-724 (christian_skull/arm, islam_hair/hand/tooth,
+    # buddhism_tooth/bone/tongue/hair/sarira), artifacts_l_simp_chinese.yml:850-864 (bone_type_*),
+    # starting_holy_site_relics_l_simp_chinese.yml (圣保禄遗骨 / 圣若翰洗者右臂 / 多默宗徒圣髑).
+    # 圣髑 itself is left out: it names the shrine (「一方精美的圣髑盒」) and appears in the description
+    # of every christian relic, body part or not.
     ARTIFACT_PART_WORDS = ("头骨", "头颅", "颅骨", "头盖骨", "乳牙",
-                           "之骨", "剩的骨头", "被吃掉了")
+                           "之骨", "剩的骨头", "被吃掉了",
+                           "指骨", "遗骨", "遗骸", "之髑", "之臂", "右臂", "之手",
+                           "之牙", "之发", "髻发", "舌头", "舍利",
+                           "木乃伊", "之颅")
+    # Drawn saint relics (Pamphylia / 圣人) need their own vocabulary: `pam_saint_relic_template`
+    # covers body parts and belongings alike (pam_saint_l_simp_chinese.yml:187-215 lists 圣指/圣齿/圣肋/
+    # 圣发/圣手/圣臂/头骨/圣血/圣心/圣骨灰/舍利/圣髻/卡诺匹斯罐 next to 祭披/圣像/之信/之画/文具/之杖/
+    # 漉水囊/乞食钵/圣袍/之剑/护符/丹药/圣足印), so the template cannot decide on its own. Gating these
+    # words on the template keeps 圣手 from firing on 圣手帕 (the Image of Edessa).
+    ARTIFACT_SAINT_RELIC_TEMPLATE = "pam_saint_relic_template"
+    ARTIFACT_SAINT_RELIC_WORDS = ("圣指", "圣齿", "圣肋", "圣发", "圣手", "圣臂", "头骨",
+                                  "圣血", "圣心", "圣骨灰", "圣髻", "舍利", "卡诺匹斯罐")
 
     # Data-function blocks inside an artifact description: \x15ONCLICK:CHARACTER,id \x15TOOLTIP:… \x15L name\x15!\x15!\x15!
     _ARTIFACT_REF_RE = re.compile(
@@ -10447,8 +10491,8 @@ class Facts:
         return re.sub(r"([\u4e00-\u9fff]{1,5})，(?=[\u4e00-\u9fff])", r"\1", s)
 
     def _is_part_artifact(self, a, desc=""):
-        """Whether the artifact is made from a character part: a matching visual type, or a word hit in
-        the name or description.
+        """Whether the artifact is made from a character part: a body-part visual, a body-derived
+        template, or a word hit in the name or description (drawn saint relics use their own word list).
 
         `devour_bone_visual` and the words 之骨 / 剩的骨头 / 被吃掉了 cover the devouring mod's bones
         (`devour_bone_name` = `[…]之骨`, `devour_bone_desc` = "…被吃掉了，这是…被吃剩的骨头。"),
@@ -10457,8 +10501,13 @@ class Facts:
         vis = ((a.get("visuals") or {}).get("type") or "")
         if vis in self.ARTIFACT_PART_VISUALS:
             return True
+        tpl = a.get("template") or ""
+        if tpl in self.ARTIFACT_PART_TEMPLATES:
+            return True
         blob = f"{a.get('name') or ''}{desc}"
-        return any(w in blob for w in self.ARTIFACT_PART_WORDS)
+        words = self.ARTIFACT_SAINT_RELIC_WORDS \
+            if tpl == self.ARTIFACT_SAINT_RELIC_TEMPLATE else self.ARTIFACT_PART_WORDS
+        return any(w in blob for w in words)
 
     def _artifact_ever_own_player(self, hist):
         """Whether the transfer history *ever* put the artifact in the protagonist's own hands.
@@ -15754,6 +15803,18 @@ def _mem_sentence_body(f, owner_id, mem):
         _kw = kin_text(_k) if _k else ""
         if _kw:
             return f"{owner}的{_kw}{other}去世。"
+    # The peer-relation sentences get the same treatment, so a "became friends" row and the later
+    # bereavement row for the same pair read alike. The word is relative to the sentence's own
+    # subject, which is why this lives here and not in the section pass (that one works from the
+    # article subject's viewpoint: 洪惟良 is the biographee's brother and his wife's brother-in-law).
+    if mtype in _REL_PEER_TYPES and isinstance(other_id, int) \
+            and other and other_id != owner_id:
+        _k = kin_key(f.cache, owner_id, other_id,
+                     spouse_back=f._spouse_back_index(),
+                     rev=f._kin_rev_index())
+        _kw = kin_text(_k) if _k else ""
+        if _kw:
+            other = f"{_kw}{other}"
     # No opponent -> fall back to the `<type>_no_other` template (imprisoned, escaped, stillborn)
     if not other:
         tpl = MEMORY_TEMPLATES.get(f"{mtype}_no_other") or tpl
@@ -16700,6 +16761,11 @@ _DIED_TYPES = ("relative_died", "friend_died", "rival_died", "spouse_died",
 # instead and is not in this tuple.
 _REL_DIED_TYPES = ("relative_died", "rival_died", "friend_died", "lover_died",
                    "soulmate_died", "best_friend_died", "nemesis_died")
+
+# The peer-relation types, whose sentence names both parties and whose counterpart therefore gets
+# its kin word written straight into the sentence (see `_mem_sentence`).
+_REL_PEER_TYPES = ("became_friends", "became_soulmates", "became_blood_brother",
+                   "became_rivals", "became_grudge", "became_nemesis")
 
 
 def _count_zh(n):
@@ -20545,7 +20611,11 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         # drop a row with no material; the old "｜" counting no longer works.
         return row, bool(tname) and bool(acq)
     birth = rec.get("birth") or ""
-    death = (rec.get("death") or {}).get("date") or ""
+    # The death comes from the fullest record first, then from `_char_death_date`'s fallback chain.
+    # The chain matters most for the biographee: `pipeline._backfill_tail_deaths` skips the player, so
+    # his death lives only in `cache["player_death"]` and never in `characters[]`.
+    _d0 = rec.get("death") or {}
+    death = _d0.get("date") or f._char_death_date(cid) or ""
     # death item = date + age at death + cause (the cause from the existing
     # `death_clause`, the record being the most complete across caches)
     dead_bits = []
@@ -20554,13 +20624,21 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         _age = _chrono_year_age(birth, death)
         if _age is not None:
             dead_bits.append("享年%d岁" % _age)
-        _reason = (rec.get("death") or {}).get("reason") or ""
+        _reason = _d0.get("reason") or ""
+        _killer = _d0.get("killer")
+        if str(cid) == str(f.cache.get("player_id")):
+            # `death_clause` reads the cause and the killer from `characters[]` too, so the player's
+            # own death has to hand them over explicitly.
+            _pd = f.cache.get("player_death") or {}
+            _reason = _reason or _pd.get("reason") or ""
+            if _killer is None:
+                _killer = _pd.get("killer")
         try:
             # The killer's title is read as of the day before the event (the same rule as `_anchor_date`:
             # on the death day the title has already passed to the heir), else the killer would be named
             # by an office he had just acquired.
             _clause = f.death_clause(cid, date=death, reason=_reason,
-                                     killer=(rec.get("death") or {}).get("killer"),
+                                     killer=_killer,
                                      killer_date=_day_before(death))
         except Exception:
             _clause = ""
@@ -20632,7 +20710,11 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
     if not segs:
         return "", False
     row = head + "".join(("，" if i == 0 else "；") + s for i, s in enumerate(segs))
-    return row, bool(_last) and bool(dead_bits) and bool(bits)
+    # "Has everything" means the row carries a title word and an accession clause / reign span — the
+    # same two things the family row above reports. An unrecorded death leaves the row worth writing,
+    # so it must not void the flag: doing so dropped the biographee's own row and left the chronicle's
+    # closing section with no material at all.
+    return row, bool(_last) and bool(bits)
 
 
 def _chrono_group(items, max_n):
@@ -20797,6 +20879,44 @@ def _chrono_prev_for(accs, idx):
     return None
 
 
+def _chrono_holder_now(f, tid, pid, accs):
+    """One line naming the title's holder at the close of this volume, with his office and house —
+    e.g. 「本朝现任（1000年1月1日）：教宗洪审礼（洪氏）」.
+
+    The chronicle's rows stop at the last accession the volume covers, so without this line nothing
+    in the material says who sits on the seat afterwards, and a closing section that lost its rows
+    had only that silence to go on. A final volume is cut at the biographee's death day and the seat
+    usually passes that same day, so once the biographee is dead by `as_of` the next recorded holder
+    is named instead of him."""
+    if not accs:
+        return ""
+    as_of = f.as_of or f.cache.get("last_date") or ""
+    when, cid = accs[-1][0], accs[-1][1]
+    if isinstance(cid, int) and cid == pid and f._char_death_date(pid):
+        nxt = next(((d, h) for d, h, _ty, _e, _v in _chrono_accs(f, tid, None)
+                    if isinstance(h, int) and h != cid and d
+                    and (not as_of or cl.date_key(d) >= cl.date_key(as_of))), None)
+        if nxt:
+            when, cid = nxt
+    if not isinstance(cid, int):
+        return ""
+    nm = _chrono_nm(f, cid, when)
+    if not nm:
+        return ""
+    off = _chrono_office(f, cid, when)
+    house = ""
+    try:
+        house = f._house_label_at(cid, when)
+    except Exception:
+        house = ""
+    who = f"{off}{nm}" if off else nm
+    if house:
+        who += f"（{house}）"
+    if cid == pid:
+        who += "，即传主"
+    return "本朝现任（%s）：%s" % (f.date(when) if when else "本卷之末", who)
+
+
 def _chrono_build(f, tid, pid, is_h, own, periods, tname):
     """《历代记》 part material: one person per row, plus parts and wars / branches. A title the
     biographee created and solely held becomes a family chronicle; with no titled father or mother (a
@@ -20843,6 +20963,7 @@ def _chrono_build(f, tid, pid, is_h, own, periods, tname):
         "is_h": bool(is_h),
         "current": cur,
         "periods": periods,
+        "holder_now": _chrono_holder_now(f, tid, pid, accs),
         "wars": _chrono_war_lines(f, tid) if is_h else [],
         "subs": _chrono_sub_lines(f, tid, pid),
     }
@@ -21160,6 +21281,12 @@ def _top_title_history(f, group_lines=None):
     ivs = (f._hold_intervals(pid) or {}).get(tid) or []
     if own and ivs:
         _g, _l = ivs[-1][0], ivs[-1][1]
+        if not _l:
+            # An open interval means the melt still had him on the seat. A final volume is cut at his
+            # death, so the tenure closes there; only a death after this volume's cutoff keeps 至今.
+            _cand = f._char_death_date(pid) or (f.cache.get("reign_end") or {}).get("date") or ""
+            if _cand and not (f.as_of and cl.date_key(_cand) > cl.date_key(f.as_of)):
+                _l = _cand
         lines.append("主角本朝任期：" + f.date(_g)
                      + ("–" + f.date(_l) if _l else " 至今"))
     return common, lines, _chrono_build(f, tid, pid, is_h, own, periods, tname)
