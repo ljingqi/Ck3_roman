@@ -4017,8 +4017,9 @@ class Facts:
                         parts.append(f"{base}，{ew}" if base else "")
                         continue
                     if tk == "clerical":
-                        w = self._clerical_holder_word(cid, t, d)
-                        parts.append(f"{nm}{w}" if nm and w else (nm or ""))
+                        parts.append(self._clerical_word_for(cid, t, d)
+                                     or (self._name_at_date(t, d)
+                                         or self.title_base_name(t)))
                         continue
                     if tk == "landless":
                         w = self._landless_holder_word(cid, t, d)
@@ -4338,19 +4339,20 @@ class Facts:
         return f"其{kin_word_short(key)}"
 
     def kin_word_for(self, cid, subject):
-        """Kinship word of subject relative to cid (single outlet; see the module-level `kin_word`).
+        """Kinship word of `cid` relative to `subject` (single outlet; see the module-level
+        `kin_word`, whose first argument is the relative and the second the reference person).
 
-        The character table always comes from the cache, because the cache holds the kinship graph
-        (the melt's family_data is often empty); kin_key falls back only for records the cache
-        lacks.
+        e.g. kin_word_for(son, father) == 子. The character table always comes from the cache,
+        because the cache holds the kinship graph (the melt's family_data is often empty); kin_key
+        falls back only for records the cache lacks.
         """
         return kin_word(self.cache, subject, cid,
                         spouse_back=self._spouse_back_index(),
                         rev=self._kin_rev_index())
 
     def blood_kin_word_for(self, cid, subject):
-        """Blood-relation term of subject relative to cid; affinal, step and spousal relations
-        return ''.
+        """Blood-relation term of `cid` relative to `subject` (same direction as
+        `kin_word_for`); affinal, step and spousal relations return ''.
 
         Same test as `kin_word_for`, but the spouse edge between the two is removed first, so a
         double relation (both concubine and niece) resolves to the blood one. Used to label the
@@ -6326,6 +6328,26 @@ class Facts:
             return ""
         return v[:-1] if v.endswith(self._CR_WORD_TRIM) else v
 
+    def _clerical_word_for(self, cid, tid, date=None):
+        """Full appellation of an ecclesiastical province's head: the title's own display name plus
+        the ecclesiastical office word (「兰斯总主教区总主教」/「京兆总主教」), '' when the office
+        word cannot be resolved.
+
+        Single outlet shared by `clerical_region_word` (the character's appellation) and
+        `held_titles` (the tenure line), so a profile never calls one man 兰斯总主教区总主教 in one
+        row and 兰斯总主教 in the next.
+        """
+        place = ""
+        try:
+            place = self.title(tid, date) or self._name_at_date(tid, date) \
+                or self.title_base_name(tid) or ""
+        except Exception:                                     # noqa: BLE001
+            place = ""
+        word = self._clerical_holder_word(cid, tid, date)
+        if not word:
+            return ""
+        return f"{place}{word}" if place else word
+
     def clerical_region_word(self, cid, date=None):
         """Office word of a clerical province's head (place name plus ecclesiastical office word), else ''.
 
@@ -6335,16 +6357,7 @@ class Facts:
         tid = self._clerical_region_title(cid, date)
         if tid is None:
             return ""
-        place = ""
-        try:
-            place = self.title(tid, date) or self._name_at_date(tid, date) \
-                or self.title_base_name(tid) or ""
-        except Exception:
-            place = ""
-        word = self._clerical_holder_word(cid, tid, date)
-        if not word:
-            return ""
-        return f"{place}{word}" if place else word
+        return self._clerical_word_for(cid, tid, date)
 
     # Holder words of the unlanded offices that are NOT adventurer camps: a mercenary company
     # (`mercenary_government`) and a holy order (`holy_order_government`, or
@@ -12886,7 +12899,7 @@ class Facts:
         for v, dd in self._killer_victims(int(killer)).items():
             if v == int(griever):
                 continue
-            kin = self.kin_word_for(griever, v)
+            kin = self.kin_word_for(v, griever)
             if not kin:
                 continue
             dk = cl.date_key(dd)
