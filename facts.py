@@ -6337,38 +6337,27 @@ class Facts:
         return ""
 
     def official_title(self, cid, date=None):
-        """角色官职名: 「头衔名+官职词」(交州刺史/淄青节度使/青徐路观察使)。
-        已死角色优先读存档 dead_data.flavor (游戏算好的键, 最准)。
-        v13: flavor 只有官职词 (节度使/国司/关白) 无地名 — 用最后持有头衔的地名补全
-        (颍州刺史/建宁节度使/出云国司), 与在世角色渲染一致。
-        伊斯兰统治者特殊: 家族名+苏丹国/哈里发国 (复用 realm_name)。
-        v15: 宗教领袖 (教宗) 优先 — 称谓直达, 不走「X国国王主教」神权词。
-        v25: date 锚点 — 默认取卒日 (死者按其卒时国号称呼), 在世取 as_of;
-        动态国号 (h_china 唐→秦) 据此按卒期正确落名。
-        v36 (问题6, 用户拍板2): 朝廷职司 (六部/御史台/枢密院) 先行出词 —
-        在任给「礼部尚书」, 已去职且无真领地者给「前礼部尚书」, 不再被通用 flavor 截断。
-        v36 (问题1, 用户拍板5): 层级前缀 flavor (王/公爵/国王…) 解不出地名时整词作废,
-        返回空串; 男爵领已在 _primary_title_at 处排除。"""
+        """Role office name, "<title name><office word>".
+
+        Dead characters read the save's baked `dead_data.flavor` word; `date` anchors the lookup
+        (death date by default, `as_of` for the living) so a dynamic realm name lands right."""
         rhw = self.religious_head_word(cid)
         if rhw:
             return rhw
-        # v81 (问题3, 用户 2026-09-29 拍板): 日本最高头衔持有者 (e_japan / 高御座)
-        # 走直表裸词 —— 「关白X」「太政大臣X」「幕府将军X」「上皇X」「天皇X」,
-        # **不加**「日本政权/日本帝国」前缀 (见 `japan_top_office`)。
+        # Japan's top titles (e_japan / 高御座) use the bare office word, with no
+        # "日本政权/日本帝国" prefix (see `japan_top_office`).
         _jw = self.japan_top_office(cid, date)
         if _jw:
             return _jw
         anchor = self._anchor_date(cid, date)
-        # v36 (问题6, 用户拍板2): ① 在任朝廷职司先行出词 — 存档 flavor 对礼部/户部
-        # 只给通用词「尚书」(minister_any_male), 部名要靠头衔补;
-        # ② 已去职且锚点无真领地者写「前礼部尚书」。
+        # Ministry offices come first: the save's flavor gives only the generic "尚书"
+        # (minister_any_male) for the boards, so the board name must come from the title.
         mo = self._ministry_office_at(cid, anchor)
         if mo:
             return mo
-        # v89 (问题2, 用户 2026-10-02 拍板): 教省 (圣职区) 首座先行于「前职司」兜底 ——
-        # 教省头衔是无地神权头衔 (键前缀不成层级), `_has_current_landed_title` 判它
-        # 不是真领地, 旧稿于是把「江宁总主教」写成「前礼部尚书」(实测洪氏2 904 档)。
-        # 位置: 现任朝廷职司之后 (在任官衔优先)、「前职司」兜底之前。
+        # Clerical province (圣职区) heads are landless theocratic titles whose key prefix
+        # carries no tier, so `_has_current_landed_title` rejects them — check them before
+        # the former-office fallback below.
         cr = self.clerical_region_word(cid, anchor)
         if cr:
             return cr
@@ -6378,80 +6367,62 @@ class Facts:
                 return mo
         c = self._chars.get(str(cid)) or {}
         fkey = (c.get("dead_data") or {}).get("flavor")
-        # v41 (问题1) 关键: `dead_data.flavor` 是游戏在角色死亡时**烘死**的词键,
-        # 按末档政体算 (诺兰档: 迪特里希二世死于 1101, flavor 记的是行政制的
-        # `duke_administrative_male_byzantine_group` = 将军), 于是他在 1082 年
-        # 的封建时期事件里也被写成「上洛塔林吉亚将军」。改为: 先按 date 自身算
-        # 职称; 只有当存档 flavor 与本日政体自洽时才采信它 (它仍是最准的
-        # 游戏原词), 否则回落到按政体取词的路径。
-        # v82 (P2): 日本最高头衔的烘死官称键 (关白/太政大臣/幕府将军/上皇/天皇) **只**从
-        # `japan_top_office` 出词 —— 它已按「该日此人是否真持 e_japan/高御座」把关。
-        # 通用烘死词通道没有这层门槛: 键是角色**卒时**按末档政体烘死的, 而日本全境的
-        # `_character_government` 在整段战役里都是 `japan_administrative_government`,
-        # `_dead_flavor_consistent` 只比政体前缀, 于是 874 年只持 `c_kazusa` 的
-        # 田所浩二也被写成「日本政权关白」(实测 probe10: `_primary_title_at`=(county,
-        # c_kazusa)、`japan_top_office`='' 、`_dead_flavor_consistent`=True)。
+        # `dead_data.flavor` is baked at death from the LAST government of the save, so it can
+        # contradict an earlier date's government; accept it only when
+        # `_dead_flavor_consistent` agrees with the anchor day.
+        # Japan's top-office keys must come only from `japan_top_office`, which checks whether
+        # the person really holds e_japan/高御座 that day — `_dead_flavor_consistent` merely
+        # compares the government prefix.
         if fkey and fkey not in self._JAPAN_OFFICE_FROM_FLAVOR \
                 and self._dead_flavor_consistent(fkey, cid, anchor):
             v = L.loc(self.table, fkey)
             if v and not v.startswith("$") and not v.startswith("["):
                 if fkey.startswith(self._TIER_FLAVOR_PREFIXES):
-                    # v36 (问题1): 层级词必须配地名 (「新罗」+「国王」= 新罗国王);
-                    # 头衔被存档剪除而解不出地名时, 裸层级词不成称谓 → 空串
-                    # (由起义领袖/王子称号/显示名分支接管)。
+                    # A tier word needs a place name; with none resolvable the bare word is
+                    # not a title → "" and another branch renders the label.
                     place = self._last_title_place(cid, fkey, date=anchor)
                     if not place or v.startswith(place):
                         return ""
                     return f"{place}{v}"
-                # v28b: 派系领袖头衔 (faction_leader_male/female「领袖」) 无地名,
-                # 单用不成称谓 — 交 person_label 的起义称谓分支出词
+                # Faction-leader flavors (领袖) name no place, so the bare word is not a
+                # title — person_label's rebel branch renders it.
                 if fkey in self._FACTION_LEADER_FLAVORS:
                     return ""
                 return v
         tier, tid = self._primary_title_at(cid, as_of=anchor)
         if tid is None or tier is None:
-            # v13: 无地家族/庄园头衔 (x_nf_*「XX家族」) 的持有者官职词 —
-            # 按文化选词 (日本: 当主; 高丽系: 户长; 其余天朝/选贤/行政: 乡绅)。
-            # 修: 此前返回空, 家族领袖的官职从未传给模型。
-            # v68 (问题5): 判据由 `x_nf_` 前缀改为 `_is_estate_title` —— 中国世族的
-            # 庄园键是 `c_nf_`/`d_nf_` (伯爵领/公国级键名), 旧判据漏掉, 家业持有者
-            # 落进领地支 → 「张氏」+「刺史」=「张氏刺史」(实测 973.1.12 死者 73985);
-            # 家业一律称家族乡绅/当主/户长 (用户拍板: 统一称家族乡绅)。
+            # Landless family estate titles (x_nf_*,「XX家族」): the holder word follows the
+            # culture (Japan 当主, Korea 户长, otherwise 乡绅). Detected by `_is_estate_title`,
+            # not by the x_nf_ prefix — Chinese clan estates use c_nf_/d_nf_ keys.
             if tid is not None:
                 if self._is_estate_title(tid):
                     nm = self.title_base_name(tid) or ""
                     sq = self._estate_holder_word(cid)
                     return f"{nm}{sq}" if nm else sq
-            return ""  # 无头衔 / 仅营地 (无官职词)
-        # v13: 朝廷职司持有者 → 职司官职词 (吏部尚书/御史大夫/枢密使), 非「X皇帝/帝国」
+            return ""  # no title, or camp only (no office word)
+        # Ministry office holder → office word (not "X皇帝/帝国")
         mo = self._minister_office(tid)
         if mo:
             return mo
         rn = self.realm_name(tid)
         if rn:
             return rn
-        # v80 (点4 B): 惣領制头衔的显示名带「武士团」(「下总武士团女士」);
-        # 其余头衔与旧稿逐字相同 (窄口径见 `_title_display_name`)
+        # 惣領制 titles carry "武士团" in the display name (see `_title_display_name`)
         name = self._title_display_name(tid, anchor, cid=cid) \
             or self._name_at_date(tid, anchor) or self.title_base_name(tid)
-        # v41 (问题1): 政体按 anchor 日取 (逐档政体史) —— 旧稿读缓存里**末档**的
-        # 政体, 封建期的神罗封臣因此被写成行政制的督军/将军/分区长。
-        # v74 (问题2, 用户拍板): 改走 `_gov_for_word` —— 它比 `_character_government`
-        # 多两层**可据的**来源: ① 头衔侧政体 (沿 de_facto_liege 上溯到领主,
-        # `_title_government`); ② 死者 `dead_data.government`。旧稿只取持有者逐档
-        # 政体史, 而缓存 `char_government_history` 只为**入目标集**的角色逐档记录,
-        # 于是一批受害者政体取不到 (`gov=''`) → flavorization 只剩**无任何条件**的
-        # `duke` 兜底条目 → 同一顶 `d_hitakami`(日高见国) 写出「日高见公爵」,
-        # 而政体取得到的持有者写「日高见国司」。见 docs/方案_v74_田所三问题.md 问题2。
+        # Government is resolved for the anchor day, not from the cache's last save.
+        # `_gov_for_word` adds the title-side government (`de_facto_liege` up to the liege) and,
+        # for the dead, `dead_data.government`; without them flavorization can fall back to the
+        # unconditional `duke` entry and give one title two different words.
         gov = self._gov_for_word(cid, tid, anchor)
         if not gov:
             rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
             gov = (rec.get("landed") or {}).get("government") or ""
         if not gov:
             gov = (c.get("landed_data") or {}).get("government") or ""
-        # v62: 日本最高头衔 (天皇座/e_japan) 的取词政体按**头衔侧**政体补 ——
-        # 持有者政体史早于缓存窗口时 (藤原良房卒 879, 政体史 884 起) 上面三项皆空,
-        # 旧稿落通用词「皇帝」, 于是同一顶 e_japan 在源融写「关白」、在藤原良房写「皇帝」。
+        # For Japan's top title (天皇座/e_japan) also try the title-side government: a holder
+        # whose government history starts after the cache window would otherwise get the
+        # generic "皇帝".
         if ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
             gov = self._gov_for_word(cid, tid, anchor) or gov
         _indep = self._is_independent(cid, anchor)
@@ -6459,12 +6430,9 @@ class Facts:
                                  independent=bool(_indep) if _indep is not None else True,
                                  female=self._is_female(cid),
                                  tid=tid, cid=cid, date=anchor)
-        # v28b: 头衔无地名时 (营地/派系等 x_ 头衔) 官职词单用不成称谓 — 返回空串,
-        # 由 person_label / 档案层回退显示名 (此前写出裸词「领袖」)
-        # v87 (问题1): **枢机名 (d_cd_*) 不是领地** —— 游戏 `07_pam_ecclesiastical_titles.txt`
-        # 的 `### Cardinal Titles` 一族是无地 titular (`landless = yes`,
-        # `destroy_on_succession = yes`), 官称已由臂表给出「枢机」; 叠地名会写出
-        # 「萨比娜枢机」(实测 洪秀全 终传后任句), 故此处只出官称词。
+        # A place-less title yields a bare office word — return it and let person_label fall
+        # back to a display name. Cardinal titles (d_cd_*) are landless titular (see
+        # `07_pam_ecclesiastical_titles.txt`), and the office word is already "枢机".
         if word and self._is_cardinal_title(tid):
             return word
         if name and word:
@@ -6472,14 +6440,10 @@ class Facts:
         return name or ""
 
     def _is_cardinal_title(self, tid):
-        """该头衔是否「枢机名」(1.20 `d_cd_*` 一族: 无地 titular + 枢机选举人)。
+        """Whether `tid` is a cardinal title (the 1.20 `d_cd_*` family).
 
-        判据用存档字段而非键名: `landed_titles[<tid>].clerical_elector` 非空
-        (实测 d_cd_sabina = 12; 该字段由 `special_title = clerical_elector` 的
-        条目写入, 见 `20_pam_flavorization.txt:180-191`)。
-        **不判 `landless`** —— 那是静态定义字段 (`07_pam_ecclesiastical_titles.txt:66-74`
-        写 `landless = yes`), 存档里的头衔对象并不持久化它 (实测该字段为 None),
-        拿它当判据会让本例失效。"""
+        Judged by the save field `landed_titles[<tid>].clerical_elector`; `landless` is a static
+        definition field that save title objects do not persist."""
         if tid is None:
             return False
         t = self._lt.get(str(tid)) or {}
@@ -6487,19 +6451,20 @@ class Facts:
             return False
         return t.get("clerical_elector") not in (None, "")
 
-    # v13: 朝廷职司 (e_minister_*) → 官职词 (游戏本地化键, 六部+御史台+枢密院)
+    # Ministry offices (e_minister_*) → localization keys (six boards + censorate +
+    # privy council)
     _MINISTER_OFFICE_KEYS = {
-        "e_minister_of_personnel": "minister_personnel",   # 吏部尚书
-        "e_minister_of_revenue": "minister_revenue",       # 户部尚书
-        "e_minister_of_rites": "minister_rites",           # 礼部尚书
-        "e_minister_of_war": "minister_war",               # 兵部尚书
-        "e_minister_of_justice": "minister_justice",       # 刑部尚书
-        "e_minister_of_works": "minister_works",           # 工部尚书
-        "e_minister_censor": "minister_censor",            # 御史大夫
-        "e_minister_grand_marshal": "minister_grand_marshal",  # 枢密使
-        "e_minister_chancellor": "minister_chancellor",    # 宰相 (政事堂)
+        "e_minister_of_personnel": "minister_personnel",   # Board of Personnel
+        "e_minister_of_revenue": "minister_revenue",       # Board of Revenue
+        "e_minister_of_rites": "minister_rites",           # Board of Rites
+        "e_minister_of_war": "minister_war",               # Board of War
+        "e_minister_of_justice": "minister_justice",       # Board of Justice
+        "e_minister_of_works": "minister_works",           # Board of Works
+        "e_minister_censor": "minister_censor",            # Censorate
+        "e_minister_grand_marshal": "minister_grand_marshal",  # Privy council
+        "e_minister_chancellor": "minister_chancellor",    # Chancellor
     }
-    # v28: 官职词候选链 (键缺失/未解析时的后备; 见 _minister_office)
+    # Fallback office words when a key is missing or unresolved (see _minister_office)
     _MINISTER_OFFICE_FALLBACKS = {
         "minister_revenue": ("councillor_steward_celestial_government_imperial",),
         "minister_rites": ("councillor_court_chaplain_celestial_government_imperial",),
@@ -6508,24 +6473,20 @@ class Facts:
         "minister_chancellor": ("minister_chancellor_male",),
     }
 
-    # v14: 恩怨史事件两端角色重渲染 (修复方案_菲利普2.md 问题3) —
-    # change_reason 里游戏只写「国王/王」无国号, 渲染层有头衔能力却绕过了它。
-    # 按事件日期查两端角色头衔: 主角侧「瑞典国王崔佛」, 对方侧「粤王范承宗」。
+    # Feud events re-render both characters: the game's change_reason writes only
+    # "国王/王" with no realm name, so both sides are looked up by the event date.
     def _feud_role_title(self, cid, date):
-        """事件中某角色的「头衔名+名」— person_label 的 event 式入口
-        (国号随年份: 903 是粤、更早是桂)。
-        v42 (问题4, 用户拍板2): 主角改走 `event_name` (只出名字) —— 家族恩怨录的
-        关系流水逐行重复「神圣罗马帝国巴西琉斯」, 与年表同一问题。"""
+        """`<title name><name>` of a character in an event — person_label's `event` entry.
+
+        The player goes through `event_name` (name only) to keep the feud log short."""
         if cid == self.cache.get("player_id"):
             return self.event_name(cid, date)
         return self.person_label(cid, date, "event")
 
     def _feud_other_house_phrase(self, cid, houses, fallback_label=""):
-        """自指式恩怨句的对手方 → 「{对方家族}族人」(v43)。
+        """Opponent phrase for a self-referential feud line: "{other house}族人".
 
-        施事者的家族必是该关系对 `houses` 之一 (游戏侧 `HOUSE` 参数即取自
-        CHAR 的家族, 见 `change_house_relation_effect`), 故对手方家族 = 另一个。
-        判不出 (施事者无家族 / houses 不合规) 时返回 ''，整条略去。"""
+        The actor's house is always one of `houses`, so the opponent is the other one."""
         h = self._house_of_cid(cid)
         others = [x for x in (houses or []) if x != h]
         if h is None or len(others) != 1:
@@ -6534,18 +6495,12 @@ class Facts:
         return f"{label}族人" if label else ""
 
     def _rerender_feud_event(self, raw, date, houses=None, other_label=""):
-        """change_reason 原文 → 两端角色按日期重渲染的干净中文句。
-        保留游戏动词 (劫掠了/囚禁了/处决了/成为朋友…), 只替换两端「称号+名」:
-        '\x15ONCLICK:CHARACTER,38696 ... \x15high 国王\x15!，\x15high 崔佛...' →
-        '瑞典国王崔佛·菲利普劫掠了粤王范承宗'。
-        v29: 结果不可读 (rakaly 哨兵串 'MAX_RECURSIVE_DEPTH' / 未解析键) 时返回 ''。
+        """change_reason raw text → clean sentence with both sides re-rendered; '' when the
+        result stays unreadable (rakaly sentinels, unresolved keys).
 
-        v43 (自指式条目): `murder_attempt` 与 `cuckoldry` 这两个 reason 在游戏脚本里
-        把 `TARGET_CHAR` 传成了 `root` (`00_murder_effects.txt:709`、
-        `00_adultery_effects.txt:129`), 而 root 常就是施事者本人 —— 两端于是烘焙
-        成同一个角色, 渲染出「A试图谋杀A」这种句子。第二个人**没有写进存档**
-        (关系对象只存已渲染的 change_reason), 事后无法还原, 故降级为族级对手方:
-        「A试图谋杀{对方家族}族人」。判不出对方家族时整条略去。"""
+        `murder_attempt` and `cuckoldry` pass `TARGET_CHAR` as `root`, so both ends can bake to
+        the same character; the second person is not in the save, so these degrade to a
+        house-level opponent."""
         s = str(raw or "")
         if "\x15" not in s or "ONCLICK" not in s:
             return _clean_ck3_loc(s)
@@ -6569,7 +6524,7 @@ class Facts:
         s2 = _FEUD_ROLE_RE.sub(_repl, s)
         return _clean_ck3_loc(s2)
 
-    # v29: 恩怨史事件原文不可读时的程序重建 (缓存记忆 → 该日恩怨句)
+    # Rebuild unreadable feud lines from the cached memories of that day
     _FEUD_MEMORY_TYPES = ("house_feud_started_memory", "house_feud_ended_memory")
     _FEUD_START_TPL = {
         "family_killed": "{other}因族人{victim}被杀，与{my}结为世仇。",
@@ -6582,7 +6537,7 @@ class Facts:
     }
 
     def _house_of_cid(self, cid):
-        """角色所属家族 id (缓存 → 熔件)。"""
+        """Character's house id (cache first, then melt)."""
         if not isinstance(cid, int):
             return None
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
@@ -6594,7 +6549,7 @@ class Facts:
         return int(h) if isinstance(h, int) else None
 
     def _dynasty_of_cid(self, cid):
-        """角色所属宗族 id (家族 → dynasty); 查不到返回 None。"""
+        """Character's dynasty id (via house); None when unknown."""
         hid = self._house_of_cid(cid)
         if hid is None:
             return None
@@ -6605,7 +6560,7 @@ class Facts:
         return cl.dynasty_id_of(self.melt, hid)
 
     def _house_label(self, house_id):
-        """家族名 → 史书式家族称谓 (程 → 程氏)。"""
+        """House name → chronicle-style label ("程" → "程氏")."""
         nm = (cl.house_name_zh(self.melt, house_id) or "") if house_id is not None else ""
         if not nm:
             did = cl.dynasty_id_of(self.melt, house_id) if house_id is not None else None
@@ -6615,11 +6570,8 @@ class Facts:
         return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
 
     def _house_label_at(self, cid, date=None):
-        """某人**在该日**的家族称谓 (v44 问题1): 沿革点优先, 无沿革回退家族 id 现值。
-
-        v51: 入赘婚补注已简化为「，是入赘婚」(v55 起不用括注), 不再随句下发母方家族名 —— 本方法
-        暂时没有调用点, 保留以备将来要写「属X氏」时按篇截止日取词 (阿德尔海德
-        1118 年别立冯·亚琛氏后, 末档篇不得再写「属诺兰氏」)。"""
+        """House label of a character AS OF `date`: house history first, else the current
+        house id. Has no call sites yet; kept for "属X氏" wording at a chapter cutoff."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         if rec.get("house_history"):
             h, dn = self._house_names_at(cid, date)
@@ -6631,9 +6583,9 @@ class Facts:
         return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
 
     def _feud_event_fallback(self, my_houses, other_house, date, other_label):
-        """恩怨史事件原文不可读时, 由缓存记忆重建该日句 (程序优先) —
-        house_feud_started_memory 的 attacker/victim/house_feud_reason 给出
-        「谁对谁做了什么」, 加害者在我方、受害者在他方时即本段恩怨之始。"""
+        """Rebuild that day's feud sentence from cached memories when the raw text is unreadable.
+
+        The feud starts when the memory's attacker is on our side and the victim on the other."""
         dk = str(date or "")
         my_house = None
         for h in my_houses:
@@ -6660,8 +6612,8 @@ class Facts:
                 if t == "house_feud_ended_memory":
                     return f"{other}与{my_label}的世仇就此化解。"
                 if ah not in my_houses:
-                    continue                    # 只说本方视角的恩怨之始
-                # v42 (问题4): 主角只出名字 (同家族恩怨录其余各行)
+                    continue                    # only our side's start of the feud
+                # player name only, as in the other lines of the feud log
                 an = self.event_name(attacker, dk) if attacker else ""
                 vn = self.event_name(victim, dk) if victim else ""
                 reason = ""
@@ -6676,7 +6628,7 @@ class Facts:
                 if vn:
                     who = f"{vn}遭{an}加害" if an else f"族人{vn}受害"
                     return f"{other}因{who}，与{my_label}结为世仇。"
-        # 退一步: 该日两家的结仇记忆
+        # fallback: a rivalry memory between the two houses on that day
         for _cid, rec in (self.cache.get("characters") or {}).items():
             if not isinstance(rec, dict):
                 continue
@@ -6700,20 +6652,17 @@ class Facts:
         return ""
 
     # ------------------------------------------------------------------
-    # v27: 亲属标签 — 亲属/世系/妻族一律「头衔 + 姓名」
+    # Kinship labels — kin, lineage and in-laws all use "title + name"
     # ------------------------------------------------------------------
-    # 用户定稿 (2026-09-10): 只在**前头衔层级高于现头衔**时把前头衔前置,
-    # 形态「前拜占庭皇帝，安卡拉伯爵君士坦丁十一」; 现头衔缺失时只写
-    # 「前高昌国王毗伽庞特勤」。同一头衔 (同一 tid) 的今昔两种叫法不算前头衔 —
-    # 塔坦尼·布兰 现职「可萨布兰部可敦」, 其 881–893 年的 3981 就是同一头衔的
-    # 前身, 一律只写现职, 不前置「前可萨布兰部至高女王」。
+    # A former title is prefixed only when its tier is higher than the current one; the same
+    # tid held now and then is not a former title.
 
-    # v27: 非领地头衔 (朝廷职司 e_minister_* / 无地营地与庄园 x_*) —
-    # 既不作王子公主称号的前缀 (修「兵部国皇女」), 也不算「前头衔」。
+    # Non-landed titles (ministry offices e_minister_*, landless camps and estates x_*):
+    # never a prince/princess prefix and never a former title.
     _NON_LANDED_KEY_PREFIXES = ("e_minister_", "x_")
 
     def _is_landed_title(self, tid):
-        """该头衔是否为领地头衔 (h_/e_/k_/d_/c_/b_, 且非职司/营地/庄园)。"""
+        """Whether `tid` is a landed title (h_/e_/k_/d_/c_/b_), not an office, camp or estate."""
         if tid is None:
             return False
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
@@ -6724,17 +6673,18 @@ class Facts:
         return key[:2] in ("h_", "e_", "k_", "d_", "c_", "b_")
 
     def _current_title_tid(self, cid, date=None):
-        """角色现职对应的头衔 tid (用于与前头衔比层级)。
-        现职优先取 `_primary_title_at`; 死者/失位者回退到最近一段最高位持有
-        (官方称谓可能来自 dead_data.flavor, 但层级以此判定)。"""
+        """Current title tid, used to compare tiers against a former title.
+
+        The dead and the dispossessed fall back to their most recent high title."""
         _tier, tid = self._primary_title_at(cid, as_of=date)
         if tid is not None:
             return tid
         return self._last_high_title_before(cid, date)
 
     def _former_high_title(self, cid, date=None, exclude_tid=None):
-        """前头衔: 除现职外层级最高的已失头衔 tid; 无则 None。
-        只认领地头衔 (h_/e_/k_/d_/c_/b_), 营地/庄园/职司不计入「前头衔」。"""
+        """Highest-tier lost title tid other than the current one; None when there is none.
+
+        Only landed titles count; camps, estates and offices are not former titles."""
         best_tid, best_rank, best_gain = None, 0, None
         for tid, ivs in self._hold_intervals(cid, date).items():
             if exclude_tid is not None and tid == exclude_tid:
@@ -6756,10 +6706,9 @@ class Facts:
         return best_tid
 
     def _former_title_text(self, cid, tid, date=None):
-        """前头衔中文文本 — 与 held_titles (v24) 同口径: 取任期区间中点的
-        头衔地名 + 文化/政体感知的统治者称呼词 (「高昌」+「国王」= 高昌国王),
-        不用 title_history_names 的显示名 (那是「高昌王国」, 会叠成
-        「高昌王国国王」)。"""
+        """Chinese text of a former title: place name at the tenure midpoint plus the ruler word.
+
+        Deliberately not the `title_history_names` display name, which stacks into "高昌王国国王"."""
         if tid is None:
             return ""
         gain = None
@@ -6771,25 +6720,20 @@ class Facts:
         mid = self._span_mid(gain, end)
         nm = self._name_at_date(tid, mid) or self._name_at_date(
             tid, end) or self.title_base_name(tid)
-        # v47: 词取**任期中点**之政体 (名字本来就用中点) —— 任期首日可能还在
-        # 无地冒险者政体上 (克里斯托弗 1086.1.1 夺得神罗, 政体史到 1087 才观察到
-        # 封建制), 拿首日取词会把「前神圣罗马帝国巴西琉斯」降成通用「皇帝」。
+        # The ruler word uses the midpoint's government too: a tenure's first day may still be
+        # a landless adventurer government, which would flatten the word to the generic
+        # "皇帝".
         w = self._ruler_word_at(cid, tid, self._span_mid(gain, loss or end))
         if nm and w and not nm.endswith(w):
             return f"{nm}{w}"
         return nm
 
     # ------------------------------------------------------------------
-    # v28b: 「头衔+姓名」统一组装 — 全项目人物称谓只此一处出词
-    # (kin_label / 隐事句 / 要员隐事 / 恩怨事件 / 宫廷僚属行 / 时间线 / 记忆句
-    #  都调 person_label, 别处一律不再拼「官职+姓名」)
+    # "title + name" assembly — the single place that produces person labels
     # ------------------------------------------------------------------
-    # 名不可考的占位串 (name_or / biography._name_or 的兜底) — 不进称谓
+    # Placeholder names for unrecorded names — never used as a label
     _PLACEHOLDER_NAMES = ("某人", "一位人物", "（名讳不详）")
-    # 起义派系 → 称谓词: 游戏本地化键 FACTION_PEASANT_TITLE_NAME「农民叛乱」/
-    # FACTION_POPULIST_REVOLT_TITLE_NAME「民粹暴动」/FACTION_NOMADIC_REVOLT_TITLE_NAME
-    # 「游牧民叛乱」; 用户定稿 2026-09-10 一律用「起义」(与 peasant_leader_title_name
-    # 「X巾起义」同词)。
+    # Uprising faction → label word, from the game's FACTION_*_TITLE_NAME keys
     _UPRISING_WORDS = {
         "peasant_faction": "农民叛乱",
         "escalated_peasant_faction": "农民起义",
@@ -6798,21 +6742,18 @@ class Facts:
     }
 
     def faction_word(self, cid):
-        """角色为起义派系领袖时的起义名 (「农民起义」), 否则 ''。
-        数据来自 cache["factions"] (逐档差分 + v37 起义头衔路线; 旧缓存无此字段时返回 '')。"""
+        """Uprising name ("农民起义") when the character leads an uprising faction, else ''.
+
+        Data comes from `cache["factions"]`; '' when that field is absent."""
         rec = (self.cache.get("factions") or {}).get(str(cid)) or {}
         return self._UPRISING_WORDS.get(rec.get("type") or "", "")
 
     def uprising_info(self, cid):
-        """起义领袖的起事信息 (v37, 问题8): {"base", "counties", "target", "word"} 或 {}。
+        """Uprising leader's rebellion info: {"base", "counties", "target", "word"} or {}.
 
-        - base: 起事州府名 — 起义头衔 `capital` (剧本头衔「农民叛乱」的起事州, 带
-          建立日与领袖), 落在 cache["factions"][cid]["base"]["county_name"]; 缺失时
-          用 county id 现查头衔名。**这是「死者在哪」的唯一真数据** —— 此前事实层不读,
-          无地点的死者被模型就近安放到主角家业所在 (旧稿慈州 / 新稿宾州)。
-        - counties: 该次起事参与的州府数 (「聚众N州」), 由 faction title_members 计。
-        - target: 反抗对象 — 先取该对象的最高头衔国号 (唐皇朝), 退其称谓 (唐皇帝李漼)。
-        """
+        - base: county of the uprising title's `capital` — the only real data on where he is.
+        - counties: number involved, from the faction title_members.
+        - target: the object rebelled against (its realm name, else its label)."""
         rec = (self.cache.get("factions") or {}).get(str(cid)) or {}
         if not rec:
             return {}
@@ -6840,14 +6781,16 @@ class Facts:
             out["target"] = rn or self.person_label(tgt, date=self.as_of, style="brief")
         return out
 
-    # v37 (问题8): 「乱连N州」的规模上限 —— 超出者多是 escalated 民变 (存档
-    # title_members 动辄 30–40 州, 那是整场民变的波及面, 不是该首领的聚众), 一律不写。
+    # Cap on "乱连N州": larger counts are usually escalated revolts whose
+    # title_members span the whole uprising rather than this leader's following, so
+    # they are not written.
     _UPRISING_COUNT_CAP = 12
 
     def uprising_line(self, cid, name=None):
-        """起义领袖的起事独立行 (v37, 问题8): 「丁文举起于渠州，乱连六州，反抗唐皇朝。」
+        """Uprising leader's standalone line: "丁文举起于渠州，乱连六州，反抗唐皇朝。"
 
-        与既有「X死于Y。」同形 (独立行, 不用名词括注同位语); 三项皆无返回 ''。"""
+        Same shape as the "X死于Y。" lines (standalone, no parenthetical apposition);
+        '' when all three parts are missing."""
         info = self.uprising_info(cid)
         if not info:
             return ""
@@ -6866,7 +6809,7 @@ class Facts:
 
     @property
     def _name_logs(self):
-        """本线程生效中的出词登记器栈 (可嵌套; 见 `log_names`)。"""
+        """Stack of active label loggers in this thread (nestable; see `log_names`)."""
         st = getattr(self._tls, "logs", None)
         if st is None:
             st = []
@@ -6874,19 +6817,15 @@ class Facts:
         return st
 
     def log_names(self):
-        """v45 (档 B): 开启本行的称谓出词登记 (上下文管理器, 可嵌套)。
+        """Open label logging for the current line (context manager, nestable).
 
-        用法: `with f.log_names() as lg: text = _mem_sentence(...)` →
-        `f.index_names(text, lg)` 把这一行与它用到的 (cid, label) 记进 `name_index`。
-        有了这张表, 板块期就能把人名**确切地**改写成「定语+人名」, 不必对已烘定
-        的字符串做正则猜测 (档 C 的同名子串误插问题由此消失)。"""
+        `f.index_names(text, lg)` then records the line with the (cid, label) pairs it used."""
         return _NameLog(self)
 
     def index_names(self, text, log, owner=None):
-        """把一行文本与它用到的 (cid, label) 登记进 `name_index`。
+        """Register a line and the (cid, label) pairs it used into `name_index`.
 
-        v63: `owner` = 本行**主语** (句子讲的是谁, 一般是记忆/死亡记录的持有人)。
-        板块期给句中第三方人名出定语时以它为准 (见 `biography._kin_tag_line`)。"""
+        `owner` is the line's subject; the section pass uses it for kin attributes."""
         if text and log is not None and log.items:
             self.name_index[text] = [list(x) for x in log.items]
             if owner is not None:
@@ -6897,12 +6836,10 @@ class Facts:
         return text
 
     def alias_line(self, old, new):
-        """v90 (问题3): 把一行的称谓登记复制到它的**改写形**上。
+        """Copy a line's label registration onto its rewritten form.
 
-        逐人条目省主语后句面已变 (「892年12月2日，南诏乡绅洪天曾夺得兰溪。」
-        →「892年12月2日，夺得兰溪。」), 而 `name_index` / `line_owner` /
-        `line_stated` 三表都以句本体为键 —— 不复制别名, 板块期
-        (`biography._kin_tag_line`) 就查不到这一行, 亲缘定语随之丢失。"""
+        `name_index`, `line_owner` and `line_stated` are keyed by sentence body, so without the
+        alias the section pass loses the line and its kin attributes."""
         if not old or not new or old == new:
             return
         for tbl in (self.name_index, self.line_owner, self.line_stated):
@@ -6910,7 +6847,7 @@ class Facts:
                 tbl[new] = tbl[old]
 
     def _log_label(self, cid, label):
-        """`person_label` 出词时向所有生效的登记器各记一条 (v45 档 B)。"""
+        """Record one entry in every active logger when `person_label` renders a label."""
         if not label or not self._name_logs:
             return
         try:
@@ -6920,18 +6857,15 @@ class Facts:
         for lg in self._name_logs:
             lg.items.append((cid, label))
 
-    # ---- v64 (问题5): 勋号骑士称谓 -------------------------------------------
-    # 用户 2026-09-25 拍板: 「只在涉及到某个宫廷角色带有勋号时，在名字前面加上勋号」。
-    # 故勋号不进独立板块、不加新行, 而是收进**唯一称谓出口** `person_label` ——
-    # 谁戴着勋号, 他出现的地方 (档案名号句/年表行/隐事句/亲缘句) 名字前就带勋号。
-    #
-    # 存档字段 (melt["accolades"]["database"]): `name` 是**已经渲染好的中文串**
-    # (「曼苏拉之云雀」「葛洛夫枪手」, 不必拼本地化键); `owner` = 授予的领主;
-    # `acclaimed` = 当前勋号骑士; `history` = 新→旧的 [{acclaimed, date}] 更替史
-    # (末条 = 立号/首位受勋日), 故「某人在某日戴哪个勋号」可由 history 逐段定日。
-    # 时代性: 一律按 date 取 (十年传记不会把十年后的勋号写到十年前的人身上)。
+    # ---- Accolade (勋号) labels -------------------------------------------------
+    # Accolades get no section and no line of their own: they are folded into the label exit
+    # `person_label`, so an accolade always precedes its holder's name.
+    # Save fields (melt["accolades"]["database"]): `name` is an already rendered string,
+    # `acclaimed` the current knight, `history` the [{acclaimed, date}] tenure list; always
+    # taken at `date`, so a later accolade never lands on an earlier person.
     def _accolade_index(self):
-        """{角色id: [(起始日|None, 勋号名), …]} —— 勋号骑士更替史 (惰性建一次)。"""
+        """{character id: [(start date or None, accolade name), …]} — accolade tenure history,
+        built once and cached."""
         if getattr(self, "_acc_idx", None) is not None:
             return self._acc_idx
         idx = {}
@@ -6951,7 +6885,7 @@ class Facts:
                     if isinstance(c, int) and dd:
                         hist.append((str(dd), c))
                 if not hist:
-                    # 无更替史 (旧档/脚本授予): 用当前 acclaimed, 无日期 (任何 date 都算)
+                    # no tenure history (old save / script grant): use `acclaimed` undated
                     c = a.get("acclaimed")
                     if isinstance(c, int):
                         idx.setdefault(c, []).append((None, nm))
@@ -6963,7 +6897,7 @@ class Facts:
         return idx
 
     def accolade_word_at(self, cid, date=None):
-        """该角色在 date 所戴的**勋号名** (无则 '') —— 供称谓前置。"""
+        """Accolade name the character wears at `date` ('' when none), for label prefixing."""
         if cid is None:
             return ""
         try:
@@ -6976,7 +6910,7 @@ class Facts:
         lim = cl.date_key(cut) if cut else None
         best, best_dk = "", None
         for dd, nm in rows:
-            if dd is None:            # 无日期的兜底行: 仅在没有带日期的行时生效
+            if dd is None:            # undated fallback row: only used if no dated row exists
                 if best_dk is None:
                     best, best_dk = nm, (0, 0, 0)
                 continue
@@ -6988,18 +6922,14 @@ class Facts:
         return best
 
     def person_label(self, cid, date=None, style="full"):
-        """人物称谓统一入口 (v28b)。style:
-        - "full": 家室/世系 (kin_label) — 「[前X，]现职Y 姓名」;
-        - "brief": 隐事/把柄/要员隐事/时间线 — 「现职Y 姓名」(前头衔不前置);
-        - "event": 恩怨史事件 (v14) — 现职按**事件日期**取 (死者按事件时官职);
-        - "office": 宫廷僚属行 — 与 brief 同形 (用户决策 2026-09-10:
-          姓在前的名一律保留宗族姓, 西方名保留家族姓)。
-        ① 宗教领袖 → 「教宗X」; ② 天皇座子女称号已并入姓名, 不叠前缀;
-        ③ 起义领袖 (农民/民粹/游牧) 无领地头衔时 → 「农民起义领袖X」;
-        ④ 名不可考 (占位串) → 返回 '' 由调用方整条略去;
-        ⑤ 无头衔者 → full 式按父/母头衔取王子/公主称号, 其余只给显示名;
-        ⑥ v64 (问题5): 戴勋号者 (accolades.database 的 `acclaimed`) → 勋号紧接在
-           名字前面 (「葛洛夫枪手贝奥武夫」), 时代按 date 取; 主角的年表行仍只出名字。"""
+        """Single entry point for person labels. `style`:
+        - "full": household/lineage — "[former X,] current title Y name";
+        - "brief": secrets/hooks/timeline — "current title Y name", no former title;
+        - "event": feud events, office as of the event date;
+        - "office": court rows, as brief (Eastern name order keeps the clan surname).
+
+        A religious head gets "教宗X"; a landless uprising leader "农民起义领袖X"; an unrecorded
+        name returns '' so the caller drops the line; an accolade precedes the name."""
         if cid is None:
             return ""
         key = (int(cid), date or "", style)
@@ -7016,21 +6946,19 @@ class Facts:
         nm = self.name_with_regnal(cid, date)
         if not nm or nm in self._PLACEHOLDER_NAMES:
             return ""
-        # v42 (问题4): 年表事实行 —— 主角只写名字 (「邪魔克里斯托弗·诺兰」)。
-        # 头衔已在《传主档案》(office/label + 历任/政体/直辖句) 给足, 年表逐行重复
-        # 只耗注意力 (终传 249 条里 241 条带全称谓); 东方名序由 name_with_regnal
-        # 直出姓名。其余人仍走 brief 式 (官职/称号+名), 供辨认。
+        # Timeline fact lines give the player the name only: the profile section already covers
+        # his titles, and a full label on every line only costs attention. Everyone else still
+        # uses the brief form (title + name) for recognition.
         if style == "timeline" and cid == self.cache.get("player_id"):
             return nm
         if self._tenno_prince_word(cid, date):
             return nm
-        # v64 (问题5): 戴勋号者 —— 勋号紧接在**名字前面** (「葛洛夫枪手贝奥武夫」),
-        # 与官职/称号并列而不互相顶替; 主角的年表行仍只出名字 (v42 口径)。
+        # The accolade sits alongside the office/title word instead of replacing it.
         acc = self.accolade_word_at(cid, date)
         pn = f"{acc}{nm}" if acc else nm
-        # v94: 对立教宗 —— 年表/事实行的完整称谓 (「日本对立教宗洪地保」);
-        # 排在 `official_title` 之前, 否则会落到「前朝廷职司」兜底
-        # (`religious_head_word` 是**通用**口, 只给概念原词, 不带定位前缀)。
+        # Antipope: full label for timeline/fact lines. Must come before
+        # `official_title`, otherwise it falls into the former-office fallback
+        # (`religious_head_word` is a generic word with no locating prefix).
         apw = self.antipope_label(cid, date)
         if apw:
             return f"{apw}{pn}"
@@ -7040,10 +6968,11 @@ class Facts:
         off = self._event_office(cid, date) if style == "event" \
             else self.official_title(cid, date)
         if not off:
-            # v28b: 无领地头衔者按父/母头衔取王子/公主称号 (与档案一致)
+            # No landed title: take a prince/princess word from the father's or
+            # mother's title, as the profile section does
             off = self.prince_title(cid, date) or ""
         if not off:
-            # v28b: 起义领袖 (无领地头衔) — 以起义名为称谓
+            # Landless uprising leader: the uprising word serves as the title
             word = self.faction_word(cid)
             if word:
                 off = f"{word}领袖"
@@ -7052,18 +6981,20 @@ class Facts:
         return f"{off}{pn}" if off else pn
 
     def event_name(self, cid, date=None):
-        """年表/事实行的**主语名** (v42 问题4): 主角只出名字, 其余人出 brief 称谓。
-        单一出口 —— 凡进入 `facts["timeline"]` 或隐事主题/恩怨流水的名字都走这里,
-        使「主角头衔逐行泛滥」不再可能; 与《传主档案》的全称谓分工明确:
-        档案负责**一次**立名, 年表负责**逐条**叙事。"""
+        """Subject name for timeline/fact lines: the name only for the player, a brief label
+        for everyone else.
+
+        The single exit for every name entering the timeline or the secret/feud streams."""
         if cid is None:
             return ""
         return self.person_label(cid, date, style="timeline") \
             or self.name_with_regnal(cid, date)
 
     def _event_office(self, cid, date):
-        """恩怨史事件里的现职 (v14): 按事件日期取「头衔名+官职词」; 政体从头衔侧取
-        (角色 landed 在死者/时点会被清空, 头衔政体更稳)。"""
+        """The current office in a feud event, as "title name + office word" at the event date.
+
+        The government is read from the title side: a character's landed data can be cleared for
+        the dead or for that point in time, while the title's government stays."""
         tier, tid = self._primary_title_at(cid, as_of=date)
         if tid is None or tier is None:
             return ""
@@ -7078,18 +7009,15 @@ class Facts:
         return f"{tname}{word}" if word else tname
 
     def _full_label(self, cid, date, cur, nm):
-        """full 式称谓 (v27 用户定稿): 只在**前头衔层级高于现头衔**时把前头衔前置,
-        形态「前拜占庭皇帝，安卡拉伯爵君士坦丁十一」; 现头衔缺失时只写
-        「前高昌国王毗伽庞特勤」。同一头衔 (同一 tid) 的今昔两种叫法不算前头衔 —
-        塔坦尼·布兰 现职「可萨布兰部可敦」, 其 881–893 年的 3981 就是同一头衔的
-        前身, 一律只写现职。无头衔者按父/母头衔取王子/公主称号。
+        """full-style label: a former title is prefixed only when its tier is higher than the
+        current one; the same tid held now and then is not a former title.
 
-        v46 (问题1): 现职/前头衔/前头衔文本**三处共用同一个 anchor**
-        (`_anchor_date`, 卒后日期折到卒前一日) —— 旧稿三处各自用入参 date,
-        死者于是被读成「当日无现职」而把一生最高头衔提升成「前头衔」。"""
+        All three lookups share one anchor (`_anchor_date`, which folds post-death dates back),
+        or a dead character would lose his current title in favour of a "former" one."""
         anchor = self._anchor_date(cid, date)
-        # 现职为空时不存在「现头衔」, 不能把「最近一段最高位持有」当成现职排除掉
-        # (否则 毗伽庞特勤 的 高昌 会被自己挤掉, 只剩更低的 喀喇沙尔公国)。
+        # With no current office there is no current title, so the most recent high
+        # title must not be excluded as if it were one (that would squeeze out a higher
+        # former title in favour of a lower one).
         cur_tid = self._current_title_tid(cid, anchor) if cur else None
         cur_rank = 0
         if cur_tid is not None:
@@ -7117,19 +7045,16 @@ class Facts:
         return nm
 
     def kin_label(self, cid, date=None):
-        """亲属/世系/妻族专用称谓 (v27) — person_label 的 full 式入口:
-        「[前X，]现职Y 姓名」。
+        """Label for kin, lineage and in-laws — person_label's full entry point.
 
-        v41 (问题1): date 缺省取 `self.as_of` —— 传记事实一律按本篇截止日取官职词
-        (封建期的神罗封臣写「上洛塔林吉亚公爵」, 行政期才写「将军」);
-        传入 None 时不再落到缓存里的末档政体。"""
+        `date` defaults to `self.as_of`, so office words follow the chapter's cutoff date."""
         return self.person_label(cid, date or self.as_of, "full")
 
     def _minister_office(self, tid):
-        """e_minister_* 头衔的职司官职词; 非职司头衔返回 ''。
-        v28: 本地化键按**候选链**取 — 实测 minister_revenue/minister_rites 不在
-        本地化表里 (户部/礼部此前取不到官职词), 游戏显示这两个职司用的是
-        天朝制御前会议职位键 (councillor_steward/court_chaplain_..._imperial)。"""
+        """Office word of an e_minister_* title; '' for other titles.
+
+        Keys are tried as a candidate chain: minister_revenue and minister_rites have no
+        localization entry, and the game shows those offices with the celestial council keys."""
         if tid is None:
             return ""
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
@@ -7142,22 +7067,23 @@ class Facts:
             cands.extend(self._MINISTER_OFFICE_FALLBACKS.get(loc_key, ()))
         for c in cands:
             v = L.loc(self.table, c)
-            # 拒收未解析的引用 ($X$ / [X]) 与英文兜底 (纯 ASCII 词)
+            # reject unresolved references ($X$ / [X]) and English fallbacks (pure-ASCII words)
             if v and not v.startswith("$") and not v.startswith("[") \
                     and not re.search(r"[A-Za-z]{2,}", v):
                 return v
         return self.title_base_name(tid) or "尚书"
 
-    # v13: 无地家族/庄园头衔 (x_nf_*) 持有者的官职词, 按文化模板选
-    # (游戏本地化键: 日本 当主/女士, 高丽系 户长/夫人, 其余 乡绅/夫人)
+    # Office word for holders of landless family estate titles (x_nf_*), chosen by
+    # culture template (game localization keys: Japan 当主/女士, Korea 户长/夫人,
+    # others 乡绅/夫人)
     _KOREAN_ESTATE_TPL = {"korean", "silla", "goryeo", "baekje",
                           "goguryeo", "balhae", "khitan"}
 
     def _estate_holder_word(self, cid):
-        """庄园持有人称谓 (v41b 用户拍板1: 用游戏原文)。
-        东亚三支取自游戏本地化键 (日本 当主/女士, 高丽系 户长/夫人,
-        天朝 乡绅/夫人); 其余 (欧洲/行政制世族) 用 `game_concept_house_head`
-        = 家主 —— 「乡绅」只属天朝分支, 加在希腊皇帝身上会把模型带进中华乡绅门第。"""
+        """Estate holder word, taken from the game's own text.
+
+        The East Asian branches use their localization keys (Japan 当主/女士, Korea 户长/夫人,
+        celestial 乡绅/夫人); everyone else uses `game_concept_house_head` = 家主."""
         female = self._is_female(cid)
         tpl = self.culture_template(cid) or ""
         if tpl == "japanese":
@@ -7176,8 +7102,9 @@ class Facts:
         return "夫人" if female else "乡绅"
 
     def holder_at(self, tid, date=None):
-        """头衔在 date 的持有者 id (title history 最后一条 ≤ date 的持有人;
-        无记录/已毁弃返回 None)。date 为 None 时取熔件当前 holder。"""
+        """Holder id of a title at `date` (last title-history entry at or before it); None
+        with no record or after the title was destroyed. With `date` None, the melt's
+        current holder."""
         if tid is None:
             return None
         if date is None:
@@ -7210,15 +7137,11 @@ class Facts:
         return holder
 
     def _my_realm_tids(self):
-        """主角所处政权的头衔 id 集 (v34, 问题3):
-        主角首要头衔 + 其上位链上的全部头衔。朝廷职司 (`e_minister_*`) 的
-        `de_facto_liege` 落在这个集合里, 才算「主角所处朝廷的职司」。
-        独立领主上位链到顶, 集合即其自身领地头衔 → 别国职司不再混入。
+        """Title id set of the realm the player sits in: his primary title plus every title up
+        its liege chain.
 
-        v61 (问题2): **已卒传主**补一条 `held_through` 路子 —— 终传 (as_of 为空) 取卒日
-        (`player_death.date`; 缺则末档日), 十年篇取 as_of。旧稿只认「末档仍在持」,
-        传主卒于末档时头衔全带 loss 日 ⇒ 本函数返回空集 ⇒ 下面两处职司门槛
-        的 `if mine and …` 被短路 (fail-open), 全图 `e_minister_*` (唐六部) 混入。"""
+        A ministry office counts as his own only when its `de_facto_liege` is in this set, so
+        other realms' offices never leak in."""
         pid = self.cache.get("player_id")
         if pid is None:
             return set()
@@ -7226,7 +7149,7 @@ class Facts:
         _tier, ptid = self._primary_title_at(pid)
         if ptid is None:
             cut = (self.as_of
-                   or (self.cache.get("reign_end") or {}).get("date")   # v76: 让位日
+                   or (self.cache.get("reign_end") or {}).get("date")   # abdication date
                    or (self.cache.get("player_death") or {}).get("date")
                    or self.cache.get("last_date"))
             if cut:
@@ -7236,7 +7159,7 @@ class Facts:
             for tid, _h in self.liege_chain(ptid) or []:
                 out.add(int(tid))
         if not out:
-            # 无地冒险者等无头衔情形: 取玩家营地/庄园头衔
+            # no title (landless adventurer etc.): take the player's camp/estate titles
             ld = ((self.cache.get("characters") or {}).get(str(pid)) or {}).get("landed") or {}
             for x in ld.get("domain") or []:
                 if isinstance(x, int):
@@ -7244,22 +7167,17 @@ class Facts:
         return out
 
     def _realm_title_set(self):
-        """兼容别名 (v34): 见 `_my_realm_tids`。"""
+        """Compatibility alias for `_my_realm_tids`."""
         return self._my_realm_tids()
 
     def _ever_held_title(self, tid):
-        """该高位头衔是否「存在过」(v64, 问题4) —— 三档任一成立即算:
+        """Whether this high title ever existed, by three checks:
 
-        ① `history` 非空 (有人做过它的主人);
-        ② 此刻有 `holder`;
-        ③ `realm_history` 快照里曾见非空持有者 —— 项目 v11 已注明 title history
-           会被剪除 (「如已毁的王国」), 故 ③ 是不可省的补充判据 (实测本档这一档
-           为空集, 但换档即可能出现)。
+        ① `history` is non-empty; ② it has a `holder` now; ③ a `realm_history` snapshot saw a
+        non-empty holder. Title history gets pruned for destroyed titles, so ③ cannot be dropped.
 
-        用途: 朝局事实面的法理回落 (`_realm_facts._up_liege`) 只许落在存在过的
-        头衔上 —— 存档对**从未创建**的空衔同样给 `de_jure_liege` (本档 177 个高位
-        空衔: e_tartaria / e_turan / e_britannia / e_scandinavia …), 旧稿照名写出
-        「为鞑靼帝国封臣」, 模型据此编出不存在的帝国。"""
+        The de jure fallback (`_realm_facts._up_liege`) may only land on titles that existed,
+        since the save gives `de_jure_liege` for never-created empty titles too."""
         if tid is None:
             return False
         t = self._lt.get(str(tid)) or {}
@@ -7282,28 +7200,25 @@ class Facts:
             return False
 
     def legal_children(self, cid):
-        """cid 的**法理子女** id 集 (v34, 问题8, 用户拍板):
-        存档 `family.father` 含 cid 的孩子 — 不论其是否另有实父 (非婚生亦然),
-        这些孩子都算 cid 的子女, 归《本纪》与父亲的家门清单。
-        法理父是**别人**的孩子 (妻室与他人所出而不入其户籍者) 不在其中,
-        归《家室列传》作妻子的子女。
-        v44 (问题3): 认亲字段**按本人性别取** —— 女性主角取其子女的 `mother`
-        字段。旧实现只认 `father`, 于是女主亲生的子女全被判成「配偶与他人所出」
-        (阿德尔海德档四个子女被写成「此数人之法理父并非主角」, 模型由此得出
-        「主角的儿子与主角的丈夫没有关系」)。"""
+        """Set of cid's legal children: every child whose save `family` lists cid, including
+        openly illegitimate ones.
+
+        The field follows cid's own gender — a female cid compares her children's `mother` —
+        and children of someone else's legal parentage belong to the wife's section."""
         out, _ = self.legal_children_ex(cid)
         return out
 
     def legal_children_ex(self, cid):
-        """同 `legal_children`, 另返回「是否有家谱数据」。
-        无家谱数据时调用方应保留原名单 (不能把无数据当成无子女)。"""
+        """Same as `legal_children`, also returning whether genealogy data exists at all.
+
+        Callers keep the original list when there is no data."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         fam = rec.get("family") or {}
         kids = [k for k in (fam.get("child") or []) if isinstance(k, int)]
         if not kids:
             return set(), False
-        # v44 (问题3): 本人为母 → 比对孩子 family 的 mother 字段; 为父 → father。
-        # 无性别记载时两者都比 (宁取并集, 不把亲生子女判出门外)。
+        # Female → compare the child's `mother` field; male → `father`. With no recorded
+        # sex, compare both (a union is safer than dropping a child).
         female = self._is_female(cid)
         want = ["mother"] if female else ["father"]
         if not female and rec.get("female") is None:
@@ -7318,10 +7233,9 @@ class Facts:
         return out, True
 
     def wife_other_children(self, cid):
-        """配偶与他人所出、且**本人不是其父/母**的孩子 (v34, 问题8; v44 问题3):
-        这些是《家室列传》里的「配偶的子女」, 不进主角的家门清单。
-        本人为女时比对孩子 `mother` (旧实现一律比对 `father`, 女主亲生子女
-        因此全落进这里)。"""
+        """Children the spouse had with someone else, where cid is neither father nor mother.
+
+        These are the household section's "spouse's children" and do not join cid's own list."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         fam = rec.get("family") or {}
         legal, has = self.legal_children_ex(cid)
@@ -7339,25 +7253,15 @@ class Facts:
         return out
 
     def wife_other_children_line(self, cid, kids=None):
-        """配偶与他人所出的孩子 → **可直接落笔的一句** (v74 问题3, 用户拍板)。
+        """Render the spouse's children by another parent as one ready-to-write sentence.
 
-        旧稿由 `biography._profile_lines` 拼成「妻室另育有和气敬子、和气孝成、藤原咲，
-        此数人之**法理父**并非主角。」——「法理父」三字把模型推向「丈夫是法理父」的
-        错解 (第 1 个十年成稿即写「法理父为浩二，生父则为和气丰永」，与游戏数据相反)。
-        游戏口径 (见 docs/调研_v74_大和私生子与法理父.md): 公开私生的孩子
-        `father` 直接被置为真父、随生父之氏, **不存在**法理父与生物父的分野。
-        故此处**按生父分人直陈**, 全句不出现「法理父」:
-
-            「藤原诸子与和气氏当主和气丰永生子和气敬子、和气孝成；
-              与远江国司藤原玄上生女藤原咲。此三人各随生父之氏。」
-
-        单亲查不到生父时退回「<生母>另育有<子女>，随其生父之氏」的简式。
-        返回 '' 表示无料 (调用方整句省略)。"""
+        Grouped by (mother, biological father) and stated per father, each child taking the
+        biological father's house; '' when there is nothing to write."""
         chars = self.cache.get("characters") or {}
         kids = list(kids if kids is not None else self.wife_other_children(cid))
         if not kids:
             return ""
-        # (生母, 生父) → [孩子 id]，按 (生母首次出现, 生父首次出现) 稳定排序
+        # (mother, father) → [child ids], stably ordered by first appearance
         groups = {}
         order = []
         for k in sorted(kids, key=lambda x: str(x)):
@@ -7394,7 +7298,7 @@ class Facts:
             total += len(sons) + len(daughters)
             if dname:
                 if mname and mom == prev_mom:
-                    lead = f"又与{dname}生"          # 同一生母的第二个情夫
+                    lead = f"又与{dname}生"          # second partner of the same mother
                 elif mname:
                     lead = f"{mname}与{dname}生"
                 else:
@@ -7416,18 +7320,14 @@ class Facts:
         return "；".join(parts) + f"。{n}各随生父之氏。"
 
     def _current_ministers(self, date=None):
-        """朝廷职司在 date (缺省熔件当前) 的持有者 →
-        ['兵部尚书任清', …] (朝局风云录·朝廷职司用)。
-        v28: 输出形态改为「官职词+人名」— 此前「兵部：任清（兵部尚书）」把
-        「部名」与「官职词」写了两遍。官职词取不到时才退「部名：人名」。
-        v28b: **按 as_of 取时任者** — 此前一律取熔件当前 holder, 十年传记会把
-        后来的任命写进早期十年 (田所2 @878 写出 883 年才上任的宰相)。
-        v34 (问题3): **只收主角所处政权的职司** — 此前遍历全图所有
-        `e_minister_*`, 于是贝内文托亲王的《朝局风云录》里永远挂着唐六部
-        (实测 9 个职司的 de_facto_liege 全为 h_china)。
-        v61 (问题2): 过滤改 **fail-closed** —— 政权判不明 (`mine` 空) 时一律不收。
-        旧写法 `if mine and lc not in mine` 在空集时把整条过滤短路, 于是传主卒于末档时
-        唐六部九卿 (与其隐事) 又混进《朝局风云录》。"""
+        """Holders of the court ministries at `date` (default: the melt's save) as
+        ['兵部尚书任清', …], for the court section.
+
+        The office word comes first, with "department name：person" as a fallback, and holders
+        are taken as of `date` so a later appointment never lands in an earlier decade.
+
+        Only the player's own realm is collected (every `e_minister_*` would hang the Tang six
+        boards on an unrelated prince's court); fail-closed when the realm is unknown."""
         d = date if date is not None else self.as_of
         mine = self._my_realm_tids()
         out = []
@@ -7438,14 +7338,14 @@ class Facts:
             if not key.startswith("e_minister_"):
                 continue
             lc = t.get("de_facto_liege")
-            if lc not in mine:      # v61: mine 空 ⇒ 一律不收 (宁缺勿滥)
+            if lc not in mine:      # empty `mine` ⇒ nothing is collected (fail-closed)
                 continue
             holder = self.holder_at(int(tid), d)
             if not isinstance(holder, int):
                 continue
             nm = self.name_or(holder)
             off = self._minister_office(int(tid))
-            # v14: 职司名取不到时用「某职司」, 不直出 e_minister_ key
+            # no office word resolved: use "某职司" rather than the raw e_minister_ key
             base = self.title_base_name(int(tid)) or "某职司"
             if off and off != base:
                 out.append(f"{off}{nm}")
@@ -7454,9 +7354,10 @@ class Facts:
         return out
 
     def minister_ids(self, date=None):
-        """朝廷职司 (e_minister_*) 在 date 的持有者 id 列表 (要员隐事取材用)。
-        v34 (问题3): 与 `_current_ministers` 同口径 — 只取主角所处政权的职司。
-        v61 (问题2): 同 `_current_ministers` 改 fail-closed (mine 空 ⇒ 不收)。"""
+        """Ids of the court ministry (e_minister_*) holders at `date`, used to source key
+        officials' secrets.
+
+        Same scope as `_current_ministers`, fail-closed."""
         d = date if date is not None else self.as_of
         mine = self._my_realm_tids()
         out = []
@@ -7466,22 +7367,23 @@ class Facts:
             if not (t.get("key") or "").startswith("e_minister_"):
                 continue
             lc = t.get("de_facto_liege")
-            if lc not in mine:      # v61: mine 空 ⇒ 一律不收 (宁缺勿滥)
+            if lc not in mine:      # empty `mine` ⇒ nothing is collected (fail-closed)
                 continue
             h = self.holder_at(int(tid), d)
             if isinstance(h, int) and h not in out:
                 out.append(h)
         return out
 
-    # ---- v28: 隐事 (secrets) ----
+    # ---- Secrets (隐事) ----
 
     def _secret_cut(self):
-        """隐事的时点截断: as_of 优先, 缺省用缓存末档日期。"""
+        """Cutoff for secret facts: `as_of` first, else the cache's last save date."""
         return self.as_of or self.cache.get("last_date")
 
     def secrets_owned_by(self, cid, date=None):
-        """某人在 date 时点握有的隐事记录列表 (按首见日期升序)。
-        过滤: owner 相符 + first_seen ≤ date + 尚未消失 (lost_at > date)。"""
+        """Secret records a person holds at `date`, ascending by first-seen date.
+
+        Filter: matching owner + first_seen ≤ date + not yet lost (lost_at > date)."""
         if cid is None:
             return []
         cut = date or self._secret_cut()
@@ -7501,24 +7403,19 @@ class Facts:
         return out
 
     def _first_seen_note(self, rec):
-        """隐事年份短语 (v80 点2): 「879年为外人所知」; 无年可给返回 ''。
+        """Secret year phrase: "879年为外人所知"; '' when no year can be given.
 
-        v35 之前是「自879年见载」并以括注形态 `（自879年见载）` 进入正文 —— 「见载」
-        是数据管道词, 模型照抄成满篇考据按语 (德圣塔实测「何时见载、何时知情, 本篇
-        未著其年」)。v35 改成「N年见于记载」仍留着「记载」这个词根, 模型据此正反两用
-        (田所定治实测成稿「书上只写…四字」「此事是否已入定治之耳，书中」) —— v80 点2
-        改与世界内措辞一致: 只说「N年为外人所知」(与 `RULES["secret"]` 的
-        「此事在何年为外人所知」同口径), 不出现「记载/见载/未载」。
-        首档即见 (数据起点前已有) 无年份可给 → 返回 ''; 提示词侧不再点名索要年份,
-        模型手里没有年份时也就不会去编「未著其年」。"""
+        The wording stays inside the world (as `RULES["secret"]` asks) and avoids pipeline words
+        such as 记载/见载/未载, which the model otherwise copies into scholarly filler."""
         fs = rec.get("first_seen")
         if not fs or rec.get("first"):
             return ""
         return f"{self._year_only(fs)}为外人所知"
 
     def _blood_kin(self, cid):
-        """cid 的**血亲** id 集 (v34, 问题2): 父/母/子女/同胞。
-        姻亲 (配偶/前配偶/妾) 一律不算 — 乱伦只认血缘。"""
+        """Set of cid's blood kin: parents, children and siblings.
+
+        In-laws never count — incest is judged on blood only."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         fam = rec.get("family") or {}
         out = set()
@@ -7526,8 +7423,8 @@ class Facts:
             for x in fam.get(key) or []:
                 if isinstance(x, int) and x != cid:
                     out.add(x)
-        # 自己作为对方 family 里的 father/mother/child/siblings 出现的反向关系
-        # (缓存已做反向合并, 此处兜底熔件侧同一字段)
+        # reverse relations where cid appears in another character's family fields (the
+        # cache merges both directions; this also covers the melt side)
         for _cid, r in (self.cache.get("characters") or {}).items():
             rf = (r.get("family") or {})
             if cid in (rf.get("father") or []) or cid in (rf.get("mother") or []):
@@ -7538,8 +7435,9 @@ class Facts:
         return out
 
     def _sex_partner_mems(self, cid):
-        """cid 的性/情记忆 [(日期, 对方 id)], 按日期升序 (v34, 问题2;
-        v38 问题1: 并入 Carnalitas 的 `had_sex_*` 族)。"""
+        """cid's sexual/romantic memories as [(date, other id)], ascending by date.
+
+        Includes the Carnalitas `had_sex_*` family."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         out = []
         for m in rec.get("memories") or []:
@@ -7554,7 +7452,7 @@ class Facts:
                     other = v
                     break
             if other is None:
-                # 兜底: 取唯一一个非本人的 int 参与者
+                # fallback: the single int participant other than cid
                 cands = [v for v in parts.values()
                          if isinstance(v, int) and v != cid]
                 if len(cands) == 1:
@@ -7565,13 +7463,11 @@ class Facts:
         return out
 
     def _secret_partner(self, rec):
-        """乱伦等「对方不入档」的隐事 → 对方 id (判不出返回 None)。
+        """Other party of a secret whose counterpart is not saved (incest and the like); None
+        when undecidable.
 
-        v34 (问题2): 存档的 `secret_incest` 只有持有人 (`target` 为空数组),
-        对方靠**血亲 ∩ 性/情记忆**判定: 取「与持有人的性/情记忆对象中,
-        同时是持有人血亲」的那一个; 多条候选取日期最早者 (关系之始)。
-        姻亲不算血亲 — 主角是当事人配偶, 不能被判成乱伦对象。
-        """
+        `secret_incest` has only the holder (`target` is empty), so the counterpart is blood kin
+        ∩ sexual/romantic memories, earliest first; in-laws are excluded."""
         if not isinstance(rec, dict):
             return None
         owner = rec.get("owner")
@@ -7586,12 +7482,10 @@ class Facts:
         return None
 
     def _secret_partner_label(self, rec, self_cid=None):
-        """对方称谓 (person_label brief; **持有人本人**写「自己」)。判不出返回 ''。
+        """Label of the other party (person_label brief; the record's own holder is "自己").
 
-        v42 (问题2): 「自己」以**记录持有人**为准, 不再以 `self_cid` (主角) 为准 ——
-        旧稿让家人隐事句里的对象「主角」被写成「自己」(读成该家人与自己)。
-        `self_cid` 仅保留给调用方传主角 id, 用于统一称谓式样。
-        """
+        "自己" follows the record's holder, not `self_cid`, so a family member's secret never
+        calls the player "自己"."""
         o = self._secret_partner(rec)
         if o is None:
             return ""
@@ -7601,18 +7495,11 @@ class Facts:
         return self.event_name(o, date=self.as_of) or ""
 
     def secret_topic(self, rec, self_cid=None):
-        """隐事主题短语 (不含持有人): 「在张朴主持的乡试中舞弊」/「谋害叠溪寋」/
-        「与阿足私通」; 未收录类型回退游戏本地化类型名 (取不到返回 '')。
-        v28b: 涉及对象带官职称谓, **持有人本人**写作「自己」。
-        v29 (问题6): 科举舞弊写明**方向与级别** — 存档的 target 是主考 (考试组织者),
-        主角是在他主持的考试上作弊; 级别由同一快照的考试记忆判定
-        (用户实测: 868.1.1 ↔ 乡试、873.1.1 ↔ 会试)。旧表述「科举舞弊（涉及X）」
-        会被读成「考官协助主角作弊」。
-        v42 (问题1/2): ① 乱伦并入 style.SECRET_TOPICS 的 `与{target}乱伦`, 不再
-        自带「乱伦：」标签; ② 「自己」的基准改为**记录持有人** (rec["owner"]) ——
-        隐事句的主语就是持有人, 旧稿以主角 id 为基准, 家人隐事里的主角被写成
-        「自己」(「乱伦：与自己」「实父为自己」)。
-        涉及对象一律用 `event_name` (主角只出名字, 与年表同式)。"""
+        """Secret topic phrase without the holder: "在张朴主持的乡试中舞弊" / "谋害叠溪寋" /
+        "与阿足私通"; unknown types fall back to the game's localization type name.
+
+        Related characters carry their titles and the holder is written as "自己". Exam cheating
+        states direction and level: `target` is the examiner who ran the exam."""
         if not isinstance(rec, dict):
             return ""
         tp = rec.get("type") or ""
@@ -7620,7 +7507,7 @@ class Facts:
         owner = rec.get("owner")
 
         def _self_or(cid):
-            """cid → 「自己」(持有人本人) 或统一称谓。"""
+            """cid → "自己" (the holder himself) or the standard label."""
             if not isinstance(cid, int):
                 return ""
             if isinstance(owner, int) and cid == owner:
@@ -7629,9 +7516,9 @@ class Facts:
 
         tname = _self_or(tgt) if isinstance(tgt, int) else ""
         if not tname and tp == "secret_incest":
-            # v34 (问题2): 乱伦的 `target` 恒为空数组 (双方各持一条), 对方由
-            # 「血亲 ∩ 性/情记忆」判定 (姻亲不算); 判不出时走下面 {target} 缺位
-            # 的简式「乱伦」—— 交程序判定, 不给模型发散空间。
+            # For incest `target` is always empty (each side holds its own record), so the
+            # counterpart comes from blood kin ∩ sexual memories (in-laws excluded); when
+            # undecidable the plain "乱伦" form below is used — the program decides.
             tname = self._secret_partner_label(rec)
         if tp == "secret_exam_cheater":
             lvl = self._exam_level_for_secret(rec.get("owner"), rec.get("first_seen"))
@@ -7639,10 +7526,9 @@ class Facts:
             return f"在{where or '科考'}中舞弊" if (tname or lvl) else "科考舞弊"
         if tp in ("secret_disputed_heritage",
                   "secret_unmarried_illegitimate_child"):
-            # v41 (问题4): 血统类隐事**点名实父**。旧稿只写「所生X血统有争」,
-            # 全篇找不到「X 的实父是谁」时, 模型读不出「主角的女儿嫁的正是
-            # 主角自己的私生子」这层关系 —— 断言出处见 修复方案_v41 问题4。
-            # 实父取自该子女档案的 real_father (缓存已由秘密推导补全)。
+            # Bloodline secrets must name the biological father, or the text cannot show that
+            # the player's daughter married the player's own illegitimate son. The father comes
+            # from the child's `real_father` (filled in by secret inference).
             tpl = SECRET_TOPICS.get(tp)
             if not tpl or not isinstance(tgt, int):
                 return ""
@@ -7654,30 +7540,27 @@ class Facts:
             rn = _self_or(rf)
             if rn:
                 return tpl.format(target=child, father=rn)
-            # 实父判不出 → 不带实父位的简式 (无料不下发)
+            # biological father unknown → short template without the father slot
             return SECRET_TOPICS_NO_FATHER.get(tp, "").format(target=child)
         tpl = SECRET_TOPICS.get(tp)
         if tpl:
             if "{target}" in tpl:
                 if tname:
                     return tpl.format(target=tname)
-                # v34 (问题2): 乱伦等「对方不入档」的隐事判不出对象时退简式
+                # counterpart not in the save and undecidable → the short form
                 return SECRET_TOPICS_NO_TARGET.get(tp, "隐情")
-            # 模板未用对象 (科举舞弊/挪用国库…) 但有对象时并写, 便于区分同类隐事
-            # v55 (问题2): 去括注 —— 「科举舞弊，事涉唐皇帝李漼」
+            # Template without a target slot but a target exists: append it as a clause so
+            # similar secrets stay distinguishable ("科举舞弊，事涉唐皇帝李漼")
             return f"{tpl}，事涉{tname}" if tname else tpl
         z = L.loc(self.table, tp) or ""
         if not z or re.search(r"[A-Za-z_]", z):
             return ""
-        z = re.sub(r"者$", "", z)          # 类型名是名词 (考试舞弊者) — 去「者」成事
+        z = re.sub(r"者$", "", z)          # the type name is a noun ("考试舞弊者") — drop 者
         return f"{z}，事涉{tname}" if tname else z
 
     def _exam_level_for_secret(self, owner, first_seen):
-        """科举隐事的考试级别 (v29, 问题6): 取该角色在**同一快照**首见的考试记忆。
-
-        存档的 secret 只有「owner + 主考 + 首次见于记载的快照日」, 级别靠考试记忆
-        对齐: 868.1.1 ↔ 乡试 (867.9.17)、873.1.1 ↔ 会试 (872.12.28)。同年未见
-        考试记忆时退一步取 ≤ 该年最近的考试记忆; 都取不到返回 ''。"""
+        """Exam level of an exam-cheating secret, from the exam memory first seen in the same
+        snapshot as the secret (nearest earlier one as fallback, else '')."""
         if owner is None:
             return ""
         keys = {"passed_child_exam_memory": "童子试",
@@ -7705,12 +7588,10 @@ class Facts:
         return exact or same_year or nearest
 
     def secret_sentence(self, rec, owner_label=None, self_cid=None):
-        """隐事句: 「陆荣廷有一桩隐事：科举舞弊，事涉唐皇帝李漼，873年见于记载。」
-        首档即见者不写年份。v55 (问题2): 对象与见载年都不用括注, 依次作同句分句。
-        v58 (问题2): **谓词型**主题 (私通/乱伦/谋害/暗行巫术/侵吞库银…) 去壳 ——
-        直接写「{owner}{topic}」。旧稿一律套「有一桩隐事：」框架, 于是私通类
-        被读成「玛蒂尔达·卡诺萨有一桩隐事：与阿普利亚公爵狐狸罗贝尔·欧特维尔私通。」
-        (用户 2026-09-22 报第 2 问: 期望「1072年，玛蒂尔达·卡诺萨与…私通。」)"""
+        """Secret sentence: "陆荣廷有一桩隐事：科举舞弊，事涉唐皇帝李漼，873年见于记载。"
+        (no year for a secret present at the start of the data); target and year are clauses.
+
+        Predicate-type topics (私通/乱伦/谋害/暗行巫术…) are written bare as "{owner}{topic}"."""
         if not isinstance(rec, dict):
             return ""
         topic = self.secret_topic(rec, self_cid=self_cid)
@@ -7730,31 +7611,27 @@ class Facts:
         return s + "。"
 
     def secret_knowers(self, rec, self_cid=None):
-        """知情者短语 (无句末句号): 「知情者：卢从度，同年；孙元忠，自873年起」;
-        无第三方知情者返回 ''。同年知情者并列共用一个年份 (省词元)。
+        """Knower phrase without the final period: "知情者：卢从度，同年；孙元忠，自873年起";
+        '' when no third party knows. Knowers of the same year share one year.
 
-        v55 (问题2): 去括注 —— 年份改作「，同年」/「，自N年起」的并列分句, 以「；」相隔。
-
-        v31 (问题7): 当事人不算知情者 — 参与者 (做下此事的人) 与持有人本就知道,
-        把他们写成「知情者」只能引出同义反复 (「安乔为二子生父, 则其必知情」)。
-        知情者 = known_by − 持有人 − 当事人; 为空则不发行 (由「至今无人知晓」承载)。"""
+        Knowers = known_by − holder − parties, since those necessarily knew already."""
         if not isinstance(rec, dict):
             return ""
         owner = rec.get("owner")
         parties = {x for x in (rec.get("participants") or []) if isinstance(x, int)}
-        # v31 (问题7): 私通类隐事的 target 就是对方当事人 (存档 participants 只列
-        # 持有人) — 一并排除, 否则「公主与乔乔私通, 知情者：乔乔」又是同义反复。
+        # For affair-type secrets the `target` is the other party (participants list only the
+        # holder): exclude it too, or the line reads "…had an affair with Qiao, knowers: Qiao".
         if (rec.get("type") or "") in _SECRET_PARTY_TARGET_TYPES \
                 and isinstance(rec.get("target"), int):
             parties.add(rec["target"])
-        # v34 (问题2): 乱伦的对方不在 target 里, 但已被判出 → 也是当事人,
-        # 不能同时出现在「知情者」名单里 (同义反复)。
+        # The incest counterpart is not in `target` but has been determined from blood kin
+        # ∩ sexual memories, so it is a party too and must not reappear as a knower.
         if (rec.get("type") or "") == "secret_incest":
             _p = self._secret_partner(rec)
             if isinstance(_p, int):
                 parties.add(_p)
         seen = self._year_only(rec.get("first_seen")) if self._first_seen_note(rec) else ""
-        groups = []            # [(年份文本 or '', [名, ...])] — 同一年并列
+        groups = []            # [(year text or '', [names…])] — grouped by year
         index = {}
         total = 0
         for k in rec.get("known_by") or []:
@@ -7778,7 +7655,7 @@ class Facts:
                 break
         if not groups:
             return ""
-        # v28b: 按年份升序 (无年份者居前) — 此前按出现次序, 会写出「自875年起、自873年起」
+        # Sort by year with undated group first (otherwise "自875年起、自873年起" appears)
         groups.sort(key=lambda g: (1, cl.date_key(g[0])) if g[0] else (0, (0,)))
         parts = []
         for yr, names in groups:
@@ -7786,18 +7663,18 @@ class Facts:
             if not yr:
                 parts.append(who)
             elif seen and yr == seen:
-                # 年份已在「见载」处写过, 只写一次 (v55: 去括注, 作并列分句)
+                # the year is already written by the first-seen note, so write it once
                 parts.append(f"{who}，同年")
             else:
                 parts.append(f"{who}，自{yr}起")
         return "知情者：" + "；".join(parts)
 
     def note_line_stated(self, text, mem, owner_id=None):
-        """v63: 句面已写明关系的行 → 登记对手方 (板块期不再给他插亲缘定语)。
+        """A line whose wording already states the relation → register the counterpart so the
+        section pass adds no kin attribute to it.
 
-        判据是**记忆型 + 参与槽** (不猜措辞): 成婚/同房(配偶)/丧偶/生育/夭折 这些
-        模板本身就写着对手方与主语的关系 (「与X成婚」「添子X」「A之妻B产下死婴」),
-        故这些人名不再加定语 —— 旧稿实测出「与丈夫金敏恭成婚」「得长女女儿X」。"""
+        Decided by memory type + participant slot, never by wording: the marriage, intercourse,
+        widowhood, birth and stillbirth templates already name the relation."""
         mtype = str((mem or {}).get("type") or "")
         if not text or mtype not in _REL_STATED_TYPES:
             return
@@ -7805,17 +7682,17 @@ class Facts:
         oid = ((mem or {}).get("participants") or {}).get(slot) if slot else None
         if not isinstance(oid, int) or oid == owner_id:
             return
-        # 「同房」只在双方确为配偶时才是关系句 (非配偶档走「有私情」, 那句没写关系)
+        # "同房" states a relation only for an actual spouse pair (others get "有私情")
         if mtype == "had_sex" and not self.is_spouse_pair(owner_id, oid):
             return
         self.line_stated[text] = [int(oid)]
 
     def secret_line(self, rec, owner_label=None, knowers=True, self_cid=None,
                     owner=None):
-        """隐事一行 (v28b): 「{owner}有一桩隐事：{topic}，事涉X，Y年见于记载；
-        知情者：A，同年；B，自Z年起。」— 隐事与知情者同句, 一眼看出谁知道了哪桩事。
-        v45 (档 B): 外层包一层出词登记 (整行一次登记 —— 一行一位持有人)。
-        v63: `owner` = 隐事持有人 id (本行主语, 与 owner_label 同一人)。"""
+        """One secret line: "{owner}有一桩隐事：{topic}，事涉X，Y年见于记载；知情者：A，同年；B，自Z年起。"
+        — secret and knowers in one sentence.
+
+        `owner` is the secret holder's id (this line's subject)."""
         with self.log_names() as lg:
             out = self._secret_line_body(rec, owner_label=owner_label,
                                          knowers=knowers, self_cid=self_cid)
@@ -7831,15 +7708,12 @@ class Facts:
 
     def secret_lines(self, recs, owner_label=None, self_cid=None, with_knowers=True,
                      owner=None):
-        """同一持有人的隐事合并成一行 (v28b 省词元):
+        """Merge one holder's secrets into one line (saves tokens), e.g.
+        "陆荣廷有隐事二桩：科举舞弊（涉及樊骥）；会试舞弊（涉及唐皇帝李漼，873年见载），
+        知情者：卢从度（自875年起）。"
 
-            「陆荣廷有隐事二桩：科举舞弊（涉及樊骥）；会试舞弊
-              （涉及唐皇帝李漼，873年见载），知情者：卢从度（自875年起）。」
-
-        持有人只写一次, 每桩自带见载年与自己的知情者; 单桩时与 secret_line 同形
-        (「陆荣廷有隐事：…」)。返回 [str] (无可用主题时返回 [])。
-        v45 (档 B): 外层包一层出词登记 (每行单独登记, 供板块期插亲缘定语)。
-        v63: `owner` = 持有人 id (本行主语) —— 传给同名的单桩出口并登记本行主语。"""
+        Each secret keeps its own year and knowers; a single secret matches `secret_line`.
+        Returns [str], [] when no topic is usable."""
         with self.log_names() as lg:
             out = self._secret_lines_body(recs, owner_label=owner_label,
                                           self_cid=self_cid,
@@ -7862,10 +7736,10 @@ class Facts:
             ln = self.secret_line(items[0], owner_label=owner, self_cid=self_cid,
                                   knowers=with_knowers, owner=owner)
             return [ln] if ln else []
-        # v58 (问题2): 谓词型主题逐桩成句 (「X与Y私通，1072年见于记载。」),
-        # 名词型仍并成「X有隐事N桩：…」—— 两类混在一起会写出
-        # 「有隐事两桩：与X私通；所生Y血统有争」这种半通顺句。
-        blocks = []          # [(是否谓词型, [rec…])] 按原次序 (按日期排好的)
+        # Predicate-type topics each become their own sentence ("X与Y私通，1072年见于记载。"),
+        # while noun-type ones still merge into "X有隐事N桩：…" — mixing the two
+        # half-sentences reads badly.
+        blocks = []          # [(is_predicate, [rec…])] in original (date-sorted) order
         for r in items:
             pred = _style.secret_topic_is_predicate(r.get("type"))
             if blocks and blocks[-1][0] == pred:
@@ -7888,7 +7762,8 @@ class Facts:
                     continue
                 note = self._first_seen_note(r)
                 if note:
-                    # v55 (问题2): 去括注 —— 见载年作分句接在主题后 (旧稿并入同一括号)
+                    # the first-seen year becomes a clause after the topic, not a
+                    # parenthetical
                     topic += f"，{note}"
                 kn = self.secret_knowers(r, self_cid=self_cid) if with_knowers else ""
                 if kn:
@@ -7900,7 +7775,7 @@ class Facts:
         return out
 
     def secrets_known_by(self, cid, date=None):
-        """cid 知情、但主人不是他的隐事记录 (把柄维度)。"""
+        """Secret records cid knows about but does not own (the leverage dimension)."""
         cut = date or self._secret_cut()
         ck = cl.date_key(cut) if cut else None
         out = []
@@ -7918,14 +7793,13 @@ class Facts:
         return out
 
     # ------------------------------------------------------------------
-    # v31 (问题4/5/6/8): 宫廷身份 / 妻室情事脉络 / 牵制 / 直辖折叠
+    # Court identity / consort affairs / hooks / domain-title folding
     # ------------------------------------------------------------------
 
     def court_service_phrase(self, cid, actor_label=None):
-        """宫廷身份短语 (v31, 问题6): 「主角廷中骑士，自869年6月4日在廷」。
+        """Court identity phrase: "主角廷中骑士，自869年6月4日在廷".
 
-        数据源 `court_data` (缓存 `court`): 雇主为玩家时给出, 否则返回 ''。
-        「配偶的情人是主角自己的廷臣/骑士」此前完全读不到, 乔乔因此只剩一个名字。"""
+        Source is `court_data` (cache key `court`), emitted only when the employer is the player."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         ct = rec.get("court") or {}
         pid = self.cache.get("player_id")
@@ -7941,21 +7815,13 @@ class Facts:
         return word
 
     def domain_titles(self, dom):
-        """直辖头衔折叠 (v31 问题8 / v54 问题1): 返回 (保留 id 列表, 被折叠的首府男爵领集)。
+        """Fold domain titles: returns (kept ids, folded ids).
 
-        伯爵领的首府男爵领 (存档 `capital_barony = true`, 且其 `capital` 即所辖
-        伯爵领) 由所辖伯爵领自然蕴含 — 与伯爵领并列会把一处领地写成两处
-        (「贝阿恩伯爵领、波城男爵领」)。首府另由「治所」句写一次。
+        A county's capital barony is implied by that county (listing both writes one holding as
+        two places), and baronies never enter the list.
 
-        v36 (用户拍板5): 男爵领 (rank 1) 一律不进直辖清单 — 头衔材料最低取到州府。
-
-        v54 (用户拍板, 2026-09-18): 直辖清单 = **最高头衔**（同最高层级全留）
-        + **实控伯爵领**。理由（用户口径）: 公国/王国之下必须有封臣才能产出租税
-        与兵员, 只有伯爵领是可直接经营的层级 —— 次级 k_/d_ 头衔不是「实控领地」,
-        并列会让档案变成报菜名（马丁 26 地里有 11 王国 + 6 公国）；它们已由
-        「历任」与《朝局风云录》承担。
-        家业 (`x_nf_*`) 只在**一个伯爵领都没有**时保留 —— 与 v41b「有地领主不写
-        庄园句」同纪律（有地时主线走政体/历任，家业另有《家室列传》承担）。"""
+        Kept = the top tier plus actually held counties, since only counties can be worked
+        directly; a family estate (x_nf_*) stays only when there is no county at all."""
         ids = [int(t) for t in (dom or []) if isinstance(t, int)]
         held = set(ids)
 
@@ -7966,7 +7832,7 @@ class Facts:
         keep, folded = [], set()
         for tid in ids:
             t = self._lt.get(str(tid)) or {}
-            if _rank(tid) == 1:      # v36: 男爵领由所辖州府蕴含
+            if _rank(tid) == 1:      # baronies are implied by the county they belong to
                 folded.add(tid)
                 continue
             cap = t.get("capital")
@@ -7975,7 +7841,7 @@ class Facts:
                 folded.add(tid)
                 continue
             keep.append(tid)
-        # v54: 只留最高层级 + 伯爵领 (家业在无伯爵领时才留)
+        # keep only the top tier + counties (an estate stays only when no county exists)
         top = max((_rank(t) for t in keep), default=0)
         has_county = any(_rank(t) == 2 for t in keep)
         out = []
@@ -7984,17 +7850,16 @@ class Facts:
             if rank == 2 or rank == top:
                 out.append(tid)
             elif rank == 0 and not has_county:
-                out.append(tid)      # 纯世族: 家业即其全部「地」
+                out.append(tid)      # pure clan: the estate is all the land it has
             else:
                 folded.add(tid)
         return out, folded
 
     def consort_affairs(self, cid, spouses=None):
-        """妻室情事脉络 (v31, 问题4): [{spouse, spouse_label, partner, identity, arc}]。
+        """Consort affair threads: [{spouse, spouse_label, partner, identity, arc}].
 
-        逐情人一条: 关系弧由缓存记忆按人聚合 (私通→相恋→灵魂伴侣→分手/情人去世),
-        身份短语取 `court_service_phrase` (主角廷中骑士 / 廷臣 + 入宫日)。
-        「妻子怎么交到情人和灵魂伴侣」此前无脉络可写, 只有一条条孤立日期。"""
+        One entry per lover, the arc aggregated from cached memories by person; the identity
+        phrase comes from `court_service_phrase`."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         fam = rec.get("family") or {}
         pid = self.cache.get("player_id")
@@ -8060,7 +7925,7 @@ class Facts:
         return (L.hook_type_table().get("hook_types") or {}).get(tp or "") or {}
 
     def _hook_name(self, tp):
-        """牵制名的引号形态:「干了我老婆」; 本地化查不到时返回 ''。"""
+        """Quoted hook name, e.g. 「干了我老婆」; '' when the localization is missing."""
         nm = L.hook_type(self.table, tp or "")
         return f"「{nm}」" if nm else ""
 
@@ -8070,33 +7935,26 @@ class Facts:
         return _FACT_WORDING["hook_since"].format(
             year=self._year_only(rec["first_seen"]))
 
-    # v35 (问题3): 家主牵制不入事实层 —— `house_head_hook` 是**家主身份自带**的机制
-    # 牵制 (家主对其每个族人天然持有), 不是「握有把柄」这一叙事事件。v31 起
-    # `hook_notable` 已把它判为「不足以单开一篇隐事」, 但 `hook_lines` 仍原样下发,
-    # 于是《阴私录》里塞满「主角握有对两个儿子的『家主』牵制」(德圣塔档 2 条,
-    # 马克龙档曾 8 条), 与用户「强牵制太泛滥」的判断一致。cache_lib 已在入库前跳过
-    # (见 `hook_type_kept`), 此处对旧缓存再兜一层。
-    # v38 (问题2, 用户拍板): 判据由「排除家主」升级为**白名单** —— 通用人情类
-    # (人情/义务/蒙恩/支持者/忠诚/威胁/操控/孝道…) 一律不下发, 判据见
-    # `style.hook_type_kept`; 旧缓存里已入库的通用牵制由此同样被拦下。
+    # House-head hooks never reach the fact layer: `house_head_hook` comes with the house-head
+    # identity itself, not from a narrative deed, so it would only fill the secrets section
+    # (cache_lib skips them on ingest, see `hook_type_kept`; this also guards older caches).
+    # Only whitelisted types are emitted — see `style.hook_type_kept`.
     def _hook_kept(self, tp):
         return _style.hook_type_kept(tp)
 
     def hook_lines(self):
-        """牵制事实 (v31, 问题5): {"held": [主角握有的], "over": [他人对主角的]}。
+        """Hook facts: {"held": [hooks the player holds], "over": [hooks others hold over him]}.
 
-        方向: 取缓存已定好的 `holder`/`target`（v33 起由 `cache_lib.hook_slot_holder`
-        按 `active_hook_<N>` 槽号判定 —— first/second 只是按键规范化的成对编号）。
-        强弱取游戏 `common/hook_types` 的 `strong`; 同型多条归并成一行。
-        v38 (问题2): 类型先过 `style.hook_type_kept` 白名单 —— 只有背后有一件具体事
-        的牵制才出句 (勒索/捏造/罪案/Mod 内容牵制/强牵制), 通用人情与身份自带类
-        (人情/义务/蒙恩/忠诚/威胁/操控/家主/孝道) 一律略去, 见 `_hook_kept`。
-        只出 as_of 之前已见、且 as_of 时仍持有者 (逐档差分记录 lost_at)。"""
+        Direction comes from the cache's resolved `holder`/`target`; strength is `strong` in
+        `common/hook_types`; hooks of one type merge into one line.
+
+        Types pass the `style.hook_type_kept` whitelist, and only hooks seen before as_of and
+        still held then are emitted."""
         pid = self.cache.get("player_id")
         if pid is None:
             return {}
         ao = cl.date_key(self.as_of) if self.as_of else None
-        # v56 (问题4): 主角只出名字 (event_name), 头衔在档案一次立名
+        # the player gets the name only (event_name); the profile names his titles once
         plabel = self.event_name(pid, self.as_of) or "主角"
         recs = []
         for rec in (self.cache.get("hooks") or {}).values():
@@ -8126,7 +7984,8 @@ class Facts:
                 name = self._hook_name(tp)
                 word = _FACT_WORDING["hook_strong_word"] if strong else ""
                 if len(rs) > 1:
-                    # 归并行: 对手方按方向取 (主角握有 → 对象; 他人对主角 → 持有者)
+                    # merged line: the counterpart depends on direction (player holds →
+                    # target; others over player → holder)
                     ids = [(r["target"] if mine else r["holder"]) for r in rs]
                     names = "、".join(
                         (self.person_label(i, date=self.as_of, style="brief") or "某人")
@@ -8159,9 +8018,8 @@ class Facts:
         return out
 
     def _is_slave_of(self, slave, owner=None, date=None):
-        """slave 在 date 时点是否为 owner (缺省=主角) 的奴隶 (cache["enslavements"])。
-
-        判据 = 逐档差分记录: first_seen ≤ date 且 (lost_at 为空或 > date)。"""
+        """Whether `slave` is a slave of `owner` (default: the player) at `date`, per the
+        per-save diff record: first_seen ≤ date and (no lost_at, or lost_at > date)."""
         pid = self.cache.get("player_id")
         owner = pid if owner is None else owner
         if slave is None or owner is None:
@@ -8179,27 +8037,15 @@ class Facts:
         return True
 
     def enslaved_lines(self):
-        """奴役事实 (v35, 问题4): 主角为奴隶主的那些人。
+        """Slavery facts: the people the player owns as slaves.
 
-        Carnalitas 的 `carn_enslave_effect` 在奴役的**同一刻**对已被囚的奴隶执行
-        `release_from_prison = yes`, 所以存档里那句「释放」记忆正是「没为奴隶」这一步;
-        只有这层关系 (`opinions.active_opinions[*].scripted_relations.slave`,
-        缓存 `enslavements`) 能把两者区分开。旧稿把「抓人 → 没为奴隶 → 放出牢房」
-        整个读成了「抓了又放」, 正是缺了这条。
+        Carnalitas enslaves an imprisoned person and releases him from prison in the same
+        instant, so only the scripted relation
+        (`opinions.active_opinions[*].scripted_relations.slave`, cache `enslavements`) separates
+        "enslaved" from "captured and freed".
 
-        返回 {"lines": [...], "former": [...], "head": bool} —
-        在册者逐条 = 「X没为Y的奴隶（Z年起）。」(超三人时归并成一行, 与牵制同口径);
-        **曾为主角所有、此后不再所有者**进 `former`, 逐条写出关系的收束
-        (v38 问题4: 被卖/被释/被夺, 由缓存差分判定) —— 旧稿只写在册的,
-        人一被卖掉就从事实面彻底消失, 模型此后再无此人可依。
-
-        v38 (问题4, 用户拍板「全部做完」): 收「曾经是主角奴隶」的全部关系
-        (不只看在本档还在册的), 并给出三档收束句:
-          · 转卖 → 「X没为Y的奴隶（Z年起），至W年转归他人」;
-          · 释放 → 「X没为Y的奴隶（Z年起），至W年获释」;
-          · 结局不明 (死亡/数据中断) → 「X没为Y的奴隶（Z年起）」, 不再补缺席按语。
-        判据来自 cache_lib._diff_enslavements 记录的 `end_owner` / `freed` /
-        `lost_at` (见该处注释)。"""
+        Returns {"lines": [one line per current slave, merged above three], "former": [relations
+        the player has lost, closed by the cache diff as resold, freed or unknown]}."""
         pid = self.cache.get("player_id")
         if pid is None:
             return {}
@@ -8209,7 +8055,7 @@ class Facts:
         for key, rec in (self.cache.get("enslavements") or {}).items():
             if not isinstance(rec, dict):
                 continue
-            # v38: 只取主角为**某一任**主人的关系 (转卖后关系仍在缓存里)
+            # only relations where the player was SOME owner (a resold slave stays cached)
             owners = [rec.get("owner")] + list(rec.get("prev_owners") or [])
             if pid not in owners:
                 continue
@@ -8219,14 +8065,14 @@ class Facts:
             if not isinstance(rec.get("slave"), int):
                 continue
             if ao is not None and la and cl.date_key(la) <= ao:
-                # 关系在 as_of 之前就断了 → 曾为主角所有
+                # relation already ended before as_of → formerly owned by the player
                 former.append(rec)
                 continue
             recs.append(rec)
         recs.sort(key=lambda r: cl.date_key(r.get("first_seen") or "9999.9.9"))
         former.sort(key=lambda r: cl.date_key(r.get("lost_at") or "9999.9.9"))
         W = _FACT_WORDING
-        # v56 (问题4): 主角只出名字 (event_name), 头衔在档案一次立名
+        # the player gets the name only (event_name); the profile names his titles once
         plabel = self.event_name(pid, self.as_of) or "主角"
         names = []
         for r in recs:
@@ -8252,7 +8098,7 @@ class Facts:
             for r, nm in names:
                 fs = r.get("first_seen")
                 if r.get("first") or not fs:
-                    # 首档即见: 起年不可知, 只写事 (不给空年份)
+                    # present at the data start: the year is unknown, so write the deed only
                     out.append(W["enslaved_line"].format(
                         slave=nm, actor=plabel))
                 else:
@@ -8262,7 +8108,8 @@ class Facts:
         fout = []
         for r, nm in fnames[:8]:
             fs, la = r.get("first_seen"), r.get("lost_at")
-            # v55 (问题2): 起年由括注改为句首状语 (「自874年起，X没为Y的奴隶，至881年…」)
+            # the start year is an initial adverbial ("自874年起，X没为Y的奴隶，至881年…"),
+            # not a parenthetical
             since = "" if (r.get("first") or not fs) \
                 else "自{}起，".format(self._year_only(fs))
             end_y = self._year_only(la) if la else ""
@@ -8282,26 +8129,18 @@ class Facts:
         return {"lines": out, "former": fout}
 
     def harm_lines(self):
-        """强迫/半推半就之事的**事实行** —— v59 起停用 (恒返回 [])。
+        """Fact lines for forced / half-consented acts — an intentional empty implementation
+        (always returns []).
 
-        v38 (问题1 追修) 曾把「时间线里模块『强暴凌辱』的事件」单列一块, 供
-        《阴私录》的事实面使用 (「...X强迫Y性交。（受害方及其亲属由此视其为仇）」)。
-        **v59 (问题2, 用户 2026-09-23 拍板): 性事只在《列传·好友》《列传·仇人》
-        里用** —— 该块随之停用; 性事行的载体改为好友/仇人两篇的【相关年表】
-        (走 `facts["timeline"]` + `MODULE_SLICE` 的 `("friend"/"enemy","mid")`)。
-
-        函数保留为**空实现**: `_secrets_facts` 仍调用它, 但 `out["harm"]` 不再下发
-        (见 `_secrets_facts`); 将来若要把强迫之事放进别的专用块, 这里是恢复点
-        (`style.FACT_WORDING` 的 `harm_*` 措辞已随本轮删除)。"""
+        Sexual matters live only in the friend and enemy chapters now; kept as the restore point
+        should such facts be wanted in a dedicated block again."""
         return []
 
     def std_lines(self):
-        """性病传播的事实行 (v40): 只收当事人属相关集者。
+        """Fact lines for disease transmission; only parties inside the related set.
 
-        返回 [「{日期}，{源}把{病}传染给了{的}。」] —— 无源 (卖淫/先天) 时写
-        「{的}染上{病}。」。
-        v59 (问题2): 「可挂性事」的补注出口随性事退出年表而删除,
-        本行成为传播的唯一出口。"""
+        Returns ["{date}，{source}把{disease}传染给了{target}。"], or "{target}染上{disease}。"
+        with no source."""
         related = _related_ids(self)
         out = []
         for when, text, src, tgt in _std_index(self):
@@ -8313,33 +8152,14 @@ class Facts:
         return out
 
     def carnal_opinion_lines(self):
-        """Carnalitas 事件好感 → 干净中文句 (v38 问题1/4; v41 问题3 改开关制)。
+        """Carnalitas event opinion → clean Chinese sentence.
 
-        数据源 `cache["carnal_opinions"]` (逐档差分, 自带 `start` = 游戏给的
-        start_date)。本地化就是一句对对方的评断 —— 实测:
+        Source is `cache["carnal_opinions"]` (per-save diff with the game's own `start` date);
+        each localization is an assessment of the other person ("曾强奸我" …), stated as
+        "{owner}自{year}起视{target}为{word}。". Keys without a localization are dropped.
 
-            carn_raped_me                              = 曾强奸我
-            carn_raped_my_lover                        = 曾强奸我的情人
-            carn_raped_family_member                   = 曾强奸家庭成员
-            carn_enslaved_me_opinion                   = 奴役了我
-            carn_enslaved_me_crime_opinion             = 非法奴役了我
-            carn_enslaved_close_family_opinion         = 奴役了亲族成员
-            carn_former_slave_or_slave_owner_opinion   = 曾经是主奴关系
-            carn_forced_me_into_prostitution_opinion   = 迫使我卖淫
-            carn_demanded_manumission_opinion          = 被要求解放奴隶
-
-        方向: `owner` = 持有该评断的人, `target` = 被评断的人。句式为
-        「{owner}视{target}为：{评断词}（{年}）」，即以**持有者的视角**直陈。
-        查不到本地化的键整条略去 (不把裸键送进提示词)。
-
-        v41 (问题3, 用户拍板「都移除, 做成配置形式」): **整族由配置开关控制**,
-        默认关 (`config.json` 的 `carnal_opinions`)。实测本档 29 条全部是
-        `carn_raped_me/_my_lover/_family_member`, 只给「曾强奸我」这类评断,
-        无地点、无行为、无具体日, 与性事记忆渲染的强迫之事行
-        (「1078年6月21日…强迫尼希莱·卡斯特罗乔瓦尼口交」) 逐条重复,
-        只增提示词长度。置 true 时恢复旧行为。
-        v59 (问题2): 性事行已退出公开面 (只在好友/仇人列传里用), 本块与它的
-        重复面进一步缩小; 开关口径不变。"""
+        Off by default via `carnal_opinions` in `config.json`: the entries give only judgements,
+        with no place, act or day."""
         if not self._show_carnal_opinions:
             return {}
         pid = self.cache.get("player_id")
@@ -8364,7 +8184,7 @@ class Facts:
             if not she or not the:
                 continue
             year = self._year_only(fs) if fs else ""
-            # v55 (问题2): 去括注 —— 起年作句内状语 (「X自874年起视Y为…」)
+            # the start year is an adverbial inside the sentence ("X自874年起视Y为…")
             since = f"自{year}起" if (year and not rec.get("first")) else ""
             out.append(f"{she}{since}视{the}为{word}。")
         if not out:
@@ -8372,12 +8192,11 @@ class Facts:
         return {"lines": sorted(set(out))[:10]}
 
     def carnal_victim_line(self):
-        """主角身上「最近遭强暴」的收束句 (v38, 问题1)。
+        """Closing line for "recently raped" on the player himself, from the per-save diff of
+        the character modifier `carn_recently_raped` (5 years, health −0.25).
 
-        数据源 = 逐档差分的角色修正 `carn_recently_raped` (Mod 在受害方身上加
-        5 年, health −0.25)。它与性事记忆互为佐证: 记忆给「谁做的」, 修正给
-        「此事确实按强迫处理、且五年内仍算近事」这一当下状态。只在主角自己身上
-        时出句; 无则返回 ''。"""
+        The modifier corroborates the sexual memories: the act was handled as forced and still
+        counts as recent."""
         pid = self.cache.get("player_id")
         if pid is None:
             return ""
@@ -8394,15 +8213,12 @@ class Facts:
         return _FACT_WORDING["carnal_recently_raped"]
 
     def forced_concubine_lines(self):
-        """强纳为妾事实 (v32, 问题1): 逐条 = 「880年1月1日，主角强纳戈迪娜·迭戈斯为妾。」。
+        """Forced-concubinage facts, one line each: "880年1月1日，主角强纳戈迪娜·迭戈斯为妾。".
 
-        数据源 = `cache["opinions"]` 里 `forced_me_concubine_marriage_opinion` 的
-        `start_date` (存档 `opinions.active_opinions`: owner=被纳者, target=施为者)。
-        游戏脚本 `concubine_on_accept_effect` 在该人**身陷囹圄或守贞**时给这条好感,
-        同一段落紧接着 `release_from_prison = yes` —— 故若同人同日有
-        `released_from_prison_memory` 且监禁者同为施为者, 句尾补「同日自狱中释出」,
-        「掳人 → 囚 → 强纳为妾」的次序即由程序坐实 (旧文本只能写
-        「嫁入年份未见于簿册」, 模型遂默认先婚后囚)。只出 as_of 之前已见者。"""
+        Source is `start_date` of `forced_me_concubine_marriage_opinion` in
+        `cache["opinions"]` (owner = the woman taken, target = the one acting). The game grants
+        it to an imprisoned or chaste person and releases her from prison in the same block, so
+        a matching `released_from_prison_memory` adds "同日自狱中释出" and fixes the order."""
         pid = self.cache.get("player_id")
         if pid is None:
             return []
@@ -8430,7 +8246,8 @@ class Facts:
                 continue
             actor = "主角" if target == pid \
                 else (self.person_label(target, date=self.as_of, style="brief") or "某人")
-            # 同日释放 (脚本 release_from_prison = yes) → 出狱缘由即此
+            # released the same day (the script's release_from_prison = yes) — that is why
+            # she left prison
             paroled = False
             for m in (((self.cache.get("characters") or {}).get(str(owner))
                        or {}).get("memories") or []):
@@ -8446,15 +8263,12 @@ class Facts:
         return sorted(set(out))
 
     def concubine_divorce_lines(self):
-        """「妾的原有婚配被离断」事实 (v60 问题3) —— 逐条形如
-        「879年9月1日，希尔德加德原为萨洛蒙之妻，主角强纳为妾而离异。」。
+        """Facts about a concubine's existing marriage being broken, one line each: e.g.
+        "879年9月1日，希尔德加德原为萨洛蒙之妻，主角强纳为妾而离异。".
 
-        源 = `cache["opinions"]` 里 `forced_spouse_concubine_marriage_opinion`
-        (owner = 被离断的原配, target = 强纳者), 由游戏脚本
-        `00_marriage_interaction_effects.txt` 在「强纳有夫/有妇之人为妾」时给予
-        原配并 `divorce = scope:recipient`。崔佛档三名妾**都是他人之妻**,
-        而模型此前只看到「强纳为妾」一句, 遂把女子的原配关系整段虚构 ——
-        这一行把「谁是原配」写成事实。"""
+        Source is `forced_spouse_concubine_marriage_opinion` in `cache["opinions"]` (owner = the
+        divorced spouse, target = the one taking the concubine); the game grants it with
+        `divorce = scope:recipient`, so without the line the woman's marriage gets invented."""
         pid = self.cache.get("player_id")
         if pid is None:
             return []
@@ -8480,7 +8294,8 @@ class Facts:
             ex_name = self.person_label(owner, date=self.as_of, style="brief") or ""
             if not ex_name:
                 continue
-            # 被强纳者 = 原配在本档的前妻/前夫 (缓存亲属集里唯一的新增配偶)
+            # the woman taken = the spouse's ex in this save (the only former spouse in the
+            # cache's kinship set)
             sp_name = ""
             for x in (((self.cache.get("characters") or {}).get(str(owner)) or {})
                       .get("family") or {}).get("former_spouses") or []:
@@ -8496,11 +8311,10 @@ class Facts:
         return sorted(set(out))
 
     def hook_notable(self):
-        """有「够格入《阴私录》」的牵制 (v31; v38 问题2 收紧判据)。
+        """Whether there is a hook worthy of the secrets section.
 
-        门槛即 `style.hook_type_kept` 的白名单: 只有背后有一件具体事的牵制
-        (勒索/捏造/罪案/Mod 内容牵制/强牵制) 才算料; 家主、孝道、人情、义务、
-        蒙恩这类身份自带或通用人情不单开一篇。"""
+        The bar is the `style.hook_type_kept` whitelist: identity-borne and generic hooks
+        (house-head, filial piety, favours, obligations) get no section of their own."""
         pid = self.cache.get("player_id")
         for rec in (self.cache.get("hooks") or {}).values():
             if not isinstance(rec, dict):
@@ -8511,14 +8325,14 @@ class Facts:
                 return True
         return False
 
-    # v13: 戏剧性事实 — 短命帝国/皇朝在位 (≤30 日即失去/被毁)
+    # Dramatic facts — short-lived empires/dynasties (lost or destroyed within 30 days)
     DRAMATIC_TENURE_DAYS = 30
 
     def dramatic_facts(self, pid):
-        """高亮戏剧性事件 (v15): 短命皇朝 (h_/e_ 头衔 ≤30 日在位即失/被毁)。
-        (v14 的主角级时间线转折点已并入【主角大事摘要】, 不再逐条重复;
-        大奸大恶关系链由 _villain_chains 程序直算, 在 build_facts 并入。)
-        返回 ['935年11月4日承袭周皇朝…', …]。"""
+        """Highlighted dramatic events: short-lived realms (an h_/e_ title held and then lost or
+        destroyed within 30 days).
+
+        Villain chains are computed by `_villain_chains` and merged in build_facts."""
         out = []
         if pid is None:
             return out
@@ -8527,8 +8341,9 @@ class Facts:
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
             if not key.startswith(("h_", "e_")):
                 continue
-            # v53 (问题3): 三省六部是无地官署头衔, 创建当日立刻任命给朝臣,
-            # 天子「在位」时长为零 — 不是短命皇朝, 不进戏剧块。
+            # The six boards are landless government-office titles granted to ministers the
+            # day they are created, so the "reign" lasts zero days — not a short-lived
+            # realm.
             if key.startswith("e_minister_"):
                 continue
             for (gain, loss, ltype) in ivs:
@@ -8539,7 +8354,7 @@ class Facts:
                     continue
                 tname = self._title_name_at(tid, gain, pid)
                 if not tname:
-                    continue  # v14: 头衔名取不到时不直出 key
+                    continue  # with no title name available, never emit the raw key
                 verb = "被毁" if ltype == "destroyed" else "失去"
                 out.append(f"{self.date(gain)}承袭{tname}，"
                            f"{self.date(loss)}{verb}，在位仅{span}日")
@@ -8547,16 +8362,14 @@ class Facts:
 
     def _prince_word(self, ptier, government, independent, female,
                      child=None, ptid=None, date=None, owner=None):
-        """王子词: 按父头衔层级 × 政体 × 独立/封臣 × 性别。
-        天朝制: 皇朝/帝国=皇子/皇女; 独立王国=王子/郡主 (大理国王子);
-        封臣王国=公子/公女 (青徐路公子)。封建: 王子/公主。
+        """Prince word by the parent's title tier × government × independent/vassal × sex.
 
-        v64 (问题2) 闸门: 出词前先问游戏 `special = ruler_child` 条目表
-        (`_prince_word_exists`) —— 表里没有该 (层级 × 政体 × 文化/信仰) 组合时
-        **游戏本就不给称号**, 此处返回 '' (部落制/游牧制的王国级、帝国级子女即此:
-        `prince`/`princess`/`prince_empire` 的 governments 均不含 tribal/nomad)。
-        出词口径不变 (仍走中式键 + `_PRINCE_WORD_OVERRIDE`); `child`/`ptid` 缺省
-        (旧调用) 时跳过闸门, 行为与 v63 逐字相同。"""
+        Celestial: empire → 皇子/皇女, independent kingdom → 王子/郡主, vassal kingdom → 公子/公女;
+        feudal: 王子/公主.
+
+        A combination missing from the game's `special = ruler_child` table (`_prince_word_exists`)
+        grants no title in the game either, so '' is returned; with `child`/`ptid` omitted the
+        gate is skipped."""
         if child is not None and not self._prince_word_exists(
                 ptier, government, independent, child, ptid, date, owner=owner):
             return ""
@@ -8575,16 +8388,16 @@ class Facts:
                 return v
         key = ("princess_kingdom_feudal_chinese" if female
                else "prince_kingdom_feudal_chinese")
-        # v16: 本地化表的封建王国之女是「郡主」(唐制亲王之女的东亚封号),
-        # 西式王国/帝国之女在传记里一律写「公主」; 天朝制的 皇女/郡主/公女
-        # 属刻意东亚风味, 不在覆盖之列
+        # A feudal kingdom's daughter is "郡主" in the localization table, but a Western
+        # kingdom's or empire's daughter is always written "公主" in the biography; the
+        # celestial 皇女/郡主/公女 are deliberate East Asian flavour and are not overridden.
         v = _PRINCE_WORD_OVERRIDE.get(key) or L.loc(self.table, key)
         if v and not v.startswith("$") and not v.startswith("["):
             return v
         return "公主" if female else "王子"
 
     def _parents_of_cid(self, cid):
-        """角色父母 id 列表 (缓存 family → 熔件 family_data 兜底)。"""
+        """Parent ids of a character (cache `family`, then the melt's `family_data`)."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         parents = []
         for k in ("father", "mother"):
