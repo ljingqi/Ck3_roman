@@ -491,7 +491,7 @@ A：先看 `output\<宗族>\data\` 里该玩家的缓存与快照，再决定是
   返回值、非显然的机制与数据来源、性能提示；
 - 版本沿革、问题编号、用户拍板记录、旧稿对比一律不进代码 —— 这些留在 `docs/`
   （本地工作文档，不入版本库）与 git 提交信息里；
-- 改完注释后跑一次 `python tools/tests/check_comment_only.py <文件>`：它比对工作树与
+- 改完注释后跑一次 `python tools/tests/verify_comments.py <文件>`：它比对工作树与
   基线的 AST（剥掉 docstring 后比较），确认这一轮只动了注释、没有动代码。
 
 ---
