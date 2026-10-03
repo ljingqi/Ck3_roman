@@ -40,7 +40,7 @@ PROF_FULL = [
     "个人教义：你们要生育繁殖、孝道、托钵宣道。",
 ]
 OLD_LEAD_FULL = ("写传主所受之礼：所奉礼仪的名目与源流、礼仪领袖为谁。"
-                 "核心教义逐条点名，宗教热情与灵性满足依档位词写来，"
+                 "核心教义逐条点名，宗教热情与灵性满足按档位词写出，"
                  "个人教义写出当前所奉的条目。")
 _NEG = re.compile(r"不要|请勿|勿|禁止|避免|切勿|不得|别 |严禁|不可|不再|除非")
 
@@ -94,7 +94,7 @@ def unit_checks():
     check("U4a 档案只有一行 ⇒ 开篇要求只索这一行",
           r_min["lead"] == "写传主所受之礼：所奉礼仪的名目。", r_min["lead"])
     check("U4b 只有修会一块 ⇒ 纪事要求只索修会, 题面回落通用句",
-          r_min["mid"].endswith("现任之长。") and "受礼" not in r_min["mid"]
+          r_min["mid"].endswith("现任首领。") and "受礼" not in r_min["mid"]
           and r_min["focus"] == "写传主所受之礼与其教门中的作为",
           r_min["mid"] + " | " + r_min["focus"])
 

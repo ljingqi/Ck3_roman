@@ -1697,8 +1697,8 @@ def _article_facts(facts, cache, key, section=None):
             if sk == "lead" and key == "friend":
                 fcid, is_fallback = _pick_friend(cache, as_of=facts.get("as_of"))
                 if cid == fcid and is_fallback:
-                    blocks["说明"] = ("传主与主角无结友记忆，本传按同朝共事之谊立传，"
-                                      "以传主生平为主。")
+                    blocks["说明"] = ("传主与主角没有结友的记录，本传按同朝共事的关系立传，"
+                                      "以传主的生平为主。")
                 else:
                     rs = _relation_reasons(facts, cache, cid, _friend_types())
                     # v16: 游戏自带关系原因优先 (friend/soulmate/blood_brother)
@@ -3033,7 +3033,7 @@ def _chrono_mid_req(base_req, idx, total, periods, last=False, family=False):
         head += f"（第{idx + 1}节，共{total}节）"
     head += "。"
     if family:
-        head += "本板块写先世诸位统治者的世次与其事迹：" + "、".join(names) + "。"
+        head += "本板块写先世各位统治者的辈分次序与事迹：" + "、".join(names) + "。"
     else:
         spans = []
         for p in (periods or []):
@@ -3045,7 +3045,7 @@ def _chrono_mid_req(base_req, idx, total, periods, last=False, family=False):
         if spans:
             head += "年代区间：" + "、".join(spans) + "。"
     if last:
-        head += "本板块是本篇末节，收束于传主在位的末年。"
+        head += "本板块是本篇的末节，写到传主在位的最后一年为止。"
     return head + "\n\n" + (base_req or "")
 
 
@@ -3230,24 +3230,24 @@ def _mid_req_for_group(base_req, idx, total, group):
         head += "。"
         if len(kids) > 1:
             head += (f"本组子女共{len(kids)}人，已随本组档案一并给出；"
-                     "本板块逐人写其受任、婚配、子嗣与家门之事。")
+                     "本板块逐人写出他们的受任、婚配、子嗣与家中的事。")
         else:
             head += ("本板块写这一名子女的成年行迹：受任何职、与何人成婚、"
-                     "已育子女，以及其与父母的往来。")
+                     "已育子女，以及与父母的往来。")
     else:
         head = f"本请求只写这一房：{label}"
         if total > 1:
             head += f"（第{idx + 1}节，共{total}节）"
         head += "。"
-        head += f"本房为{who}。"
+        head += f"这一房是{who}。"
         if len(mates) > 1:
-            head += (f"本房含{len(mates)}位妻妾，已随本组档案一并给出；"
-                     "本板块逐人写其结缡、情事与家门之事。")
+            head += (f"这一房含{len(mates)}位妻妾，已随本组档案一并给出；"
+                     "本板块逐人写出她们的结婚、感情与家中的事。")
         if kids:
             head += (f"这一房所出的未成年子女共{len(kids)}人，"
-                     "已随本组档案一并给出；本板块写这一房的夫妻、子女与其家门之事。")
+                     "已随本组档案一并给出；本板块写这一房的夫妻、子女与家中的事。")
         elif len(mates) <= 1:
-            head += "本板块写这一房夫妻与其家门之事。"
+            head += "本板块写这一房夫妻与家中的事。"
     return head + "\n\n" + (base_req or "")
 
 
@@ -3381,11 +3381,11 @@ def _liyi_req(facts):
         tail.append("核心教义逐条点名")
     _fv, _sf = _has("宗教热情"), _has("灵性满足")
     if _fv and _sf:
-        tail.append("宗教热情与灵性满足依档位词写来")
+        tail.append("宗教热情与灵性满足按档位词写出")
     elif _fv:
-        tail.append("宗教热情依档位词写来")
+        tail.append("宗教热情按档位词写出")
     elif _sf:
-        tail.append("灵性满足依档位词写来")
+        tail.append("灵性满足按档位词写出")
     if _has("个人教义"):
         tail.append("个人教义写出当前所奉的条目")
     lead = "写传主所受之礼：" + first + "。" \
@@ -3397,14 +3397,14 @@ def _liyi_req(facts):
         mid_bits.append("受礼、改礼、立礼的年月与缘由")
         focus_bits.append("受礼、改礼、立礼")
     if facts.get("personal_tenets"):
-        mid_bits.append("他本人采纳个人信条的更替之年")
+        mid_bits.append("他本人采纳个人信条的更替年份")
         focus_bits.append("个人教义之更替")
     if facts.get("rite_tenet_changes"):
         mid_bits.append("礼仪核心教义的演变")
         focus_bits.append("本礼核心教义之更替")
     if facts.get("holy_orders"):
-        mid_bits.append("他建立或庇护的修会，逐所写出立会之年、会规、"
-                        "所领教堂领地与现任之长")
+        mid_bits.append("他建立或庇护的修会，逐所写出立会年份、会规、"
+                        "所领教堂领地与现任首领")
     src = style.SECTION_REQ.get("liyi", {})
     # ---- 第三板块: 枢机团与教宗选举 (v95 问题2, 用户 2026-10-02) ----
     # 与开篇/纪事同一条纪律: 只索本篇真下发的那几行 (席次/封臣枢机/现任教宗/推举与
@@ -3416,26 +3416,26 @@ def _liyi_req(facts):
 
     tail_bits, tail_focus = [], []
     if pe:
-        tail_bits.append("枢机团的席次与虚悬之数")
+        tail_bits.append("枢机团的席次与空缺数")
         if _pe_has("本朝封臣入枢机者"):
-            tail_bits.append("本朝封臣入枢机者逐人点名（席位名与教宗候选声望照抄）")
+            tail_bits.append("本朝封臣入枢机者逐人点名（席位名与教宗候选声望照原样抄写）")
             tail_focus.append("本朝封臣入枢机者")
         if _pe_has("现任教宗"):
-            tail_bits.append("现任教宗及其即位之年")
+            tail_bits.append("现任教宗及其即位年份")
         if _pe_has("下届选举"):
-            tail_bits.append("下届推举的人选、票数与票序第一")
+            tail_bits.append("下届推举的人选、票数与得票第一的人")
             tail_focus.append("下届推举与票数")
         if _pe_has("派别"):
             tail_bits.append("各候选所属派别")
         if _pe_has("奔走"):
-            tail_bits.append("为候选奔走的枢机之数")
+            tail_bits.append("为候选人奔走的枢机人数")
         tail_focus.append("枢机团席次")
     return {
         "lead": lead or (src.get("lead") or ""),
         "mid": (("写礼仪与教义的沿革、传主在教门中的作为：" + "；".join(mid_bits) + "。")
                 if mid_bits else (src.get("mid") or "")),
         "tail": (("写本朝枢机在下届教宗选举中的形势：" + "；".join(tail_bits) + "。"
-                  "席次、票数与人名一律照本篇给出的事实行写来。")
+                  "席次、票数与人名一律照本篇给出的事实写出。")
                  if tail_bits else (src.get("tail") or "")),
         "focus": ("写礼仪的沿革与教门中的作为：" + "、".join(focus_bits)
                   + ("；并写枢机团与下届教宗选举：" + "、".join(tail_focus)
@@ -3643,7 +3643,7 @@ def build_articles(facts, cache, cfg):
     articles = [
         {"key": "benji", "title": f"本纪·{pname}", "subject": None,
          "theme": "人物生平",
-         "focus": "以公开行迹为限：家世、执掌之地、战和囚狱、家门添丁",
+         "focus": "只写公开的行迹：家世、执掌的地方、战争与入狱、家中添丁",
          "sections": mk_sections("benji")},
     ]
     # v88 (问题1/P1): 好友/仇人列传按素材量出篇 —— 该传主本人行迹少于
@@ -3659,12 +3659,12 @@ def build_articles(facts, cache, cfg):
     if friend is not None:
         articles.append({"key": "friend", "title": f"列传·{fname or '好友'}",
                          "subject": fname, "theme": "好友传记（最亲近同僚的一生）",
-                         "focus": "以传主生平为限，主角只在二人交游处出场",
+                         "focus": "只写传主的生平，主角只在两人交游处出场",
                          "sections": mk_sections("friend")})
     if enemy is not None:
         articles.append({"key": "enemy", "title": f"列传·{ename or '仇人'}",
                          "subject": ename, "theme": "仇人传记（一生劲敌）",
-                         "focus": "以传主一生行迹与结仇由头为限，客观平实",
+                         "focus": "只写传主一生的行迹与结仇的起因，叙述客观平实",
                          "sections": mk_sections("enemy")})
     # v60 (问题3): 家室列传的题面随素材改口 (theme/focus 与板块要求同分支) ——
     # 无正妻、无子女者若仍收「妻室子女的门庭画卷」「子女来历与血脉之争」,
@@ -3672,8 +3672,8 @@ def build_articles(facts, cache, cfg):
     _jv = style.JIASHI_VARIANTS.get(facts.get("_jiashi_variant") or "") or {}
     articles.extend([
         {"key": "jiashi", "title": "家室列传", "subject": None,
-         "theme": _jv.get("theme") or "妻室子女的门庭画卷",
-         "focus": _jv.get("focus") or "写门庭内情：结缡、情事脉络、子女来历与血脉之争",
+         "theme": _jv.get("theme") or "妻室子女的家庭画卷",
+         "focus": _jv.get("focus") or "写家中的内情：结婚、感情脉络、子女来历与血脉之争",
          "sections": mk_sections("jiashi")},
     ])
     # v68 (问题1, 用户拍板): 《朝局风云录》改为《XX历代记》—— 以主角当前最高头衔
@@ -3694,10 +3694,10 @@ def build_articles(facts, cache, cfg):
     if _final and (_ttn or _dc):
         _fam = bool(_dc.get("family"))
         _ttl = (_dc.get("name") or _ttn) if _fam else _ttn
-        _t_fam = "家族历代" if _fam else "王朝的历代承继与改朝换代"
-        _f_fam = ("以先世的世次与所执头衔为纲，写家世累代与传主的兴起"
+        _t_fam = "家族历代" if _fam else "王朝的世代更替与改朝换代"
+        _f_fam = ("按先世的辈分次序与他们持有的头衔，写家族的世代传承与传主的兴起"
                   if _fam else
-                  "以各朝代的起止与历代即位缘由为纲，写改朝换代、疆域归并与主角的升沉")
+                  "按各朝代的起止与历代统治者的继位缘由，写改朝换代、疆域归并与主角的起落")
         articles.append(
             {"key": "chaoju", "title": f"{_ttl}历代记", "subject": None,
              "theme": _t_fam, "focus": _f_fam,
@@ -3707,13 +3707,13 @@ def build_articles(facts, cache, cfg):
         articles.insert(4, {"key": "feuds", "title": "家族恩怨录",
                             "subject": None,
                             "theme": "与主角家族关系不和的家族恩怨",
-                            "focus": "写仇怨的来龙去脉：开战、胜负、夺地、对方处境与关系档位",
+                            "focus": "写仇怨的来龙去脉：开战、胜负、夺地、对方的处境与关系档位",
                             "sections": mk_sections("feuds")})
     if facts.get("family_artifacts"):
         articles.insert(5, {"key": "artifacts", "title": "宝物志",
                             "subject": None,
                             "theme": "主角家族所藏重宝的流转历史",
-                            "focus": "写每件重宝的来历与流转，以物见人",
+                            "focus": "写每件重宝的来历与流转，借宝物写人",
                             "sections": mk_sections("artifacts")})
     # v5: 刺客列传 (主角击杀 ≥1 人); v11: 按击杀数动态拆纪事板块
     # (<30 不拆 1 个纪事; 30–59 拆 2 个; ≥60 拆 3 个; 已剔除 lowborn)
@@ -3721,22 +3721,22 @@ def build_articles(facts, cache, cfg):
     if _has_assassins(facts):
         articles.append({
             "key": "assassins", "title": "刺客列传·刀下诸魂",
-            "subject": None, "theme": f"被主角所杀 {len(killed)} 人的合传",
-            "focus": "为每名死者立小传：其生平、与主角的交集、死时情状",
+            "subject": None, "theme": f"被主角杀死的 {len(killed)} 人的合传",
+            "focus": "为每名死者立小传：其生平、与主角的交集、死时的情形",
             "sections": _assassin_sections(len(killed))})
     # v5: 游侠列传 (无地冒险者)
     if facts.get("protagonist", {}).get("landless"):
         articles.append({
             "key": "youxia", "title": "游侠列传·行纪",
-            "subject": None, "theme": "萍踪浪迹的漂泊行纪",
-            "focus": "按行纪次序写漂泊：每至一地的时间、所驻之地、与当地势力的交集",
+            "subject": None, "theme": "漂泊不定的行旅记录",
+            "focus": "按行程次序写漂泊：每到一地的时间、驻扎的地方、与当地势力的交集",
             "sections": mk_sections("youxia")})
     # v5: 妻族传 (妻妾含公主头衔/中华皇帝之女·姐妹)
     if facts.get("imperial_spouses"):
         articles.append({
             "key": "qizu", "title": "妻族传·帝胄姻亲",
-            "subject": None, "theme": "妻族门第 (公主头衔/中华皇帝之女·姐妹)",
-            "focus": "写妻族门第与姻亲牵连 (含妻室自身的经历)",
+            "subject": None, "theme": "妻族门第（公主头衔／中华皇帝之女·姐妹）",
+            "focus": "写妻族门第与姻亲牵连（含妻室自身的经历）",
             "sections": mk_sections("qizu")})
     # v5: 群英录 (行政制角色)
     if facts.get("protagonist", {}).get("government") and \
@@ -3744,18 +3744,18 @@ def build_articles(facts, cache, cfg):
         articles.append({
             "key": "qunying", "title": "群英录·朝堂要员",
             "subject": None, "theme": "同朝要员的群像",
-            "focus": "写同朝要员的名录与浮沉，以主角为坐标",
+            "focus": "写同朝要员的名录与起落，以主角为参照",
             "sections": mk_sections("qunying")})
     # v28: 阴私录 (条件生成 — 有非谋杀隐事 / 家人近臣隐事 / 把柄 才开篇,
     # 避免「27 桩谋杀之秘」这类只与《刺客列传》重复的战役白付两次调用)
     if (facts.get("secrets") or {}).get("any"):
         articles.append({
             "key": "secrets", "title": "阴私录·隐事秘辛",
-            "subject": None, "theme": "隐事与把柄 (主人公不为人知的一面)",
+            "subject": None, "theme": "隐事与把柄（主人公不为人知的一面）",
             # v35 (问题2): 旧 focus 写「自何时见载」, 与板块要求一起逼模型产出
             # 「见载年」这一元数据; 数据给不齐时就编出「本篇未著其年」。现只写话题,
             # 年份由事实层的「N年见于记载」给足。
-            "focus": "写隐事的揭底：何事、涉及何人、事在何年、有谁知情",
+            "focus": "写隐事的揭底：什么事、牵涉到谁、事情发生在哪一年、有谁知道",
             "sections": mk_sections("secrets")})
     # v86 (用户 2026-09-30 拍板): 十年传记与终传都出《礼仪志》(传主所奉礼仪 +
     # 个人教义转变 + 宗教热情/灵性满足); v87 起《教会志》整篇删除 (见本节末注释)。

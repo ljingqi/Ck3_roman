@@ -149,7 +149,7 @@ def unit_checks():
                                            "派别：甲属虔诚派。",
                                            "奔走：26 位枢机在替甲奔走。"]})
     check("U4b 有枢机素材时 tail 逐条索要",
-          all(t in r1["tail"] for t in ("席次与虚悬", "入枢机者", "现任教宗",
+          all(t in r1["tail"] for t in ("席次与空缺", "入枢机者", "现任教宗",
                                        "下届推举", "派别", "奔走")), r1["tail"])
     check("U4c 题面点出枢机团与下届教宗选举",
           "枢机" in r1["focus"] and "教宗选举" in r1["focus"], r1["focus"])
