@@ -18475,7 +18475,9 @@ def _timeline(f):
 # house_founded (absent from `_TYPE2MODULE`/`_STATS_LABEL`, so overview counts are
 # untouched); ident.owner = the protagonist (so `_cap_timeline` ranks it level 1).
 def _house_founding_events(f):
-    """立家/家族改名/宗族改名的年表事件 (无沿革返回 [])。"""
+    """Timeline events for house founding / house rename / dynasty rename.
+
+    Returns [] when there is no such history."""
     pid = f.cache.get("player_id")
     if pid is None:
         return []
@@ -18501,10 +18503,9 @@ def _house_founding_events(f):
         new_house = cur.get("house_id") != prev.get("house_id")
         house_changed = hn != p_hn
         dyn_changed = dn != p_dn
-        # 宗族名按家格句的称法 (「属菲利普宗族」, 不带「氏」)
-        # v81 (问题1): 家族称法已含宗族名时 (东方名序的组装形「平氏下北沢家」)
-        # 不再补 —— 与 `house_history_lines` / `clan_line` 同一条口径,
-        # 免得同一件宗族关系在档案行与年表事件里各说一遍。
+        # The clan is named as in the house-rank sentence ("属X宗族", without "氏"). The suffix is
+        # skipped when the house name already contains the clan name (Eastern name-order composite),
+        # the same rule as `house_history_lines` / `clan_line`, so one relation is not stated twice.
         _east = f.name_order(pid) in cl.EASTERN_NAME_ORDERS
         clan = f"，属{dn_raw}宗族" if dn_raw and hn and dn != hn and not _east else ""
         if new_house:
@@ -18520,8 +18521,8 @@ def _house_founding_events(f):
         out.append({
             "date": d,
             "type": "house_founded",
-            # v64: 专用模块 (只进《本纪》开篇白名单) —— 语义上属「起家发迹」,
-            # 但那一档落在本纪**纪事**/朝局开篇, 而用户指认的句子在本纪**开篇**。
+            # Dedicated module, admitted only to the 本纪 opening whitelist: semantically "rise of the
+            # house", a tier that otherwise lands in the 纪事 / 朝局 opening.
             "module": "家格宗支",
             "text": f"{f.date(d)}，{body}",
             "ident": {"owner": pid, "parts": {"owner": pid},
@@ -18530,31 +18531,18 @@ def _house_founding_events(f):
     return out
 
 
-# v14: 十年戏剧主题抽取 (研究_戏剧模块化.md 3.2) — 时间线事件按模块计数,
-# 主角参与 ×3 / 直系参与 ×2 / 其余 ×1 (时间线已只含直系, 权重简化为
-# 主角名在文本中 ×3 否则 ×1); v24: 取 Top5 (用户: 呈现 5 个左右), 与第 5 名
-# 并列的模块全保留; 专题模块 (血脉登基等) 先并入再统一切口。
+# Decade drama themes: timeline events counted per module with the protagonist weighted x3 and the
+# rest x1 (the timeline already holds only the direct line, so the x2 tier collapses); keep the top 5
+# modules with all ties at 5th, after merging topic modules (bloodline enthronement etc.) in.
 def _cap_timeline(out, f):
-    """年表限量 (v14; v56 问题2 附带重写判据与次序)。
-
-    级别3已从源头剔除, 剩余级别1(主角)/级别2(直系); 超限时截断级别2。
-
-    v56 判据: 级别1 按事件自带的 `ident`, 不再靠句面人名匹配 —— 旧稿用
-    `name_full in text`, 而主角改名后 (斯卡利茨 947 年宗族改称「施」氏) 现名与
-    **事件当日的旧名**不同形: 战争/头衔行按事件日取名
-    (「撒旦之种沙米尔·斯卡利茨赢得战争。」), 现名是「施沙米尔」, 于是主角自己
-    924–943 年的战争行整批被判成级别2 而在封顶时删光 (终传 150 条里只剩 7 条,
-    全是前代马丁朝的)。
-      · ident.owner == 主角  → 本人持有的记忆;
-      · 主角在 ident.parts 里 → 本人为当事人 (镜像对留存的那条常是对手视角,
-        如「敌方赢得战争」而主角是败方 —— 这类正是要留的);
-      · 无 ident 的旧型 → 回退句面匹配。
-    另: ① 末道按日期**稳定**排序 —— 中间几步 (同月同型聚合、私情配对) 把合并行
-    放回该组首次出现的位置, 少数行因此落到更晚的日期之后 (斯卡利茨终传实测 7 处
-    逆序); ② 截断**保持原时间序** (旧稿把级别1 全部提到级别2 之前, 封顶后的年表
-    因此前段是主角、后段倒回前代, 与板块要求「按时间次序叙述」相悖)。"""
+    """Cap the timeline (level 3 is already gone at the source, level 2 is what truncation removes).
+    Level 1 comes from each event's `ident` rather than the text name, because after a rename his
+    current name differs from the event-day name and text matching would delete his own rows
+    (`ident.owner` = his own memory, a protagonist in `ident.parts` = a party to it). Events with no
+    `ident` fall back to text matching. Rows are sorted stably by date and truncation keeps the
+    original order, or the capped timeline would not be chronological."""
     out.sort(key=lambda _e: cl.date_key(_e.get("date") or ""))
-    cap = 80 if f.as_of else 150   # 十年传记(有 as_of) ≤80, 终传/在世 ≤150
+    cap = 80 if f.as_of else 150   # decade biography (with as_of) <= 80, final / living <= 150
     if len(out) <= cap:
         return out
     pid_cap = f.cache.get("player_id")
@@ -18572,7 +18560,7 @@ def _cap_timeline(out, f):
     _lvl1 = [_e for _e in out if _is_lvl1(_e)]
     _room = max(0, cap - len(_lvl1))
     _keep = {id(_e) for _e in _lvl1}
-    for _e in out:                      # 原序遍历, 级别2 按序补足名额
+    for _e in out:                      # original order: fill the rest of the slots with level 2
         if _room <= 0:
             break
         if id(_e) not in _keep:
@@ -18582,8 +18570,9 @@ def _cap_timeline(out, f):
 
 
 def decade_module_top(timeline, protagonist, top_n=5):
-    """十年戏剧主题: [(模块名, 得分)] 按得分降序; 并列第5名全保留 (可能 >5)。
-    无时间线/无模块事件时返回 []。"""
+    """Decade drama themes: [(module, score)] in descending score order, with all
+    modules tied at 5th kept (may exceed 5). Returns [] with no timeline or no
+    module events."""
     pname = (protagonist or {}).get("name") or ""
     score = {}
     for e in timeline or []:
@@ -18597,13 +18586,14 @@ def decade_module_top(timeline, protagonist, top_n=5):
     ranked = sorted(score.items(), key=lambda x: -x[1])
     if len(ranked) <= top_n:
         return ranked
-    # Top5 + 与第5名并列者
+    # top_n plus every module tied with the last kept rank
     cutoff = ranked[top_n - 1][1]
     return [r for r in ranked if r[1] >= cutoff]
 
 
 def _cut_module_top(dm, top_n=5):
-    """对 (模块, 得分) 列表重排并截到 Top5 (+与第5名并列), 供专题模块并入后统一收口。"""
+    """Re-sort a (module, score) list and cut it to the top `top_n` (plus ties at
+    that rank); the single final cut after topic modules are merged in."""
     if not dm:
         return []
     ranked = sorted(dm, key=lambda x: -x[1])
@@ -18613,21 +18603,15 @@ def _cut_module_top(dm, top_n=5):
     return [r for r in ranked if r[1] >= cutoff]
 
 
-# 同日同型可合并事件: type → (提取可变槽的正则, 组合函数)
-# v42 (§3.1/§3.3, 用户拍板3「保留」): **去掉两条监禁类合并** ——
-#   ① `imprisoned` 的正则还是 v32 前的旧形态 `^(.+?)为(.+?)所囚。$`, 早已永不命中
-#      (现形态是「{jailer}囚禁{victim}，…」); `imprisoned_other` 的正则也会把
-#      「囚禁X，14日后获释」的尾巴当成名字槽 —— 两条都是隐患而非功能;
-#   ② 入狱行现在带出狱缘由 (获释/越狱/没为奴隶/处决/死于狱中), 逐人结局不同,
-#      合并成「诺兰囚禁A、B…等12人」恰好抹掉每人各自的死法 —— 逐人成行才有意义
-#      (诺兰 1088.1.16 的 12 人即此例: 10 人 6 个月后处决, 2 人获释)。
+# Same-day same-type mergeable events: type -> (regex for the variable slots, combiner). Both
+# imprisonment merges are deliberately absent: their patterns are stale, and prison rows carry each
+# person's release reason (获释 / 越狱 / 没为奴隶 / 处决 / 死于狱中), so one "等N人" row would erase
+# every individual fate.
 _MERGE_SLOT_RES = {
-    # v56 (问题1b): 加冕句补上 host 后, 正则与合并器同步 —— 且**只有 host 相同**
-    # (同一场加冕礼) 才合并成一行。条目字段:
-    #   pat      —— 提取可变槽的正则 (第 0 组恒为人名, 其余为定值槽)
-    #   key      —— None 时整组合并; 给出时按 key(groups) 分小组, 不同键不合并
-    #   comb     —— 合并句正文 (入参 = 各行的 m.groups() 元组列表 gs)
-    #   cap_verb —— 超过 _MERGE_CAP 人时「…等N人」之后的收尾 (须把定值槽带全)
+    # Coronation rows merge only when the host matches (the same ceremony). Fields: pat = regex for the
+    # variable slots (group 0 always a name); key = absent merges the group, present splits by
+    # key(groups) and never across keys; comb = merged body (argument gs, a list of m.groups() tuples);
+    # cap_verb = tail after "...等N人" past _MERGE_CAP.
     "witnessed_a_coronation_memory": {
         "pat": r"^(?P<name>.+?)见证(?P<host>.+?)的加冕。$",
         "key": lambda g: g[1],
@@ -18641,24 +18625,22 @@ _MERGE_SLOT_RES = {
         "cap_verb": lambda gs: "出席大婚。",
     },
 }
-_MERGE_CAP = 10  # 合并人名上限, 超过收成「…等N人」
+_MERGE_CAP = 10  # max merged names; beyond this they collapse to "…等N人"
 
 
-# v58 (问题7): **同场活动跨日合并** —— 游戏对同一场加冕礼写两条
-# `witnessed_a_coronation_memory`（活动收尾 `common/activities/activity_types/
-# coronation.txt:3043` ＋ 宾客告别事件 `coronation_events.0312`
-# (`events/activities/coronation_activity/coronation_events.txt:5137`, 只对非 AI
-# 宾客触发)），玩家侧于是落在相邻两天（本档 1067.12.22 与 1067.12.23）。
-# 同日合并器只认同一天, 跨日的同场事件不合并 → 大事记里同一场加冕礼连出两行。
-# 规则: 同 type + 同 host (加冕者) 且在 `_ACTIVITY_MERGE_DAYS` 天窗口内 → 并成一行,
-# 日期取**首日**（用户 2026-09-22 拍板「只写第一天」), 见证人取并集。
+# Cross-day merge of one activity: the game writes two `witnessed_a_coronation_memory` rows for a
+# single coronation (the activity finale `common/activities/activity_types/coronation.txt:3043` plus
+# the guest farewell event `coronation_events.0312` at
+# `events/activities/coronation_activity/coronation_events.txt:5137`, non-AI guests only), so they land
+# on adjacent days and the ceremony would otherwise appear twice. Rule: same type + same host within
+# `_ACTIVITY_MERGE_DAYS` -> one row, first day, witnesses unioned.
 _ACTIVITY_WINDOW_TYPES = ("witnessed_a_coronation_memory",
                           "grand_wedding_completed_guest")
 _ACTIVITY_MERGE_DAYS = 7
 
 
 def _merge_activity_windows(events, f=None):
-    """同场活动跨日合并 (v58 问题7)。仅对 `_ACTIVITY_WINDOW_TYPES` 生效。"""
+    """Cross-day merge of one activity. Applies only to `_ACTIVITY_WINDOW_TYPES`."""
     if not events:
         return events
     by_type = {}
@@ -18684,7 +18666,7 @@ def _merge_activity_windows(events, f=None):
             return b[len(pre):] if (pre and b.startswith(pre)) else b
 
         ordered = sorted(entries, key=lambda e: cl.date_key(e.get("date") or ""))
-        groups = []            # [(首日, [entry…])]
+        groups = []            # [(group key, [entry…])]
         for e in ordered:
             m = re.match(pat, _body(e))
             if not m:
@@ -18703,9 +18685,9 @@ def _merge_activity_windows(events, f=None):
         for gkey, g in groups:
             if len(g) < 2:
                 continue
-            # 同一人可能两天各留一条记忆 (本档玛蒂尔达 12.22 与 12.23 各有),
-            # 同日那一条的「名字槽」本身也可能是「A、B」多人串 →
-            # 逐名拆开去重, 只列一次。定值槽 (host 等) 取首条的。
+            # One person may leave a row on each of the two days, and a name slot may itself be an
+            # "A、B" string -> split and dedupe so each name is listed once; fixed slots (host etc.)
+            # come from the first row.
             _base = re.match(pat, _body(g[0])).groups()
             _names, _seen = [], set()
             for e in g:
@@ -18740,9 +18722,10 @@ def _merge_activity_windows(events, f=None):
 
 
 def _merge_same_day_events(events, f=None):
-    """同日同型事件合并 (v11): 集体事件 (多人同日见证加冕/出席大婚/被囚, 或
-    同一人同日囚禁多人) 拆成多行会浪费模型注意力, 按 (日期, 类型) 合并为一行。
-    仅当句子结构一致且只差一个名字槽时合并 (双槽成婚等事件不受影响)。"""
+    """Same-day same-type merge: collective events (many people witnessing a coronation,
+    attending a wedding or imprisoned on one day, or one person imprisoning several) would
+    waste model attention as many rows. Rows merge only when structurally identical apart
+    from one name slot; two-slot events such as marriages are unaffected."""
     groups = {}
     order = []
     for e in events:
@@ -18767,8 +18750,9 @@ def _merge_same_day_events(events, f=None):
                 b = b[len(f.date(d)) + 1:]
             return b
 
-        # 同一 (日期, 类型) 里可能含**几件不同的事** (同日数场加冕礼) —— 按 key 切块,
-        # 不同键各自成行, 不被折成一句。
+        # One (date, type) group may hold several distinct events (several
+        # coronations on the same day) -- split by key, so different keys stay on
+        # their own rows instead of being folded into one sentence.
         if spec.get("key"):
             buckets = {}
             for e in entries:
@@ -18796,9 +18780,9 @@ def _merge_same_day_events(events, f=None):
                 else:
                     merged = prefix + spec["comb"](slots)
             if merged:
-                # v27: 合并必须携带 module —— 此前只写 date/type/text, 合并后的
-                # 事件模块为空, 模块切片会把「被囚」等集体事件整体漏掉。
-                # v34 (问题8): 骨血标记同型合并后按「全部为本家子女」判定, 不一并丢失。
+                # A merged row must carry `module`, or module slicing drops the collective events
+                # entirely (imprisonment etc.). The own_birth flag survives merging, judged as "all
+                # of them are own children".
                 _rec = {"date": d, "type": typ, "text": merged,
                         "module": chunk[0].get("module", "")}
                 if any("own_birth" in e for e in chunk):
@@ -18813,30 +18797,29 @@ def _merge_same_day_events(events, f=None):
 
 
 
-# v92 (问题4, 用户 2026-10-02): 结怨/结仇/死敌的记忆型 ↔ 游戏关系类型。
-# 年表据此补一行「结仇之由」(游戏 `scripted_relations.reason` 的本地化句),
-# 不再让《本纪》只能写「结仇之由，本传不详」。
+# Feud / grudge / nemesis memory types mapped to the game relation types; the timeline uses this to
+# add a "结仇之由" row from the `scripted_relations.reason` localization instead of leaving the cause
+# of the feud unrecorded.
 _FEUD_MEM_TYPES = ("became_rivals", "became_grudge", "became_nemesis")
 _FEUD_RIVAL_KINDS = ("rival", "grudge", "nemesis")
 
-# v15: 同月同型流水事件聚合 — 只合并单槽可变、结构一致的流水 (结怨/结仇/助战等)。
-# style: duo = 「A与B结怨。」双槽; solo = 「A助盟友作战。」单槽。
+# Same-month same-type aggregation of routine events: only rows structurally identical apart from
+# one variable name slot (feuds, allies' wars joined, ...).
+# style: duo = "A与B结怨。" two slots; solo = "A助盟友作战。" one slot.
 _AGG_SPEC = {
     "became_grudge":    {"pat": r"^(.+?)与(.+?)结怨。$",     "verb": "结怨",     "style": "duo"},
     "became_rivals":    {"pat": r"^(.+?)与(.+?)结仇。$",     "verb": "结仇",     "style": "duo"},
     "became_nemesis":   {"pat": r"^(.+?)与(.+?)结为死敌。$", "verb": "结为死敌", "style": "duo"},
     "became_friends":   {"pat": r"^(.+?)与(.+?)结为好友。$", "verb": "结为好友", "style": "duo"},
-    # v78-3: 战事重建后盟战行改写成「{名}随{盟友}出战，对抗{敌手}[，此役为{战名}]」，
-    # 旧样式的 `^…助盟友作战。$` 不再命中。此处按**富句**重挂聚合: 同一月、同一盟友、
-    # 同一敌手、同一战名的一批应召 (同一次战争的各路封臣) 并成一行 —— 细节 (盟友/
-    # 敌手/战名) 一字不减, 只把「同一场战争的多次应召」收到一行 (用户 D4 只做 A 档,
-    # 但同月同对手的应召并成一行属于「合并」而非「丢料」)。
+    # After the war reconstruction, ally-war rows read "{名}随{盟友}出战，对抗{敌手}[，此役为{战名}]", so the
+    # old `^…助盟友作战。$` form no longer matches and aggregation is re-hung on the rich sentence: a
+    # batch of call-ups in the same month for the same ally, opponent and war name becomes one row.
     "joined_allys_war": {"pat": r"^(.+?)随(.+?)出战，对抗(.+?)(，此役为(.+?))?。$",
                          "verb": "",  "style": "allies"},
 }
 
-# v15: 「私情+相恋」成对合并 (同月同对象的 had_sex 与 became_lovers)
-# v31 (问题2): 配偶对另用「同房」句形, 合并为「夫妻情笃」(非配偶仍是「私通相恋」)
+# Pair "had_sex + became_lovers" for the same month and target. Spouses use a separate "同房" sentence
+# form and merge into "夫妻情笃" (non-spouses keep "私通相恋").
 _PAIR_MERGE = {
     "had_sex":            r"^(.+?)与(.+?)有私情。$",
     "had_sex_spouse":     r"^(.+?)与(.+?)同房。$",
@@ -18846,8 +18829,10 @@ _PAIR_MERGE = {
 
 
 def _agg_line(ym, names, verb, tail):
-    """聚合行: '870年4月，莱昂、昂盖朗、诺贝特三人先后与麦克·汤利结怨。'
-    名字 ≤3 全列加人数词 (二人/三人), >3 收前三加「等N人」。"""
+    """One aggregate row: "870年4月，甲、乙、丙三人先后与丁结怨。"
+
+    Up to 3 names are listed, followed by a count word (二人/三人); more than 3
+    keeps the first three plus "等N人"."""
     if not names:
         return None
     y, _, m = ym.partition(".")
@@ -18864,9 +18849,10 @@ def _agg_line(ym, names, verb, tail):
 
 
 def _merge_same_month_events(events, f=None):
-    """同月同型事件聚合 (v15): 「870年4月，莱昂、昂盖朗、诺贝特三人先后与
-    麦克·汤利结怨。」— 把同一年月内结构一致、只差一个名字槽的流水事件并成一行,
-    省词元并防模型逐条数日期; 关键事件 (婚/丧/子/仇/战) 保留精确日期不聚合。"""
+    """Same-month same-type aggregation into one row ("870年4月，甲、乙、丙三人先后与丁结怨。")
+    for routine events identical apart from one name slot: saves tokens and keeps the model
+    from counting dates one by one. Key events (marriage / death / child / feud / war) keep
+    their exact dates."""
     groups = {}
     order = []
     for e in events:
@@ -18906,7 +18892,8 @@ def _merge_same_month_events(events, f=None):
                     merged = _agg_line(ym, [s[0] for s in slots],
                                        spec["verb"], "")
                 elif spec["style"] == "allies":
-                    # v78-3: 同月同盟友同敌手同战名的盟战应召并成一行
+                    # same month + ally + opponent + war name: the call-ups for
+                    # one war become a single row
                     who = [s[0] for s in slots]
                     allies = {s[1] for s in slots}
                     foes = {s[2] for s in slots}
@@ -18936,13 +18923,12 @@ def _merge_same_month_events(events, f=None):
 
 
 def _merge_affair_pairs(events, f=None):
-    """「私情+相恋」成对合并 (v15): 同一月内同一对的 had_sex 与 became_lovers
-    并成一行: '869年1月，麦克·汤利与吉塞勒·加洛林私通相恋。' (成对事件
-    拆两行浪费模型注意力, 且两行日期只差一天)。
-
-    v31 (问题2): 配偶对按 `had_sex_spouse` / `became_lovers_spouse` 句形识别,
-    并作「夫妻情笃」一行, 事件类型也换成 `_spouse` 变体 (概览/模块随之改档)。"""
-    slots = {}   # (ym, 对象对) -> {type: (去日期前缀正文, 完整原文)}
+    """Pair "had_sex + became_lovers" for the same pair in one month into a single
+    "869年1月，甲与乙私通相恋。": two rows waste model attention and their dates differ by a
+    day. Spouse pairs (recognised by the `_spouse` sentence forms) merge into "夫妻情笃" and
+    switch to the `_spouse` event type, so the overview and module tiers follow."""
+    slots = {}   # (ym, unordered pair) -> {type: (body sans date prefix, full text,
+                 #                                      is_spouse)}
     for e in events:
         typ = e.get("type")
         pat = _PAIR_MERGE.get(typ)
@@ -18998,8 +18984,9 @@ def _merge_affair_pairs(events, f=None):
 
 
 def _asof_ids(f, ids):
-    """v11: 按 as_of 过滤家族成员 id 列表 — 出生晚于 as_of 的未出生者不列
-    (十年传记不出现 893 年才出生的马乌戈热塔)。as_of 为空时原样返回。"""
+    """Filter a family member id list by `as_of` (members born after it are not listed, a
+    decade biography not showing the unborn); the list is returned unchanged when `as_of` is
+    empty."""
     if not f.as_of or not ids:
         return ids or []
     ao = cl.date_key(f.as_of)
@@ -19016,121 +19003,126 @@ def _asof_ids(f, ids):
 
 
 def _protagonist(f):
-    """主角档案 (干净中文)。"""
+    """The protagonist's profile facts (clean Chinese)."""
     cache = f.cache
     pid = cache.get("player_id")
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
     melt = f.melt
     pobj = (melt.get("living") or {}).get(str(pid)) or {}
     ad = pobj.get("alive_data") or {}
-    # v44 (问题1): 家族名按本篇截止日取沿革之值 —— 传主别立家族/家族改名后,
-    # 【家族】行、名号句与家格句三处必须同源 (旧稿一律取缓存首见值「诺兰」)。
+    # The house name is read from the lineage as of this chapter's cut-off date:
+    # after the protagonist founds or renames a house, the 【家族】 row, the title
+    # sentence and the house-rank sentence must all read the same value.
     _dn, _hn = f._house_names_at(pid, f.as_of)
     p = {
-        "name": f.name_with_regnal(pid, f.as_of),  # v17: 带世系编号; v44: 按篇截止日
+        "name": f.name_with_regnal(pid, f.as_of),  # regnal numbering, at the cut-off date
         "name_zh": rec.get("name_zh") or "",
-        # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充, 与宗族不同时给出)
+        # clan name (the surname under Eastern name order) + house/branch, given
+        # only when it differs from the clan
         "house": _dynasty_display(_dn, _hn),
         "house_branch": _house_branch(_dn, _hn),
-        # v81 (问题1): 按文化/名序组装的全篇唯一家族称法 (平氏下北沢家 /
-        # 斯卡利茨施氏 / 菲利普，顿巴斯)
+        # the single house wording used throughout, assembled from culture and name
+        # order (平氏下北沢家 / 斯卡利茨施氏 / 菲利普，顿巴斯)
         "house_label": house_label(_dn, _hn, f.name_order(pid),
                                    (f._culture_entry(pid, f.as_of) or {})
                                    .get("culture_template")),
         "birth": f.date(rec.get("birth")),
         "culture": f.culture(pid, f.as_of),
         "faith": f.faith(pid),
-        # v31 (问题1): 「为人」按类别分句 (性情/才具/阅历…), 不再一顿号串
+        # "为人" split into sentences by category (disposition / ability /
+        # experience ...) instead of one comma-separated list
         "traits": f.traits_sentence(pid, public=True),
         "government": f.government(pid),
     }
-    # v11: 角色语言 (语言：诺斯语、阿拉伯语)
     langs = f.languages(pid)
     if langs:
         p["languages"] = "、".join(langs)
-    # v27: 语言风味 — 母语/兼通 + 与妻室子女的言语异同
-    # v44 (问题4): 母语按篇截止日取 (早年篇的族属与母语须一致)
+    # Language flavour: native tongue / also spoken, plus the language (dis)similarity
+    # with wives and children. The native tongue is read at the chapter cut-off date
+    # so an early chapter's ethnicity and native tongue agree.
     p["language_line"] = f.language_sentence(pid, f.as_of)
     p["language_bridge"] = f.language_bridge_line(pid)
-    # v28: 与妻室子女的逐人言语关系句 (程序直给「相通/须通译」结论)
+    # per-person language relation rows with wives and children (the program states
+    # the "相通 / 须通译" verdict itself)
     _lrel = f.language_relation_lines(pid)
     if _lrel:
         p["language_relations"] = _lrel
-    # v9: 主角官职名 (v11: 按 as_of 截断日期取)
+    # protagonist's office title, truncated at as_of
     poff = f.official_title(pid)
     if poff:
         p["office"] = poff
-    # v28b: 称谓统一 — 档案名号句由 facts 一次组好 (biography 不再拼 office+name)
+    # label unified: the profile label sentence is assembled here once, so
+    # biography does not have to join office + name
     p["label"] = f.person_label(pid, date=f.as_of, style="brief") or p["name"]
-    # v9.1: 主角父名 (先世无考则无)
+    # patronymic; absent when the ancestry is unknown
     pptn = f.patronym(pid)
     if pptn:
         p["patronym"] = pptn
     thl = f.trait_history_lines(pid)
     if thl:
         p["trait_history"] = "；".join(thl)
-    # v26: 信仰履历 (改信过程 — 游戏无记忆, 逐档 faith 差分)
+    # faith history (the conversion process): the game keeps no memory of it, so it
+    # is derived by diffing `faith` across save snapshots
     fhl = f.faith_history_lines(pid)
     if fhl:
         p["faith_history"] = "；".join(fhl)
-    # v95 (问题7): 继位改名者 (教宗圣名) 的**本名**单列一行 (用户 2026-10-02 拍板
-    # 「本名与圣名并写」) —— 显示名/称谓一律走圣名 (游戏口径), 本名在此给一次,
-    # 由 `biography._profile_lines` 渲染「本名：阿斯卡尼奥。」。
+    # A ruler who took a regnal (papal) name gets his birth name on its own row: the label runs on the
+    # regnal name (the game's convention) and the birth name is given here once.
     _rbn = f.regnal_birth_name(pid, f.as_of)
     if _rbn:
         p["birth_name"] = _rbn
-    # v95 (问题3, 用户 2026-10-02 拍板「整行删去」): 主角档案**不再**写个人教义 ——
-    # 旧稿 (v88 问题3/P3-A-⑤) 把 `personal_tenet_lines` 的三段式沿革 (「905年起，
-    # 奉转世、圣洁自然为个人教义。908年起，放弃…改奉…」) 塞进主角档案行, 而《礼仪志》
-    # 已有同一件事两块 (开篇《礼仪档案》的「个人教义：当前所奉」+ 纪事「个人教义沿革」)
-    # ⇒ 本纪与总纲里那一行是纯重复 (终传总纲写成「个人教义更迭尤繁：转世、圣洁自然…
-    # 至940年而定于猎首」)。其余角色的档案行不动 (见 `_profile_facts` 同名字段) ——
-    # 他们没有礼仪志, 那一行是唯一出处。
-    # v30: 族属变迁 (问题1 — 游戏不为改宗留记忆, 逐档 culture 差分)
+    # The protagonist profile deliberately omits personal tenets: 礼仪志 already carries the same fact
+    # twice (礼仪档案 "个人教义：当前所奉" and 纪事 "个人教义沿革"). Other characters' rows keep it via
+    # `_profile_facts`, since without a 礼仪志 it is their only source.
+    # Culture history: the game writes no memory for a conversion, so it is derived by
+    # diffing `culture` across save snapshots.
     chl = f.culture_history_lines(pid)
     if chl:
         p["culture_history"] = "；".join(chl)
-    # v44 (问题1): 家格沿革 (别立家族 / 家族改名)
     hhl = f.house_history_lines(pid)
     if hhl:
         p["house_history"] = hhl
-    # v44 (问题2): 传主链 (前任/后任传主与继位日)
+    # chain of biographees (previous / next biographee and the succession date)
     scl = f.succession_lines()
     if scl:
         p["succession"] = scl
-    # v7: 家族家训 + 宫廷/营地官职
     mot = f.motto()
     if mot:
         p["motto"] = mot
     cpl, _cpch = f.court_positions_lines()
     if cpl:
-        # v23: 主语=任职者 (仲宣任丑角…；德方任私人医生…), 组间以「；」分隔
+        # the subject is the office holder ("仲宣任丑角…"), groups separated by "；"
         p["court_positions"] = "；".join(cpl)
-    # v36 (问题2, 用户拍板3): 主角**获授**的朝廷职位 (太师等) — 与上面的僚属花名册分列,
-    # 同时进《传主档案》与《朝局风云录》(realm facts 侧同源)。
+    # Court offices granted to the protagonist (太师 etc.): only offices he himself received
+    # (employee = protagonist), kept apart from the retainer roster, and shared with the realm
+    # facts side (朝局风云录 reads the same source).
     col, coch = f.court_office_lines()
     if col:
         p["court_office"] = "；".join(col)
     if coch:
         p["court_office_changes"] = "；".join(coch)
-    # v11: as_of 早于末档时, 直辖/封臣/营规等明细是「后期快照」数据, 不进入提示词
-    # (只做头衔维度; 明细维度如要按时期需另行逐年快照, 成本高暂不做)
+    # When as_of predates the last snapshot, details such as domain, vassals and camp laws are
+    # late-snapshot data and must not enter the prompt; only the title dimension is date-aware
+    # (per-period detail would need yearly snapshots, too costly for now).
     skip_detail = bool(f.as_of) and cl.date_key(f.as_of) < cl.date_key(
         cache.get("last_date") or f.as_of or "9999.9.9")
     ld = rec.get("landed") or {}
     gov = ld.get("government")
-    # v11: 无地/有地分支按 as_of 首要头衔判定 (十年传记穿越时, 缓存 landed 是末档数据)
+    # the landless / landed branch is decided from the primary title as of as_of
+    # (the cached landed data is the last snapshot)
     ptier, ptid = f._primary_title_at(pid)
-    # v41b (用户指正: 「认为他直接从无地变成行政制」): `ld` 是缓存**末档**数据,
-    # 十年传记穿越到早年时政体读错 (1077 写行政制、1087 写行政制, 实为冒险者/封建制)。
-    # 一律按 as_of 取 (逐档政体史), 查不到才回退末档。
+    # `ld` is last-snapshot cache data, so a government read from it is wrong for the early
+    # years of a decade biography: read the government as of as_of (per-snapshot history) and
+    # fall back to the last snapshot only when nothing is found.
     gov_asof = f._character_government(pid, f.as_of) or gov or ""
-    # v28: 政体原始键 (提示词侧按政体换措辞用: 天朝制/行政制=官职轮转)
+    # raw government key, used by the prompt side to vary the wording
+    # (天朝制 / 行政制 = office rotation)
     p["government_key"] = gov_asof
-    # v28: 只有**真·无地冒险者营地** (x_d_laamp_/雇佣团/教团) 才走营地分支;
-    # 世族庄园 (x_nf_) 与游牧毡帐 (x_c_nomad_) 是家业/驻地, 不走营地分支。
+    # Only a true landless-adventurer camp (x_d_laamp_ / mercenary company / holy order) takes
+    # the camp branch; family estates (x_nf_) and nomadic yurts (x_c_nomad_) are a seat of
+    # power, not a camp.
     if f.title_kind(ptid) == "camp" or gov_asof == "landless_adventurer_government":
-        # ---- 无地冒险者: 营地 ----
+        # ---- landless adventurer: camp ----
         p["landless"] = True
         camp_tid = ptid if f.title_kind(ptid) == "camp" \
             else (ld.get("domain") or [None])[0]
@@ -19138,7 +19130,8 @@ def _protagonist(f):
             p["camp_name"] = f._title_name_at(camp_tid, f.as_of) or "冒险者营地"
         else:
             p["camp_name"] = "冒险者营地"
-        # 营地细节仅当缓存 landed 确为营地 (非 as_of 穿越) 时渲染
+        # camp details are rendered only when the cached landed data really is a
+        # camp (i.e. no as_of time travel)
         if gov_asof == "landless_adventurer_government" and not skip_detail:
             laws = ld.get("laws") or []
             if laws:
@@ -19154,7 +19147,7 @@ def _protagonist(f):
             prov = f.character_location_province(pid)
             county_tid = f.county_at_province(prov)
             if county_tid is None and camp_tid:
-                # 兜底: 营地头衔 capital 视为所在郡
+                # fallback: the camp title's capital counts as the county
                 t = (f.melt.get("landed_titles") or {}).get("landed_titles") or {}
                 cap = (t.get(str(camp_tid)) or {}).get("capital")
                 county_tid = cap
@@ -19171,32 +19164,32 @@ def _protagonist(f):
                     for tid, hid in mids:
                         tn = f.title(tid)
                         hn = f.name_or(hid, "") if hid is not None else ""
-                        # v29b: 头衔与持有人直连 (「幽蓟路李黯」), 不用括注同位语
+                        # title joined straight to its holder ("幽蓟路李黯"), with no
+                        # parenthetical appositive
                         parts.append(f"{tn}{hn}" if hn else tn)
                     p["camp_liege_chain"] = "、".join(parts)
                 top_tid, top_holder = chain[-1]
                 p["camp_top_liege"] = f"{f.title(top_tid)}{f.name_or(top_holder)}" \
                     if top_holder is not None else f.title(top_tid)
     else:
-        # ---- 有地领主 / 世族 ----
-        # v28: 世族庄园 (x_nf_/c_nf_) — 家业身份, 与「无地冒险者营地」分列;
-        # 取 as_of 仍在持有的庄园 (十年传记不回退到末档数据)。
-        # v41b (用户拍板2: 「只在无地/仅持庄园时写」): 首要头衔为领地 (c_ 及以上)
-        # 时**不写**庄园句 —— 诺兰是皇帝, 旧稿把这句无日期的「世族庄园「诺兰家族」，
-        # 主人称乡绅，庄园在亚琛」摆进档案, 模型便拿它当了 1048 年的产房与
-        # 一生门第; 有地领主的主线由「政体/历任」承担 (冒险者营地 → 帝国)。
+        # ---- landed ruler / family estate ----
+        # Family estates (x_nf_ / c_nf_) are an estate identity kept apart from the adventurer camp and
+        # read at as_of. With a landed primary title (c_ and above) the estate sentence is omitted: the
+        # main line is carried by the government / tenure rows, and an undated estate sentence would be
+        # read as the birthplace and standing of a whole life.
         if ptier is None:
             for _etid, _ivs in (f._hold_intervals(pid) or {}).items():
                 if _ivs and _ivs[-1][1] is None and f._is_estate_title(_etid):
                     p["estate_name"] = f._title_name_at(_etid, f.as_of) or "家族庄园"
                     p["estate_word"] = f.estate_kind_word(_etid, pid)
                     p["estate_holder"] = f._estate_holder_word(pid)
-                    # v36 (问题4): 庄园驻地州府 (家业在宾州 — 与官职治所吉昌县两处地方)
+                    # seat county of the estate (the estate and an office seat are two
+                    # different places)
                     _ep = f.estate_place_name(pid)
                     if _ep:
                         p["estate_place"] = _ep
-                    # v41b: 立族日 (晚于出生才写出 —— 出生后所立的家业不是他的产房;
-                    # 诺兰家族头衔 1094.5.28 created)
+                    # founding date, written only when later than the birth: an estate
+                    # founded after birth is not the birthplace
                     _eg = _ivs[-1][0]
                     _bd = rec.get("birth")
                     if _eg and _bd and cl.date_key(_eg) > cl.date_key(_bd):
@@ -19204,9 +19197,9 @@ def _protagonist(f):
                     break
         if ld and not skip_detail:
             p["ruler_since"] = f.date(ld.get("became_ruler_date"))
-            # v31 (问题8): 首府男爵领由所辖伯爵领蕴含, 折叠后再出「直辖N地」
-            # v54 (问题1, 用户拍板): 直辖 = 最高头衔(同层级全留) + 实控伯爵领;
-            # 次级公国/王国不再并列 (见 domain_titles 文档串)
+            # The capital barony is implied by its county, so the folded list is what produces
+            # "直辖N地": domain = the highest-tier titles (all of that tier) + the counties actually
+            # held, secondary duchies and kingdoms not listed alongside (`domain_titles`).
             keep, _folded = f.domain_titles(ld.get("domain") or [])
             dom = []
             for tid in keep:
@@ -19218,20 +19211,20 @@ def _protagonist(f):
             cap = f.title(ld.get("realm_capital"))
             if cap:
                 p["capital"] = cap
-            # v81 (问题5, 用户 2026-09-29): 零值不下发 —— 「封臣0人」把模型的注意力
-            # 引到「他没有封臣」这件无事发生的事上; 无封臣即不出这一分句。
+            # Zero values are not emitted: "封臣0人" would draw the model's attention
+            # to the non-event of having no vassals; with no vassals the clause is
+            # simply absent.
             _vcount = int(ld.get("vassal_count") or 0)
             if _vcount:
                 p["vassal_count"] = _vcount
-            # v29: 御前会议席位改用动态官职名 + 大臣名 (解析不到则整句不发)
+            # council seats use the dynamic office name + the councillor's name; no
+            # clause is emitted when it cannot be parsed
             cl_line = f.council_line()
             if cl_line:
                 p["council"] = cl_line
-        # v26: 游牧牧群/口粮 — 与金钱同口径 (只给当前值), 且取 as_of 熔件的毡帐,
-        # 不用缓存末档 (十年传记 as_of 早于末档时数值会穿越)。
-        # v28: 按 domicile 类型分派 — 牧群只在毡帐 (yurt) 有意义, 口粮只在无地
-        # 营地 (camp) 有意义, 庄园/领地两者皆无; 0 值一律省略 (此前天朝制世族
-        # 档案写出「牧群0」)。
+        # Nomadic herd / camp provisions: current value only, read from the melt at as_of rather than
+        # the last snapshot (which would leak later values). Herd only in a yurt, provisions only in a
+        # landless camp, neither in an estate or landed realm; zero values are omitted.
         if not p.get("landless"):
             _pc = f._chars.get(str(pid)) or {}
             _pld = _pc.get("landed_data") or {}
@@ -19244,12 +19237,14 @@ def _protagonist(f):
             _is_camp = (not _is_nomad) and (
                 _dtype == "camp" or gov_asof == "landless_adventurer_government")
 
-            # v29: 牧群 (游牧货币) 数值不下发; 口粮 (营地补给) 改档位词
+            # the herd (nomadic currency) value is not emitted; provisions (camp
+            # supply) become a game band word
             if _dom and _is_camp and _dom.get("provisions") is not None:
                 w = provisions_band(_dom.get("provisions"))
                 if w:
                     p["provisions_word"] = w
-    # 现状 (仅在世**且未让位**时; v76: 让位者按「位已终」写收句, 不再报在任现状)
+    # current status, only while alive and not abdicated; an abdicated ruler gets the
+    # "位已终" closing sentence instead and no current status.
     if not cache.get("player_death") and not cache.get("reign_end"):
         def num(v, nd=1):
             try:
@@ -19260,7 +19255,8 @@ def _protagonist(f):
         age = None
         try:
             by = int((rec.get("birth") or "0.0.0").split(".")[0])
-            # v11: 十年传记按 as_of 计龄, 不按末档 (防「年87岁」泄漏到 892 年)
+            # a decade biography computes the age at as_of, not at the last snapshot,
+            # so a later age cannot leak into an earlier year
             cy_src = (f.as_of or melt.get("date") or "0.0.0")
             cy = int(str(cy_src).split(".")[0])
             age = cy - by
@@ -19268,37 +19264,39 @@ def _protagonist(f):
             pass
         if age is not None:
             bits.append(f"年{age}岁")
-        # v28: 健康/压力只给游戏档位词 (现代白话), 不再直出 5.5/69 这类元信息数值
+        # health / stress are given only as game band words (plain modern Chinese),
+        # never as raw numbers such as 5.5 or 69
         hs = health_state_zh(ad.get("health"))
         if hs:
             bits.append(hs)
         ss = stress_state_zh(ad.get("stress"))
         if ss:
             bits.append(ss)
-        # v29: 财务与信仰数值一律档位化 (用户决策 2026-09-11):
-        # 国库金、月入、牧群等货币数值整项不下发; 虔诚/威望/影响力/功勋取游戏档位词
-        # (defines LEVELS_* + 本地化 <kind>_level_N: 戴罪之人/崭露头角/七品…)。
+        # Money and faith values are always banded: treasury gold, monthly income and the herd are
+        # omitted entirely, while piety / prestige / influence / merit become game band words (defines
+        # LEVELS_* plus the localization key <kind>_level_N, e.g. 戴罪之人 / 崭露头角 / 七品).
         for kind, label in (("piety", "虔诚"), ("prestige", "威望"),
                             ("influence", "影响力"), ("merit", "功勋")):
             v = (ad.get(kind) or {}).get("currency")
             w = L.level_word(f.table, f._bands, kind, v)
             if w:
-                # v39: 档位词字面已含标签时只出档位词 —— piety_level_2 = 「虔诚信者」,
-                # 旧写法拼成「虔诚虔诚信者」(诺兰 22:36 请求实测)。
+                # when the band word already contains the label, emit the band word
+                # alone: piety_level_2 is "虔诚信者", and prefixing the label would
+                # give "虔诚虔诚信者"
                 bits.append(w if label in w else f"{label}{w}")
         if bits:
             p["status"] = "，".join(bits) + "。"
-    # 死亡 (终传时; v11: as_of 早于死期视为在世, 十年传记不泄漏「死于…」)
-    # v76 (问题1): 让位 (reign_end) 优先 —— 用户 2026-09-27 拍板「让位即终了,
-    # 日后死亡只进缓存给后续篇目的家庭信息用」, 故两档都有时本篇只写让位句。
+    # death (final biography); an as_of earlier than the death date counts as alive, so a decade
+    # biography does not leak "死于…". Abdication (`reign_end`) takes precedence: it ends this chapter,
+    # and a later death only enters the cache for later chapters' family information.
     re_end = cache.get("reign_end")
     if re_end and f.as_of \
             and cl.date_key(f.as_of) < cl.date_key(re_end.get("date") or "9999.9.9"):
-        re_end = None                      # 十年档早于让位日 ⇒ 该档不谈让位
+        re_end = None                      # decade chapter ending earlier: abdication untold
     pd = cache.get("player_death")
     if pd and re_end and cl.date_key(pd.get("date") or "0.0.0") \
             > cl.date_key(re_end.get("date") or "9999.9.9"):
-        pd = None                          # 让位之后的死亡不进本篇
+        pd = None                          # a death after the abdication stays out of this chapter
     if pd and f.as_of and cl.date_key(f.as_of) < cl.date_key(pd.get("date") or "9999.9.9"):
         pd = None
     if re_end:
@@ -19308,40 +19306,38 @@ def _protagonist(f):
             f"死于{f.date(pd.get('date'))}，"
             f"{f.death_clause(pid, date=pd.get('date'), reason=pd.get('reason'), killer=pd.get('killer'))}。"
         )
-        # v81 (问题6, 用户 2026-09-29): 卒地 (男爵领) —— 与《刺客列传》的
-        # `victim_place` 同一出口, 取不到即整项略去 (无料不下发)。
-        # ⚠ 必须与 `p["death"]` **同闸** (`elif pd:`) —— 主角自己的
-        # `characters[pid]["death"]` 是空的 (死亡只写在 `cache["player_death"]`),
-        # 而 `victim_place` 的第三源 `last_location` 不受 as_of 约束; 无条件算会把
-        # **未来**的卒地漏进早年的十年传记 (实测 as_of=970.1.1 就多出一行「卒地亚眠」)。
+        # Death place (a barony), the same output `victim_place` uses in 刺客列传; omitted when
+        # unavailable. It must share the gate of `p["death"]`: the protagonist's own death record is
+        # empty, and `victim_place`'s third source `last_location` is not bounded by as_of, so an
+        # unconditional computation would leak a future death place.
         _dp = f.death_place(pid)
         if _dp:
             p["death_place"] = _dp
-        # v84 (用户 2026-09-29 拍板「人都死了, 历程几个站、预计什么时候到哪根本不重要」):
-        # 卒前那一档仍在旅途者, 把「启程日 + 自X启程 + 赴Y 干什么 + (途中/返程途中)」
-        # 直接**并进卒句**, 不另出一行、不写站数与预计到达:
-        #   「1002年7月15日自秋田启程，赴坎特伯雷主办院校访学，途中死于1006年8月7日，酗酒而亡。」
-        # 与 `p["death"]` 同闸 (`elif pd:`); 取不到启程日/目的地时 `transit_death_clause`
-        # 返回 '' ⇒ 卒句逐字不变 (零回归)。数据见 `Facts.transit_facts`。
+        # A traveller still on the road in the snapshot before death: departure date + "自X启程" +
+        # destination and purpose + (途中 / 返程途中) merge into the death sentence, with no separate row,
+        # station count or estimated arrival. With no departure date or destination the clause returns ''
+        # and the sentence is unchanged (`Facts.transit_facts`).
         _tr = f.transit_facts(pid)
         if _tr:
             p["transit"] = _tr
             _tc = f.transit_death_clause(_tr)
             if _tc:
                 p["death"] = _tc + p["death"]
-    # v81 (问题6, 用户 2026-09-29): 生卒之地 (男爵领) —— 卒地与 `p["death"]` 同闸,
-    # 生地取本人首见快照 (见 `birth_place` 的判据), 取不到即整项略去。
+    # Birth and death places (baronies): the death place shares the gate of
+    # `p["death"]`, and the birth place comes from the person's first-seen snapshot
+    # (see the criteria in `birth_place`); each is omitted when unavailable.
     _bp = f.birth_place(pid)
     if _bp:
         p["birth_place"] = _bp
-    # 家庭 (v11: as_of 截断 — 出生晚于 as_of 的未出生者不列)
+    # family (truncated at as_of: members born later are not listed)
     fam = rec.get("family") or {}
-    # v60 (问题3): 先并入婚配闩存 —— 主角自身的 family_data 在死亡档被清空,
-    # 而配偶/妾的反向指针逐档在册; 不并这一层, 「一生无正妻、只有三名强纳
-    # 之妾」在事实面就退化成一片空白, 模型遂自行虚构妻室。
+    # Merge in the spouse latch first: the protagonist's own family_data is cleared in the death
+    # snapshot while spouses' and concubines' reverse pointers stay in every snapshot; without it the
+    # facts would go blank and the model would invent spouses.
     fam = f.merge_spouse_latch(fam, f.as_of)
     rec["family"] = fam
-    # v13: 妻妾与父系婚姻史交叉标注 — 「先为父之妻/妾, 后归子」的戏剧性关系
+    # cross-annotation of wives/concubines against the father's marriage history: the
+    # "first the father's wife/concubine, then the son's" relation
     father_id = (fam.get("father") or [None])[0]
     fd_fam = {}
     if father_id is not None:
@@ -19355,10 +19351,9 @@ def _protagonist(f):
             if not nm:
                 continue
             note = ""
-            # v92 (问题1, 用户 2026-10-02 拍板「双重亲属用血缘上最优先的那一条」):
-            # 妻/妾若同时是传主的**血亲** (甥/侄/堂表姊妹…), 血缘称谓写在最前 ——
-            # 事实面只写位分时, 模型只能自造 (天贵福之妾洪天美实为其外甥女,
-            # 成稿曾写成「贵福之姊妹行」「外姐姐」并附一句「终生未嫁」)。
+            # A wife or concubine who is also a blood relative (niece / nephew / cousin ...)
+            # gets the blood kinship term first: given only the marital position the model
+            # would invent the relation.
             _bk = f.blood_kin_word_for(sid, pid)
             if _bk:
                 note = f"，本为其{_bk}"
@@ -19367,54 +19362,56 @@ def _protagonist(f):
                                  ("concubine", "妾"), ("former_spouses", "前妻"),
                                  ("former_concubines", "前妾")):
                     if sid in (fd_fam.get(k) or []):
-                        # v55 (问题2): 去括注 —— 补注作同句分句, 故并列改用「；」
+                        # no parentheses: the note is a clause of the same sentence,
+                        # hence the "；" separator
                         note += (f"，原为父{f.kin_label(father_id, f.as_of)}"
                                  f"之{label}")
                         break
-            # v43: 母系婚 (入赘) 的配偶行补线系与子女归属
+            # matrilineal marriage: the spouse row adds the lineality and the
+            # children's affiliation
             if lineality:
                 note += f.marriage_lineality_note(pid, sid, before=f.as_of)
             if note:
                 noted = True
             out.append(nm + note)
-        # 有人带补注时并列用「；」, 免与补注内的「，」相混
+        # use "；" as the separator when any entry carries a note, so it cannot be
+        # confused with the "，" inside the note
         return ("；" if noted else "、").join(out)
 
     spouse_ids = list(dict.fromkeys(
         _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
-    # v43: 成婚日晚于本篇截止日者不列 (末档配偶状态穿越)
+    # spouses married after this chapter's cut-off date are not listed (the last
+    # snapshot's marital state would leak)
     spouse_ids = f._spouses_asof(pid, spouse_ids)
-    # v76 (问题2, 用户拍板④「全部篇目都裁」): 再按**本篇窗口**裁掉窗口内已非妻妾者
-    # (十年档窗口 = 上一个十年截止日 → as_of; 终传/在世 = 战役起点 ⇒ 恒不裁)
+    # Then cut everyone who was no longer a wife or concubine within this chapter's window (a decade
+    # chapter's window runs from the previous decade's cut-off date to as_of; a final or living
+    # biography starts at the campaign start, so nothing is ever cut).
     spouse_ids = f.spouses_in_window(spouse_ids)
     p["spouses"] = _annotate(spouse_ids, lineality=True)
-    # v70 (用户 2026-09-27 拍板: 「姐姐姐姐一类的重复一起改掉」): 同一人只进一个
-    # 婚配档 —— 存档 `family_data` 的 `former_spouses`/`former_concubines` 会把
-    # **现配偶一并列出** (实测 伍尔夫克尔: 妻室善江·敬直斯多蒂尔, 前妻又列她一人;
-    # 温映娘: 「夫瓯王愚者韩元佶、夫韦鲁、前夫韦鲁、前夫瓯王愚者韩元佶」两份互为
-    # 倒序), 旧稿四档各自成形, 于是档案行出「妻室X、前妻X」。优先序 = 打印序:
-    # 妻室 > 前妻 > 妾 > 前妾。
+    # One person enters only one marital category: the save's `family_data` lists the current spouse
+    # again in `former_spouses` / `former_concubines`, so all four categories formed independently
+    # would print "妻室X、前妻X". Priority = print order: wives > former wives > concubines > former.
     _sp_set = set(spouse_ids)
     _former_sp = [x for x in _asof_ids(f, fam.get("former_spouses") or [])
                   if x not in _sp_set]
-    _former_sp = f.spouses_in_window(_former_sp)          # v76: 同窗口口径
+    _former_sp = f.spouses_in_window(_former_sp)          # same window rule
     p["former_spouses"] = _annotate(_former_sp)
-    # v8: 妾 (正向 concubine + 反向 concubinist, 已在缓存合并去重)
+    # concubines (forward `concubine` + reverse `concubinist`, merged and deduped in
+    # the cache)
     _seen_mar = _sp_set | set(_former_sp)
     _conc = [x for x in _asof_ids(f, fam.get("concubine") or [])
              if x not in _seen_mar]
-    _conc = f.spouses_in_window(_conc)                    # v76: 同窗口口径
+    _conc = f.spouses_in_window(_conc)                    # same window rule
     p["concubines"] = _annotate(_conc)
     _seen_mar |= set(_conc)
     _fconc = [x for x in _asof_ids(f, fam.get("former_concubines") or [])
               if x not in _seen_mar]
-    _fconc = f.spouses_in_window(_fconc)                  # v76: 同窗口口径
+    _fconc = f.spouses_in_window(_fconc)                  # same window rule
     p["former_concubines"] = _annotate(_fconc)
     child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
-    # v34 (问题8, 用户拍板): 家门清单列**主角是法理父亲的**全部子女
-    # (非婚生亦在内); 法理父是别人的孩子 (妻室与他人所出) 不进本纪的门门清单,
-    # 由《家室列传》作「妻子的子女」交代。
-    # (无家谱数据时保留原名单, 不把「无数据」当成「无子女」。)
+    # The household list holds every child whose legal father is the protagonist (illegitimate ones
+    # included); children of another legal father stay out of the 本纪 list (家室列传 covers them as
+    # "妻子的子女"). With no genealogy data the original list is kept, so "no data" != "no children".
     _legal, _has_fam = f.legal_children_ex(pid)
     if _has_fam:
         child_ids = [c for c in child_ids if c in _legal]
@@ -19423,12 +19420,13 @@ def _protagonist(f):
     if _wo_line:
         p["wife_other_children"] = _wo_line
     p["children"] = "、".join(f.kin_label(c) for c in child_ids)
-    # v26: 子女按性别分列 (「子A、B，女C、D」) — 与 _character_profiles 同口径
+    # children split by sex ("子A、B，女C、D"), the same rule as `_character_profiles`
     p["children_sons"] = "、".join(
         f.kin_label(c) for c in child_ids if not f._is_female(c))
     p["children_daughters"] = "、".join(
         f.kin_label(c) for c in child_ids if f._is_female(c))
-    # v28: 主体性别 (配偶标签「妻室/夫婿」按此取, 见 biography._profile_lines)
+    # the subject's sex, which selects the spouse label "妻室/夫婿" (see
+    # `biography._profile_lines`)
     p["female"] = f._is_female(pid)
     p["father"] = "、".join(
         f.kin_label(x) for x in (fam.get("father") or []) if f.name(x))
@@ -19436,23 +19434,20 @@ def _protagonist(f):
         f.kin_label(x) for x in (fam.get("mother") or []) if f.name(x))
     p["siblings"] = "、".join(
         f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
-    # v45 (档 B): 本档案家世行**已点名**的亲属 id 集 —— 板块期据此判定
-    # 「此人的亲缘已经写明」, 后面不再重复加定语 (KinScope.seed)。
+    # ids of the relatives already named in this profile's kinship rows: the section stage
+    # (KinScope.seed) reads this to know a kinship is stated and stops repeating the modifier.
     p["kin_ids"] = sorted({int(x) for x in (
         list(spouse_ids) + list(_former_sp) + list(_conc) + list(_fconc)
         + list(child_ids) + list(_wife_other or ())
         + list(fam.get("father") or []) + list(fam.get("mother") or [])
         + list(fam.get("siblings") or [])) if isinstance(x, int)})
-    # v5: 自定义角色 (无谱系) — 家世通用文本覆盖
+    # custom character (no genealogy): the generic kinship text is overridden
     if f.is_custom_start(pid):
         p["custom_start"] = True
-    # v5: 真正父亲 (私生子场景; 与法理父不同才渲染)
-    # v74 (问题3, 用户拍板): 判据改为**按 id 与法理父比对** —— 公开私生的孩子
-    # `real_father == father` (游戏 `on_action/child_birth_on_actions.txt:781-817`
-    # 在 `is_bastard = yes` 的同一分支里 `set_father = scope:real_father`), 生父就是父,
-    # 不另出「实父」; 只有真托卵 (`father != real_father`, 田所档方子) 才下发。
-    # 旧稿无条件写 `p["real_father"]`, 配合「父」行被抑制, 把九位公开私生写成
-    # 「另有一个法理父」。见 docs/方案_v74_田所三问题.md §3.3。
+    # Real father (bastard scenario), decided by comparing ids with the legal father: a publicly
+    # acknowledged bastard has `real_father == father` (the game's
+    # `on_action/child_birth_on_actions.txt:781-817` sets `set_father = scope:real_father` in the same
+    # `is_bastard = yes` branch), so only a true cuckoo case emits the row.
     _father_ids = {int(x) for x in (fam.get("father") or [])
                    if isinstance(x, int)}
     rf = (fam.get("real_father") or [None])[0]
@@ -19462,27 +19457,27 @@ def _protagonist(f):
             p["real_father"] = rfname
             if isinstance(rf, int):
                 p["kin_ids"] = sorted(set(p["kin_ids"]) | {rf})
-    # 主角历任 (v11: 主要头衔演进)
     ht = f.held_titles(pid)
     if ht:
         p["titles_held"] = "；".join(ht)
-    # v41 (问题1): 政体变更句 (改行行政官制等) — 只在确有变化时出句
+    # government change sentence (a switch to administrative government etc.),
+    # emitted only when something actually changed
     gc = f.government_changes(pid)
     if gc:
         p["government_change"] = gc
-    # v41 (问题5): 宗族宗支句 (分家与宗族不同名时)
+    # clan branch sentence (when the branch name differs from the clan name)
     cl_ = f.clan_line(pid)
     if cl_:
         p["clan_line"] = cl_
-    # v41 (问题6): 共治者括注 (「（共治巴西琉斯）」)
+    # co-ruler note, e.g. "（共治巴西琉斯）"
     cor = f.co_ruler_note(pid, date=f.as_of)
     if cor:
         p["co_ruler"] = cor
-    # v53 (问题3): 天命局势一行
     dc = f.dynastic_cycle_line(f.as_of)
     if dc:
         p["dynastic_cycle"] = dc
-    # v13: 戏剧性事实 (一日皇帝等) — 置于档案末尾高亮
+    # dramatic facts (emperor for a day etc.), placed at the end of the profile for
+    # emphasis
     df = f.dramatic_facts(pid)
     if df:
         p["dramatic_facts"] = df
@@ -19490,10 +19485,10 @@ def _protagonist(f):
 
 
 def _profile_needed_ids(f):
-    """v13 (性能): 需要构建档案的角色 id 集 — 只有这些角色会进提示词:
-    相关集 (主角/宗族/父母妻儿/孙辈儿媳婿) ∪ 好友仇人 (双通道) ∪ 宫廷任官。
-    其余 4 万路人档案不构建 — 按需计算, 对齐 P社开发日志 #187 的
-    「只算可见内容」思路 (41k 全量档案 → 数百份, build_facts 大提速)。"""
+    """Ids of the characters whose profile is built -- only these enter the prompt: the related set
+    (protagonist / clan / parents, wives, children, in-laws) ∪ friends and foes ∪ court office
+    holders. Computing only what is visible (cf. Paradox dev diary #187) cuts 41k profiles to a few
+    hundred and greatly speeds up build_facts."""
     out = _related_ids(f)
     pid = f.cache.get("player_id")
     if pid is None:
@@ -19517,8 +19512,8 @@ def _profile_needed_ids(f):
         for p in h.get("positions") or []:
             if isinstance(p.get("employee"), int):
                 out.setdefault(p["employee"], 2)
-    # v31 (问题4/6): 主角配偶的情人/灵魂伴侣 — 妻室情事脉络与情人档案的取材对象
-    # (乔乔/佩拉约此前完全不在档案集, 模型只能写「其职衔、族属，仅存其名」)。
+    # Lovers and soulmates of the protagonist's spouses: source material for the
+    # wives' affairs and for the lovers' own profiles.
     prec = (f.cache.get("characters") or {}).get(str(pid)) or {}
     pfam = prec.get("family") or {}
     for sid in dict.fromkeys(
@@ -19535,9 +19530,9 @@ def _profile_needed_ids(f):
             other = (m.get("participants") or {}).get(slot)
             if isinstance(other, int) and other not in (pid, sid):
                 out.setdefault(other, 2)
-    # v28: 主角的谋害对象与被害者 (成功谋杀记忆 ∪ 缓存死亡记录 killer==主角) —
-    # 这些人的族属/信仰在存档里一直可读 (dead_unprunable 保留对象字段),
-    # 此前只进《刺客列传》(击杀 >5 才生成), 陆氏这类小传里完全读不到。
+    # The protagonist's murder targets and victims (successful_murder memories ∪ cached deaths with
+    # killer == protagonist): their culture and faith stay readable in the save (dead_unprunable keeps
+    # the object fields), and they used to reach 刺客列传 only, which needs more than 5 kills.
     prec = (f.cache.get("characters") or {}).get(str(pid)) or {}
     for m in prec.get("memories") or []:
         if m.get("type") == "successful_murder":
@@ -19553,23 +19548,23 @@ def _profile_needed_ids(f):
 
 
 def _character_profiles(f):
-    """每个缓存角色: 干净档案 + 记忆 + 死亡 + 亲属 + 历任头衔。
-    v13: 只构建进提示词的角色 (见 _profile_needed_ids), 按需计算。"""
+    """Per cached character: clean profile + memories + death + kin + tenures. Built only for
+    the characters that enter the prompt (see `_profile_needed_ids`), computed on demand."""
     out = {}
     for cid in _profile_needed_ids(f):
         rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
         if not rec:
             continue
-        name = f.name_with_regnal(cid)  # v17: 档案名带世系编号 (与时间线文本同口径)
+        name = f.name_with_regnal(cid)  # profile name carries the regnal number, as in timeline text
         prof = {
             "name": name,
             "name_zh": rec.get("name_zh") or "",
-            # v14: 宗族名 (东方名序的姓) + 家族/分家 (风味补充)
+            # clan name (the surname under Eastern name order) + house/branch (flavour)
             "house": _dynasty_display(rec.get("dynasty_name"),
                                       rec.get("house_name")),
             "house_branch": _house_branch(rec.get("dynasty_name"),
                                           rec.get("house_name")),
-            # v81 (问题1): 按文化/名序组装的全篇唯一家族称法
+            # the single house wording used throughout, from culture and name order
             "house_label": house_label(rec.get("dynasty_name"),
                                        rec.get("house_name"),
                                        f.name_order(cid),
@@ -19578,12 +19573,11 @@ def _character_profiles(f):
             "birth": f.date(rec.get("birth")),
             "culture": f.culture(cid),
             "faith": f.faith(cid),
-            # v31 (问题1): 按类分句 (与主角档案同口径)
+            # split into sentences by category, the same rule as the protagonist's profile
             "traits": f.traits_sentence(cid, public=True),
         }
-        # v31 (问题6): 主角廷中身份 — 骑士/廷臣 + 入宫日 (乔乔/佩拉约等妻室情人
-        # 正是主角廷中骑士; 旧档案里这一身份完全缺席)。玩家**自家人**不写这一句
-        # (妻室子女的档案行不必都挂一句「廷臣」)。
+        # Court standing under the protagonist (knight / courtier) + the date of entering
+        # court. The player's own kin skip the sentence: kin rows need no "廷臣" tag.
         _pid0 = f.cache.get("player_id")
         _is_kin = False
         if _pid0 is not None and int(cid) != int(_pid0):
@@ -19599,38 +19593,36 @@ def _character_profiles(f):
                 _csp = f.court_service_phrase(cid)
                 if _csp:
                     prof["court_service"] = _csp
-        # v11: 角色语言
         langs = f.languages(cid)
         if langs:
             prof["languages"] = "、".join(langs)
-        # v29: 语言事实句 (母语/兼通) 只给主角本人 (用户决策 2026-09-11:
-        # 「母语」描写过滥, 家人之间言语相通属常识); 其余角色仅在「与主角无共通语」
-        # 时由 language_relation 句带出其语言清单 — 故此处不再写 prof["language_line"]。
-        # v28: 该角色与主角的言语关系句 (程序直给「相通/须借通译」结论) —
-        # 《列传·好友/仇人》《家室列传》写二人交谈时照此落笔
+        # The language fact sentence (native tongue / also spoken) goes to the protagonist alone:
+        # describing everyone's native tongue is excessive and intelligibility in a family is common
+        # knowledge; others reach the prompt only via `language_relation` (the "相通 / 须借通译" verdict).
         _pid = f.cache.get("player_id")
         if _pid is not None and int(cid) != int(_pid):
             _ln = f.language_relation_line(_pid, cid)
             if _ln:
                 prof["language_relation"] = _ln
-        # v9: 官职名 (首要头衔+官职词) / 王子称号 (无头衔的王国/帝国/霸权子女)
+        # office name (primary title + office word) / prince title (children of a kingdom, empire or
+        # hegemony who hold no title)
         off = f.official_title(cid)
         if off:
             prof["office"] = off
         pt = f.prince_title(cid)
         if pt:
             prof["prince"] = pt
-        # v28b: 称谓统一 — 档案名号句由 facts 一次组好
+        # label unified: the profile label sentence is assembled here once
         prof["label"] = f.person_label(cid, date=f.as_of, style="brief") or name
-        # v41 (问题5): 宗族宗支句 (分家与宗族不同名时点明同宗)
+        # clan branch sentence (spelled out when the branch name differs, to mark the
+        # same clan)
         _cl = f.clan_line(cid)
         if _cl:
             prof["clan_line"] = _cl
-        # v41 (问题6): 共治者括注 (「（共治巴西琉斯）」)
         _cor = f.co_ruler_note(cid, date=f.as_of)
         if _cor:
             prof["co_ruler"] = _cor
-        # v9.1: 父名 (诺斯等父名制文化: 崔佛松/崔佛斯多蒂尔)
+        # patronymic (patronymic cultures such as Norse: 崔佛松 / 崔佛斯多蒂尔)
         ptn = f.patronym(cid)
         if ptn:
             prof["patronym"] = ptn
@@ -19640,22 +19632,22 @@ def _character_profiles(f):
         fhl = f.faith_history_lines(cid)
         if fhl:
             prof["faith_history"] = "；".join(fhl)
-        # v95 (问题7): 继位改名者 (教宗圣名) 的**本名**逐人一行 —— 称谓走圣名,
-        # 本名在此给一次 (用户 2026-10-02 拍板「本名与圣名并写」)。
+        # A ruler who took a regnal (papal) name gets his birth name on his own row:
+        # the label runs on the regnal name and the birth name is given once here.
         _rbn = f.regnal_birth_name(cid, f.as_of)
         if _rbn:
             prof["birth_name"] = _rbn
-        # v88 (问题3/P3-A-⑤): 个人教义**逐人**入档 (不只是传主) —— 有地统治者才带
-        # `playable_data.tenets`, 故只有这些人出这一行 (本档 90 人档案里 18 人)。
+        # Personal tenets go into every profile, not only the biographee's; only landed
+        # rulers carry `playable_data.tenets`, so only they get this row.
         ptl = f.personal_tenet_lines(cid, f.as_of)
         if ptl:
             prof["personal_tenets"] = f._join_sentences(ptl)
-        # v30: 族属变迁 (问题1)
         chl = f.culture_history_lines(cid)
         if chl:
             prof["culture_history"] = "；".join(chl)
-        # v7: 该角色在玩家宫廷/营地中的官职 (最新快照, 反向取最后一年)
-        # v29: 显示名按玩家宫廷的政体变体取 (私人医生 → 医学博士)
+        # this character's office in the player's court or camp (latest snapshot,
+        # scanning backwards for the last year); the display name follows the player's
+        # court government variant (私人医生 -> 医学博士)
         for h in reversed(f.cache.get("court_positions") or []):
             for p in h.get("positions") or []:
                 if p.get("employee") == cid:
@@ -19668,37 +19660,39 @@ def _character_profiles(f):
         fam = rec.get("family") or {}
         spouse_ids = list(dict.fromkeys(
             _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
-        # v43: 成婚日晚于本篇截止日者不列 (同 _protagonist_facts 口径)
+        # spouses married after this chapter's cut-off date are not listed (same rule
+        # as `_protagonist_facts`)
         spouse_ids = f._spouses_asof(cid, spouse_ids)
-        # v27: 亲属一律「头衔+姓名」(kin_label), 不再只给姓名
-        # v43: 母系婚 (入赘) 的配偶逐人补线系与子女归属
+        # Kin are always "title + name" (`kin_label`), never the bare name; a
+        # matrilineal marriage adds the lineality and the children's affiliation per
+        # spouse.
         prof["spouses"] = "、".join(
             f.kin_label(s) + (f.marriage_lineality_note(cid, s, before=f.as_of) or "")
             for s in spouse_ids if f.name(s))
         prof["concubines"] = "、".join(
             f.kin_label(s) for s in _asof_ids(f, fam.get("concubine") or []) if f.name(s))
-        # v92 (问题1, 用户 2026-10-02): 位分/血缘行 —— 本人档案查不到「为谁所纳」时
-        # 由程序补出 (否则同一篇里传主档案列其为妾、本人档案却「终生未嫁」)。
-        # 落在**名号句**里 (见 biography._profile_lines): 模型对「洪氏 + 天X 辈」的
-        # 名字极易判成同胞 —— 两轮成稿都把传主之甥女写成「传主之姐姐」, 故把这层
-        # 关系放在最先读到的一行, 而不是排在特质履历之后。
+        # Consort / blood-kin row: the program supplies whom she was taken by when her own profile cannot
+        # show it (otherwise the protagonist's profile lists her as a concubine while her own says
+        # "终生未嫁"). It goes into the label sentence (`biography._profile_lines`), the first line the
+        # model reads, since names sharing a generational prefix are easily misread as siblings.
         _co = f.consort_of_line(cid)
         if _co:
             prof["consort_rel"] = _co
         _conc_ids = list(_asof_ids(f, fam.get("concubine") or []))
         child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
         prof["children"] = "、".join(f.kin_label(c) for c in child_ids)
-        # v26: 子女按性别分列 (「子A、B，女C、D」) — 此前只有无性别混排列表,
-        # 模型只能靠名字猜 (田所2 睦/立希被写成儿子)。
+        # children split by sex ("子A、B，女C、D"); without it the list is an ungendered
+        # mix and the model can only guess from the names
         prof["children_sons"] = "、".join(
             f.kin_label(c) for c in child_ids if not f._is_female(c))
         prof["children_daughters"] = "、".join(
             f.kin_label(c) for c in child_ids if f._is_female(c))
-        # v28: 主体性别 — 配偶标签按此取 (女角色的丈夫不再写成「妻室」)
+        # the subject's sex, which selects the spouse label (a female character's
+        # husband is no longer labelled "妻室")
         prof["female"] = f._is_female(cid)
-        # v29 (问题5): 主角子女的档案不再重复家世名单 —
-        #   「兄弟姊妹」与主角其余子女完全同集 (主角档案已列全), 同批名单此前
-        #   在家室档案里按人重复 8 次; 「父」为主角时一并省去 (保留「母」以辨生母)。
+        # A protagonist's child gets no repeated kinship list: his "兄弟姊妹" is exactly the
+        # protagonist's other children, listed in full already, and repeating it per household profile
+        # prints it eight times. The "父" row is also dropped; "母" is kept to identify the birth mother.
         _pid = f.cache.get("player_id")
         _prec = (f.cache.get("characters") or {}).get(str(_pid)) or {}
         _pchildren = {int(x) for x in ((_prec.get("family") or {}).get("child") or [])}
@@ -19709,17 +19703,11 @@ def _character_profiles(f):
             prof["father"] = "、".join(f.kin_label(x) for x in _fathers)
         prof["mother"] = "、".join(
             f.kin_label(x) for x in (fam.get("mother") or []) if f.name(x))
-        # v74 (问题3 C4, 用户拍板「公开私生不需要专门写」—— 本条只写**生母的婚配
-        # 身份**, 不写孩子是否私生): 生母在**孩子出生时**另有配偶 (该配偶不是孩子的父)
-        # 时, 记一句生母的婚配身份 (多家取门第最高的那位), 由 `biography._profile_lines`
-        # 只在**内宅档** (with_real_parentage) 追加到「母」行后。
-        # 本档最有戏的一层关系即此: 田所浩二的情人 藤原高子 / 大和忠子 都是
-        # **前任天皇大和惟仁之妻**, 所生子女随田所氏 (见方案 §3.6)。
-        # 「出生时仍在婚」判据 (全由缓存记忆/字段直算, 不猜):
-        #   ① 有 `married` 记忆者: 成婚日 ≤ 孩子生日 (成婚日晚于出生的排除);
-        #   ② 无 `married` 记忆者 (实测 藤原高子 × 大和惟仁 即此类, 婚姻早于缓存
-        #      窗口): 以「该配偶在孩子出生时仍在世」为准 —— 该配偶在孩子出生前已卒
-        #      即婚配已终 (藤原珍子 × 橘良根: 良根 871 卒, 其子女皆 874 后出生, 排除)。
+        # Only the birth mother's marital status at the child's birth is recorded (not illegitimacy):
+        # with another spouse then (not the child's father) one sentence gives her marital identity,
+        # taking the highest-ranked spouse; `biography._profile_lines` appends it to the "母" row only in
+        # the inner-household chapter. "Still married at the birth", from cache fields and memories: with
+        # a `married` memory the wedding date is <= the birth date, without one the spouse was still alive.
         _mom = (fam.get("mother") or [None])[0]
         _birth = str(rec.get("birth") or "")
         if _is_pchild and isinstance(_mom, int) and _birth:
@@ -19748,23 +19736,25 @@ def _character_profiles(f):
                 _rel = f._consort_word(_best, _mom)
                 _bl = f.kin_label(_best)
                 if _rel and _bl:
-                    # 不带括注 (项目铁律: 事实面无「名词（名词）」括注同位语) ——
-                    # 由 `biography._profile_lines` 作为独立一句下发。
+                    # no parentheses: the facts use no appositive "noun（noun）" form (a
+                    # project rule). `biography._profile_lines` emits it as a sentence of
+                    # its own.
                     prof["mother_note"] = f"生母为{_bl}之{_rel}。"
         if not _is_pchild:
             prof["siblings"] = "、".join(
                 f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
-        # v5: 自定义角色 + 真正父亲 (私生子)
         if f.is_custom_start(cid):
             prof["custom_start"] = True
-        # v74 (问题3): 同 `_protagonist_facts` —— 只在**真托卵** (`father != real_father`)
-        # 时下发「实父」; 公开私生的 `real_father == father`, 不写「实父」。
+        # same as `_protagonist_facts`: the real father is emitted only for a true
+        # cuckoo case (`father != real_father`); a publicly acknowledged bastard has
+        # `real_father == father` and gets no such row.
         rf = (fam.get("real_father") or [None])[0]
         if rf is not None and int(rf) not in _fids:
             rfname = f.kin_label(rf)
             if rfname:
                 prof["real_father"] = rfname
-        # v45 (档 B): 本档案家世行已点名的亲属 id 集 (见 _protagonist_facts 同名字段)
+        # ids of the relatives this profile's kinship rows already named (see the
+        # same-named field in `_protagonist_facts`)
         prof["kin_ids"] = sorted({int(x) for x in (
             list(spouse_ids) + list(_conc_ids) + list(child_ids)
             + list(fam.get("father") or []) + list(fam.get("mother") or [])
@@ -19773,17 +19763,17 @@ def _character_profiles(f):
         ht = f.held_titles(cid)
         if ht:
             prof["titles_held"] = "；".join(ht)
-        # v74 (问题1, 用户拍板「腾位置只针对《家室列传》」): 主角子女的**承位句** ——
-        # 其现任头衔的前任里, 连续一串死于主角之手的那些人 (「刀下亡魂是为了给
-        # 我的孩子腾位置」)。只随子女档案下发 (家室档案/阴私录), 不进《刺客列传》。
+        # Seat sentence for a protagonist's child: among the predecessors of his current title, the run
+        # of those who died at the protagonist's hand ("those killed so that my child could take the
+        # seat"), emitted with the child's profile only (household biography / secret records).
         if _is_pchild:
             _sn = f.seat_note(cid)
             if _sn:
                 prof["seat_note"] = _sn
         mems = []
-        # v26: 取缓存记忆 (此前写 prof.get("memories"), 而 prof 无该键 →
-        # 「传主行迹」对所有人恒为「（无行迹记录）」)
-        # v58 (问题8): 先做「继承合句」配对 —— 被消费的死讯/承袭记忆不再单独成行
+        # read the memories from the cache (the old code read `prof.get("memories")`, a key that never
+        # existed, so every "传主行迹" said "（无行迹记录）")
+        # pair up inheritance sentences first: memories consumed by a pair no longer become rows
         _ipairs = f.inherit_pairs(cid)
         _iconsumed = set()
         for _line, _ids, _dd in _ipairs.values():
@@ -19791,17 +19781,17 @@ def _character_profiles(f):
         for mem in rec.get("memories") or []:
             if id(mem) in _iconsumed:
                 continue
-            # v59 (问题2, 用户拍板): 性事 (同房/私通/强迫·半推半就) 不进角色档案的
-            # 「行迹」 —— 档案是各篇共用的公开数据 (家室档案也在共享前缀里),
-            # 性事只在《列传·好友》《列传·仇人》的【相关年表】里出现
-            # (那一路走 `facts["timeline"]`, 见 `_timeline` 的闸)。
+            # Sexual memories (同房 / 私通 / forced or half-willing) stay out of a character's "行迹":
+            # profiles are public data shared by every chapter, so sex appears only in the 【相关年表】
+            # of the friend and foe biographies (via `facts["timeline"]`, see `_timeline`).
             if is_sex_memory(mem.get("type")):
                 continue
             s = _mem_sentence(f, cid, mem)
             if not s:
                 continue
-            # v11: as_of 截断 — 十年传记只列该时期前的事件
-            # v34b: 日期取事实日 (头衔得失用 title history 事件日)
+            # truncated at as_of: a decade chapter lists only events up to that period;
+            # the date is the factual date (title gains and losses use the title-history
+            # event date)
             _md = f.mem_date(cid, mem)
             if f.as_of and _md and cl.date_key(_md) > cl.date_key(f.as_of):
                 continue
@@ -19810,18 +19800,16 @@ def _character_profiles(f):
             mems.append(f"{f.date(_dd)}，{_line}")
         mems.sort()
         prof["events"] = mems
-        # v29 (问题4): 「传主行迹」用省主语版 — 块内主语恒为传主, 重复姓名无信息。
-        # v64 (问题5 连带): 剥离键仍取档案称谓 (旧行为逐字不变), 但另备一条
-        # **去掉勋号前缀**的同形键 —— 勋号随时点变化 (某人在事件当日还没戴上,
-        # 而档案称谓按篇末取), 只用档案称谓做键会剥不掉, 省主语版里于是重新冒出
-        # 一个光秃秃的主语名 (实测 5 例: 阿农德尔·塞卡尔 / 富兰克林·崔佛松等)。
+        # "传主行迹" uses the subject-omitted form (the block's subject is always the biographee). Strip
+        # keys are the profile label plus a same-shaped key without the accolade prefix: an accolade
+        # changes over time, so keying on the label alone lets a bare subject name reappear.
         _subj = prof.get("label") or name
         _alts = []
         _acc = f.accolade_word_at(cid, f.as_of)
         if _acc and _acc in _subj:
             _alts.append(_subj.replace(_acc, "", 1))
-        # v90 (问题3): 再以**本人名**兜底 —— 句首是当日官称时 (「南诏乡绅洪天曾」
-        # 「桂郡主洪天姣」) 只有本人名是共同锚点。
+        # Fall back to the person's own name: when the sentence opens with the office
+        # title of the day, the name itself is the only common anchor.
         _own = [name]
         _raw = f.name(cid)
         if _raw and _raw != name:
@@ -19830,8 +19818,9 @@ def _character_profiles(f):
         for x in mems:
             y = _strip_subject_prefix(x, _subj, _alts, own_names=_own)
             _subs.append(y)
-            # v90: 省主语后句面已变, 三张以句本体为键的登记表 (name_index /
-            # line_owner / line_stated) 要跟着复制别名, 否则亲缘定语插不进这一行。
+            # After subject omission the sentence body changes, so the three registries
+            # keyed by sentence body (name_index / line_owner / line_stated) need an
+            # alias copy, or the kinship modifier cannot be inserted into this row.
             if y != x:
                 _m2 = _SUBJ_DATE_RE.match(x)
                 _hd = _m2.group(0) if _m2 else ""
@@ -19841,39 +19830,38 @@ def _character_profiles(f):
         prof["events_subjectless"] = _subs
         for _ob, _nb in _aliases:
             f.alias_line(_ob, _nb)
-        # v31: 死亡句按 as_of 截断 — 十年传记不写十年末之后的死 (旧文本把 878.3.17
-        # 的死写进截至 878.01.01 的十年传; 时间线本有截断, 只有档案漏了)
+        # The death sentence is truncated at as_of: a decade biography does not write a
+        # death after the decade's end (the timeline already truncated; only the
+        # profiles leaked it)
         _dd = (rec.get("death") or {}).get("date")
         if not (f.as_of and _dd and cl.date_key(_dd) > cl.date_key(f.as_of)):
             ds = _death_sentence(f, cid)
             if ds:
                 prof["death"] = ds
-            # v81 (问题6, 用户 2026-09-29 拍板): 卒地只写**主角的家族成员** ——
-            # 其他人的卒地已由《刺客列传》的 `victim_place` 承担 (那一处早就做了),
-            # 档案行不必逐人再挂一遍。
+            # A death place is written for the protagonist's kin only: other people's
+            # death places are already carried by `victim_place` in 刺客列传, so the
+            # profile rows need not repeat them.
             if _is_kin:
                 _dp = f.death_place(cid)
                 if _dp:
                     prof["death_place"] = _dp
-        # v81 (问题6): 生地同样只写家族成员 —— 本人首见快照所在, 见 `birth_place`
+        # the birth place is also written for kin only, taken from the person's
+        # first-seen snapshot (see `birth_place`)
         if _is_kin:
             _bp = f.birth_place(cid)
             if _bp:
                 prof["birth_place"] = _bp
-        # v75 (凶手点名): 死者档案带公开性旗标 (供板块期与快照复核)
+        # a victim's profile carries the publicity flag for naming the killer (used by
+        # the section stage and for snapshot cross-checking)
         prof["killer_public"] = f.killer_is_public(cid)
         out[str(cid)] = prof
     return out
 
 
 def _campaign_start(f):
-    """战役起点 (开局日, v68 问题1) —— 本战役各传主缓存 `sources` 首档的最小值。
-
-    为什么不能只看本缓存: 每份缓存只覆盖自己当玩家的那批档期 (实测菲利普2:
-    崔佛 868–922 / 富兰克林 923–930 / 卡尔 931–954 / 尼克 955–976 /
-    伍尔夫克尔 978.1.1), 只读本缓存时《朝局风云录》的下界被砍到「本缓存首档 − 30 年」
-    = 925, h_china 的唐 (—886.1.2) 与中华 (887.1.2–950.6.1) 两段整个落选,
-    「改朝换代」一次也看不见 (用户问题1)。无 sources 时返回 None (调用方退回旧口径)。"""
+    """Campaign start (opening date): the minimum first snapshot across this campaign's biographee
+    caches. This cache alone would clamp the lower bound of 朝局风云录 to "its first snapshot - 30
+    years" and drop whole dynasty segments. None without sources; the caller falls back."""
     best = None
     for src in list((f.campaign or {}).values()) + [f.cache]:
         srcs = (src or {}).get("sources") or []
@@ -19888,13 +19876,11 @@ def _campaign_start(f):
     return best
 
 
-# v69 (用户 2026-09-27 拍板): 《XX历代记》每人的**即位缘由** —— 存档 `landed_titles.
-# <tid>.history` 每条事件的 `type` 就是游戏自己的继位方式 (子代理取证 `logs/
-# probe_v69_succ4.txt`: 20 种取值里除 `destroyed` 外**全部**是「取得」事件, 即事件的
-# `holder` 是取得者; `destroyed` 的 `holder` 是失去者)。措辞取自游戏本地化
-# (`game/localization/simp_chinese/`: succession_laws 「任命继承制」、
-# memories_l_simp_chinese.yml:630-731 的 ascended_throne 各缘由句)。
-# 无 type 的裸 holder 条目 = 常规继承 (CK3 存档即以此区分, 全局 32234 条)。
+# Accession reason for each person in 《XX历代记》, read from the `type` of every event in the save's
+# `landed_titles.<tid>.history` -- the game's own succession method (of the 20 values that occur, all
+# except `destroyed` are "acquire" events). Wording from the game localization: succession_laws
+# "任命继承制" and the ascended_throne reasons in memories_l_simp_chinese.yml:630-731. A bare holder
+# with no `type` means regular inheritance (32234 entries in total).
 _SUCC_WORD = {
     "appointment_succession": "受任命继位",
     "appointment": "受任命",
@@ -19915,25 +19901,26 @@ _SUCC_WORD = {
     "independency": "自立",
     "returned": "收回",
     "swear_fealty": "宣誓效忠",
-    # v73: 记忆档 (`ascended_throne_memory.vars.reason`) 里有、头衔 history 不落的
-    # 五种取法 —— 措辞照游戏原文 (`game/localization/simp_chinese/memories_l_simp_chinese.yml`
-    # 的 `ascended_throne_memory_desc_intro_*`): `:633` 我继承了 / `:638` 我被选举来统治 /
-    # `:640` 我购买了 / `:637` 我夺取了…的牧场 / 议和得位 (negotiated)。
+    # Five methods of taking a title that exist in the memory record
+    # (`ascended_throne_memory.vars.reason`) but never reach the title history; the wording follows
+    # `ascended_throne_memory_desc_intro_*` (memories_l_simp_chinese.yml:633-640).
     "inheritance": "继承",
     "purchased": "买得头衔",
     "seized_pastureland": "夺取牧场",
     "negotiated": "议得头衔",
     "created": "创建",
 }
-# 这些缘由写「从某某处…」(前任是同一枚头衔的上一任, 继承链可读)
+# these reasons read "从某某处…": the predecessor is the previous holder of the same
+# title, so the inheritance chain stays readable
 _SUCC_FROM_PREV = (None, "appointment_succession", "abdication")
 
 
 def _title_hist_events(f, tid, end=None):
-    """头衔 history 的事件序列 [(date, holder|None, type|None)] (≤end)。
+    """Event sequence of a title's history: [(date, holder|None, type|None)] up to `end`.
 
-    `type` = 游戏记的继位方式 (无 = 常规继承); `holder` 为 None 表示该日头衔无主
-    (毁弃/待封)。同日多事件 (列表形) 按存档原序展开 (v15 起既有口径)。"""
+    `type` is the game's recorded succession method (absent = regular inheritance);
+    `holder` None means the title had no holder that day (destroyed / awaiting a
+    grant). Several events on one day (list form) are expanded in save order."""
     t = f._lt.get(str(tid)) or {}
     hist = t.get("history") or {}
     out = []
@@ -19951,18 +19938,17 @@ def _title_hist_events(f, tid, end=None):
 
 
 def _title_holder_seq(f, tid, end=None):
-    """头衔 history 的持有者序列 [(date, holder|None)] (≤end)。
+    """Holder sequence of a title's history: [(date, holder|None)] up to `end`.
 
-    `holder` 为 None 表示该日头衔无主 (毁弃/待封), 供调用方截断上一任的任期。"""
+    A `holder` of None means the title had no holder that day (destroyed / awaiting a
+    grant), which lets the caller close the previous holder's term."""
     return [(d, h) for d, h, _ty in _title_hist_events(f, tid, end=end)]
 
 
 def _realm_holder_seq(f, tid, end=None):
-    """头衔在**各传主缓存的 realm_history 快照**里的持有者序列 [(date, holder)] (v68)。
-
-    兜底 `_title_holder_seq`: 无地头衔 (游牧毡帐/营地/新创头衔) 的熔件 title history
-    常常为空, 而快照逐档记着当时的 holder (旧《朝局风云录》的「库曼顿巴斯部：930年
-    1月2日：乞则里…」几行即出自这里)。逐档观测值按日期去重; 相邻同主只留首个。"""
+    """Holder sequence of a title in the `realm_history` snapshots of every biographee's cache:
+    [(date, holder)]. Fallback for `_title_holder_seq`, since the melt's title history is often empty
+    for landless titles (yurt / camp / newly created); observations are deduped by date."""
     seen = {}
     for src in list((f.campaign or {}).values()) + [f.cache]:
         for h in (src or {}).get("realm_history") or []:
@@ -19985,10 +19971,10 @@ def _realm_holder_seq(f, tid, end=None):
 
 
 def _estate_court_tid(f, pid):
-    """家业持有者的「朝廷」头衔 (v68 问题1, 用户拍板 §7-2: 有庄园则写最高领主的头衔历史)。
-
-    取家业头衔的 `de_facto_liege` 上溯到顶 (中国世族庄园挂在 h_china 之下);
-    取不到再走主角所在地的上位链顶。无则 None。"""
+    """The "court" title of an estate holder (with an estate, the top liege's title history is
+    written): walk `de_facto_liege` of the estate title to the top (a Chinese family estate hangs
+    under h_china), else take the top of the liege chain of the protagonist's location; None when
+    neither works."""
     for t in (f._hold_intervals(pid) or {}):
         if not f._is_estate_title(t):
             continue
@@ -20016,29 +20002,30 @@ def _estate_court_tid(f, pid):
 
 
 # ---------------------------------------------------------------------------
-# v73: 《XX历代记》扩写素材 (用户 2026-09-27 拍板「内容太短 → 扩充 + 分篇并发」)
+# 《XX历代记》 expansion material
 # ---------------------------------------------------------------------------
-# 设计口径 (取证见 `docs/方案_v73_历代记扩写与并发分篇.md`):
-#   · 短在素材不在提示词 —— 旧稿只下发「国号 + 年代 + 名 + 缘由」四样 (7 份快照
-#     实测 64–560 字符), 而缓存里本有每人的生卒/年龄/享国/失位缘由/本朝战事;
-#   · 一人一行 (旧稿把整朝历代压成一行, 卡尔 941 的 22 位帐汗挤在一行);
-#   · 全部由程序成句, 提示词只交代「写哪一段、写什么」(prompt-last 铁律)。
+# Design rules: the material was too thin, not the prompt (the old draft sent only dynasty name +
+# period + name + reason while the cache holds each person's birth and death, age, reign length, loss
+# reason and the wars of the reign); one person per row; the program writes every sentence, the prompt
+# only saying which passage to write and what goes in it (prompt-last rule).
 
-_CHRONICLE_ANCESTOR_MAX = 12     # 家族历代记的上溯位数上限
-_CHRONICLE_WAR_MAX = 40          # 单篇战事行上限 (每段再对半切)
-CHRONICLE_MID_MAX = 4            # 分篇上限 (与《家室列传》JIASHI_GROUP_MAX 同式)
-CHRONICLE_ROWS_PER_SECTION = 4   # v82: 单朝人数多于此数时按人再切段 (见 biography._chrono_row_chunks)
-# 天朝 (`h_`) 创建天命时的缘由词 (用户 2026-09-27 拍板):
-#   前一段是空位期 (群雄争霸) → 建立天命; 直接顶替在位者 → 取代 (王莽代汉之例)。
-# 其余头衔的 `created` 仍走 `created_verb_kind` 三档 (创建/重建/开创)。
+_CHRONICLE_ANCESTOR_MAX = 12     # max generations traced back in the family chronicle
+_CHRONICLE_WAR_MAX = 40          # max war rows per part (each section halves it again)
+CHRONICLE_MID_MAX = 4            # max parts, the same form as JIASHI_GROUP_MAX
+CHRONICLE_ROWS_PER_SECTION = 4   # one reign with more people -> further sections (_chrono_row_chunks)
+# Wording for the reason a celestial empire (`h_`) creates the Mandate of Heaven: a
+# preceding vacancy (contending warlords) -> 建立天命; displacing a sitting holder
+# directly -> 取代. For other titles `created` still uses the three
+# `created_verb_kind` bands (创建 / 重建 / 开创).
 _CELLESTIAL_CREATE_VERB = {"vacant": "建立天命", "takeover": "取代"}
-# `created` 三档的中文词 (与 style.TITLE_GAIN_CREATED_VERBS 同表; 此处就地重复,
-# 免得 facts → style 反向依赖)。
+# Chinese words for the three `created` bands (the same table as
+# style.TITLE_GAIN_CREATED_VERBS, repeated here to avoid a facts -> style dependency).
 _TITLE_GAIN_CREATED_VERBS_ZH = {"first": "创建", "restored": "重建", "founded": "开创"}
 
 
 def _war_word(f, reason):
-    """战争缘由词 (记忆 `war_cb` 的本地化名)。取不到返回空串, 由调用方省略该分句。"""
+    """War reason word, the localized name of the memory's `war_cb`; returns "" when it
+    cannot be resolved, and the caller then omits that clause."""
     if not reason:
         return ""
     try:
@@ -20049,10 +20036,10 @@ def _war_word(f, reason):
 
 
 def _chrono_rec(f, cid):
-    """角色记录 (v73: 同战役各传主缓存里取**最完整**的一份)。
+    """Character record: the most complete copy across this campaign's caches.
 
-    各缓存是同一局游戏不同档期的真实观测: 尼克档记下奄美靖 51 条记忆与卒日,
-    崔佛档同期对该人是 0 条 —— 故按记忆条数取最全, 只读不合并写回。"""
+    Each cache is a real observation of the same game at a different snapshot, so the
+    copy with the most memories wins. Read-only -- nothing is merged back."""
     key = str(cid)
     best, best_n = None, -1
     for src in ([f.cache] + list((f.campaign or {}).values())):
@@ -20066,7 +20053,7 @@ def _chrono_rec(f, cid):
 
 
 def _chrono_year_age(birth, date):
-    """生日与事件日 → 整年岁 (缺任一返回 None)。"""
+    """Birth date and event date -> whole years of age (None when either is missing)."""
     if not birth or not date:
         return None
     try:
@@ -20079,7 +20066,7 @@ def _chrono_year_age(birth, date):
 
 
 def _chrono_span(gain, loss):
-    """在位跨度文本: 「在位10年」/「在位未满一年」; 缺失位日返回空串。"""
+    """Reign span text: "在位10年" or "在位未满一年"; "" when a date is missing."""
     if not gain or not loss:
         return ""
     try:
@@ -20092,10 +20079,10 @@ def _chrono_span(gain, loss):
 
 
 def _chrono_seqs(f):
-    """{(cid, tid): [(date, reason, type)]} —— 登位/失位**记忆**索引 (一次扫描缓存)。
-
-    `ascended_throne_memory.vars.reason` 是游戏自己记的取法 (尼克档 9,875 条
-    **全部**带 reason), `lost_title_memory` 同式; `landed_title` 即该记忆对应的头衔。"""
+    """{(cid, tid): [(date, reason, type)]} -- accession / loss memory index, built in one scan of
+    the cache. `ascended_throne_memory.vars.reason` is the game's own record of how the title was
+    taken (every row carries a reason), `lost_title_memory` has the same shape, and `landed_title`
+    is the title the memory refers to."""
     if getattr(f, "_chrono_idx", None) is not None:
         return f._chrono_idx
     idx = {}
@@ -20128,12 +20115,15 @@ def _chrono_seqs(f):
 
 
 def _chrono_accession_reason(f, cid, tid, hist_type, date):
-    """该日即位的**缘由** —— 记忆档优先, 头衔 history 兜底。
+    """The reason for acceding on that day: the memory record first, the title history
+    as a fallback.
 
-    天朝 (`h_`) 的 `created` 由调用方按用户判据改写 (空位期后 = 建立天命 / 顶替在位者
-    = 取代), 故此处返回空串; 其余一律先取记忆档 (词表更全: 补 inheritance / election /
-    purchased / seized_pastureland / negotiated 五档), 记忆缺该头衔时退回头衔 history
-    的 `type`。两处都没有返回 "" (该分句整段省略)。"""
+    For a celestial empire's (`h_`) `created` the caller rewrites the wording (after a
+    vacancy = 建立天命, displacing a sitting holder = 取代), so "" is returned here.
+    Otherwise the memory record wins, its word list being fuller (it adds the five bands
+    inheritance / election / purchased / seized_pastureland / negotiated), and the title
+    history's `type` is the fallback when the memory record has no such title. When
+    neither exists, "" is returned and the whole clause is omitted."""
     if hist_type == "created":
         return ""
     for (d, reason, _ty) in reversed(_chrono_seqs(f).get((int(cid), int(tid)), [])):
@@ -20145,7 +20135,7 @@ def _chrono_accession_reason(f, cid, tid, hist_type, date):
 
 
 def _chrono_rel_word(f, cid, other):
-    """二者亲属关系词 (子/女/父/母/兄/姊/配偶); 无关系返回 ''。"""
+    """Kinship word between the two (子 / 女 / 父 / 母 / 兄 / 姊 / 配偶); "" when unrelated."""
     if cid is None or other is None:
         return ""
     fam = (_chrono_rec(f, cid).get("family") or {})
@@ -20165,10 +20155,13 @@ def _chrono_rel_word(f, cid, other):
 
 
 def _chrono_nm(f, cid, date=None):
-    """事件人名 (v73): 取**受业名** —— 先按熔件 `first_name` 与当地名序拼显示名,
-    退到缓存档案的 `name_full`。跨传主缓存取记录时, `name_full` 可能是另一档期算出的
-    父名/家名 (富兰克林档实测: 先王记成「比约恩·蒙索」而国号沿革里是「比约恩·朗纳尔松」),
-    故受业名优先, 与历代行同一套词。"""
+    """The event person's name: the name-in-office form first -- the display name built
+    from the melt's `first_name` and the local name order -- then the cache profile's
+    `name_full`.
+
+    When a record is taken from another biographee's cache, `name_full` may be a
+    patronymic or house name computed at that other snapshot, so the name-in-office form
+    wins and the chronicle rows keep one vocabulary."""
     cc = f._chars.get(str(cid)) or {}
     if isinstance(cc, dict) and cc:
         try:
@@ -20182,10 +20175,10 @@ def _chrono_nm(f, cid, date=None):
 
 def _chrono_acc_text(f, cid, date, word, prev, from_prev=False,
                        prev_date=None):
-    """即位分句: 「953年6月6日从珉·奄美处被派系拥立」/「874年7月7日自立建国」。
+    """Accession clause: "953年6月6日从珉·奄美处被派系拥立" / "874年7月7日自立建国".
 
-    `from_prev` 只对**继承类**缘由置真 (与 v69 的 `_SUCC_FROM_PREV` 同口径):
-    「从X处建立天命」「从X处被派系拥立」都不是通顺句。"""
+    `from_prev` is set only for inheritance-type reasons (the same rule as
+    `_SUCC_FROM_PREV`): "从X处建立天命" and "从X处被派系拥立" are not idiomatic."""
     d = f.date(date) if date else ""
     if not word:
         return d
@@ -20198,12 +20191,9 @@ def _chrono_acc_text(f, cid, date, word, prev, from_prev=False,
 
 
 def _chrono_loss_date(f, cid, tid, next_date):
-    """该次任职的**真正失位日** (v73): 两位君主先后相继 (前任卒/禅 → 后任即位) 时,
-    `history` 的下一事件日只是**继任日**, 不是前任的失位日 —— 旧稿因此把「奄美樽
-    951 即位、953 传位其子」写成「随后于 953 年失去天命」, 与 `top_title_history`
-    的「从奄美珉处受任命继位」自相矛盾。故只在存档另记失位事件 (`lost_title_memory`)
-    或下一事件本身是 `destroyed` 时, 才认这个日期为失位日; 否则返回 None
-    (行内只写任期, 不写失位)。"""
+    """The real loss date of this tenure. When two rulers follow one another, the next event date in
+    `history` is only the succession date; it counts as a loss date only when the save records a
+    `lost_title_memory` or the next event is `destroyed`, else None."""
     if not next_date:
         return None
     for (d, _reason, ty) in _chrono_seqs(f).get((int(cid), int(tid)), []):
@@ -20215,12 +20205,10 @@ def _chrono_loss_date(f, cid, tid, next_date):
 
 
 def _chrono_reign_end(f, cid):
-    """该统治者的**让位档** (v81 问题2): 同战役缓存里他当传主时写入的 `reign_end`
-    (由 `pipeline._cross_check_reign_ends` 从存档接替链判出, 含种类与继承人)。
-
-    为什么历代记要读它: 失位日旧稿只认 `lost_title_memory`, 而田所久保 922.7.7
-    的让位只落在**他自己那份缓存**的 `reign_end` 里 —— 于是 919 即位、922 失位
-    (在位 3 年) 的久保被写成「卒于位」(卒 930), 与在位年数自相矛盾。"""
+    """The ruler's abdication record: the `reign_end` written into the cache in which he was the
+    biographee (via `pipeline._cross_check_reign_ends`, with the kind and the heir). Needed because
+    some abdications appear only there, not in `lost_title_memory`, which would leave the ruler
+    written as dying in office."""
     key = int(cid)
     if f.cache.get("player_id") == key:
         return f.cache.get("reign_end") or {}
@@ -20231,8 +20219,9 @@ def _chrono_reign_end(f, cid):
 
 
 def _chrono_office(f, cid, date):
-    """该日在位者的官称 (v81 问题2/3): 日本最高头衔走 `japan_top_office` 的裸词
-    (关白/太政大臣/幕府将军/上皇/天皇), 其余头衔走 `official_title`; 取不到返回 ''。"""
+    """The office title of the holder on that day: the Japanese top title uses the bare
+    word from `japan_top_office` (关白 / 太政大臣 / 幕府将军 / 上皇 / 天皇), other titles
+    use `official_title`; "" when unavailable."""
     if not date:
         return ""
     try:
@@ -20243,20 +20232,14 @@ def _chrono_office(f, cid, date):
 
 
 def _chrono_joko_clause(f, cid, date):
-    """「上皇」之由 (v83, 用户 2026-09-29 指正): 「关白之序及身，乃退天皇位，称上皇」。
-
-    机制 (两处脚本, 已在本局数据上核实 —— `logs/v82_probe2.txt`):
-      · `common/on_action/title_on_actions.txt:1461-1487` —— 新持有者取得 `e_japan`
-        (关白之位) 时, 若 `e_japan.var:administrative_ui_special_title` 所指头衔
-        (本局 = 高御座 `k_chrysanthemum_throne`) 仍在他手上, 即触发 9120 号事件;
-      · `events/dlc/tgp/tgp_japan_general_events.txt:733-767` —— 该事件让他**退天皇位**
-        (高御座交 `player_heir`, 故其持有区间在即位次日终结)、加 `joko_flag` 与
-        `former_emperor` ⇒ 称**上皇**: 仍持关白 = 实权摄政, 且先前做过天皇。
-    实测 (田所久荫 16851604): 高御座 962.2.27–964.11.20 → e_japan 964.11.19 及身
-    → 次日高御座交田所尹秀 ⇒ 上皇之称**始于即位之日**, 不是卒前某日。
-
-    ⇒ 这一句接在即位句后 (行尾不再写「退位上皇」); 查不到「即位日仍持高御座」的
-    证据时只写「，称上皇」。"""
+    """The "上皇" clause: "关白之序及身，乃退天皇位，称上皇". Event 9120 fires when a new holder takes
+    `e_japan` (关白) while the title in `e_japan.var:administrative_ui_special_title` (the
+    Chrysanthemum Throne, `k_chrysanthemum_throne`) is still his
+    (`common/on_action/title_on_actions.txt:1461-1487`); it makes him leave the throne (to
+    `player_heir`, ending his holding interval the day after his accession) and adds `joko_flag` and
+    `former_emperor` (`events/dlc/tgp/tgp_japan_general_events.txt:733-767`), so the title begins on
+    the accession day and the clause follows the accession clause. Without evidence he still held the
+    throne that day, only "，称上皇" is written."""
     tid = f.title_by_key("k_chrysanthemum_throne")
     date_key = cl.date_key(date) if date else None
     if isinstance(tid, int) and date_key:
@@ -20276,29 +20259,16 @@ def _chrono_joko_clause(f, cid, date):
 def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
                        vacant=False, is_h=False, family=False, nm=None,
                        prev_date=None, dtor=False):
-    """一位统治者一行 (v73 用户拍板「一人一行」; v81 问题2 立行形; v82 去分栏):
+    """One ruler per row, e.g. "关白{名}，卒930年4月9日，享年55岁，死于心脏病发作；…；在位3年，922年7月7日
+    剃发退位，传位于{继承人}" or "西山阴道一族{名}，995年7月25日受封西山阴道栋梁" (family row).
 
-    `关白田所久保，卒930年4月9日，享年55岁，死于心脏病发作；919年2月24日从父田所浩二
-      处受任命继位，时年44岁；在位3年，922年7月7日剃发退位，传位于田所定治`
-    `上皇田所久荫，卒970年10月30日，享年53岁，死于心脏病发作；…；964年11月19日从田所
-      为久处受任命继位，时年47岁，关白之序及身，乃退天皇位，称上皇；在位6年`
-    `幕府将军平盛秀，卒1006年8月7日，享年49岁，酗酒而亡；…；在位11年，开府，改称幕府将军`
-    `西山阴道一族平有永，995年7月25日受封西山阴道栋梁`   (家族历代记行)
-
-    v81 (用户 2026-09-29 拍板) 立的三处:
-      · 去「生X年」(出生日期在这不重要), 改「卒{日}，享年{N}岁，{死因}」;
-      · 让位 (reign_end) 优先于 `lost_title_memory` 判失位, 写退位词与继承人;
-      · 卒项跨缓存取最全一份记录。
-    v82 (用户 2026-09-29 拍板) 改行形:
-      · **称号紧贴人名**、不再用「｜」分栏 (「关白田所久保」);
-      · 称号取**最后的称号** (久荫=上皇 / 盛秀=幕府将军), 改称只在行内补一句
-        (「，开府，改称幕府将军」), 末词不被读成即位时就有。
-    v83 (用户 2026-09-29 指正) 两处:
-      · 行尾不再写「卒于位」 —— 卒项已在前, 「在位N年，卒于位」是同义重复;
-      · 上皇不是「在位若干年后退位」: 关白之序及身时, 时任天皇 (他本人) 退位、
-        称上皇 —— 这一句移到即位句后 (见 `_chrono_joko_clause`)。
-    `prev`(前任) 与 `vacant`(前一段是空位期) 支撑天朝「建立天命 / 取代」的用户判据。
-    返回 "" 表示此行无料可写 (无称号、无卒项、无即位句), 由调用方整行略去。"""
+    Shape: no birth item; the death item reads "卒{date}，享年{N}岁，{cause}" from the existing
+    `death_clause`, using the most complete record across caches; the title is glued to the name with
+    no "｜" column and is the **last** title of the reign, a later change being added inside the row
+    ("，开府，改称幕府将军") so the final word is not read as held from the start; abdication
+    (`reign_end`) outranks `lost_title_memory` for the loss, and the 上皇 clause follows the accession
+    clause (see `_chrono_joko_clause`); no "卒于位" at the row end. "" means the row has nothing to
+    write and the caller drops it."""
 
     nm = nm or _chrono_nm(f, cid, date)
     if not nm:
@@ -20308,15 +20278,17 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         word = _SUCC_WORD.get(hist_type or "", "") or ""
         acq = _chrono_acc_text(f, cid, date, word, None)
         tname = f.title(tid, date=date) if tid is not None else ""
-        # v82: 家族行同样去「｜」分栏 —— 称号 (头衔名) 紧贴人名, 后接即位句。
+        # The family row likewise has no "｜" column: the title name is glued to the
+        # person's name and followed by the accession clause.
         head = f"{tname}{nm}" if tname else nm
         row = f"{head}，{acq}" if acq else head
-        # v82: 明文回报「此行是否三样俱全」(称号/卒项/即位句) —— 旧稿靠数字「｜」个数
-        # 判料之有无, 分栏一去就无从判断; 判据仍在事实层, 供纪事块整行略去无料之行。
+        # Report whether the row has everything (title / accession clause) so the chronicle block can
+        # drop a row with no material; the old "｜" counting no longer works.
         return row, bool(tname) and bool(acq)
     birth = rec.get("birth") or ""
     death = (rec.get("death") or {}).get("date") or ""
-    # v81: 卒项 = 日 + 享年 + 死因 (死因走既有的 death_clause; 跨缓存取最全一份记录)
+    # death item = date + age at death + cause (the cause from the existing
+    # `death_clause`, the record being the most complete across caches)
     dead_bits = []
     if death:
         dead_bits.append("卒" + f.date(death))
@@ -20325,9 +20297,9 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
             dead_bits.append("享年%d岁" % _age)
         _reason = (rec.get("death") or {}).get("reason") or ""
         try:
-            # v82: 凶手称谓按**事发前一日**取 (与 `_anchor_date` 的「卒日当天头衔已随
-            # 继承易主」同一条口径) —— 大和实世 901.7.30 被杀、浩二同日继位,
-            # 按当日取词会写成「被关白…赐死」(那天他才刚当上关白)。
+            # The killer's title is read as of the day before the event (the same rule as `_anchor_date`:
+            # on the death day the title has already passed to the heir), else the killer would be named
+            # by an office he had just acquired.
             _clause = f.death_clause(cid, date=death, reason=_reason,
                                      killer=(rec.get("death") or {}).get("killer"),
                                      killer_date=_day_before(death))
@@ -20347,9 +20319,9 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
                                                     "abdication", "inheritance")),
                            prev_date=prev_date)
     if not word and prev is not None and isinstance(prev, int):
-        # 两源都无线索 (头衔 history 无 type、记忆档也未载) 时, 按**前任相继**写常规
-        # 「继位」—— 与 v69 的「无 type = 常规继承」同口径; 首位统治者 (无前任) 则
-        # 只写即位日, 不替游戏猜缘由。
+        # No clue in either source (no `type` in the title history, nothing in the memory record) ->
+        # write the regular "继位" from the predecessor's succession ("no type = regular inheritance");
+        # the first ruler gets the accession date alone rather than a guessed reason.
         _pn = _chrono_nm(f, prev, prev_date or date)
         if _pn:
             _rel = _chrono_rel_word(f, cid, prev)
@@ -20360,14 +20332,11 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         acq += "，时年%d岁" % age
     _real_loss = _chrono_loss_date(f, cid, tid, loss_date)
     if _real_loss is None and dtor:
-        _real_loss = loss_date          # 下一事件即毁弃 (holder = 失去者) 时直接认下
+        _real_loss = loss_date          # the next event destroys the title (holder = loser)
     _end = _real_loss or loss_date or death
     span = _chrono_span(date, _end)
-    # v82 (用户 2026-09-29 拍板): 称号取**最后的称号** —— 一行一个称号词, 紧贴人名
-    # (「关白田所久保」「上皇田所久荫」「幕府将军平盛秀」)。
-    # 为什么取最后: 旧稿写「X，后为Y」两词并列, 模型成稿只落第一个
-    # (实测 1006 终传: 「太政大臣，后为幕府将军」被写成「为太政大臣」, 上皇整词丢失),
-    # 而称号位与行首人名的黏合形式模型必写。
+    # The title is the last title of the reign: one title word per row, glued to the name. Listing two
+    # side by side ("X，后为Y") made the model keep only the first, losing the final title.
     office = _chrono_office(f, cid, date)
     _o2 = ""
     if _end:
@@ -20376,25 +20345,25 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         if isinstance(_tid2, int) and _tid2 == tid:
             _o2 = _chrono_office(f, cid, _a2)
     _last = _o2 or office
-    # v83: 上皇之称始于即位之日 (关白之序及身 → 退天皇位 → 称上皇), 故这一句接在即位句后。
+    # the 上皇 title begins on the accession day, so this clause follows the accession clause
     _joko = _chrono_joko_clause(f, cid, date) if _last == f._JAPAN_OFFICE_JOKO else ""
     tail = ""
     _re = _chrono_reign_end(f, cid)
     _red = _re.get("date") or ""
     if _red and _end and cl.date_key(_red) == cl.date_key(_end):
-        # 让位 (v76 机制): 写退位词与继承人 (继承人只出名字, 与即位句同口径)
+        # abdication: the abdication word and the heir (heir's name only)
         _w = f.reign_end_word(_re)
         _succ = _re.get("successor")
         _snm = _chrono_nm(f, _succ, _red) if isinstance(_succ, int) else ""
         _srel = _chrono_rel_word(f, cid, _succ) if isinstance(_succ, int) else ""
         tail = "，" + f.date(_red) + _w + (f"，传位于{_srel}{_snm}" if _snm else "")
     elif _real_loss and not (death and cl.date_key(death) == cl.date_key(_real_loss)):
-        # v83: 失位日与卒日同日 = 在位而终, 行尾不再出词 (旧稿写的「卒于位」与卒项重复)。
+        # died in office (loss date == death date): no tail, the death item already says it
         tail = "，随后于" + f.date(_real_loss) + ("失去天命" if is_h else "失去头衔")
     if _o2 and _o2 != office and _o2 != f._JAPAN_OFFICE_JOKO:
-        # v82: 在位期间改称 (惣領制 + 头衔带 `shogun_flag` = 开府) —— 称号位只出末词,
-        # 改称之由在行内补一句, 免得模型把末词当成即位时就有 (盛秀 995 年即位时是
-        # 太政大臣, 开府在他卒前的那一年里)。
+        # A title change during the reign (惣領制 plus the `shogun_flag` on the title =
+        # 开府): the title slot holds only the last word, so the change is added inside
+        # the row to keep the model from reading that last word as held from the start.
         tail = ("，开府，改称幕府将军" if _o2 == f._JAPAN_OFFICE_SHOGUN
                 else f"，改称{_o2}") + tail
     bits = [x for x in (acq + _joko, span) if x]
@@ -20408,7 +20377,8 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
 
 
 def _chrono_group(items, max_n):
-    """把 items 尽量等分成 ≤max_n 段 (空段不返回)。"""
+    """Split items as evenly as possible into at most `max_n` chunks (empty chunks are
+    not returned)."""
     items = list(items or [])
     if not items:
         return []
@@ -20424,15 +20394,16 @@ def _chrono_group(items, max_n):
 
 
 def _chrono_label(f, cid, date=None):
-    """战事行里的人名 (只出名字; 战事行已由本方称谓领起)。"""
+    """Name used in war rows: the name alone, since the row already opens with this side's
+    title."""
     return f.name_with_regnal(cid, date) or f.name_or(cid, "") or ""
 
 
 def _chrono_war_lines(f, tid):
-    """本头衔的战事行 (v73): 兴兵之年 + 对手 + 决胜之年与胜负, 一行成句。
-
-    源: 缓存记忆 `offensive_war` / `defensive_war` 的 `war_title` = 本头衔
-    (`war_attacker` = 兴兵方), 胜负取同对手的 `war_won` / `war_lost`。"""
+    """War rows of this title: the year war was raised + the opponent + the decisive year and
+    outcome, one sentence per row. Source: the cache memories `offensive_war` / `defensive_war`
+    whose `war_title` is this title (`war_attacker` = the side that raised the war), with the
+    outcome from `war_won` / `war_lost` against the same opponent."""
     tid = int(tid)
     wars, wins = [], []
     for _cid, _rec in (f.cache.get("characters") or {}).items():
@@ -20480,8 +20451,9 @@ def _chrono_war_lines(f, tid):
                 continue
             me += "；" + f.date(wd) + ("战胜" if wty == "war_won" else "败于")                 + (_chrono_label(f, wopp) if isinstance(wopp, int) else "对手")
             break
-        # v81 (问题5): 找不到决胜时**不再**补「；胜负未见记载」—— 无料分句只会占
-        # 模型的注意力 (与 v78 在 `_pair_war_events` 已定的口径一致: 只写兴兵句)。
+        # With no decisive result found, no "；胜负未见记载" is added: a clause with no
+        # material only consumes the model's attention (the same rule as
+        # `_pair_war_events`: write the war-raising clause alone).
         me += "。"
         if me in seen:
             continue
@@ -20493,8 +20465,10 @@ def _chrono_war_lines(f, tid):
 
 
 def _chrono_base_name(f, tid, date=None):
-    """头衔**底名** (不含层级词) —— k_qingxu → 「青徐」。
-    与 `_realm_facts` 内 `_base_name` 同式 (该处是闭包, 模块级另立一份)。"""
+    """The title's base name, without the tier word: k_qingxu -> "青徐".
+
+    The same form as `_base_name` inside `_realm_facts`, which is a closure, hence this
+    module-level copy."""
     t = f._lt.get(str(tid)) or {}
     key = t.get("key") or ""
     if not key:
@@ -20506,9 +20480,10 @@ def _chrono_base_name(f, tid, date=None):
 
 
 def _chrono_sub_lines(f, tid, pid=None):
-    """本朝治所/所辖行 (v73): 治所取传主档案里已算好的 `protagonist.capital`
-    (「长安县」—— 与《传主档案》同一出口, 免得两处治所不一致); 所辖列挂在本头衔名下的
-    封臣头衔。取不到即整行省略。"""
+    """Capital / territory rows of this reign: the capital comes from the already computed
+    `protagonist.capital` (the same output as the profile, so the two cannot disagree),
+    and the territory row lists the vassal titles hanging under this title. A row is
+    omitted entirely when unavailable."""
     out = []
     capname = ""
     if pid is not None:
@@ -20533,8 +20508,10 @@ def _chrono_sub_lines(f, tid, pid=None):
 
 
 def _chrono_accs(f, tid, as_of):
-    """本头衔的取得序列 [(date, holder, type, reign_end, vacant)]。
-    头衔 history 为空 (游牧毡帐等) 时退逐档快照, 缘由为空。"""
+    """Acquisition sequence of this title: [(date, holder, type, end, vacant)].
+
+    When the title history is empty (nomadic yurt etc.) it falls back to the per-snapshot
+    records, with an empty reason."""
     evs = _title_hist_events(f, tid, end=as_of)
     if not evs:
         evs = [(d, h, None) for d, h in _realm_holder_seq(f, tid, end=as_of)]
@@ -20552,7 +20529,8 @@ def _chrono_accs(f, tid, as_of):
 
 
 def _chrono_prev_for(accs, idx):
-    """取得序列里该事件的前一任持有者 (继承链可读); 无则 None。"""
+    """The previous holder before that event in the acquisition sequence, which keeps the
+    inheritance chain readable; None when there is none."""
     for j in range(idx - 1, -1, -1):
         h = accs[j][1]
         if isinstance(h, int):
@@ -20561,11 +20539,10 @@ def _chrono_prev_for(accs, idx):
 
 
 def _chrono_build(f, tid, pid, is_h, own, periods, tname):
-    """《历代记》分篇素材 (v73 用户拍板): 一人一行 + 分篇 + 战事/支系.
-
-    · 该头衔由传主创建且历代只有传主一人 → **家族历代记** (祖上最早一位统治者写到传主);
-      此时取不到有头衔的父/母 (自定义角色) → 返回 None, 该篇不生 (用户 2026-09-27 拍板)。
-    · 否则按国号段组织历代 (段界 = 各段首位即位日), 每段一人一行。"""
+    """《历代记》 part material: one person per row, plus parts and wars / branches. A title the
+    biographee created and solely held becomes a family chronicle; with no titled father or mother (a
+    custom character) it returns None. Otherwise the chronicle is organised by dynasty-name periods,
+    one person per row."""
     accs = _chrono_accs(f, tid, f.as_of or f.cache.get("last_date"))
     if len(accs) == 1 and accs[0][1] == pid and (accs[0][2] or "") == "created":
         return _family_chronicle(f, pid, tid, is_h=is_h)
@@ -20578,21 +20555,23 @@ def _chrono_build(f, tid, pid, is_h, own, periods, tname):
         for gi, (d, h, ty, end, vac) in enumerate(accs):
             if h not in p["ids"] or gi in claimed:
                 continue
-            # 归属判据 = **即位日落在本段之前** (该段的即位者可能在战役窗口之前就即位,
-            # 如李漼 859 年即位而唐皇朝段自 868 年战役起点起算), 且下一段开始前仍在位。
+            # Attribution rule: the accession date falls before this period (a period's holder may have
+            # acceded before the campaign window while the period starts at the campaign start), and he
+            # was still in office before the next period began.
             claimed.add(gi)
-            # v73: 下一事件即「毁弃」(holder = 失去者) 时, 该任的结束日就是真正的失位日
+            # when the next event destroys the title (holder = the loser), this tenure's
+            # end date is the real loss date
             _dtor = bool(gi + 1 < len(accs) and accs[gi + 1][2] == "destroyed")
-            # v82: 行文本与「此行是否三样俱全」的判据同时入库 (一一对应, 空行也占位),
-            # 供纪事块略去无料之行 (旧稿靠数字「｜」个数判, 分栏一去即无从判断)。
+            # The row text and the "has everything" flag are stored one to one (empty rows keep their
+            # slot), as are each row's accession date and person id, which the sectioner needs to
+            # compute a section's date range and vassals (`biography._chrono_row_chunks`).
             _row, _detail = _chrono_ruler_line(
                 f, tid, d, h, ty, _chrono_prev_for(accs, gi), end,
                 vacant=vac, is_h=is_h, dtor=_dtor,
                 prev_date=(accs[gi - 1][0] if gi > 0 else None))
             p["rows"].append(_row)
             p.setdefault("rows_detail", []).append(bool(_detail))
-            # v82: 逐行的即位日与人物 id 同样入库 (与 rows 一一对应) —— 分节器按人
-            # 切段时要用它算各段的年代区间与所辖诸侯 (见 biography._chrono_row_chunks)。
+            # Each row's accession date and person id, one to one with `rows`, for the sectioner.
             p.setdefault("rows_dates", []).append(str(d))
             p.setdefault("rows_ids", []).append(int(h))
     if not any(p["rows"] for p in periods):
@@ -20611,11 +20590,11 @@ def _chrono_build(f, tid, pid, is_h, own, periods, tname):
 
 
 def _family_chronicle(f, pid, tid, is_h=False):
-    """家族历代记 (v73 用户拍板): 该头衔由传主创建、且历代只有传主一人 → 从**祖上最早的
-    一位统治者**写到传主。无有头衔的父/母 (自定义角色, 如诺兰冒险者) → 返回 None, 该篇不生。
-
-    条目 = 同宗族 (`dynasty_id` 一致) 的历代祖先 (父/母链上溯), 各取其**最早**一次持衔;
-    按即位日由老到新, 末条 = 传主本人。上限 `_CHRONICLE_ANCESTOR_MAX` 人。"""
+    """Family chronicle: the title was created by the biographee and solely held by him, so the
+    chronicle runs from the earliest ruling ancestor to him; None with no titled parent (a custom
+    character). Entries are same-dynasty ancestors up the father / mother chain, each taking his
+    earliest holding, oldest accession first and the biographee last (max
+    `_CHRONICLE_ANCESTOR_MAX`)."""
     p_dyn = f._dynasty_of_cid(pid)
     seen, queue = set(), []
     fam0 = (_chrono_rec(f, pid).get("family") or {})
@@ -20693,15 +20672,11 @@ def _family_chronicle(f, pid, tid, is_h=False):
 
 
 def _is_final_bio(f):
-    """本篇是否**终传** (v73 用户 2026-09-27 拍板: 《XX历代记》只在终传触发)。
-
-    判据 = 传主之位已终了 **且** 本篇截止日正是那个终了日:
-      · `pipeline._bio_as_of` 给终传传的是终了日 (与终了日同期 ⇒ 终传);
-      · 十年传记传的是十年末 (≠ 终了日, 且 decade 有值);
-      · 在世传记没有终了日。
-    终了 = 死亡 (`player_death`) **或** 在位终结但未死亡 (`reign_end`, v76 问题1:
-    剃发退位/让位等换扮演角色; 两档都有时让位日优先, 见 `pipeline._reign_end`)。
-    世界末日档 (终了日与叙事末日同期且 decade 有值) 归十年档, 按用户要求不建本篇。"""
+    """Whether this chapter is the final biography (《XX历代记》 triggers only there): the
+    biographee's position has ended **and** the cut-off date is exactly that end date (`_bio_as_of`
+    hands a final biography the end date; a decade biography gets the decade's end; a living one has
+    none). End = `player_death` or a reign that ended without death (`reign_end`: tonsure, abdication
+    and the like switch the played character; the abdication date wins when both exist)."""
     return _is_final_bio_spec({
         "decade": f.decade,
         "as_of": f.as_of,
@@ -20711,8 +20686,9 @@ def _is_final_bio(f):
 
 
 def _is_final_bio_spec(facts):
-    """`_is_final_bio` 的**事实面**版 (同一判据, 供 `biography.build_articles` 复核)。
-    v76: 终了日 = reign_end (让位) 优先, 其次 player_death (卒)。"""
+    """The facts-side version of `_is_final_bio`, the same criterion, used by
+    `biography.build_articles` for cross-checking. The end date is `reign_end`
+    (abdication) first, then `player_death` (death)."""
     facts = facts or {}
     if facts.get("decade"):
         return False
@@ -20733,34 +20709,27 @@ def _is_final_bio_spec(facts):
 
 
 def _top_title_history(f, group_lines=None):
-    """本朝历代 (v68 问题1; 用户拍板 §7-1「篇名《XX历代记》」/§7-2「有庄园写最高领主的
-    头衔历史, 冒险者营地略去」; v69 用户追改行形) —— 主角当前最高头衔**从战役起点
-    以来**的历代。返回 (篇名用朝代通称, [总说行...], 分篇素材); 无可写对象返回 ("", [], {})。
+    """The succession history of this reign, material for the part title 《XX历代记》: the holders of
+    the protagonist's current top title since the campaign start. Returns (common name for the part
+    title, [summary lines...], part material); ("", [], {}) when there is nothing to write.
 
-    块的行序 (v69 用户样例: 每朝一行, 次行由老到新列该朝历代并写明即位缘由):
-      本朝：{该日头衔显示名}            (仅家业者写「所附之朝：」; 末行另有主角在位段)
-      {国号}{层级词}（{起}至{止}）      例: 唐皇朝（868年至887年）/ 元皇朝（972年至今）
-      {名}（{即位日}{缘由}…）、…       例: 奄美靖（953年6月6日被派系拥立）
-      群雄争霸（{毁弃日}至{重建日}）    天命毁弃而国号未改的空位期 (用户指定此名)
-      {毁弃日}天命中绝，天下无主
-      本朝疆域：{同属一廷的封臣头衔} / 主角本朝任期：{起}–{止}
-    即位缘由取存档 `history.<date>.type` (见 `_SUCC_WORD`; 无 type = 常规继承),
-    失天命/失头衔取 `destroyed` 事件; 全体取证见 `docs/方案_v69_菲利普2历代记.md`。
-    为什么要有它: 旧《朝局风云录》的「天下大势」用 `holder_changes` 的「相关高位头衔」
-    口径, 同一家族名下被同一套游牧动态名统一命名的四枚头衔并列 (四行同名), 国号
-    (唐→中华→和→毕→越→元) 一行不可见 —— 模型于是把草原汗位更替当成中国王朝更替来写。"""
+    One line per dynasty as "{国号}{tier word}（{起}至{止}）" (preceded by "本朝：", followed by
+    本朝疆域 / 主角本朝任期 lines), then its holders oldest to newest as "{名}（{即位日}{缘由}）"; a
+    vacancy with the mandate destroyed but the dynasty name unchanged reads "群雄争霸". Reasons come
+    from the save's `history.<date>.type` (see `_SUCC_WORD`; no type = regular inheritance)."""
     pid = f.cache.get("player_id")
     if pid is None:
         return "", [], {}
-    # v73 (用户 2026-09-27 拍板): 本篇**只在终传触发** —— 在世传记 (尚未卒) 与各十年
-    # 传记都不再建《XX历代记》 (历代既已完篇, 不必每十年重述一遍)。
+    # This part triggers only for a final biography: a living biography (not yet dead) and
+    # every decade biography skip 《XX历代记》, the succession history being complete
+    # already and not worth retelling once a decade.
     if not _is_final_bio(f):
         return "", [], {}
     as_of = f.as_of or f.cache.get("last_date")
     start = _campaign_start(f)
     tid, own = None, False
     _t, _tid = f._primary_title_at(pid, as_of=f.as_of)
-    if _tid is not None and _t is not None:      # 有真领地 → 主角自己的最高头衔
+    if _tid is not None and _t is not None:      # a real domain -> his own top title
         tid, own = _tid, True
     else:
         cut = f.as_of or (f.cache.get("reign_end") or {}).get("date") \
@@ -20768,12 +20737,12 @@ def _top_title_history(f, group_lines=None):
             or f.cache.get("last_date")
         if cut:
             _t2, _tid2 = f._primary_title_at(pid, held_through=cut)
-            if _tid2 is not None and _t2 is not None:   # 已卒/已让位传主: 按终了日仍在持算
+            if _tid2 is not None and _t2 is not None:   # dead / abdicated: still holding at the end date
                 tid, own = _tid2, True
-        if tid is None:                              # 仅家业 → 最高领主之朝
+        if tid is None:                              # estate only -> the top liege's court
             if any(f._is_estate_title(t) for t in (f._hold_intervals(pid) or {})):
                 tid = _estate_court_tid(f, pid)
-    if tid is None:                                  # 仅冒险者营地 → 本篇略去
+    if tid is None:                                  # adventurer camp only -> part skipped
         return "", [], {}
     t = f._lt.get(str(tid)) or {}
     key = t.get("key") or ""
@@ -20782,14 +20751,15 @@ def _top_title_history(f, group_lines=None):
     tname = f.title(tid, as_of) or _disp
     if not tname:
         return "", [], {}
-    # 篇名通称: 有国号更名史者用它自己那一版通称 (h_china → 中华, 覆盖唐宋元…);
-    # 其余用该日显示名的底名 (k_norway → 挪威 而非「挪威王国」)。
+    # Common name for the part title: a title with a dynasty-rename history uses its own
+    # common name (h_china -> 中华, covering 唐宋元…); others use the base name of that
+    # day's display name (k_norway -> 挪威, not 挪威王国).
     common = L.loc(f.table, key) or _disp if f._has_reign_history(tid) else _disp
     if not common:
         common = tname
     lines = [("本朝：" if own else "所附之朝：") + tname]
 
-    # ---- 国号分段 (title_history_names): [名, 起, 止] ----
+    # ---- dynasty name segments (title_history_names): [name, start, end] ----
     segs = []
     names = tnd.get("title_history_names") or []
     for h in names:
@@ -20807,29 +20777,25 @@ def _top_title_history(f, group_lines=None):
         segs.append([v, d, None])
     for i in range(len(segs) - 1):
         segs[i][2] = segs[i + 1][1]
-    # 只留与 [战役起点, as_of] 相交的国号段 (汉/晋/隋等开局前的古史段整段落选)
+    # keep only the dynasty segments intersecting [campaign start, as_of]; ancient
+    # segments predating the start (汉 / 晋 / 隋 …) drop out entirely
     if start:
         segs = [s for s in segs
                 if not (s[2] and cl.date_key(s[2]) <= cl.date_key(start))]
 
-    # ---- 历代 (v69 用户 2026-09-27 拍板): 每个朝代**单独一行**「国号（起年至止年）」,
-    # 次行由老到新列出该朝历代, 每人附即位缘由 (受任命继位/被派系拥立/正常继位…) 与
-    # 失位/失天命; 天命毁弃而国号未改的**空位期**记作「群雄争霸」(用户指定, 不写
-    # 「中华皇朝」)。缘由取 history 条目的 `type` (见 `_SUCC_WORD` 与探针取证)。
-    # 旧稿把国号链与历代压成两行, 中华段因毁弃无主而把李漼写成该段起首之君,
-    # 63 年空位一行不可见, 且全无继位缘由。
+    # Each dynasty on its own line, followed by its holders oldest to newest with accession reason.
     is_h = key.startswith("h_")
     _evs = _title_hist_events(f, tid, end=as_of)
     plain = False
-    if not _evs:                    # 无逐档头衔史 (游牧毡帐等) → 逐档快照兜底, 无缘由
+    if not _evs:                    # no per-snapshot title history -> snapshot fallback, no reason
         _evs = [(d, h, None) for d, h in _realm_holder_seq(f, tid, end=as_of)]
         plain = True
-    accs, losses = [], []           # accs[(date, holder, type, reign_end, 空位中?)]; losses[(date, holder)]
+    accs, losses = [], []           # accs[(date, holder, type, end, was vacant)]; losses[(date, holder)]
     _prev, _vacant = None, False
     for _i, (_d, _h, _ty) in enumerate(_evs):
         if _h is None:
             continue
-        if _ty == "destroyed":      # 毁弃: holder = 失去者 (全局 2983/2985 与前一主相同)
+        if _ty == "destroyed":      # destroyed: holder = loser (2983 of 2985 match the previous holder)
             if _prev is not None and _h == _prev:
                 losses.append((_d, _h))
             _prev, _vacant = None, True
@@ -20842,12 +20808,12 @@ def _top_title_history(f, group_lines=None):
 
     seg_rows = [[_nm, _s, _e, [], False]
                 for _nm, _s, _e in (segs or [[_disp, None, None]])]
-    # 国号更名比持有者变更晚 0–3 天落账 (950.6.1 珉·奄美建天命 → 950.6.3 改号「和」;
-    # 963.1.9 格尔木噶玛即位 → 963.1.11 改号「毕」), 故即位日落在某国号段起点之后
-    # 7 天内的归入**新**段 —— 否则开国之君会被算进上一朝。
+    # A dynasty rename is recorded 0-3 days after the holder changes, so an accession
+    # falling within 7 days after a dynasty segment's start belongs to the **new** segment;
+    # otherwise a founding ruler would be counted into the previous dynasty.
     for _gi, (_d, _h, _ty, _end, _vac, _was_vac) in enumerate(accs):
         if start and _end and cl.date_key(_end) <= cl.date_key(start):
-            continue                # 开局前就已卸任者不入历代 (汉晋隋唐古史)
+            continue                # rulers who left office before the campaign start are not listed
         _dk, _pick, _best = _date_ord(_d), 0, None
         for _j, (_nm2, _s2, _e2, _hs2, _v2) in enumerate(seg_rows):
             if not _s2:
@@ -20860,7 +20826,8 @@ def _top_title_history(f, group_lines=None):
             seg_rows[_pick][4] = True
 
     def _span(s, e):
-        """朝代行的年代区间 (用户样例用年; 同一年内改朝者补月份)。"""
+        """Date range for a dynasty line: years, with months added when the change happens
+        within one year."""
         y1, m1 = str(s).split(".")[0], str(s).split(".")[1]
         if e is None:
             return f"{y1}年至今"
@@ -20869,10 +20836,9 @@ def _top_title_history(f, group_lines=None):
             return f"{y1}年{m1}月至{y1}年{m2}月"
         return f"{y1}年至{y2}年"
 
-    # 朝代名 = 国号段名 + 层级后缀。后缀取**叙事末日的显示名**(元皇朝 → 皇朝;
-    # 挪威王国 → 王国) 而非各段起始日 —— 天朝 `h_` 的层级词只在持有者行天朝制时
-    # 才出「皇朝」(v8 口径), 950/963/972 三段的开国者都还是游牧制, 逐段取会得到
-    # 「和」「毕」「元」这样的裸国号, 与「本朝：元皇朝」不一致。
+    # Dynasty name = dynasty segment name + tier suffix, the suffix taken from the display name at the
+    # narrative end date (元皇朝 -> 皇朝; 挪威王国 -> 王国) rather than per segment, since for a
+    # celestial empire `h_` the tier word appears only while the holder runs that government.
     _base_now = f._name_at_date(tid, as_of) or ""
     _full_now = f.title(tid, as_of) or ""
     _suf = _full_now[len(_base_now):] if (_base_now and _full_now.startswith(_base_now)) else ""
@@ -20883,7 +20849,7 @@ def _top_title_history(f, group_lines=None):
         if _st is None:
             continue
         if start and _date_ord(_st) < _date_ord(start):
-            _st = start                    # 朝代行按战役窗口起算 (用户样例 867→868 口径)
+            _st = start                    # a dynasty line starts at the campaign window
         _nx = (seg_rows[_i + 1][3][0][1] if (_i + 1 < len(seg_rows)
                                              and seg_rows[_i + 1][3])
                else (seg_rows[_i + 1][1] if _i + 1 < len(seg_rows) else None))
@@ -20892,7 +20858,7 @@ def _top_title_history(f, group_lines=None):
         _hdr = ((_nm + _suf) if (_suf and _nm and not _nm.endswith(_suf)) else _nm) \
             if _nm else (_full_now or tname)
         if not _hs and is_h:
-            _hdr = "群雄争霸"              # 天命毁弃、国号未改的空位期 (用户指定)
+            _hdr = "群雄争霸"              # vacancy: mandate destroyed, dynasty name unchanged
         lines.append(_hdr + "（" + _span(_st, _nx) + "）")
         _items = []
         for (_gi, _d, _h, _ty) in _hs:
@@ -20902,8 +20868,9 @@ def _top_title_history(f, group_lines=None):
             if plain:
                 _txt = f"{_hn}（{f.date(_d)}起在位"
             elif _ty == "created":
-                # 空位期后重建 (珉·奄美 950.6.1 续 887 之绝) 与开国 (尼克 972.10.10
-                # 从奄美崇业手中另立天命) 是两码事 —— 看**紧邻的上一条事件**是否毁弃。
+                # Rebuilding after a vacancy and founding a new mandate are two different
+                # things; the code looks at whether the immediately preceding event was a
+                # destroy event.
                 _w = ("重建天命" if is_h else "重建头衔") if accs[_gi][4] \
                     else ("建立天命" if is_h else "自立建国")
                 _txt = f"{_hn}（{f.date(_d)}{_w}"
@@ -20940,10 +20907,11 @@ def _top_title_history(f, group_lines=None):
 
 
 def _realm_facts(f):
-    """朝局数据 (v4): 玩家上位链 + 帝国/王国级头衔持有者变化。"""
+    """Realm data: the player's liege chain + holder changes of empire/kingdom-tier titles."""
     out = {}
-    # 玩家上位链 (最后快照)。v11: as_of 早于末档 (十年传记) 时, 当前熔件的上位链
-    # 是末档状态 (周皇朝), 与十年前不符且无法按时期重建 → 省略, 避免「隶属周皇朝」误写。
+    # The player's liege chain (last snapshot). When as_of predates the last snapshot (a decade
+    # biography) the current melt's chain is late-snapshot state, which cannot be rebuilt per period, so
+    # it is omitted rather than written wrongly.
     pid = f.cache.get("player_id")
     if pid is not None and not (f.as_of and cl.date_key(f.as_of) < cl.date_key(
             f.cache.get("last_date") or f.as_of or "9999.9.9")):
@@ -20954,28 +20922,29 @@ def _realm_facts(f):
             parts = []
             for tid, hid in chain:
                 hn = f.name_or(hid, "") if hid is not None else ""
-                # v29b: 头衔与持有人直连 (「唐皇朝李漼」), 不用括注同位语
+                # title joined straight to its holder ("唐皇朝李漼"), no parenthetical
+                # appositive
                 parts.append(f"{f.title(tid)}{hn}" if hn else f.title(tid))
-            # v38 (问题3): 链顶是主角自己 → 点明自立, 免得模型把「自己的政权」
-            # 与同表里的唐/青徐混为一谈
+            # When the protagonist tops the chain, say he is independent, so the model does
+            # not confuse his own polity with the other titles in the same table.
             top_hid = chain[-1][1]
             tail = "，自立，上无领主" if top_hid == pid else ""
             out["liege_chain"] = " → ".join(parts) + tail
-    # 高位头衔持有者变化 (h_/e_/k_): title history 精确日期为主, realm_history 快照兜底;
-    # 头衔名按任期 (v11: 唐皇朝 → 周皇朝 更名可见, 882 的「周皇朝」错标即由此根除)。
-    # v13: 只收「相关」高位头衔 (上位链 + 相关角色曾任 + 朝廷职司另列), 剔除全球
-    # 各国更替噪声; 朝廷职司 (e_minister_*) 不进本表。
+    # Holder changes of high titles (h_/e_/k_): exact title-history dates with realm_history snapshots as
+    # fallback, the title name following the tenure so renames show. Only "relevant" high titles are
+    # collected (liege chain + titles once held by related characters); court offices (e_minister_*) stay out.
     if f.as_of:
         rh = [h for h in f.cache.get("realm_history") or []
               if cl.date_key(h.get("date")) <= cl.date_key(f.as_of)]
     else:
         rh = f.cache.get("realm_history") or []
-    # v13: 历史事件只收「首档前 ~30 年」之后 (剔除汉晋隋唐等 25 年古史噪声,
-    # 保留本朝更名/夺位叙事: 唐皇朝→周皇朝 919 崔佛·菲利普)
+    # History events are kept only from ~30 years before the first snapshot: this drops
+    # ancient-history noise while keeping this reign's renames and usurpations.
     min_dk = min((cl.date_key(h.get("date")) for h in rh), default=None)
     hist_min_y = (min_dk[0] - 30) if min_dk else None
 
-    # 相关角色集: 家人/好友/仇人/宫廷任官 (高位头衔曾属他们才收录)
+    # relevant character set: family / friends / foes / court office holders (a high title
+    # is collected only when it was once theirs)
     related = _related_ids(f)
     for _cid, _rec in (f.cache.get("characters") or {}).items():
         for _m in _rec.get("memories") or []:
@@ -20991,7 +20960,7 @@ def _realm_facts(f):
             if isinstance(p.get("employee"), int):
                 related.setdefault(p["employee"], 2)
 
-    # 主角所在上位链头衔 (含最高领主) — 本朝主干
+    # titles in the protagonist's liege chain, top liege included: the backbone of this reign
     chain_tids = set()
     try:
         prov = f.character_location_province(pid)
@@ -21001,7 +20970,7 @@ def _realm_facts(f):
     except Exception:
         pass
 
-    # ① title history 精确序列 (主源)
+    # (1) the exact title-history sequence (primary source)
     hist_map = {}  # tid -> [(date, holder), ...]
     for tid, t in f._lt.items():
         if not isinstance(t, dict):
@@ -21009,7 +20978,7 @@ def _realm_facts(f):
         key = t.get("key") or ""
         if not key.startswith(("h_", "e_", "k_")):
             continue
-        if key.startswith("e_minister_"):  # v13: 朝廷职司另列
+        if key.startswith("e_minister_"):  # court offices are listed separately
             continue
         hist = t.get("history") or {}
         if not isinstance(hist, dict) or not hist:
@@ -21026,7 +20995,8 @@ def _realm_facts(f):
                     pass
             holder = ev.get("holder") if isinstance(ev, dict) else ev
             if isinstance(holder, list):
-                # v15: 同日多事件 (destroyed+created 等, 重复键合并成列表)
+                # several events on one day (destroyed + created etc.; duplicate keys
+                # merge into a list)
                 for _h2 in holder:
                     if isinstance(_h2, dict):
                         if _h2.get("holder") is not None:
@@ -21037,7 +21007,8 @@ def _realm_facts(f):
                 seq.append((d, holder))
         if seq:
             hist_map[int(tid)] = seq
-    # ② realm_history 快照 (仅补 title history 未覆盖的头衔, 消除双源重复)
+    # (2) realm_history snapshots: fill in only the titles the title history does not
+    # cover, removing double counting between the two sources
     for h in rh:
         for tid, holder in (h.get("holders") or {}).items():
             t = f._lt.get(str(tid)) or {}
@@ -21050,7 +21021,7 @@ def _realm_facts(f):
                 continue
             hist_map.setdefault(int(tid), []).append((h.get("date"), holder))
 
-    # ③ 相关过滤: 上位链头衔 / 相关角色曾任头衔
+    # (3) relevance filter: titles in the liege chain / titles once held by related characters
     keep_tids = set(chain_tids)
     for tid, seq in hist_map.items():
         if tid in keep_tids:
@@ -21059,18 +21030,12 @@ def _realm_facts(f):
             keep_tids.add(tid)
     span_end = f.as_of or f.cache.get("last_date")
     changes = []
-    # v38 (问题3): 隶属标注 —— 高位头衔更替原是一行一条、彼此平级 (唐皇朝 / 青徐国
-    # 并列), 模型无从知道青徐是唐的封臣王国, 于是写出「唐皇朝以外, 青徐国自成一系」
-    # 甚至「李润改元以青徐国为号」。现按熔件的 `de_facto_liege` (跟不动时沿
-    # `de_jure_liege` 上溯) 求出每个头衔的**最近帝国/霸主级宗主**, 逐条标注,
-    # 并给出「同属一个朝廷」的归组行。实测 k_qingxu 的 de_facto_liege = h_china。
-    #
-    # v64 (问题4): 法理回落必须落在**存在过的**头衔上 —— 存档里 `de_jure_liege`
-    # 对**从未创建**的空衔同样有值 (本档 177 个高位头衔的 `history` 为 null、
-    # holder 亦空, 且 realm_history 快照从未见过), 旧稿照名输出, 于是朝局事实面
-    # 写出「库曼顿巴斯部：…为鞑靼帝国封臣」, 模型据此编出一个不存在的鞑靼帝国
-    # (终传实测「他所属的鞑靼帝国，乃当世屈指可数的巨邦」)。判据见
-    # `Facts._ever_held_title` (三档: history / 此刻 holder / realm 快照曾见)。
+    # Liege annotation: high-title changes used to be one line each, all peers, so the model could not
+    # tell that 青徐 was a vassal kingdom of 唐. Each title's nearest empire/hegemon liege now comes from
+    # the melt's `de_facto_liege` (walking up `de_jure_liege` when it fails to move), annotated per line
+    # and grouped into a "same court" row. The jure fallback must land on a title that **existed**, since
+    # the save gives `de_jure_liege` a value even for never-created empty titles and emitting them would
+    # put a phantom empire into the facts (`Facts._ever_held_title`).
     def _up_liege(tid):
         seen = set()
         cur = tid
@@ -21091,9 +21056,9 @@ def _realm_facts(f):
     for tid in sorted(keep_tids):
         sup = _up_liege(tid)
         if sup is not None and sup != tid:
-            # v64 (问题4) 自检: 宗主必须是「存在过的」头衔。de_facto 链理论上只会
-            # 指向有人持有的头衔, 此处兜住存档异常, 防幽灵政权 (鞑靼帝国/图兰帝国)
-            # 经任何路径再漏进事实面。
+            # Self-check: a liege must be a title that existed. The de_facto chain should
+            # only point at held titles; this catches save anomalies so a phantom polity
+            # cannot leak into the facts by any path.
             if not f._ever_held_title(sup):
                 _PHANTOM_LIEGE_LOG["lines"] += 1
                 if len(_PHANTOM_LIEGE_LOG["samples"]) < 12:
@@ -21108,14 +21073,14 @@ def _realm_facts(f):
                     pass
                 continue
             liege_of[tid] = sup
-    # 归组: 宗主 → 其下的高层头衔 (下辖层级词按 tier 取)
+    # grouping: liege -> the high titles under it (the tier word comes from the tier)
     vassal_groups = {}
     for tid, sup in liege_of.items():
         vassal_groups.setdefault(sup, []).append(tid)
 
     def _group_suffix(tid):
-        """该头衔的宗主标注: 「，为唐皇朝封臣」; 无宗主 (自成一国) 不给标注。
-        v55 (问题2): 去括注, 作同句分句。"""
+        """Liege annotation for this title: "，为唐皇朝封臣"; a title with no liege (a polity
+        of its own) gets none. No parentheses -- it is a clause of the same sentence."""
         sup = liege_of.get(tid)
         if sup is None:
             return ""
@@ -21123,17 +21088,19 @@ def _realm_facts(f):
         return f"，为{nm}封臣" if nm else ""
 
     def _simple_name(tid):
-        """头衔的**宗室/朝廷通称** —— 按 span_end 的时任持有者取 (h_china → 「唐皇朝」)。
-        用于宗主标注。"""
+        """The title's court / dynastic common name, taken from the holder at `span_end`
+        (h_china -> "唐皇朝"). Used for the liege annotation."""
         t = f._lt.get(str(tid)) or {}
         if not (t.get("key") or ""):
             return ""
         return f._title_name_at(tid, span_end)
 
     def _base_name(tid):
-        """头衔的**底名** (不含层级词) —— k_qingxu → 「青徐」。
-        归组行用它, 免得把「青徐路/福建路」这类**按时任持有者独立性**取的层级词
-        (同一头衔在皇帝兼领时叫「国」、臣子受任时叫「路」) 混进同一行。"""
+        """The title's base name, without the tier word: k_qingxu -> "青徐".
+
+        The grouping row uses it so tier words that depend on the holder's independence (the
+        same title reads 国 while an emperor also holds it and 路 when a subject is
+        appointed) do not mix into one row."""
         t = f._lt.get(str(tid)) or {}
         key = t.get("key") or ""
         if not key:
@@ -21142,17 +21109,19 @@ def _realm_facts(f):
         return str(nm).strip()
 
     def _tier_tail(name):
-        """名字的层级词尾巴 (国/路/州府/皇朝/伯爵领…) —— 用于「同一条里换了层级词」判定。
-        「国」是**独立天朝制王国**的层级词 (`_tier_word_at` 查
-        `kingdom_celestial_chinese_independent`), 不在 GENERIC_TIER_ZH 里,
-        故本地补入。"""
+        """The tier-word tail of a name (国 / 路 / 州府 / 皇朝 / 伯爵领 …), used to detect a
+        tier-word change within one line.
+
+        "国" is the tier word of an independent celestial kingdom (`_tier_word_at` looks up
+        `kingdom_celestial_chinese_independent`) and is absent from GENERIC_TIER_ZH, so it is
+        added here."""
         for w in sorted(f._rank_words | {"国"}, key=len, reverse=True):
             if w and name.endswith(w):
                 return w
         return ""
 
     def _name_stem(name):
-        """去掉层级词尾巴的底名 (青徐国 → 青徐)。"""
+        """The base name with the tier-word tail removed (青徐国 -> 青徐)."""
         t = _tier_tail(name)
         return name[:len(name) - len(t)] if t else name
 
@@ -21160,7 +21129,8 @@ def _realm_facts(f):
         seq = sorted(hist_map.get(tid) or [], key=lambda x: cl.date_key(x[0]))
         if not seq:
             continue
-        # 去重: 同日同持有者只留一条 (title history 与快照同日重复)
+        # dedupe: one row per (date, holder), since the title history and the snapshots can
+        # repeat the same day
         dedup = []
         seen_k = set()
         for d, holder in seq:
@@ -21180,9 +21150,9 @@ def _realm_facts(f):
             end = dedup[i + 1][0] if i + 1 < len(dedup) else span_end
             nm = f._name_in_span(tid, d, end, cid=holder)
             tail = _tier_tail(nm) if nm else ""
-            # v38 (问题3): 头衔是「国」还是「路」取决于该任期持有者是否自立 ——
-            # 皇帝兼领时显示「青徐国」、臣子受任时显示「青徐路」, 这不是改名。
-            # 底名相同而只有层级词不同时, 只留首个 (后文由宗主标注说明归属)。
+            # 国 vs 路 depends on whether that tenure's holder is independent (青徐国 while an emperor
+            # holds it, 青徐路 for an appointed subject) -- not a rename. Same base name with a
+            # different tier word: keep the first alone, the liege annotation states the affiliation.
             if nm and tail and prev_tail and tail != prev_tail \
                     and _name_stem(nm) == _name_stem(prev_nm):
                 nm = ""
@@ -21195,9 +21165,9 @@ def _realm_facts(f):
             prev = holder
         if len(bits) > 1:
             changes.append("，".join(bits) + _group_suffix(tid))
-    # v38 (问题3): 同一宗主的头衔归组一行 —— 让「唐皇朝 / 青徐国」并列的两行
-    # 一眼看出是同一个朝廷的上下级, 而不是两个并立的政权。
-    # v68 (问题1): 归组行按宗主 tid 另存一份, 供「本朝历代」的疆域行复用。
+    # Group the titles of one liege into a row, so "唐皇朝" and "青徐国" read as superior and
+    # subordinate in one court rather than as two coexisting polities. The grouping rows are
+    # also stored by liege tid for the territory row of 《XX历代记》.
     group_lines = {}
     for sup in sorted(vassal_groups):
         names = []
@@ -21213,7 +21183,7 @@ def _realm_facts(f):
         _gln = f"{snm}朝廷所辖，同属一廷：" + "、".join(names)
         changes.append(_gln)
         group_lines[sup] = _gln
-    # 排序: 上位链头衔在前 (按层级降序), 其余按最后更替日期降序 (近期先)
+    # order: liege-chain titles first (by descending rank), the rest as they are
     def _sort_key(ln):
         nm = ln.split("：", 1)[0]
         for tid in chain_tids:
@@ -21223,23 +21193,25 @@ def _realm_facts(f):
     changes.sort(key=_sort_key)
     if changes:
         out["holder_changes"] = changes
-    # v13: 朝廷职司 (尚书省六部/御史台/枢密院 — as_of 时点的时任者 + 职司官职)
+    # court offices (the six ministries / censorate / bureau of military affairs: the holders
+    # at as_of plus the office title)
     min_off = f._current_ministers(f.as_of)
     if min_off:
         out["ministers"] = min_off
-    # v36 (问题2, 用户拍板3): 主角**获授**的朝廷职位 (太师等) — 《朝局风云录》升沉段用;
-    # 只写主角自己受任的职位 (employee=主角), 与廷中僚属花名册分列。
+    # Court offices granted to the protagonist (太师 etc.), used by the rise-and-fall section
+    # of 朝局风云录; only offices the protagonist himself received (employee = protagonist),
+    # kept apart from the retainer roster.
     col, coch = f.court_office_lines()
     if col:
         out["protagonist_offices"] = col
     if coch:
         out["protagonist_office_changes"] = coch
-    # v28: 要员隐事 — 最高领主链 (皇帝/路/王国) 与朝廷职司时任者的隐事
-    # (用户 2026-09-10 决策: 《朝局风云录》收录最高统治者的秘密)
+    # Secrets of the powerful: those of the liege chain (emperor / province / kingdom) and of
+    # the current court office holders; 朝局风云录 records the top ruler's secrets.
     out["secrets"] = _realm_secret_lines(f)
-    # v68 (问题1): 本朝历代 —— 主角当前最高头衔从**战役起点**以来的国号沿革与历代
-    # 持有者 (用户拍板: 篇名《XX历代记》, 移除「朝局动态」块; 有家业者写最高领主的
-    # 头衔历史, 仅冒险者营地者本篇略去)。`holder_changes` 保留给其它调用点与既有断言。
+    # Succession history of this reign: the dynasty-name evolution and successive holders of the
+    # protagonist's current top title since the campaign start (《XX历代记》; an estate holder writes the
+    # top liege's title history, an adventurer camp is skipped). `holder_changes` remains for other callers.
     _tt_common, _tt_lines, _tt_chronicle = _top_title_history(
         f, group_lines=group_lines)
     if _tt_lines:
@@ -21251,9 +21223,10 @@ def _realm_facts(f):
 
 
 def _realm_secret_lines(f):
-    """要员隐事 (v28): 上位链持有人 (不含主角) + 朝廷职司时任者的隐事句,
-    上限 6 条; 无则返回 []。v28b: 持有人带官职称谓 (唐皇帝李漼 / 御史大夫郭克勤),
-    隐事与其知情者同句。"""
+    """Secret sentences for the powerful: the liege-chain holders (the protagonist excluded)
+    plus the current court office holders, capped at 6; [] when there are none. A holder
+    carries his office title (唐皇帝李漼 / 御史大夫郭克勤), and the secret shares its sentence
+    with its knowers."""
     pid = f.cache.get("player_id")
     owners = []
     try:
@@ -21280,11 +21253,13 @@ def _realm_secret_lines(f):
     return out
 
 
-# v15: 大奸大恶专题模块 — 由 _villain_chains 程序直算 (非记忆类型映射)。
-# 模块名同时参与十年戏剧主题抽取 (build_facts 并入 decade_modules)。
+# Villainy topic modules, computed directly by `_villain_chains` rather than mapped from
+# memory types. The module names also feed the decade drama theme extraction (build_facts
+# merges them into decade_modules).
 VILLAIN_MODULES = ("谋害人命", "托卵承嗣", "奸夫谋夫", "共谋暗杀", "血亲之刃", "血脉登基")
 
-# 阴谋参与者角色类型 → 中文 (熔件 schemes agent_slots; 本地化缺失时兜底)
+# scheme participant agent type -> Chinese (the melt's schemes `agent_slots`; fallback when
+# localization is missing)
 _AGENT_ZH = {
     "agent_assassin": "刺客", "agent_lookout": "眼线", "agent_lookout_speed": "眼线",
     "agent_infiltrator": "内应", "agent_thug": "打手", "agent_muscle": "打手",
@@ -21383,7 +21358,7 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
             return oname
         if role == "TARGET_CHARACTER":
             return tname
-        if not xname:            # TARGET_CHARACTER_2 缺人 → 整句不出
+        if not xname:            # no TARGET_CHARACTER_2 -> emit no sentence
             need_x[0] = True
             return ""
         return xname
