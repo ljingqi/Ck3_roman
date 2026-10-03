@@ -1,13 +1,7 @@
 # -*- coding: utf-8 -*-
-"""阅读页生成器 (htmlview.py) — CK3 人物传记版
-============================================
-把 output/<家族>/ 下的传记 Markdown 汇总成一个自包含的 index.html:
-  - 同一页面内可切换各篇传记 (按人物/日期);
-  - 全部样式与脚本内嵌, 不依赖任何外部资源, 离线双击即可阅读。
-
-用法:
-  python htmlview.py rebuild [家族名 ...]   生成/更新指定家族阅读页 (缺省全部)
-"""
+"""Build each family's self-contained output/<family>/index.html reading page from its
+biography Markdown (styles and scripts inlined, pieces switchable in-page, works offline).
+Usage: python htmlview.py rebuild [family ...] — all families when none is given."""
 import html
 import json
 import os
@@ -15,7 +9,7 @@ import re
 import sys
 import threading
 
-import cache_lib as cl   # v55-7: 日期键与 cache_lib.date_key 同一口径 (勿另写一份解析)
+import cache_lib as cl   # same date-key convention as cache_lib.date_key; do not add a second parser
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -34,12 +28,10 @@ def _output_dir():
     return os.path.join(SCRIPT_DIR, "output")
 
 
-# ---------------------------------------------------------------------------
-# Markdown → HTML (覆盖传记输出实际用到的语法子集)
-# ---------------------------------------------------------------------------
+# ------------------- Markdown -> HTML (the syntax subset in use) -------------
 
 def _inline(text):
-    """行内语法: 先转义 HTML, 再处理粗体/斜体/行内代码。"""
+    """Inline syntax: HTML-escape first, then bold / italic / inline code."""
     t = html.escape(text)
     t = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", t)
     t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
@@ -84,8 +76,7 @@ def _is_ol(ln):
 
 
 def _render_nested_list(rows):
-    """连续列表行 (可能含前导空格缩进) → 按缩进层级构建嵌套 <ul>。
-    例: ['- 1070年', '  - 4月', '    - 9日：事件'] → 三层嵌套 <ul>。"""
+    """Turn consecutive list lines (leading spaces express nesting) into nested <ul>s."""
     items = []
     for r in rows:
         m = re.match(r"^(\s*)([-*]|\d+[.)])\s+(.*)$", r)
@@ -130,8 +121,8 @@ def _render_nested_list(rows):
 
 
 def md_to_html(text):
-    """整篇 Markdown → (HTML 片段, 章节清单)。
-    章节清单: [{level, text, id}] — 供左侧章节栏用 markdown 标题跳转 (v14)。"""
+    """Render a whole Markdown document to (html, sections); sections are
+    [{level, text, id}] and drive the sidebar jumps."""
     lines = text.split("\n")
     out = []
     toc = []
@@ -153,16 +144,14 @@ def md_to_html(text):
             level = len(m.group(1))
             htext = m.group(2).strip()
             cls = ' class="masthead"' if level == 1 else ""
-            # v14: 标题锚点 id (章节栏跳转用)
+            # heading anchor id, used by the section sidebar for jumps
             hd_count += 1
             hd_id = f"hd-{hd_count}"
             out.append(f'<h{level} id="{hd_id}"{cls}>{_inline(htext)}</h{level}>')
-            # 仅收录 1-3 级标题进章节栏; h1 为传名 (一篇只一个, 作目录根)
+            # Only h1-h3 enter the section sidebar; h1 is the biography title, one per piece
             if level <= 3:
-                # v14: 正则去重 — 同一标题语义只留第一个 (旧文件可能带模型
-                # 误输出的短版重复/文章标题重复, 程序侧兜底, 不动提示词)。
-                # 归一化: 去数字序号/书名号/已知板块前缀 (开篇·纪事·列传·本纪·…),
-                # 短版重复 (开篇·家世与交游 vs 家世与交游) 与 文章标题混入 归同键。
+                # Deduplicate headings by a normalized key, keeping the first: numeric
+                # prefixes, book-title marks and known section prefixes are stripped first.
                 key = re.sub(r"^[0-9、]+", "", htext)
                 key = re.sub(r"[《》]", "", key)
                 key = re.sub(r"^(?:开篇|纪事|评曰|列传|本纪|家室|朝局|家族|刺客|游侠|妻族|群英|恩怨|宝物)[··]", "", key)
@@ -210,9 +199,7 @@ def md_to_html(text):
     return "\n".join(out), toc
 
 
-# ---------------------------------------------------------------------------
-# 家族阅读页 (index.html)
-# ---------------------------------------------------------------------------
+# --------------------------- Family reading page -----------------------------
 
 TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -344,9 +331,9 @@ show(0, 0);
 
 
 def _parse_header(text):
-    """从 md 头部注释解析 人物/人物ID/出生/篇目/十年 (v8, v20)。
-    v28: 先剥 `-->` 结尾标记 — 头注释末字段 (篇目/十年) 不再有后续字段兜底,
-    否则 `[^|]+` 会把 ` -->` 一起吞进篇目名。"""
+    """Parse the Markdown header comment (person / person id / birth year / piece / decade /
+    playthrough id / reign date) into a dict. The trailing `-->` is removed first: the last
+    field has no following separator, so `[^|]+` would otherwise swallow it."""
     out = {}
     for ln in (text or "").split("\n"):
         if not ln.strip().startswith("<!--"):
@@ -379,15 +366,16 @@ def _parse_header(text):
 
 _FILENAME_PERSON_RE = re.compile(r"^(.*?)\((\d+)\)$")
 _EPITHET_SUFFIX_RE = re.compile(r'[“"][^”"]*[”"]\s*$')
-# v21: 昵称改前缀式 (欺诈者郭靖 / 秃头仲宣) — 旧格式靠引号后缀识别,
-# 新格式无引号, 用启发式剥「以 者/头 等结尾的 1–4 字前缀」(仅兜底; 主路径
-# 靠文件名基名/人物ID 归并, 见 _person_identity)。
+# Nicknames are prefixed rather than quoted, so a heuristic strips a 1-4 character prefix
+# ending in a nickname-ish character. Fallback only: the main path merges by filename base
+# name or person id (see _person_identity).
 _EPITHET_PREFIX_RE = re.compile(
     r'^([\u4e00-\u9fff]{1,4}(?:者|头|狂|痴))([\u4e00-\u9fff]{2,})$')
 
 
 def _strip_epithet(name):
-    """去显示名里的绰号 (旧格式 名“绰号” 后缀 / 新格式 绰号名前缀; 无则原样)。"""
+    """Strip the epithet from a display name (quoted suffix or prefixed nickname); returned
+    unchanged when there is none."""
     if not name:
         return name
     s = _EPITHET_SUFFIX_RE.sub("", name).strip()
@@ -400,8 +388,9 @@ def _strip_epithet(name):
 
 
 def _filename_base_person(fn, folder):
-    """文件名回退角色名: 去 家族前缀 与 (生年) 后缀。返回 (基名, 生年|None)。
-    文件名来自缓存纯名 (name_full/name_zh), 不带绰号, 是稳定的身份线索。"""
+    """Fallback character name taken from a filename: drop the family prefix and the
+    (birth year) suffix; returns (base name, birth year or None). Filenames come from the
+    cached plain names (name_full/name_zh), so they carry no epithet and are stable."""
     base = fn
     for sep in ("_终传_", "_传记_"):
         if sep in fn:
@@ -416,15 +405,15 @@ def _filename_base_person(fn, folder):
 
 
 def _person_identity(fn, folder, text, h=None):
-    """(分组键, 显示名) — v20 稳定身份:
-    - A2: 头部注释有 人物ID (游戏角色 id) → 键 ('id', pid), 最精确;
-    - A1: 否则 键 ('name', 去绰号名, 生年) — 生年取头部 出生 或文件名 (849),
-      去绰号优先用文件名基名 (缓存纯名), 无则剥头部 名“绰号”后缀 / 绰号前缀。
-    同角色因绰号随时代变化 (嗜血者→屠狼者) 也归并到同一键。"""
+    """Return (group key, display name) for a stable identity: the header person id when
+    present (most exact, with the campaign id to avoid cross-campaign merges), else
+    (epithet-stripped name, birth year) from the header or filename — so the same character
+    keeps one key even as the epithet changes over time."""
     h = h if h is not None else _parse_header(text)
     person = h.get("person") or ""
     if h.get("person_id"):
-        # A2: 人物ID 唯一, 同战役复用同 id 也同页; 战役ID 参与键防跨战役同 id 误并
+        # The person id is unique inside a campaign but reused across campaigns, so the key
+        # carries the campaign id
         return (("id", h["person_id"], h.get("playthrough_id")),
                 _strip_epithet(person) or person)
     fbase, fyear = _filename_base_person(fn, folder)
@@ -432,18 +421,16 @@ def _person_identity(fn, folder, text, h=None):
     if year is None:
         year = fyear
     if person and fbase and fbase in person:
-        base = fbase  # 文件名基名是头部名 (带绰号) 的子串 → 取纯名
+        base = fbase  # the filename base name is the header name (with epithet) minus the epithet
     else:
         base = _strip_epithet(person) or person or fbase
     return ("name", base, year), base
 
 
 def _article_label(fn, text, folder=None, h=None):
-    """标签: 十年传记/终传 语义化 (v8)。返回 (label, meta)。
-    - 十年传记: 「第N个十年传记」+「至<日期>」
-    - 终传: 「终传」+「死于<日期>」
-    - 普通传记: 「传记」+「至<日期>」
-    - 旧文件 (无头部注释): 回退文件名/首行标题。"""
+    """Return (label, meta) for one article: the Chinese label of a decade / final / ordinary
+    biography plus its date line; files without a header comment fall back to the filename
+    or to the first title line."""
     title = os.path.splitext(fn)[0]
     for ln in (text or "").split("\n"):
         s = ln.strip()
@@ -455,7 +442,7 @@ def _article_label(fn, text, folder=None, h=None):
         if s.startswith("#"):
             title = s.lstrip("# ").strip()
             break
-        break  # 首个非注释非空行不是标题 → 用文件名
+        break  # first non-comment, non-blank line is not a title -> fall back to the filename
     m = re.search(r"_(终传|传记)_(?:第\d+个十年_)?(\d+_\d{2}_\d{2})", fn)
     date = m.group(2).replace("_", ".") if m else ""
     h = h if h is not None else _parse_header(text)
@@ -470,24 +457,20 @@ def _article_label(fn, text, folder=None, h=None):
     return title, ""
 
 
-# ---------------------------------------------------------------------------
-# v55-7: 阅读页排序键 —— 不再用文件名字典序
-#
-# 旧实现用 `sorted(os.listdir(...))` 定顺序, 于是**传主名参与排序**: 沙米尔 944 年
-# 由捷克入汉, 游戏内姓名顺序由「沙米尔·斯卡利茨」翻成「斯卡利茨沙米尔」, 文件名
-# 前缀随之改变 (斯 U+65AF < 沙 U+6C99) —— 第2个十年被顶到第1个十年前面; 下拉框
-# 角色顺序也变成按名字首字排 (亨利 → 沙米尔 → 马丁), 而非执政顺序。
-# 现改为语义键: 角色按 (战役, 执政日, 生年, 名), 篇目按覆盖截止日。
-# ---------------------------------------------------------------------------
+# --- Reading-page sort keys ---------------------------------------------------
+# Never filename lexicographic order: the subject's in-game name (and with it the filename
+# prefix) changes with culture and would reorder entries. Semantic keys instead —
+# characters by (campaign, reign date, birth year, name), pieces by coverage end date.
 
-# 与 cl.date_key 同型的「未知」哨兵 —— 排序键一律用元组, 切勿混入 int
-# (混型比较会抛 TypeError: '<' not supported between instances of 'tuple' and 'int')。
+# Unknown-date sentinel matching cl.date_key; sort keys stay tuples, since comparing a tuple
+# with an int raises TypeError.
 _UNKNOWN_KEY = (9999, 0, 0)
 
 
 def _reign_key(h):
-    """角色执政次序键: 优先头部「执政」即位日 (written by biography.reign_start),
-    缺失时用生年兜底 —— 同尺度近似 (即位必晚于出生), 故新旧文件混排仍有世代序。"""
+    """Reign-order key for a character: the header reign date written by
+    biography.reign_start, else the birth year — an approximation on the same scale, so
+    mixed old and new files still keep their generational order."""
     r = h.get("reign")
     if r:
         return cl.date_key(r)
@@ -495,13 +478,13 @@ def _reign_key(h):
     return (by, 0, 0) if by else _UNKNOWN_KEY
 
 
-# 篇目类型次序: 同一天时 在世传记 → 十年传记 → 终传
+# Piece-type order when dates tie: living biography -> decade biography -> final biography
 _PIECE_KIND = {"传记": 0, "十年": 1, "终传": 2}
 
 
 def _piece_key(fn, h):
-    """篇目次序键: 覆盖截止日升序 (十年档 = 十年末 / 终传 = 卒日 / 在世传记 = 末档日),
-    同日按 在世传记 → 十年传记 → 终传。"""
+    """Piece-order key: coverage end date ascending (decade end / death date / last
+    snapshot date for a living biography), ties broken living -> decade -> final."""
     m = re.search(r"_(\d+)_(\d{2})_(\d{2})\.md$", fn)
     d = (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else _UNKNOWN_KEY
     if h.get("decade") is not None:
@@ -514,13 +497,11 @@ def _piece_key(fn, h):
 
 
 def _entry_sort_key(fn, h, pkey):
-    """条目总序: (战役ID, 执政/生年, 生年, 角色键, 篇目, 文件名)。
+    """Total entry order: (campaign id, reign/birth, birth year, character key, piece, filename).
 
-    ★ 角色排序分量用 `_person_identity` 的**稳定身份键**, 绝不用显示名 —— 显示名会
-    随游戏内文化/姓名顺序变化 (沙米尔 944 由捷克入汉: 沙米尔·斯卡利茨 →
-    斯卡利茨沙米尔), 一旦拿它参与排序, 同一角色的两篇就会因「第几篇」之外的字符
-    差异而错序 —— 旧稿用文件名字典序正是栽在这里 (第2个十年顶到第1个前)。
-    身份键归一化为字符串元组, 兼防 A1 键里生年为 None 时与 int 相比抛 TypeError。"""
+    The character component is the stable identity key from _person_identity, never the
+    display name, which follows the in-game name order and would misorder a character's own
+    pieces; keys are stringified tuples, so a None birth year cannot be compared with an int."""
     return (h.get("playthrough_id") or "",
             _reign_key(h),
             h.get("birth_year") or 9999,
@@ -530,8 +511,9 @@ def _entry_sort_key(fn, h, pkey):
 
 
 def rebuild_folder(output_dir, folder):
-    """为单个家族文件夹生成/更新 index.html; 无任何 md 时返回 None。
-    v8: 按角色分组 — 右上角色菜单, 左上该角色的十年传记/终传列表。"""
+    """Build/update index.html for one family folder; returns None when there is no md.
+    Entries are grouped per character: character menu top right, that character's pieces
+    top left."""
     base = os.path.join(output_dir, folder)
     if not os.path.isdir(base):
         return None
@@ -562,12 +544,12 @@ def rebuild_folder(output_dir, folder):
         })
     if not entries:
         return None
-    # v55-7: 语义排序 (v8 起为文件名字典序 —— 传主名一变就乱序, 见上方注释块)
+    # Semantic ordering, not filename order — see the sort-key note above
     entries.sort(key=lambda e: e["sort_key"])
     for e in entries:
         e.pop("sort_key", None)
-    # 按角色分组 (v20: 稳定身份键 — 人物ID 优先, 否则 去绰号名+生年;
-    # 绰号随时代变化 (嗜血者→屠狼者) 不再拆页)
+    # Group by character using the stable identity key (person id first, else
+    # epithet-stripped name + birth year), so a changing epithet does not split a page
     groups = []
     by_key = {}
     for e in entries:
@@ -578,7 +560,7 @@ def rebuild_folder(output_dir, folder):
         groups[by_key[e["person_key"]]]["items"].append(
             {"label": e["label"], "meta": e["meta"], "html": e["html"],
              "toc": e["toc"]})
-    # 同名不同生年 (祖孙同名) 显示名追加 (生年) 消歧, 与文件名口径一致
+    # A name shared across birth years (grandfather and grandson) gets (birth year) appended
     same_name = {}
     for g in groups:
         same_name.setdefault(g["name"], []).append(g)
@@ -589,7 +571,7 @@ def rebuild_folder(output_dir, folder):
                 by = k[2] if k and k[0] == "name" else None
                 if by:
                     g["name"] = f"{g['name']}({by})"
-    # person_key 仅分组内部使用, 不进 __DATA__
+    # person_key is for grouping only and is not written into __DATA__
     for g in groups:
         g.pop("person_key", None)
     title = f"{folder} · 家传阅读页"
@@ -598,7 +580,8 @@ def rebuild_folder(output_dir, folder):
            .replace("__FOLDER__", html.escape(folder))
            .replace("__DATA__", json.dumps(groups, ensure_ascii=False)))
     path = os.path.join(base, "index.html")
-    # 唯一临时名 (主线程与后台传记线程可能并发重建同一阅读页, 共享 .tmp 会互相截断)
+    # Unique temp name: the main thread and a biography thread may rebuild the same page at
+    # once, and a shared .tmp would truncate each other
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(out)

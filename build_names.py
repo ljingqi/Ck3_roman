@@ -1,15 +1,9 @@
 # -*- coding: utf-8 -*-
-"""构建全量角色名本地化映射表 → data/names.json (v2, 含姓氏; v14 含宗族名)
-
-结构: {"schema": 2, "source": "<档期>", "names": {
-        "<角色id>": {"first_name": "...", "name_zh": "...", "house_name": "...",
-                     "dynasty_name": "..."}}}
-用途: 传记/其它输出查名兜底 (缓存只收录主角相关人物, 此表覆盖全档; house_name
-      供姓名合并: 边 + 诚 → 边诚; dynasty_name 为东方名序的姓: 藤原 + 道真)。
-
-用法:
-  python build_names.py [melt路径]   # 缺省取日期最新的一份 melt (战役文件夹优先)
-"""
+"""Build the full character-name localization table -> data/names.json: a name-lookup
+fallback for the biography output, since the cache only covers characters related to the
+player. Each character id maps to {"first_name", "name_zh", "house_name", "dynasty_name"},
+where house_name merges given names and dynasty_name is the surname in Eastern name order.
+Usage: python build_names.py [melt path] — the newest melt is used by default."""
 import json
 import os
 import re
@@ -24,9 +18,10 @@ OUT = os.path.join(HERE, "data", "names.json")
 
 
 def _latest_melt():
-    """取日期最新的一份熔件: 战役文件夹 output/<家族>/data/ 优先, 兼容旧根目录。
-    v28: 本表按角色 id 索引, **只在同一战役内有效** — 默认选最新日期仅为兜底,
-    推荐显式传本战役熔件: `python build_names.py output/<家族>/data/melt_<日期>.json`。"""
+    """Return the newest melt file by date, campaign folders output/<family>/data/ first.
+
+    The table is indexed by character id and is valid only inside one campaign, so passing
+    this campaign's melt path explicitly is better: python build_names.py <melt path>."""
     pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz|\.xz)?$")
     best, best_path = None, None
     dirs = []
@@ -50,7 +45,8 @@ def _latest_melt():
 
 
 def _campaign_folder(melt_path):
-    """melt 所在战役文件夹名 (output/<家族>/data/x.json → <家族>); 非该布局返回 ''。"""
+    """Campaign folder of a melt path (output/<family>/data/x.json -> <family>); '' when the
+    path does not fit that layout."""
     d = os.path.dirname(os.path.abspath(melt_path))
     if os.path.basename(d) != "data":
         return ""
@@ -76,7 +72,6 @@ def main():
         if not nm:
             continue
         h = cl.house_name_zh(melt, c.get("dynasty_house"))
-        # v14: 宗族名 (东方名序的姓): 家族 → 宗族 → 解析
         dn = ""
         hid = c.get("dynasty_house")
         if hid is not None:
@@ -92,15 +87,15 @@ def main():
     out = {
         "schema": 2,
         "source": melt.get("date"),
-        # v28: 战役号 — 角色 id 只在同一战役内有意义, 跨战役表会被 display_name 弃用
+        # playthrough id: character ids are per-campaign only
         "playthrough_id": melt.get("playthrough_id"),
         "total": len(names),
         "names": names,
     }
     with open(OUT, "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False)
-    # v28: 同时写一份**战役内**副本 — 传记优先读 output/<家族>/data/names.json,
-    # 全局 data/names.json 只作跨战役兜底 (角色 id 跨战役复用)。
+    # Per-campaign copy: biographies read output/<family>/data/names.json first, and the
+    # global table is only a cross-campaign fallback.
     folder = _campaign_folder(melt_path)
     if folder:
         local = os.path.join(HERE, "output", folder, "data", "names.json")

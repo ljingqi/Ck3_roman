@@ -1,24 +1,8 @@
 # -*- coding: utf-8 -*-
-"""游戏 flavorization 解析器 (v30)
-=================================
-CK3 的**统治者称呼**与**头衔名后缀**由 `common/flavorization/*.txt` 定义: 每个条目
-给出 type(character/title)、tier、gender、priority, 以及 governments / name_lists /
-heritages / faiths / religions 等条件 —— 取「优先级最高且全部条件命中」者, 其
-**块名即本地化键**。
-
-为什么要有它 (修复方案_菲利普4.md 问题2)
------------------------------------------
-Norse 段的块名叫 `count_feudal_male_norse`, 但块内写的是 `tier = duchy`、
-`priority = 30`; 通用的 `duke_tribal_male`(大酋长) 只有 26。存档信封实测:
-
-    melt_878  meta_title_name = 罗加兰酋邦        meta_player_name = 酋长崔佛
-    melt_888  meta_title_name = 居拉辛斯勒格雅尔国  meta_player_name = 雅尔崔佛
-
-而 facts/localization 的层级词从不查这张表 (只硬编码了 chinese 一族 + 政体通用词),
-于是把公国级诺斯人写成「居拉辛斯勒格大酋长」「居拉辛斯勒格公国」。
-
-产物: data/flavorization.json (游戏 + 启用 Mod 合并, Mod 同名块整体覆盖)。
-"""
+"""Parse CK3 ruler-address and title-suffix words from common/flavorization/*.txt: an
+entry's block name is the localization key, and the highest-priority entry whose
+conditions all match wins. Writes data/flavorization.json (game plus enabled mods,
+same-named mod blocks overriding the game's)."""
 import json
 import os
 import sys
@@ -27,8 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm                 # noqa: E402
 import localization as L    # noqa: E402
 
-_SCHEMA = 4   # v87: 解析 1.20 的 `rites` 条件 (礼仪) + `lessee_*` 入 unsupported
-              # (v64: schema 3 = ruler_child 条目入表并可求值)
+_SCHEMA = 4   # parses the 1.20 `rites` condition (rite) and marks `lessee_*` unsupported
 _TABLE = None
 
 
@@ -37,11 +20,9 @@ def _path(cfg):
 
 
 def _strip_comments(text):
-    """去掉 `#` 行内注释 (引号内除外)。
-
-    flavorization 文件里有大量注释掉的示例条目, 注释里的 `{`/`}` 会让
-    localization._top_blocks 的深度计数错位 (实测 00_title_holders.txt 会多出
-    2400 余个「顶层块」)。此处先剥注释再解析。"""
+    """Strip `#` comments (outside quotes) before parsing: commented-out example entries
+    hold `{`/`}` that would throw off the depth counting in localization._top_blocks
+    (00_title_holders.txt yields 2400+ spurious top-level blocks otherwise)."""
     out = []
     for line in (text or "").split("\n"):
         q = False
@@ -58,8 +39,8 @@ def _strip_comments(text):
 
 
 def _list_of(items, key):
-    """`key = { a b c }` → ['a','b','c']; 单值 `key = a` 亦收; 缺失 → []。
-    (L._script_items 把 `= { … }` 记为 op='block', 故块体存在 '_'+key 下。)"""
+    """`key = { a b c }` -> ['a','b','c']; a single `key = a` is accepted; missing -> [].
+    (L._script_items records `= { … }` as op='block', so the body lives under '_'+key.)"""
     v = items.get("_" + key)
     if v is None:
         v = items.get(key)
@@ -69,7 +50,7 @@ def _list_of(items, key):
 
 
 def _rules_of(items):
-    """flavourization_rules 子块 → {规则: bool}。"""
+    """flavourization_rules sub-block -> {rule: bool}."""
     raw = items.get("_flavourization_rules") or ""
     out = {}
     for k, op, v in L._script_items(raw):
@@ -80,7 +61,7 @@ def _rules_of(items):
 
 
 def build_flavorization(cfg):
-    """游戏 + 启用 Mod 的 common/flavorization/*.txt → 条目表。"""
+    """Game plus enabled-mod common/flavorization/*.txt -> entry table."""
     entries = {}
     roots = []
     g = L.game_dir(cfg)
@@ -109,25 +90,18 @@ def build_flavorization(cfg):
                         items[a] = v
                 typ = (items.get("type") or "").strip()
                 if typ not in ("character", "title"):
-                    continue          # domicile 等类型本项目不渲染
+                    continue          # types such as domicile are not rendered by this project
                 tier = (items.get("tier") or "").strip()
                 if not tier or tier == "none":
-                    continue          # 无层级条目不参与层级词取词 (性能与准确性)
+                    continue          # an entry without a tier takes no part in tier-word lookup
                 special = (items.get("special") or "holder").strip()
                 rules = _rules_of(items)
-                # 评估不了的条件一律标 unsupported: 宁可不取词, 也不误用他人称谓。
-                # 实测 00_title_holders.txt 里有 76 处 `titles = { d_brittany }`
-                # 这类**限定头衔**的条目 (不判就会让全欧公爵都叫「布列塔尼公爵」),
-                # 另有 flag / holding / domicile_type / 契约义务旗标 / de_jure_liege /
-                # council_position / 单值 faith 等条件。
-                # v53 (问题1): `_subject_contract_obligation_flags` 改可求值,
-                # 不再标 unsupported (天朝国王级观察使/经略使/都护靠它分档)。
-                # v87 (问题1): `rites` 改**可求值** (见 resolve 的 `rite` 形参);
-                # `lessee_*` (租约持有者的政体/传承/信仰/礼仪) 入 unsupported ——
-                # 只有 `monastery_*` 一族用它, 而 `monastery_christian`
-                # (20_pam_flavorization.txt:382-394, priority 210) 曾因此**假命中**
-                # 任何男爵领 (现无害, 只因 `_title_tier_word` 还要求 `governments`
-                # 非空才取词; 一旦放宽就会冒出来)。
+                # Anything not evaluable is marked unsupported: taking no word beats
+                # reusing another ruler's. This covers flag / holding / domicile_type /
+                # de_jure_liege / council_position / single-value faith, the `titles`
+                # restriction (76 single-title entries in 00_title_holders.txt would
+                # otherwise call every European duke a Duke of Brittany), and the
+                # `lessee_*` family (only monastery_* uses it, 20_pam_flavorization.txt:382).
                 obligation_flags = _list_of(items, "subject_contract_obligation_flags")
                 unsupported = bool(
                     items.get("flag") or items.get("domicile_type")
@@ -138,11 +112,10 @@ def build_flavorization(cfg):
                     or items.get("_lessee_heritages")
                     or items.get("_lessee_faiths")
                     or items.get("_lessee_rites"))
-                # v64 (问题2): `special = ruler_child` (王子/公主) 改**可求值** ——
-                # 其 `governments` 是穷举, 部落/游牧制在**任何层级**都没有条目,
-                # 故「有没有称号」这件事必须问表 (旧稿由 `facts._prince_word` 的
-                # 末档无条件回落「王子/公主」兜住, 于是游牧/部落子女凭空得号)。
-                # 其余 special (教宗/议员/太后/居所) 仍由各自分支渲染, 保持 unsupported。
+                # `special = ruler_child` is evaluable: its `governments` list holds no
+                # tribal/nomad entry at any tier, so "is there a prince title here" must be
+                # asked of the table rather than defaulted. Other `special` values keep
+                # their own branches and stay unsupported.
                 if special not in ("holder", "", "ruler_child"):
                     unsupported = True
                 try:
@@ -176,7 +149,7 @@ def save_flavorization(cfg, data):
 
 
 def load_flavorization(cfg=None, force=False):
-    """载入条目表; 缺失或强制时由游戏/Mod 文件重建。"""
+    """Load the entry table; rebuilt from the game/mod files when missing or forced."""
     cfg = cfg or llm.load_config()
     path = _path(cfg)
     if not force and os.path.isfile(path):
@@ -194,7 +167,7 @@ def load_flavorization(cfg=None, force=False):
 
 
 def table(cfg=None):
-    """模块级单例 (facts 每篇只取一次)。"""
+    """Module-level singleton (facts asks for it once per biography piece)."""
     global _TABLE
     if _TABLE is None:
         try:
@@ -207,26 +180,19 @@ def table(cfg=None):
 def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             faith="", religion="", rite="", title_key="", independent=True, top=None,
             obligation_flags=None, cfg=None, special="holder"):
-    """按游戏规则取词: 返回**本地化键** (块名) 或 ''。
+    """Return the winning localization key (block name) or '' under the game's rules.
 
-    与游戏同序: priority 高者先试, 全部条件命中即取 (governments / name_lists /
-    heritages / faiths / rites / religions 为空视为不限; 含 flag 的条目在建表时已标
-    unsupported)。`titles` 是**限定头衔**条件 — 只有传入的 title_key 在其中时才
-    命中 (不传即跳过这类条目)。`independent` 用于 only_vassals/only_independent
-    两条规则; `top` 传入最高领主的同名字段后, 未显式写 `top_liege = no` 的条目
-    改按最高领主判定 (游戏默认行为)。
-    v53: `obligation_flags` 是角色当时封臣合同解码出的义务旗标列表
-    (如 celestial_province_standard); 条目要求旗标时须有交集才命中。
-    v64 (问题2): `special` 过滤条目类别 —— 缺省 "holder" (统治者称谓, 旧行为逐字
-    不变); 传 "ruler_child" 时只取 `special = ruler_child` 的王子/公主条目
-    (由 `facts._prince_word` 用来判「此处游戏有没有称号」)。两类互不相干:
-    不传 special 时 ruler_child 条目一律不参与, 防「王子」压过统治者称谓。
-    v87 (问题1): `rite` 是角色所奉**礼仪**的 `rite_type` 键 (1.20 新条件
-    `rites = { … }`, 见 `_flavourization.info:280`)。旧稿整条丢弃该条件, 于是
-    什叶专用的 `duke_theocracy_male_ismaili` (`00_title_holders.txt:3142-3153`)
-    退化成「只剩政体条件」, 压过所有基督教神权词; 同族的
-    `clerical_region_duchy_east_christian` (拜占庭/格鲁吉亚礼仪, priority 110)
-    也会抢走拉丁教省的名。取不到 rite 时带 `rites` 的条目一律不命中。"""
+    Conditions are tried from the highest priority down and all must match; an empty
+    governments / name_lists / heritages / faiths / rites / religions list means
+    unrestricted, and entries marked unsupported at build time are skipped. `titles` is a
+    restricted-title condition (a match only when title_key is among them); `independent`
+    drives the only_vassals/only_independent rules; `top` carries the top liege's fields,
+    which entries not marked `top_liege = no` are judged against (the game's default).
+    `obligation_flags` are the character's decoded contract obligation flags and must
+    intersect an entry's own flags; `special` selects the entry class — "holder" by
+    default (ruler addresses), "ruler_child" for prince/princess entries, the two classes
+    never competing; `rite` is the character's rite_type, and an entry with `rites` cannot
+    match when the rite is unknown."""
     fl = table(cfg)
     ents = (fl.get("entries") or {})
     if not ents:
@@ -246,33 +212,26 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             continue
         prio = e.get("priority") or 0
         rts_e = e.get("rites") or []
-        # 取词序 (游戏文档 `_flavourization.info:143-148`: priority 更高者胜, 同值即跳过)。
-        # v87 (问题1) 唯一放宽: **同 priority 时「礼仪专属」条目 (带 `rites`) 压过
-        # 「教门通用」条目** —— 游戏把什叶专用的 `<tier>_theocracy_*_ismaili`
-        # (rites = { imami ismaili … }) 与伊斯兰通用的 `<tier>_theocracy_*_islam_religion`
-        # 写成**同一个 priority** (`00_title_holders.txt:1679` 与 `:3142`, 皆 27;
-        # count 层 `:1643` 与 `:3116`, 皆 18), 同值谁先谁后无法求证 —— 本机三份存档
-        # (洪氏 872 700 条 / 斯卡利茨 949 95 条 / 田所 1007 143 条烘死键) 里
-        # **0 条什叶神权统治者**, 无实证可依。取`专指优先`: 什叶统治者得
-        # 「大阿亚图拉/阿亚图拉/毛拉」而非逊尼口径的「大穆夫提/谢赫」, 既合 Paradox
-        # 立这两组词的本意, 也与 v87 之前的事实面一致 (旧稿因信仰标签取不到而恰好
-        # 命中 rites 条目); 基督教诸词不受影响 (rites 不匹配, 根本无并列)。
+        # Word order (game doc `_flavourization.info:143-148`): higher priority wins, an
+        # equal priority skips the entry. One deliberate relaxation: a rite-specific entry
+        # (one carrying `rites`) beats a religion-generic entry at equal priority. The game
+        # gives the Shia and the Islamic theocracy entries the same priority
+        # (00_title_holders.txt:1679 and :3142, both 27), so the game's own order is
+        # unknowable and the more specific word reads better. Christian words never tie:
+        # their `rites` do not match.
         if best_pri is not None:
             if prio < best_pri:
                 continue
             if prio == best_pri and not (rts_e and not best_rites):
                 continue
         rules = e.get("rules") or {}
-        # top_liege 默认 yes: 封臣按最高领主的政体/文化判定 (显式 no 者按自身)。
+        # top_liege defaults to yes: a vassal is judged by the top liege's
+        # government/culture unless the entry says `top_liege = no`.
         use_top = bool(top) and rules.get("top_liege", True) is not False
-        # v41 (问题1) 关键修正: `ignore_top_liege_government` (游戏
-        # `_flavourization.info:195-202`) —— 该旗标为真时, **除 government 外**
-        # 才改用最高领主。旧实现从未读这条规则, 于是最高领主一转行政制,
-        # 封建留守的封臣也去命中 `*_administrative_*_byzantine_group`
-        # (priority 51/50/29/28), 压过 `duchy_feudal`(27)/`duke_feudal_male`(26),
-        # 把诺兰档封建期 (1087–1094) 的公爵/伯爵写成军区/将军/分区/分区长。
-        # 游戏缓存串反证: date=1096.8.15 的封建封臣格哈德II 仍是「公爵」、
-        # 其头衔 d_bar 仍是「巴尔公国」 (logs/research_feudal_greek_titles.md §Q5)。
+        # `ignore_top_liege_government` (`_flavourization.info:195-202`): when true, every
+        # field *except* government still comes from the top liege. Ignoring this rule let
+        # administrative words (priority 51/50/29/28) override `duchy_feudal` (27) for
+        # feudal vassals, titling them as military-district commands.
         gov_x = (government if (not use_top
                                or rules.get("ignore_top_liege_government"))
                  else (top.get("government") or government))
@@ -303,8 +262,8 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             continue
         if rules.get("only_vassals") and independent:
             continue
-        # v53 (问题1): 合同义务旗标 — 条目列出的旗标须与角色当时旗标有交集。
-        # 条目未列旗标则不限; 角色无旗标时这类条目跳过 (回退无旗标的总督/节度使)。
+        # Contract-obligation flags: an entry listing flags matches only on an intersection;
+        # a character without flags skips such entries.
         want_flags = e.get("obligation_flags") or []
         if want_flags:
             have = set(obligation_flags or [])
@@ -314,14 +273,13 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
     return best_key
 
 
-# v64 (问题2): 本项目**会出词**的中华/天朝词族 —— 这几条的名字条件 (name_lists =
-# name_list_han) 按项目 v54 口径「天朝/行政类称谓与文化无关」处理, 故闸门对它们
-# 放宽文化判定 (斯卡利茨档捷克人建岭南照样出皇子/皇女)。
-# 其余带 name_lists/heritages/religions 的 ruler_child 条目 (guanches 关契人 /
-# tangut 党项 / roman 罗马 / iberian 伊比利亚 / iranian 伊朗 / dravidian 达罗毗荼 /
-# southeast_asian 东南亚) 是**文化专属原生词**, 本项目不出这些词, 一律照游戏条件判定
-# —— 否则 `title_prince_male_guanches` (governments 含 tribal, priority 130) 会让
-# 任何文化的部落制王国级子女都通过闸门。
+# Chinese / celestial word families this project does emit: their name conditions
+# (name_lists = name_list_han) are treated as culture-independent, like other celestial and
+# administrative titles here, so the culture gate is relaxed for them. Other ruler_child
+# entries (guanches, tangut, roman, iberian, iranian, dravidian, southeast_asian) are
+# culture-specific native words never emitted here and follow the game's conditions —
+# `title_prince_male_guanches` (priority 130) would otherwise let any tribal kingdom-tier
+# child through.
 _PRINCE_CN_KEYS = frozenset({
     "prince_duchy_chinese", "princess_duchy_chinese",
     "prince_kingdom_feudal_chinese", "princess_kingdom_feudal_chinese",
@@ -338,23 +296,17 @@ _PRINCE_CN_KEYS = frozenset({
 def ruler_child_exists(tier, gender, *, government="", name_list="", heritage="",
                        faith="", religion="", rite="", title_key="", independent=True,
                        top=None, obligation_flags=None, cfg=None):
-    """游戏侧在 (层级 × 性别 × 政体 × 独立/封臣) 下**有没有**王子/公主称号 ——
-    返回命中的本地化键, 无则 '' (v64, 问题2)。
+    """Return the prince/princess localization key the game has for (tier x gender x
+    government x independent/vassal), or '' when there is none.
 
-    与 `resolve` 的两处**刻意不同** (本项目口径, 见 `facts._prince_word` 与 v54):
-
-    ① 只取 `special = ruler_child` 的条目 (与统治者称谓互不相干);
-    ② **中华/天朝词族** (`_PRINCE_CN_KEYS`) 不查文化/信仰 —— 项目对天朝类称谓早已采
-       「与文化无关」口径 (v54: 诺斯伯爵在中国亦为刺史), 故中华皇朝的非汉人天子
-       (斯卡利茨档捷克人建岭南) 照样出皇子/皇女; 其余文化专属条目
-       (guanches/tangut/roman/iberian/iranian/dravidian/southeast_asian) 仍按
-       name_lists/heritages/faiths/religions 判定。
-
-    为什么需要它: `prince`/`princess`/`prince_empire`/`princess_empire` 的
-    `governments` 是**穷举**且不含 tribal/nomad (`00_flavorization.txt:354-400`),
-    故部落制/游牧制在任何层级都没有王子/公主称号 —— 「有没有」必须问表, 而不能由
-    末档无条件回落「王子/公主」。
-    """
+    Two deliberate differences from resolve: only `special = ruler_child` entries are
+    considered, and the Chinese/celestial families (_PRINCE_CN_KEYS) skip the culture and
+    faith conditions, since celestial and administrative titles are treated as
+    culture-independent here, while the other culture-specific entries (guanches, tangut,
+    roman, iberian, iranian, dravidian, southeast_asian) are judged as the game writes
+    them. It exists because `prince`/`princess` governments are exhaustive and hold no
+    tribal/nomad entry (00_flavorization.txt:354-400), so tribal and nomadic rulers have no
+    such title at any tier and the question must be asked of the table."""
     fl = table(cfg)
     ents = (fl.get("entries") or {})
     if not ents:
@@ -382,7 +334,7 @@ def ruler_child_exists(tier, gender, *, government="", name_list="", heritage=""
         if govs and gov_x not in govs:
             continue
         if e.get("key") not in _PRINCE_CN_KEYS:
-            # 文化/信仰条件: 中华词族除外 (见 docstring ②)
+            # culture / faith conditions, except for the Chinese word families (see the docstring)
             nls = e.get("name_lists") or []
             if nls and (top.get("name_list") if use_top else name_list) not in nls:
                 continue
@@ -392,7 +344,7 @@ def ruler_child_exists(tier, gender, *, government="", name_list="", heritage=""
             fs = e.get("faiths") or []
             if fs and (top.get("faith") if use_top else faith) not in fs:
                 continue
-            # v87: `rites` 条件 (1.20) —— 与 resolve 同判; 取不到礼仪时不命中
+            # `rites` condition (1.20), decided as in resolve; no hit when the rite is unknown
             rts = e.get("rites") or []
             if rts and (top.get("rite") if use_top else rite) not in rts:
                 continue
@@ -411,14 +363,13 @@ def ruler_child_exists(tier, gender, *, government="", name_list="", heritage=""
 
 
 def is_unconditional(key, cfg=None):
-    """该条目是否**无任何条件** (只有 type/tier/gender/priority) — 即通用兜底层级词。
+    """Whether the entry has no conditions at all (only type/tier/gender/priority) — a
+    generic fallback tier word.
 
-    v74 (问题2): `duke`/`count`/`king`/`emperor`/`baron`/`hegemon` 六条实测
-    `governments/name_lists/heritages/faiths/rites/religions/titles/obligation_flags/rules`
-    **全空**, 是任何政体取值失败者的共同出口。`facts._office_word` 在**政体不可知**
-    (`gov == ''`) 时把这类命中视为未命中, 以免通用层级词压过文化/政体词
-    (实测: 律令制日本 `d_hitakami` 的持有者政体取不到时写出「日高见公爵」,
-    政体取得到时是「日高见国司」)。"""
+    `duke`/`count`/`king`/`emperor`/`baron`/`hegemon` have every condition field empty and
+    are the common exit for any government that fails to match; facts._office_word treats
+    such a hit as a miss when the government is unknown, so a generic tier word cannot
+    override a culture or government word."""
     e = (table(cfg).get("entries") or {}).get(key) or {}
     if not e:
         return False
@@ -428,7 +379,8 @@ def is_unconditional(key, cfg=None):
 
 
 def coverage(cfg=None):
-    """自检用: 按 (type, tier) 统计条目数, 并列出覆盖到的 culture 名系/heritage。"""
+    """Self-check helper: count entries per (type, tier) and list the covered name_lists,
+    heritages and governments."""
     fl = table(cfg)
     out = {}
     nls, hss, govs = set(), set(), set()
