@@ -1787,6 +1787,77 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
     return nm
 
 
+def _melt_char(melt, cid):
+    """One character block of a melt by id, from whichever bucket holds him (living, dead
+    unprunable, dead prunable); None when that melt does not know him."""
+    if not isinstance(melt, dict) or cid is None:
+        return None
+    key = str(cid)
+    for _name, bucket in _char_buckets(melt):
+        v = bucket.get(key)
+        if v is None:
+            continue
+        if type(v) is list:
+            v = _collapse_char_value(v)
+        if isinstance(v, dict):
+            return v
+    return None
+
+
+def era_view(cache, melt, date=None):
+    """A view of the cache truncated to `date`, for regenerating a past decade (nothing is mutated).
+
+    Three surfaces of the cache carry the LAST save's state and have no history of their own:
+    `last_date`, the player's `landed` block, and each character's `regnal_name` together with the
+    `name_full` derived from it. A decade biography rendered straight from the cache therefore
+    carries the later world into it: the subject named by a regnal name taken after the decade (a
+    pope called 尼各老 in a decade when he was only a cardinal), offices and a dominion he had not
+    acquired yet, and a college of cardinals counted years later. The melt of the decade's own day
+    is the authority for all three — the same source `extract_snapshot` reads — so this view
+    replaces exactly those fields and leaves every date-keyed history and id-keyed table alone.
+
+    Returns a new dict: the passed cache and its records are never modified, and only the records
+    that actually differ are copied. A character absent from that melt keeps the cache's name,
+    since his absence says nothing about it.
+    """
+    if not isinstance(cache, dict) or not isinstance(melt, dict):
+        return cache
+    view = dict(cache)
+    src = cache.get("characters") or {}
+    out = dict(src)
+    view["characters"] = out
+    if date:
+        view["last_date"] = str(date)
+    n_landed = 0
+    pid = cache.get("player_id")
+    if pid is not None and isinstance(_melt_char(melt, pid), dict):
+        rec = dict(out.get(str(pid)) or {})
+        rec["landed"] = player_landed_block(melt, pid)
+        out[str(pid)] = rec
+        n_landed = 1
+    n_regnal = 0
+    for cid, rec in src.items():
+        if not isinstance(rec, dict):
+            continue
+        c = _melt_char(melt, cid)
+        if not isinstance(c, dict):
+            continue
+        rn = str(c.get("regnal_name") or "") or None
+        if (rec.get("regnal_name") or None) == rn:
+            continue
+        # start from the view's record, so a landed block set above is not reverted
+        rec2 = dict(out.get(cid) or rec)
+        rec2["regnal_name"] = rn
+        out[cid] = rec2
+        rec2["name_full"] = display_name(view, cid, melt=melt, date=date) \
+            or rec.get("name_full") or ""
+        n_regnal += 1
+    if n_landed or n_regnal:
+        llm.log(f"时代视图 ({date}): 教名按当日校正 {n_regnal} 人, 直辖与政体按当日重建"
+                f"{'' if n_landed else ' (该熔件内无传主)'}", detail=True)
+    return view
+
+
 # ---------------------------------------------------------------------------
 # Kinship graph (reverse index)
 # ---------------------------------------------------------------------------
@@ -2217,6 +2288,40 @@ def _record_vassal_and_cycle(cache, melt, date_label):
         elif _vh and _vh[-1].get("liege") is not None:
             _vh.append({"date": date_label, "liege": None, "flags": []})
     return _vassal_now
+
+
+def player_landed_block(melt, cid, ld=None):
+    """The player's `landed` block as the cache stores it, built from one melt character.
+
+    `extract_snapshot` rewrites this block on every save, so the cache holds the LAST save's
+    dominion, council and laws. `era_view` rebuilds it from an earlier melt with this same
+    mapping, so a regenerated decade shows the dominion, capital and vassal count of its own
+    day instead of the later world.
+    """
+    if ld is None:
+        ld = (_melt_char(melt, cid) or {}).get("landed_data") or {}
+    if not isinstance(ld, dict):
+        ld = {}
+    block = {
+        "domain": ld.get("domain"),
+        "became_ruler_date": ld.get("became_ruler_date"),
+        "government": ld.get("government"),
+        "realm_capital": ld.get("realm_capital"),
+        "vassal_count": len(ld.get("vassal_contracts") or []),
+        "council": ld.get("council"),
+        "laws": ld.get("laws"),
+        "succession": ld.get("succession"),
+        "strength": ld.get("strength"),
+        "max_power": ld.get("max_power"),
+    }
+    # Domicile (nomadic herd and provisions) from domiciles.database
+    _dom = player_domicile(melt, ld.get("domain"), cid)
+    if _dom:
+        block["herd"] = _dom.get("herd")
+        block["provisions"] = _dom.get("provisions")
+        block["domicile_type"] = _dom.get("domicile_type")
+        block["domicile_province"] = _dom.get("province")
+    return block
 
 
 def extract_snapshot(cache, melt, date_label, _new_deaths=None):
@@ -2940,25 +3045,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             rec["kills"] = sorted(set(rec.get("kills") or []) | set(kills))
         if cid == player_id:
             ld = c.get("landed_data") or {}
-            rec["landed"] = {
-                "domain": ld.get("domain"),
-                "became_ruler_date": ld.get("became_ruler_date"),
-                "government": ld.get("government"),
-                "realm_capital": ld.get("realm_capital"),
-                "vassal_count": len(ld.get("vassal_contracts") or []),
-                "council": ld.get("council"),
-                "laws": ld.get("laws"),
-                "succession": ld.get("succession"),
-                "strength": ld.get("strength"),
-                "max_power": ld.get("max_power"),
-            }
-            # Domicile (nomadic herd and provisions) from domiciles.database
-            _dom = player_domicile(melt, ld.get("domain"), cid)
-            if _dom:
-                rec["landed"]["herd"] = _dom.get("herd")
-                rec["landed"]["provisions"] = _dom.get("provisions")
-                rec["landed"]["domicile_type"] = _dom.get("domicile_type")
-                rec["landed"]["domicile_province"] = _dom.get("province")
+            rec["landed"] = player_landed_block(melt, cid, ld)
             # Player location history, change points only
             loc = (c.get("alive_data") or {}).get("location") or {}
             prov = loc.get("location") if isinstance(loc, dict) else loc

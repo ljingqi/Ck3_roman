@@ -189,6 +189,48 @@ def melt_path_for_cache(cfg, cache, date):
     return p
 
 
+def _load_melt_of_cache(cache, path, label=""):
+    """Load a melt for this cache, discarding one that is unreadable or belongs to another campaign;
+    None in both cases. A campaign check is required because player ids are reused across runs."""
+    try:
+        melt = cl.load_melt(path)
+    except Exception as e:
+        llm.log(f"  熔件读取失败 ({path}): {e}")
+        return None
+    cpt = cache.get("playthrough_id")
+    mpt = melt.get("playthrough_id")
+    if cpt and mpt and str(cpt) != str(mpt):
+        llm.log(f"  [跳过] {label or os.path.basename(path)} 属其它战役 "
+                f"({mpt}), 本缓存战役为 {cpt}")
+        return None
+    return melt
+
+
+def decade_era_melt(cfg, cache, as_of):
+    """Melt file of the day a past decade ends: the newest merged save at or before the cutoff.
+
+    A decade biography generated while its decade ended read the melt then on disk, which was the
+    newest save of that day. Regenerating it later has to read that same file, or the render
+    carries the later world into the decade: a regnal name taken afterwards, a college of cardinals
+    counted years later, offices and a dominion the subject had not acquired yet. Candidates are
+    the campaign's own merged save dates (`cache["sources"]`) at or before the cutoff, newest
+    first, then the cutoff's own melt file. Returns (path, date), or ("", "") when neither exists.
+    """
+    if not as_of:
+        return "", ""
+    dk = cl.date_key(str(as_of))
+    srcs = [d for d in (cache.get("sources") or [])
+            if d and cl.date_key(str(d)) <= dk]
+    for d in sorted(srcs, key=cl.date_key, reverse=True):
+        p = melt_path_for_cache(cfg, cache, d)
+        if p and os.path.isfile(p):
+            return p, str(d)
+    p = melt_path_for_cache(cfg, cache, as_of)
+    if p and os.path.isfile(p):
+        return p, str(as_of)
+    return "", ""
+
+
 def load_latest_melt(cfg, cache):
     """Melt dict of the cache's last save, or None. Prefers the campaign folder over the legacy
     root layout and, when the last-date melt is gone, falls back to the newest surviving source
@@ -197,29 +239,15 @@ def load_latest_melt(cfg, cache):
     if not last:
         return None
 
-    def _load(path, label=""):
-        try:
-            melt = cl.load_melt(path)
-        except Exception as e:
-            llm.log(f"  熔件读取失败 ({path}): {e}")
-            return None
-        cpt = cache.get("playthrough_id")
-        mpt = melt.get("playthrough_id")
-        if cpt and mpt and str(cpt) != str(mpt):
-            llm.log(f"  [跳过] {label or os.path.basename(path)} 属其它战役 "
-                    f"({mpt}), 本缓存战役为 {cpt}")
-            return None
-        return melt
-
     p = melt_path_for_cache(cfg, cache, last)
     if os.path.isfile(p):
-        melt = _load(p, last)
+        melt = _load_melt_of_cache(cache, p, last)
         if melt is not None:
             return melt
     for d in sorted(cache.get("sources") or [], key=cl.date_key, reverse=True):
         p2 = melt_path_for_cache(cfg, cache, d)
         if os.path.isfile(p2):
-            melt = _load(p2, d)
+            melt = _load_melt_of_cache(cache, p2, d)
             if melt is None:
                 continue
             llm.log(f"  [回退] {last} 熔件缺失, 用最近现存熔件 {d} 生成")
@@ -685,6 +713,24 @@ def _bio_pname(cache):
     return name
 
 
+def _decade_file_pattern(cache, decade):
+    """Regex of this subject's decade-th decade file, anchored on the birth year instead of the
+    display name.
+
+    A subject's name changes over his life (a pope takes a regnal name), and each decade file is
+    named by the name of its own day, so a name-keyed pattern misses the file the regeneration
+    path itself wrote and would write a second one. The birth year keeps same-name kin (and the
+    two eras of one name) apart inside a family folder.
+    """
+    pid = cache.get("player_id")
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    by = str(rec.get("birth") or "").split(".")[0]
+    if by.isdigit():
+        return re.compile(rf".*\({by}\)_传记_第{decade}个十年_.*\.md$")
+    # no birth year on file: fall back to the pinned display name
+    return re.compile(re.escape(_bio_pname(cache)) + rf"_传记_第{decade}个十年_.*\.md$")
+
+
 def _reign_end(cache):
     """The subject's end-of-reign record, in which abdication (reign_end) outranks death
     (player_death): the final biography's file name and cutoff date stay pinned to the abdication
@@ -880,11 +926,27 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     family's index.html; returns (output path, facts) or None. The background biography thread passes
     continue_mode=True, which resolves the output folder from the cache binding or the same campaign
     and never creates a folder, so a death during a watch run cannot corrupt the binding."""
-    melt = load_latest_melt(cfg, cache)
-    if melt is None:
-        llm.log(f"玩家 {cache.get('player_id')} 无可用 melt, 跳过生成")
-        return None
     as_of = _bio_as_of(cache, decade)
+    melt = None
+    render_cache = cache
+    # Regenerating a decade: render it with the melt of its own day and a cache view truncated to
+    # that day (see decade_era_melt and cl.era_view). A decade written while it ended already ran
+    # that way, so a rerun reproduces it instead of the world of the last save.
+    if decade and as_of:
+        last = cache.get("last_date")
+        if last and cl.date_key(str(as_of)) < cl.date_key(str(last)):
+            p_era, d_era = decade_era_melt(cfg, cache, as_of)
+            if p_era:
+                melt = _load_melt_of_cache(cache, p_era, d_era)
+                if melt is not None:
+                    render_cache = cl.era_view(cache, melt, d_era)
+                    llm.log(f"  第{decade}个十年按时代渲染: {os.path.basename(p_era)} ({d_era})"
+                            f"; 直辖、政体与教名按该日")
+    if melt is None:
+        melt = load_latest_melt(cfg, cache)
+        if melt is None:
+            llm.log(f"玩家 {cache.get('player_id')} 无可用 melt, 跳过生成")
+            return None
     # A death and an abdication can both fall after the last snapshot merge: backfill the records.
     pd = cache.get("player_death") or {}
     _re_end = _reign_end(cache)
@@ -908,8 +970,8 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
             if nick is None:
                 src = "时代熔件"
                 try:
-                    p_era = melt_path_for_cache(cfg, cache, as_of)
-                    if os.path.isfile(p_era):
+                    p_era, _d_era = decade_era_melt(cfg, cache, as_of)
+                    if p_era and os.path.isfile(p_era):
                         era = cl.load_melt(p_era)
                         raw = ((era.get("living") or {}).get(str(pid)) or {}).get(
                             "nickname_text")
@@ -920,15 +982,13 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
             if nick is not None:
                 nickname_override = {pid: str(nick).strip()}
                 llm.log(f"  按时代取绰号 ({as_of}, {src}): {nick!r}")
-    house, fname = output_paths(cfg, cache, continue_mode=continue_mode, decade=decade)
+    house, fname = output_paths(cfg, render_cache, continue_mode=continue_mode, decade=decade)
     out_dir = os.path.join(cfg.get("output_dir", ""), house)
     out_path = os.path.join(out_dir, fname)
     if not force:
         if decade:
             # Decade file names carry a moving date, so existence comes from any matching file on disk.
-            pname = os.path.basename(fname).split("_传记_", 1)[0]
-            pat = re.compile(re.escape(pname)
-                             + rf"_传记_第{decade}个十年_.*\.md$")
+            pat = _decade_file_pattern(render_cache, decade)
             if os.path.isdir(out_dir) and any(
                     pat.match(fn) for fn in os.listdir(out_dir)):
                 llm.log(f"已存在第{decade}个十年传记, 跳过 (加 --force 重新生成)")
@@ -936,7 +996,7 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
         elif os.path.exists(out_path):
             llm.log(f"已存在, 跳过 (加 --force 重新生成): {out_path}")
             return out_path, None
-    md, facts, articles = bio.generate_biography(cache, melt, cfg, out_path=out_path,
+    md, facts, articles = bio.generate_biography(render_cache, melt, cfg, out_path=out_path,
                                                  decade=decade, as_of=as_of,
                                                  nickname_override=nickname_override,
                                                  campaign=_campaign_caches(cfg, cache))
@@ -1431,10 +1491,16 @@ def _generated_decades_on_disk(cfg, cache):
     concurrent write, while files survive a crash and are shared between processes."""
     folder = cache.get("output_folder") or resolve_output_folder(cfg, cache, True)
     out_dir = os.path.join(cfg.get("output_dir", ""), folder)
-    pname = _bio_pname(cache)
+    pid = cache.get("player_id")
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    by = str(rec.get("birth") or "").split(".")[0]
+    if by.isdigit():
+        # birth-year anchor: see _decade_file_pattern (the display name changes with the life)
+        pat = re.compile(rf".*\({by}\)_传记_第(\d+)个十年_.*\.md$")
+    else:
+        pat = re.compile(re.escape(_bio_pname(cache)) + r"_传记_第(\d+)个十年_.*\.md$")
     done = set()
     if os.path.isdir(out_dir):
-        pat = re.compile(re.escape(pname) + r"_传记_第(\d+)个十年_.*\.md$")
         for fn in os.listdir(out_dir):
             m = pat.match(fn)
             if m:

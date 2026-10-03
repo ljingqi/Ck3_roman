@@ -101,6 +101,7 @@ def main():
     argv = [a for a in sys.argv[1:] if not a.startswith("--")]
     do_assert = "--assert" in sys.argv
     pin_last = "--pin-last-date" in sys.argv
+    do_era = "--era" in sys.argv
     # --name=<stem>: 自定义快照名 (对照实验用, 如 snap_head_878)
     out_name = ""
     melt_pick = ""
@@ -137,8 +138,21 @@ def main():
     if pin_last and as_of:
         cache["last_date"] = as_of
         print(f"  --pin-last-date: last_date → {as_of}", flush=True)
-    print(f"载入熔件 {melt_name} …", flush=True)
+    # --era: 与 pipeline.generate_bio 的重生成路径同口径 —— 旧十年用该日那一档熔件
+    # (decade_era_melt) + era_view 截断视图 (教名/直辖/政体按该日), 快照才等于实跑面。
+    era_used = ""
+    if do_era and as_of:
+        import pipeline as _pl
+        p_era, d_era = _pl.decade_era_melt(llm.load_config(), cache, as_of)
+        if p_era:
+            if not melt_pick:
+                melt_path, melt_name = p_era, os.path.basename(p_era)
+            era_used = d_era
+    print(f"载入熔件 {melt_name} …" + (f" (时代渲染 {era_used})" if era_used else ""),
+          flush=True)
     melt = cl.load_melt(melt_path)
+    if era_used:
+        cache = cl.era_view(cache, melt, era_used)
     # v82: 与 pipeline.generate_bio 同口径 —— 终了日之后那一档的头衔旗标并进来
     # (开府 shunog_flag / 上皇 joko_flag 只在那一档存在)。--melt= 已钉住同一档时跳过。
     tail_used = ""
