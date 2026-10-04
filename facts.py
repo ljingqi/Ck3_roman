@@ -13437,7 +13437,7 @@ class Facts:
         outranks the language lookup because one language is often shared by several cultures
         (language_tai alone covers several), and taking whichever candidate comes first would
         misjudge a patrilineal culture. CK3 children inherit culture from the father, so the order is
-        self → paternal line → siblings → dynasty → mother → language."""
+        self → paternal line → dynasty → siblings → mother → language."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         cul = rec.get("culture")
         if cul is None:

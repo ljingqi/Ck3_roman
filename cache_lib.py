@@ -1365,8 +1365,9 @@ def name_order_of(melt, culture_id):
 # Two-stage key order for inferring name order from relatives: the paternal side first
 # (the naming culture is inherited through the father, and child is deliberately absent
 # because a woman's children carry their father's culture), then the maternal side only if
-# the paternal side and the dynasty template both fail.
-KIN_ORDER_PATERNAL = ("father", "siblings")
+# the father, the dynasty template and the siblings all fail.
+KIN_ORDER_PATERNAL = ("father",)
+KIN_ORDER_SIBLINGS = ("siblings",)
 KIN_ORDER_MATERNAL = ("mother", "child", "primary_spouse", "spouse",
                       "former_spouses")
 
@@ -1404,9 +1405,11 @@ def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None)
 
       1) the character's culture at that date (history, then the cached field), giving
          culture_manager's name_order_convention or the Western default;
-      2) otherwise the paternal relatives' cultures;
-      3) otherwise the dynasty template and the name order of a culture sharing it;
-      4) only then the maternal side, spouses and children;
+      2) otherwise the father's culture;
+      3) otherwise the dynasty template and the name order of a culture sharing it
+         (the house's own naming tradition, which a sibling's later conversion cannot
+         override);
+      4) otherwise the siblings, then the maternal side, spouses and children;
       5) None when nothing resolves, so display_name writes the given name alone.
 
     Returns '' = Western default, DYNASTY_ALWAYS_FIRST / JAPANESE = surname first, None =
@@ -1431,6 +1434,9 @@ def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None)
         for _e in cultures.values():
             if isinstance(_e, dict) and _e.get("culture_template") == tpl:
                 return _e.get("name_order_convention") or ""
+    order = _family_name_order(cache, rec, melt, chars=chars, keys=KIN_ORDER_SIBLINGS)
+    if order is not None:
+        return order
     return _family_name_order(cache, rec, melt, chars=chars,
                               keys=KIN_ORDER_MATERNAL)
 
@@ -1474,10 +1480,11 @@ def _culture_template_of(cache, cid, melt, chars=None, memo=None):
     """A character's culture template (norse/han...), used for patronymics and name order.
 
     The naming culture follows the paternal line, so every step reads a character's OWN
-    culture and only the paternal line recurses; siblings, mother and house members are
-    read without recursing, which keeps in-law and step-parent cultures out. Order: own
-    culture, paternal line, siblings, house members, mother, language lookup. chars is the
-    prebuilt full-character index, memo the cache for this inference run."""
+    culture and only the paternal line recurses; house members, siblings, mother and the
+    language table are read without recursing, which keeps in-law and step-parent cultures
+    out. Order: own culture, paternal line, house members, siblings, mother, language
+    lookup. chars is the prebuilt full-character index, memo the cache for this inference
+    run."""
     if melt is None or cid is None:
         return ""
     memo = memo if memo is not None else {}
@@ -1538,46 +1545,52 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
         t = self_tpl(cur)
         if t:
             return t
-    # 3) siblings, own culture only and no recursion (keeps in-law cultures out)
+    # 3) house members: the most reliable paternal fallback, ahead of the mother and of the
+    # siblings -- an agnatic house carries the paternal naming culture, while a younger
+    # brother may have converted to his own or his wife's culture long after the subject's
+    # death (the cache keeps no date for that conversion).
+    dh = rec.get("dynasty_house")
+    if dh is not None:
+        hkey = f"__house_{dh}__"
+        found = memo.get(hkey)
+        if found is None:
+            found = ""
+            for _cid2, r2 in (cache.get("characters") or {}).items():
+                if r2.get("dynasty_house") == dh:
+                    t = _template_of_culture(melt, r2.get("culture"))
+                    if t:
+                        found = t
+                        break
+            if not found and chars is not None:
+                # Nothing in the cache: widen to every melt character of the same house,
+                # building the index lazily inside the shared memo. This resolves name order
+                # for characters whose own and relatives' cultures were all cleared.
+                idx_key = "__house_idx__"
+                hindex = memo.get(idx_key)
+                if hindex is None:
+                    hindex = {}
+                    for _cid2, r2 in chars.items():
+                        if not isinstance(r2, dict):
+                            continue
+                        h = r2.get("dynasty_house")
+                        if h is not None:
+                            hindex.setdefault(h, []).append(_cid2)
+                    memo[idx_key] = hindex
+                for _cid2 in hindex.get(dh, ()):
+                    t = _template_of_culture(melt, (chars.get(_cid2) or {}).get("culture"))
+                    if t:
+                        found = t
+                        break
+            memo[hkey] = found
+        # A house with no readable culture leaves the later steps reachable; returning the
+        # empty result here would hide the siblings, the mother and the languages.
+        if found:
+            return found
+    # 4) siblings, own culture only and no recursion (keeps in-law cultures out)
     for sib in fam_of(cid, ("siblings",)):
         t = self_tpl(sib)
         if t:
             return t
-    # 4) house members: the most reliable paternal fallback, ahead of the mother
-    dh = rec.get("dynasty_house")
-    if dh is not None:
-        hkey = f"__house_{dh}__"
-        if hkey in memo:
-            return memo[hkey] or ""
-        found = ""
-        for _cid2, r2 in (cache.get("characters") or {}).items():
-            if r2.get("dynasty_house") == dh:
-                t = _template_of_culture(melt, r2.get("culture"))
-                if t:
-                    found = t
-                    break
-        if not found and chars is not None:
-            # Nothing in the cache: widen to every melt character of the same house,
-            # building the index lazily inside the shared memo. This resolves name order
-            # for characters whose own and relatives' cultures were all cleared.
-            idx_key = "__house_idx__"
-            hindex = memo.get(idx_key)
-            if hindex is None:
-                hindex = {}
-                for _cid2, r2 in chars.items():
-                    if not isinstance(r2, dict):
-                        continue
-                    h = r2.get("dynasty_house")
-                    if h is not None:
-                        hindex.setdefault(h, []).append(_cid2)
-                memo[idx_key] = hindex
-            for _cid2 in hindex.get(dh, ()):
-                t = _template_of_culture(melt, (chars.get(_cid2) or {}).get("culture"))
-                if t:
-                    found = t
-                    break
-        memo[hkey] = found
-        return found
     # 5) mother
     for m in fam_of(cid, ("mother",)):
         t = self_tpl(m)
@@ -1739,9 +1752,9 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
     A patronymic culture gives "given·patronymic", which replaces the house name;
     otherwise the name order applies, where an Eastern order takes the DYNASTY name as
     surname (the game's $DYNASTY$ template) and a Western order the HOUSE name
-    ($HOUSE$). Inference runs along paternal line, siblings, house, mother and language,
-    and when it fails only the given name is returned, never a wrongly ordered
-    "surname+given".
+    ($HOUSE$). Inference runs along the paternal line, the house, the siblings, the
+    mother and the language table, and when it fails only the given name is returned,
+    never a wrongly ordered "surname+given".
 
     Name lookup chain: cache, then the melt character, then names.json (dropped when the
     playthrough differs). date selects the house name of that day and, through the culture
