@@ -19640,7 +19640,8 @@ def _kin_counts_line(f, pid, father_id, father_fam, sibs):
     chars = f.cache.get("characters") or {}
     melt_chars = getattr(f, "_chars", {}) or {}
     kids = [c for c in _asof_ids(f, (father_fam or {}).get("child") or []) if f.name(c)]
-    if not kids:
+    # one child leaves no group size to state, and no sibling list to confuse it with
+    if len(kids) < 2:
         return ""
 
     def _crec(c):
