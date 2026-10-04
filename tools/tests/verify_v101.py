@@ -30,6 +30,7 @@ sys.path.insert(0, ROOT)
 import cache_lib as cl        # noqa: E402
 import facts as F             # noqa: E402
 import biography as bio       # noqa: E402
+import localization as L      # noqa: E402
 
 OK = True
 H2 = os.path.join(ROOT, "output", "洪氏2")
@@ -172,6 +173,67 @@ def test_merge():
     check("主使人缺失时只写短语", out == ["973年4月4日，颁布教宗诏书。"], out)
 
 
+class SaintStub:
+    """Facts stand-in for `_saint_prefix`: real trait latch + real localization table."""
+    table = L.table()
+    _has_trait_at = F.Facts._has_trait_at
+    _in_saint_register = F.Facts._in_saint_register
+    _faith_id = F.Facts._faith_id
+    _tl = []
+
+    def person_label_nm(self, cid, date):
+        return F.Facts._person_label_uncached.__name__   # placeholder, unused
+
+    def __init__(self, chars, saints=(), rtag="christianity_religion", as_of="999.1.1",
+                 female=False):
+        self.cache = {"characters": chars, "player_id": 1}
+        self.as_of = as_of
+        self._saints = list(saints)
+        self._rtag = rtag
+        self._female = female
+
+    def _faith_tags(self, cid, date=None):
+        return ("catholic", self._rtag)
+
+    def _faith_id(self, cid, date=None):
+        return 13
+
+    def _is_female(self, cid):
+        return self._female
+
+    def _in_saint_register(self, cid):
+        return int(cid) in self._saints
+
+    _saint_prefix = F.Facts._saint_prefix
+
+
+def test_saint():
+    print("[C] 圣人前缀")
+    th = {"44503": {"trait_history": {"saint": [{"from": "971.1.1", "to": None,
+                                                 "first": False}]},
+                    "traits": []}}
+    o = SaintStub(th, saints=[44503])
+    check("未封圣的篇（963 卷）不带「圣」",
+          F.Facts._saint_prefix(SaintStub(th, as_of="963.1.1"), 44503, "940.1.1") == "")
+    check("封圣后的篇：基督教圣人 → 圣",
+          F.Facts._saint_prefix(o, 44503, "932.3.13") == "圣")
+    check("信仰注册表兜底（无特质史）",
+          F.Facts._saint_prefix(SaintStub({}, saints=[44503]), 44503, "999.1.1") == "圣")
+    check("非圣人 → 空前缀",
+          F.Facts._saint_prefix(SaintStub({}, saints=[]), 44503, "999.1.1") == "")
+    check("女性圣人取 christian_female_saint → 圣",
+          F.Facts._saint_prefix(SaintStub(th, saints=[44503], female=True), 44503,
+                                "999.1.1") == "圣")
+    mth = {"81124": {"trait_history": {"saint": [{"from": "980.1.1", "to": None,
+                                                  "first": False}]}, "traits": []}}
+    check("穆斯林圣人 → 吾里",
+          F.Facts._saint_prefix(SaintStub(mth, rtag="islam_religion"), 81124, "999.1.1")
+          == "吾里")
+    check("表内确有该词条（游戏本地化）",
+          L.loc(L.table(), "christian_saint") == "圣"
+          and L.loc(L.table(), "muslim_saint") == "吾里")
+
+
 def load_snaps():
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if args:
@@ -186,6 +248,7 @@ def load_snaps():
 def main():
     test_window()
     test_merge()
+    test_saint()
     snaps = load_snaps()
     print(f"(快照 {len(snaps)} 份：{[os.path.basename(s) for s in snaps]})")
     print("PASS" if OK else "FAIL")

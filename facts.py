@@ -7062,6 +7062,49 @@ class Facts:
                 best, best_dk = nm, dk
         return best
 
+    def _saint_prefix(self, cid, date=None):
+        """The game's name prefix for a canonized character (「圣」 for a Christian, 「吾里」 for a
+        Muslim), '' for everyone else.
+
+        The game prefixes the name of a character holding the `saint` trait
+        (`common/flavorization/20_pam_flavorization.txt:193-263`, word from
+        `culture_titles_l_simp_chinese.yml:1377-1380`), and the save writes that trait after a
+        canonization. Canonization is posthumous, so the test is made at this piece's own cutoff and
+        not at the date of one mention: a volume written after the canonization calls the ancestor
+        by his saint name throughout, while an earlier volume cannot know it yet. The faith's own
+        `saints` register (`faiths.database[fid].saints`) covers a character whose trait history the
+        save has pruned."""
+        if cid is None:
+            return ""
+        try:
+            seen = self.as_of or self.cache.get("last_date") or date
+            if not self._has_trait_at(int(cid), "saint", seen) \
+                    and not self._in_saint_register(cid):
+                return ""
+            _ftag, rtag = self._faith_tags(int(cid), date)
+            key = FZ.saint_word("female" if self._is_female(int(cid)) else "male",
+                                religion=rtag or "")
+            # `venerated_ancestor` is the same class but its word is a description rather than a
+            # prefix (「广受崇敬的祖先」), so a religion the game gives no saint word keeps the
+            # plain name.
+            if not key or key == "venerated_ancestor":
+                return ""
+            word = L.loc(self.table, key) or ""
+            return "" if not word or word.startswith(("$", "[")) or word == key else word
+        except Exception:                                        # noqa: BLE001
+            return ""
+
+    def _in_saint_register(self, cid):
+        """Whether the character's faith lists him among its saints (`faiths.database[fid].saints`)."""
+        try:
+            fid = self._faith_id(cid)
+            if fid is None:
+                return False
+            reg = cl.faith_entry(self.melt, fid).get("saints") or []
+            return int(cid) in [int(x) for x in reg if isinstance(x, int)]
+        except Exception:                                        # noqa: BLE001
+            return False
+
     def person_label(self, cid, date=None, style="full"):
         """Single entry point for person labels. `style`:
         - "full": household/lineage — "[former X,] current title Y name";
@@ -7087,6 +7130,11 @@ class Facts:
         nm = self.name_with_regnal(cid, date)
         if not nm or nm in self._PLACEHOLDER_NAMES:
             return ""
+        # A canonized character carries the game's saint prefix on his name (「圣洪天贵福」); it
+        # belongs to the name, so the office and the byname stay outside it.
+        sp = self._saint_prefix(cid, date)
+        if sp:
+            nm = f"{sp}{nm}"
         # Timeline fact lines give the player the name only: the profile section already covers
         # his titles, and a full label on every line only costs attention. Everyone else still
         # uses the brief form (title + name) for recognition.

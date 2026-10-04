@@ -11,7 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm                 # noqa: E402
 import localization as L    # noqa: E402
 
-_SCHEMA = 4   # parses the 1.20 `rites` condition (rite) and marks `lessee_*` unsupported
+_SCHEMA = 5   # parses the 1.20 `rites` condition (rite), marks `lessee_*` unsupported, keeps the
+              # tierless `special = saint` name-prefix entries (「圣」/「吾里」)
 _TABLE = None
 
 
@@ -92,9 +93,14 @@ def build_flavorization(cfg):
                 if typ not in ("character", "title"):
                     continue          # types such as domicile are not rendered by this project
                 tier = (items.get("tier") or "").strip()
-                if not tier or tier == "none":
-                    continue          # an entry without a tier takes no part in tier-word lookup
                 special = (items.get("special") or "holder").strip()
+                if tier == "none":
+                    tier = ""
+                # A tierless entry normally takes no part in tier-word lookup, but the `saint`
+                # class is a name prefix rather than a tier word and the game writes its entries
+                # without a tier (20_pam_flavorization.txt:193-263).
+                if not tier and special != "saint":
+                    continue
                 rules = _rules_of(items)
                 # Anything not evaluable is marked unsupported: taking no word beats
                 # reusing another ruler's. This covers flag / holding / domicile_type /
@@ -114,9 +120,10 @@ def build_flavorization(cfg):
                     or items.get("_lessee_rites"))
                 # `special = ruler_child` is evaluable: its `governments` list holds no
                 # tribal/nomad entry at any tier, so "is there a prince title here" must be
-                # asked of the table rather than defaulted. Other `special` values keep
-                # their own branches and stay unsupported.
-                if special not in ("holder", "", "ruler_child"):
+                # asked of the table rather than defaulted. `saint` is evaluable too: it is the
+                # name prefix of a character with the `saint` trait (「圣」/「吾里」). Other
+                # `special` values keep their own branches and stay unsupported.
+                if special not in ("holder", "", "ruler_child", "saint"):
                     unsupported = True
                 try:
                     prio = int(float(items.get("priority") or 0))
@@ -360,6 +367,15 @@ def ruler_child_exists(tier, gender, *, government="", name_list="", heritage=""
             continue
         best_key, best_pri = e["key"], prio
     return best_key
+
+
+def saint_word(gender, *, religion="", cfg=None):
+    """The game's name prefix for a saint of this religion — 「圣」 for a Christian, 「吾里」 for a
+    Muslim — or '' when the game has none for that religion.
+
+    `special = saint` applies to characters with the `saint` trait (`_flavourization.info:135-136`);
+    the entries carry no tier, so the class is asked with an empty tier."""
+    return resolve("character", "", gender, religion=religion, special="saint", cfg=cfg)
 
 
 def is_unconditional(key, cfg=None):
