@@ -19612,6 +19612,13 @@ def _asof_ids(f, ids):
     return out
 
 
+def _mark_lone_name(nm):
+    """A one-character name takes 氏 in the material: standing alone it is read as the tail of
+    the neighbouring relative's name rather than as a name of its own (the mother 德 inside
+    the father 洪仁德), which turns the father into the mother in the prose."""
+    return nm + "氏" if nm and len(nm) == 1 else nm
+
+
 def _kin_rank_zh(n):
     """Birth-order word for a kinship row: 4 -> 四. Plain digits, so that 2 never reads
     "两" the way the object counter `_count_zh` spells it."""
@@ -20102,7 +20109,7 @@ def _protagonist(f):
     p["father"] = "、".join(
         f.kin_label(x) for x in (fam.get("father") or []) if f.name(x))
     p["mother"] = "、".join(
-        f.kin_label(x) for x in (fam.get("mother") or []) if f.name(x))
+        _mark_lone_name(f.kin_label(x)) for x in (fam.get("mother") or []) if f.name(x))
     p["siblings"] = "、".join(
         f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
     # Family sizes counted by the program, printed with the kinship row above (see
@@ -20379,7 +20386,7 @@ def _character_profiles(f):
         if not (_is_pchild and _pid in _fathers):
             prof["father"] = "、".join(f.kin_label(x) for x in _fathers)
         prof["mother"] = "、".join(
-            f.kin_label(x) for x in (fam.get("mother") or []) if f.name(x))
+            _mark_lone_name(f.kin_label(x)) for x in (fam.get("mother") or []) if f.name(x))
         # Only the birth mother's marital status at the child's birth is recorded (not illegitimacy):
         # with another spouse then (not the child's father) one sentence gives her marital identity,
         # taking the highest-ranked spouse; `biography._profile_lines` appends it to the "母" row only in
