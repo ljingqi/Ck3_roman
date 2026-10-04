@@ -2824,8 +2824,9 @@ def _liyi_has_tail(facts):
 
 def _liyi_req(facts):
     """Rites theme/section requirements built only from blocks actually sent: lead and tail align
-    to facts.rite_profile / facts.church_chronicle line prefixes; focus omits holy orders, sent by
-    mid alone."""
+    to facts.rite_profile / facts.church_chronicle line prefixes; focus omits holy orders (sent by
+    mid alone) and the core-tenet topic (sent by the tail's own request; every section receives
+    focus, and the mid carries no core-tenet material since v101)."""
     prof = [str(x) for x in (facts.get("rite_profile") or [])]
 
     def _has(prefix):
@@ -2894,8 +2895,10 @@ def _liyi_req(facts):
             tail_bits.append("本礼信条与禁忌的更替")
             tail_focus.append("本礼信条之更替")
         if _cc_hit("改本礼核心教义", "增定核心教义", "核心教义去"):
+            # The tail's own request carries this topic; it stays out of `focus`, which every
+            # section of the article receives, and the mid section no longer has core-tenet
+            # material (v101 moved it here).
             tail_bits.append("本礼核心教义的更替与定夺者")
-            tail_focus.append("本礼核心教义之更替")
         if _cc_hit("大公教会地位"):
             tail_bits.append("本礼失去大公教会地位之事")
         if not tail_focus:

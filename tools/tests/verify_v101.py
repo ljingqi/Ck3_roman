@@ -178,6 +178,7 @@ class SaintStub:
     table = L.table()
     _has_trait_at = F.Facts._has_trait_at
     _in_saint_register = F.Facts._in_saint_register
+    _saint_prefix_uncached = F.Facts._saint_prefix_uncached
     _faith_id = F.Facts._faith_id
     _tl = []
 
@@ -245,12 +246,84 @@ def load_snaps():
     return []
 
 
+def snap_checks(path):
+    print(f"\n[D] {os.path.basename(path)}")
+    with open(path, encoding="utf-8") as fp:
+        snap = json.load(fp)
+    facts = snap.get("facts") or {}
+    blocks = snap.get("blocks") or {}
+    cc = [str(x) for x in (facts.get("church_chronicle") or [])]
+    surf = json.dumps(facts, ensure_ascii=False)
+    check("① 教会板块非空", bool(cc), len(cc))
+    bad = [x for x in cc if any(x.startswith(y) for y in PRE_952)]
+    check("① 无 952 年以前的事件行", not bad, bad[:3])
+    check("① 首条事件行是 954 年",
+          any(x.startswith("954年") for x in cc) and not any(x.startswith(("920年", "951年"))
+                                                             for x in cc))
+    check("① 相位行日期不再「未知」",
+          any(x.startswith("教会局面") and "未知" not in x for x in cc),
+          [x for x in cc if x.startswith("教会局面")])
+    check("② 诏书行与定夺合写",
+          any(re.match(r"^\d+年\d+月\d+日，.+颁布教宗诏书，将原先", x) for x in cc),
+          [x for x in cc if "颁布教宗诏书" in x][:2])
+    check("③ 980 年厄德·罗贝尔的会议带上成果",
+          any(x.startswith("980年3月20日") and "厄德·罗贝尔" in x and "华夏综摄主义" in x
+              for x in cc), [x for x in cc if "980年" in x][:2])
+    check("③ 986 年会议带核心教义与信条",
+          any(x.startswith("986年12月18日") and "核心教义" in x and "血亲性关系" in x
+              for x in cc), [x for x in cc if "986年" in x][:2])
+    check("③ 未配到事件的定夺仍独立成行（如有）",
+          all(("年起" not in x) or x.endswith("。") for x in cc))
+    check("④ rite_tenet_changes 已空（核心教义改由教会板块承载）",
+          not (facts.get("rite_tenet_changes") or []), facts.get("rite_tenet_changes"))
+    check("④ 传输面出现「圣洪天贵福」", "圣洪天贵福" in surf,
+          surf.count("洪天贵福"))
+    check("④ 圣人前缀加在名字上而非绰号前", "圣堕邪者" not in surf)
+    raw = "\n".join(cc)
+    check("⑤ 教会行无裸键/标记/括注",
+          not BARE.search(raw) and not MARK.search(raw) and not PAREN.search(raw), raw[:200])
+    tail = (blocks.get("liyi_tail") or {})
+    check("⑤ 末场板块带教会板块键", "大公会议与教宗诏书" in json.dumps(tail, ensure_ascii=False),
+          list(tail.keys())[:3])
+    mid = json.dumps(blocks.get("liyi_mid") or {}, ensure_ascii=False)
+    check("⑤ 中场不再有「本礼教义沿革」块", "本礼教义沿革" not in mid)
+    lq = facts.get("_liyi_req") or {}
+    check("⑤ 中场要求不再索要核心教义演变",
+          "核心教义" not in (lq.get("mid") or ""), lq.get("mid"))
+    check("⑤ 末场要求索要合写的定夺",
+          "会议与诏书定夺的教义条目" in (lq.get("tail") or "")
+          and "本礼核心教义" in (lq.get("tail") or ""), lq.get("tail"))
+    check("⑤ 生成的要求无负向禁令词",
+          not any(NEG.search(lq.get(k) or "") for k in ("lead", "mid", "tail", "focus")),
+          {k: lq.get(k) for k in ("lead", "mid", "tail", "focus")})
+
+
+def doc_checks():
+    print("\n[E] 成稿（存在则断言）")
+    for name in ("尼各老(917)_终传_999_07_07.md",
+                 "尼各老(917)_传记_第3个十年_983_01_01.md"):
+        p = os.path.join(H2, name)
+        if not os.path.isfile(p):
+            print(f"  [SKIP] 缺成稿 {name}")
+            continue
+        text = open(p, encoding="utf-8").read()
+        check(f"{name} 无 952 年以前的教会事件",
+              not any(f"{y}年3月2日，礼仪分歧过重" in text for y in ("873",))
+              and "920年2月1日，教会大分裂" not in text, name)
+        check(f"{name} 出现合写的 980 年会议",
+              "980年3月20日" in text and "厄德·罗贝尔" in text, name)
+        check(f"{name} 出现「圣洪天贵福」", "圣洪天贵福" in text, name)
+
+
 def main():
     test_window()
     test_merge()
     test_saint()
     snaps = load_snaps()
     print(f"(快照 {len(snaps)} 份：{[os.path.basename(s) for s in snaps]})")
+    for p in snaps:
+        snap_checks(p)
+    doc_checks()
     print("PASS" if OK else "FAIL")
     return 0 if OK else 1
 

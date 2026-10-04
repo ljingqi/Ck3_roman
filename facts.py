@@ -2310,12 +2310,16 @@ class Facts:
         tn = self._tenno_prince_name(cid, date)
         if tn:
             nick = self.nickname(cid)
+            sp = self._saint_prefix(cid, date)
             if nick:
-                return f"{nick}{tn}"
-            return tn
+                return f"{nick}{sp}{tn}"
+            return f"{sp}{tn}"
         nm = self.name_or(cid, date=date)
         if not nm:
             return nm
+        # A canonized character carries the game's saint prefix on his name (「圣洪天贵福」): the
+        # prefix belongs to the name, so a nickname and an office stay outside it.
+        nm = f"{self._saint_prefix(cid, date)}{nm}"
         nick = self.nickname(cid)
         if nick:
             return self._insert_nickname(nm, nick)
@@ -7078,21 +7082,30 @@ class Facts:
             return ""
         try:
             seen = self.as_of or self.cache.get("last_date") or date
-            if not self._has_trait_at(int(cid), "saint", seen) \
-                    and not self._in_saint_register(cid):
-                return ""
-            _ftag, rtag = self._faith_tags(int(cid), date)
-            key = FZ.saint_word("female" if self._is_female(int(cid)) else "male",
-                                religion=rtag or "")
-            # `venerated_ancestor` is the same class but its word is a description rather than a
-            # prefix (「广受崇敬的祖先」), so a religion the game gives no saint word keeps the
-            # plain name.
-            if not key or key == "venerated_ancestor":
-                return ""
-            word = L.loc(self.table, key) or ""
-            return "" if not word or word.startswith(("$", "[")) or word == key else word
+            memo = getattr(self, "_saint_memo", None)
+            if memo is None:
+                memo = self._saint_memo = {}
+            ck = (int(cid), str(seen), str(date or ""))
+            if ck in memo:
+                return memo[ck]
+            memo[ck] = out = self._saint_prefix_uncached(int(cid), date, seen)
+            return out
         except Exception:                                        # noqa: BLE001
             return ""
+
+    def _saint_prefix_uncached(self, cid, date, seen):
+        if not self._has_trait_at(cid, "saint", seen) and not self._in_saint_register(cid):
+            return ""
+        _ftag, rtag = self._faith_tags(cid, date)
+        key = FZ.saint_word("female" if self._is_female(cid) else "male",
+                            religion=rtag or "")
+        # `venerated_ancestor` is the same class but its word is a description rather than a
+        # prefix (「广受崇敬的祖先」), so a religion the game gives no saint word keeps the
+        # plain name.
+        if not key or key == "venerated_ancestor":
+            return ""
+        word = L.loc(self.table, key) or ""
+        return "" if not word or word.startswith(("$", "[")) or word == key else word
 
     def _in_saint_register(self, cid):
         """Whether the character's faith lists him among its saints (`faiths.database[fid].saints`)."""
@@ -7130,11 +7143,6 @@ class Facts:
         nm = self.name_with_regnal(cid, date)
         if not nm or nm in self._PLACEHOLDER_NAMES:
             return ""
-        # A canonized character carries the game's saint prefix on his name (「圣洪天贵福」); it
-        # belongs to the name, so the office and the byname stay outside it.
-        sp = self._saint_prefix(cid, date)
-        if sp:
-            nm = f"{sp}{nm}"
         # Timeline fact lines give the player the name only: the profile section already covers
         # his titles, and a full label on every line only costs attention. Everyone else still
         # uses the brief form (title + name) for recognition.
