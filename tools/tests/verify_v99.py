@@ -3,7 +3,8 @@
 
 洪氏2 四问 + 顺带两问：
   ① 历代记末节有素材 —— 9 行 rows_detail 全 True；分 3 节各 ≥2 行；末节含治所/主角任期/本朝现任
-  ② 官职与绰号不相粘 —— 「前礼部尚书，书吏洪地保」在，「前礼部尚书书吏」不在
+  ② 官职与绰号直接相连（v100 回滚原「，」写法）—— 「前礼部尚书书吏洪地保」在，
+     「前礼部尚书，书吏」不在
   ③ 同侪关系句自带亲缘定语 —— 洪玉英 982 年行有「姻亲兄弟洪惟良」
   ④ 历代记补「本朝现任」—— 含洪氏，且末节板块里有该行
   ⑤ 宝物志收身体部件类宝物 —— 指骨/圣指/圣齿 入「传家重宝」
@@ -21,7 +22,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 
 OK = True
-DEFAULT = [os.path.join(ROOT, "output", "洪氏2", "data", "snap_v99.json")]
+# v100 rolled issue ② back (the office and the nickname meet directly again), so the assertions run
+# on the v100 snapshot when it exists; snap_v99.json still holds the comma and fails ② by design.
+_V100 = os.path.join(ROOT, "output", "洪氏2", "data", "snap_v100.json")
+DEFAULT = [_V100 if os.path.isfile(_V100)
+           else os.path.join(ROOT, "output", "洪氏2", "data", "snap_v99.json")]
 
 
 def check(name, cond, extra=None):
@@ -93,10 +98,10 @@ def run(path):
     check("④ 现任行指出其后传主仍归洪氏", "其后传主之位归于洪氏" in holder, holder)
     check("④ 现任行无括注同位语", "（" not in holder, holder)
 
-    # ② 官职与绰号
-    check("② 官职与绰号以「，」相隔", "前礼部尚书，书吏洪地保" in surface)
-    check("② 不再出现「前礼部尚书书吏」粘连", "前礼部尚书书吏" not in surface)
-    check("② 教宗与绰号相隔", "教宗，欢乐者尼各老" in surface)
+    # ② 官职与绰号（v100 回滚：983ae6a 的「，」分支撤销，回到直接相连）
+    check("② 官职与绰号直接相连", "前礼部尚书书吏洪地保" in surface)
+    check("② 不再出现「前礼部尚书，书吏」", "前礼部尚书，书吏" not in surface)
+    check("② 教宗与绰号直接相连", "教宗欢乐者尼各老" in surface)
 
     # ③ 同侪关系句的亲缘定语
     check("③ 洪玉英 982 年行带「姻亲兄弟洪惟良」",

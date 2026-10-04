@@ -2,7 +2,7 @@
 """v98 专项断言（秒级；纯函数 + 快照，不载熔件）。
 
 问题（用户 2026-10-03）：
-  ① 重生成旧十年不得按「末档现值」渲染 —— 三篇十年传都要有《礼仪志》「枢机团与教宗选举」
+  ① 重生成旧十年不得按「末档现值」渲染 —— 三篇十年传都要有《礼仪志》第三板块
   ② 名字按当日 —— 975.9.24 才受任教宗，故 963/973 两篇写「洪思忠」，983 篇才写教名「尼各老」
   ③ as_of 逻辑落地 —— 旧十年用该日那一档熔件 + era_view 截断视图（直辖、政体、教名按当日）
 
@@ -11,7 +11,7 @@
   [2] era_view（纯函数）：教名按当日、直辖按当日、last_date 钉当日、且不改原缓存
   [3] decade_era_melt（纯函数）：取 cutoff 当日或之前最近的一档熔件
   [4] decade 文件匹配按生年：改名后仍认得出自己写的十年篇
-  [5] 快照：三篇十年传的枢机团事实行非空，且署名／直辖按当日
+  [5] 快照：三篇十年传的第三板块事实行非空，且署名／直辖按当日
   [6] 回归：非时代路径（终传）与 v97 快照逐字节一致
 
 用法：
@@ -200,7 +200,10 @@ def test_decade_file_pattern():
 
 
 def test_snapshots(snaps):
-    """[5] 三篇十年传：枢机团事实行非空，署名与直辖按当日。"""
+    """[5] 三篇十年传：第三板块事实行非空，署名与直辖按当日。
+
+    v100 起该板块由「大公会议与教宗诏书」(facts.church_chronicle) 取代枢机团，旧快照仍带
+    旧键，故此处两代板块名兼容读取；断言只判「有事实行」与当日口径。"""
     for p in snaps:
         if not os.path.isfile(p):
             print(f"[SKIP] 快照不存在: {p}")
@@ -213,13 +216,13 @@ def test_snapshots(snaps):
         if pid != SUBJ or not dec:
             print(f"[SKIP] 非本传主十年快照: {tag}")
             continue
-        pe = fac.get("papal_election") or []
+        pe = fac.get("church_chronicle") or fac.get("papal_election") or []
         proto = fac.get("protagonist") or {}
         ch = (fac.get("characters") or {}).get(str(SUBJ)) or {}
         print(f"\n[5] {tag} decade={dec} as_of={fac.get('as_of')}")
-        check("《礼仪志》枢机团与教宗选举有事实行", bool(pe), pe[:1])
-        check("含「枢机团：在位枢机 N 席」",
-              any(ln.startswith("枢机团：在位枢机") and ln.endswith("席。") for ln in pe), pe[:1])
+        check("《礼仪志》第三板块有事实行", bool(pe), pe[:1])
+        check("第三板块首行或为教会局面、或为枢机席数",
+              any(ln.startswith(("教会局面：", "枢机团：")) for ln in pe), pe[:1])
         check("无「虚悬」", "虚悬" not in surface_of(snap))
         check("last_date 钉到当日（不再被末档闸门挡掉）",
               fac.get("last_date") == fac.get("as_of"),

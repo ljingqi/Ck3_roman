@@ -1632,8 +1632,9 @@ def _article_facts(facts, cache, key, section=None):
         arts = facts.get("family_artifacts") or []
         _set_block(blocks, "传家重宝", "\n\n".join(arts))
     elif key == "liyi":
-        # rite chronicle: lead = rite profile, chronicles = tenets / holy orders / rite history, tail = papal
-        # election; a block without material is skipped whole, and a dry chronicle leaves the lead alone.
+        # rite chronicle: lead = rite profile, chronicles = tenets / holy orders / rite history,
+        # tail = the church's councils and papal bulls; a block without material is skipped whole,
+        # and a dry chronicle leaves the lead alone.
         prof = list(facts.get("rite_profile") or [])
         hist = list(facts.get("rite_history") or [])
         pt = list(facts.get("personal_tenets") or [])
@@ -1642,8 +1643,8 @@ def _article_facts(facts, cache, key, section=None):
         if _sec_key(section) == "lead":
             _set_block(blocks, "礼仪档案", "\n".join(prof) if prof else "")
         elif _sec_key(section) == "tail":
-            pe = list(facts.get("papal_election") or [])
-            _set_block(blocks, "枢机团与教宗选举", "\n".join(pe) if pe else "")
+            cc = list(facts.get("church_chronicle") or [])
+            _set_block(blocks, "大公会议与教宗诏书", "\n".join(cc) if cc else "")
         else:
             # `rite_tenet_changes` lists changes among the rite's own core tenets
             if pt:
@@ -2815,14 +2816,15 @@ def _liyi_has_mid(facts):
 
 
 def _liyi_has_tail(facts):
-    """True when the third rites section (cardinals and papal election) has material:
-    facts.papal_election, gated on current state plus a vassal in the college."""
-    return bool(facts.get("papal_election"))
+    """True when the third rites section (councils and papal bulls) has material:
+    facts.church_chronicle, empty for a subject outside the Christian church."""
+    return bool(facts.get("church_chronicle"))
 
 
 def _liyi_req(facts):
     """Rites theme/section requirements built only from blocks actually sent: lead and tail align
-    to facts.rite_profile / facts.papal_election line prefixes; focus omits holy orders, sent by mid alone."""
+    to facts.rite_profile / facts.church_chronicle line prefixes; focus omits holy orders, sent by
+    mid alone."""
     prof = [str(x) for x in (facts.get("rite_profile") or [])]
 
     def _has(prefix):
@@ -2862,41 +2864,50 @@ def _liyi_req(facts):
         mid_bits.append("他建立或庇护的修会，逐所写出立会年份、会规、"
                         "所领教堂领地与现任首领")
     src = style.SECTION_REQ.get("liyi", {})
-    # ---- tail: college of cardinals and papal election ----
-    # Only the lines actually sent are requested, matched against facts.papal_election line prefixes.
-    pe = [str(x) for x in (facts.get("papal_election") or [])]
+    # ---- tail: the church's councils and papal bulls ----
+    # Only the lines actually sent are requested, matched against facts.church_chronicle.
+    cc = [str(x) for x in (facts.get("church_chronicle") or [])]
 
-    def _pe_has(prefix):
-        return any(x.startswith(prefix) for x in pe)
+    def _cc_hit(*needles):
+        return any(n in x for x in cc for n in needles)
 
     tail_bits, tail_focus = [], []
-    if pe:
-        tail_bits.append("在位枢机的席数")
-        if _pe_has("本朝封臣入枢机者"):
-            tail_bits.append("本朝封臣入枢机者逐人点名（席位名与教宗候选声望照原样抄写）")
-            tail_focus.append("本朝封臣入枢机者")
-        if _pe_has("现任教宗"):
-            tail_bits.append("现任教宗及其即位年份")
-        if _pe_has("下届选举"):
-            tail_bits.append("下届推举的人选、票数与得票第一的人")
-            tail_focus.append("下届推举与票数")
-        if _pe_has("派别"):
-            tail_bits.append("各候选所属派别")
-        if _pe_has("奔走"):
-            tail_bits.append("为候选人奔走的枢机人数")
-        tail_focus.append("在位枢机席数")
+    if cc:
+        if any(x.startswith("教会局面") for x in cc):
+            tail_bits.append("教会当下的局面")
+            tail_focus.append("教会局面")
+        if _cc_hit("举行大公会议"):
+            tail_bits.append("大公会议的日期与主持者")
+            tail_focus.append("大公会议")
+        if _cc_hit("颁布教宗诏书"):
+            tail_bits.append("教宗诏书的颁布者与日期")
+            tail_focus.append("教宗诏书")
+        if _cc_hit("教会大分裂", "对立教宗"):
+            tail_bits.append("大分裂与对立教宗之立")
+        if _cc_hit("异端爆发", "异端礼仪", "异端复兴", "新礼仪", "分歧礼仪"):
+            tail_bits.append("异端之兴与新礼之立")
+        if _cc_hit("列为"):
+            tail_bits.append("本礼教义定夺的年份、定夺者与原委")
+            tail_focus.append("本礼教义的定夺")
+        if _cc_hit("改本礼信条", "本礼信条更改"):
+            tail_bits.append("本礼信条与禁忌的更替")
+            tail_focus.append("本礼信条之更替")
+        if _cc_hit("大公教会地位"):
+            tail_bits.append("本礼失去大公教会地位之事")
+        if not tail_focus:
+            tail_focus.append("教会局面")
     return {
         "lead": lead or (src.get("lead") or ""),
         "mid": (("写礼仪与教义的沿革、传主在教门中的作为：" + "；".join(mid_bits) + "。")
                 if mid_bits else (src.get("mid") or "")),
-        "tail": (("写本朝枢机在下届教宗选举中的形势：" + "；".join(tail_bits) + "。"
-                  "席数、票数与人名一律照本篇给出的事实写出。")
+        "tail": (("写本朝教会的大公会议与教宗诏书：" + "；".join(tail_bits) + "。"
+                  "年月与人名一律照本篇给出的事实写出。")
                  if tail_bits else (src.get("tail") or "")),
         "focus": ("写礼仪的沿革与教门中的作为：" + "、".join(focus_bits)
-                  + ("；并写枢机团与下届教宗选举：" + "、".join(tail_focus)
+                  + ("；并写大公会议与教宗诏书：" + "、".join(tail_focus)
                      if tail_bits else "")
                   if focus_bits else
-                  ("写传主所受之礼、本朝枢机与下届教宗选举"
+                  ("写传主所受之礼、本朝教会的大公会议与教宗诏书"
                    if tail_bits else "写传主所受之礼与其教门中的作为")),
     }
 
@@ -3047,7 +3058,8 @@ def build_articles(facts, cache, cfg):
                     _prev_cut = _p.get("end") or _prev_cut
             return secs
         if key == "liyi":
-            # Rites tail: the material gate lives in facts.papal_election; an empty mid still gets a tail
+            # Rites tail: the material gate lives in facts.church_chronicle; an empty mid still
+            # gets a tail
             _src = style.SECTION_REQ.get(key, {})
             secs = [{"key": "lead",
                      "title": titles.get("lead") or defaults["lead"],
@@ -3060,7 +3072,7 @@ def build_articles(facts, cache, cfg):
                                                  or "按传记笔法写作。", facts)})
             if _liyi_has_tail(facts):
                 secs.append({"key": "tail",
-                             "title": titles.get("tail") or "纪事·枢机团与教宗选举",
+                             "title": titles.get("tail") or "纪事·大公会议与教宗诏书",
                              "req": _section_req(_dyn.get("tail") or _src.get("tail")
                                                  or "按传记笔法写作。", facts)})
             return secs
@@ -3186,7 +3198,7 @@ def build_articles(facts, cache, cfg):
         articles.insert(_anchor, {"key": "liyi", "title": "礼仪志·礼仪与教义",
                                   "subject": None,
                                   "theme": "传主所受之礼与个人教义的演变"
-                                           + ("、本朝枢机与下届教宗选举"
+                                           + ("、本朝教会的大公会议与教宗诏书"
                                               if _lq.get("tail") else ""),
                                   "focus": _lq["focus"],
                                   "sections": _secs})

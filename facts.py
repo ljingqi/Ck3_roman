@@ -7087,10 +7087,10 @@ class Facts:
         # (`religious_head_word` is a generic word with no locating prefix).
         apw = self.antipope_label(cid, date)
         if apw:
-            return self._join_office(cid, apw, pn, acc)
+            return self._join_office(apw, pn)
         rhw = self.religious_head_word(cid)
         if rhw:
-            return self._join_office(cid, rhw, pn, acc)
+            return self._join_office(rhw, pn)
         off = self._event_office(cid, date) if style == "event" \
             else self.official_title(cid, date)
         if not off:
@@ -7103,8 +7103,8 @@ class Facts:
             if word:
                 off = f"{word}领袖"
         if style == "full":
-            return self._full_label(cid, date, off, pn, acc)
-        return self._join_office(cid, off, pn, acc)
+            return self._full_label(cid, date, off, pn)
+        return self._join_office(off, pn)
 
     def event_name(self, cid, date=None):
         """Subject name for timeline/fact lines: the name only for the player, a brief label
@@ -7134,24 +7134,17 @@ class Facts:
                                  date=date)
         return f"{tname}{word}" if word else tname
 
-    def _join_office(self, cid, off, nm, acc=""):
-        """Office word + display name, comma-separated when the name opens with a nickname.
+    def _join_office(self, off, nm):
+        """Office word + display name, written as one unbroken label.
 
-        The game always separates the two (`CHARACTER_NAME_NICKNAMED: "$TITLE$$TIER$，$NAME$“$NICK$”"`,
-        character_l_simp_chinese.yml:51, and every titled variant at :45-56). This project keeps the
-        nickname ahead of the name and unquoted, so the comma is what stops the office from reading as
-        one word with the nickname: 前礼部尚书 + 书吏洪地保 glued together looks like a single office
-        「前礼部尚书书吏」.
-
-        `acc` is the accolade already prefixed to `nm`; the nickname test runs on what follows it, so
-        one roster reads alike whether or not its members wear an accolade."""
+        The project keeps the nickname ahead of the name and unquoted, so office and name meet
+        directly: 前礼部尚书 + 书吏洪地保 reads as 「前礼部尚书书吏洪地保」, one man with both
+        the office and the byname."""
         if not off:
             return nm
-        nick = self.nickname(cid)
-        body = nm[len(acc):] if acc and nm.startswith(acc) else nm
-        return f"{off}，{nm}" if (nick and body.startswith(nick)) else f"{off}{nm}"
+        return f"{off}{nm}"
 
-    def _full_label(self, cid, date, cur, nm, acc=""):
+    def _full_label(self, cid, date, cur, nm):
         """full-style label: a former title is prefixed only when its tier is higher than the
         current one; the same tid held now and then is not a former title.
 
@@ -7174,17 +7167,17 @@ class Facts:
         if cur and former_tid is not None and f_rank > cur_rank:
             ft = self._former_title_text(cid, former_tid, anchor)
             if ft and ft != cur:
-                return f"前{ft}，{self._join_office(cid, cur, nm, acc)}"
-            return self._join_office(cid, cur, nm, acc)
+                return f"前{ft}，{self._join_office(cur, nm)}"
+            return self._join_office(cur, nm)
         if cur:
-            return self._join_office(cid, cur, nm, acc)
+            return self._join_office(cur, nm)
         if former_tid is not None:
             ft = self._former_title_text(cid, former_tid, anchor)
             if ft:
-                return self._join_office(cid, f"前{ft}", nm, acc)
+                return self._join_office(f"前{ft}", nm)
         pw = self.prince_title(cid, anchor)
         if pw:
-            return self._join_office(cid, pw, nm, acc)
+            return self._join_office(pw, nm)
         return nm
 
     def kin_label(self, cid, date=None):
@@ -11788,235 +11781,327 @@ class Facts:
         # is returned here; the prefixed full appellation comes from `antipope_label`.
         return self._ANTIPOPE_WORD if self.antipope_office_at(cid) is not None else ""
 
-    # ---- College of cardinals and papal election ----
+    # ---- church chronicle: councils, papal bulls and doctrine rulings ----
     # Save fields used:
-    #   · Seats = titles carrying `clerical_elector = <fid>`; the seat name comes from
-    #     `title_name_data.name` (already localized in the save) and holders from `.holder`.
-    #   · Seated cardinals = `faiths.database[<fid>].active_clerical_electors` (the college's
-    #     `inactive_clerical_electors` list is deliberately not read: vacancy is the normal
-    #     state and its count belongs in no fact line).
-    #   · Papabile score = character variable `pam_papabile_score` (fixed point ×100000, and the
-    #     variable keeps no history).
-    #   · Next-election nominees and votes = the papal-seat title's
-    #     `succession_election{nominations[], candidate_sources[]}` — votes are `strength` summed
-    #     per candidate, which reproduces the title's `heir` order; faction key comes from
-    #     `candidate_sources[].key`.
-    #   · Reigning pope = `k_papal_state` `.holder` (empty means the see is vacant).
-    #   · Canvassing = cardinal variable `pam_papabile_leaning_target` (a 20-year timer);
-    #     pressure = `pam_forced_papal_vote_target`.
-    # Not emitted: election odds (engine-internal, absent from the save) and per-tier score
-    # curves (the score variable has no history).
-    _CARDINAL_LIST_MAX = 12          # max vassals listed individually as cardinals
-    _PAPAL_FACTION_WORDS = (
-        ("theocratic_elective_pious", "虔诚派"),
-        ("theocratic_elective_populist", "大众派"),
-        ("theocratic_elective_powerful", "权势派"),
+    #   · `situation_manager.database[<id>].history` of the situation whose `type` is
+    #     the_christian_church: one row per church event from 867 on, each
+    #     `{catalyst: {value, catalyst, phase, date, character}}`. Its `keep_full_history = yes`
+    #     (pam_christian_situation.txt:17) is what keeps them all.
+    #   · the latched diffs of the subject's own rite: `rite_tenets_history` (tenet statuses) and,
+    #     added for this section, `rite_doctrine_history` / `faith_doctrine_history` (doctrine sets).
+    # The topics and votes of a council are not in the save: the activity object holding them lives
+    # 90 days past its completion (00_defines.txt:1714-1716) and no ecumenical council is left in
+    # the 1000 file, so nothing here is written.
+    _CHURCH_SITUATION = "the_christian_church"
+    _CHRISTIAN_RELIGIONS = ("christianity_religion", "christianity")
+    # 0xFFFFFFFF, the save's empty id: written for an event no character performed
+    _NO_CHARACTER = 4294967295
+    # The game's own catalyst wording with its `[concept|E]` markup dropped
+    # (pam_christian_situation_catalysts_l_simp_chinese.yml:166-246), keyed by catalyst. `kind`
+    # collapses the rows the engine writes twice for one event (a council is logged both as the
+    # ordinary and as the secular catalyst); `rank` keeps the more specific wording of the two.
+    _CHURCH_CATALYSTS = (
+        ("catalyst_hosted_ecumenical_council", "council", 1, "举行大公会议"),
+        ("catalyst_secular_hosted_ecumenical_council", "council", 2, "借教士之手举行大公会议"),
+        ("catalyst_the_christian_church_papal_bull_enacted", "bull", 1, "颁布教宗诏书"),
+        ("catalyst_pope_declared_popular_core_tenet", "tenet", 1, "宣布了一项广受欢迎的核心教义"),
+        ("catalyst_pope_declared_unpopular_core_tenet", "tenet", 1, "宣布了一项不受欢迎的核心教义"),
+        ("catalyst_the_christian_church_great_schism", "schism", 1, "教会大分裂"),
+        ("catalyst_the_christian_church_antipope_declared", "antipope_declared", 1,
+         "自立为对立教宗"),
+        ("catalyst_the_christian_church_antipope_sponsored", "antipope_sponsored", 1,
+         "扶植了对立教宗"),
+        ("catalyst_the_christian_church_antipope_removed", "antipope_removed", 1,
+         "废黜了对立教宗"),
+        ("catalyst_heresy_light_outbreak", "heresy", 1, "礼仪分歧过重，异端爆发"),
+        ("catalyst_heresy_dangerous_rite", "heresy", 1, "新的异端礼仪爆发"),
+        ("catalyst_heresy_historical_outbreak", "heresy", 1, "历史上的异端复兴"),
+        ("catalyst_the_christian_church_new_rite", "rite", 1, "创立新礼仪"),
+        ("catalyst_the_christian_church_new_divergent_rite", "rite", 1, "创立分歧礼仪"),
     )
+    # Tenet status keys -> the word the game itself uses for them (faith doctrine screen)
+    _TENET_STATUS_WORDS = {"core": "核心教义", "permitted": "允许", "prohibited": "禁止",
+                           "known": "已知"}
+    _ECUMENICAL_DOCTRINE = "special_doctrine_ecumenical_christian"
 
-    def _cardinal_word(self):
-        """The word for 「枢机」 (concept-key lookup, else the literal fallback)."""
-        for key in ("game_concept_cardinal", "cardinal_male"):
-            try:
-                v = L.loc(self.table, key) or ""
-            except Exception:                                     # noqa: BLE001
-                v = ""
-            if v and not v.startswith(("$", "[")):
-                return v
-        return "枢机"
+    def _church_history(self):
+        """Rows of the game's own church log, oldest first (memoized).
 
-    def _cardinal_seats(self, fid=None):
-        """Cardinal seats `{tid: {"fid", "name", "holder"}}` (whole `landed_titles` scan, lazily
-        once).
-
-        A seat is any `landed_titles` entry with a non-empty `clerical_elector`; when `fid` is
-        given only that faith's seats are kept."""
-        memo = getattr(self, "_cardinal_seats_memo", None)
-        if memo is None:
-            memo = {}
-            for tid, t in self._lt.items():
-                if not isinstance(t, dict):
-                    continue
-                _f = t.get("clerical_elector")
-                if _f is None:
-                    continue
-                memo[str(tid)] = {
-                    "fid": _f if isinstance(_f, int) else None,
-                    "name": str(((t.get("title_name_data") or {}).get("name")) or ""),
-                    "holder": t.get("holder") if isinstance(t.get("holder"), int) else None,
-                }
-            self._cardinal_seats_memo = memo
-        if fid is None:
-            return dict(memo)
-        return {k: v for k, v in memo.items() if v.get("fid") == fid}
-
-    def _seat_in_realm_of(self, tid, cid):
-        """Whether `cid`'s title appears on this seat title's `de_facto_liege` chain.
-
-        The save holds no per-tier vassal hierarchy, only the current de_facto chain (as of the
-        same instant as this block's time gate), so this serves only present-state sections (see
-        the time gate in `papal_election_lines`)."""
-        seen = set()
-        cur = (self._lt.get(str(tid)) or {}).get("de_facto_liege")
-        for _ in range(20):
-            if not isinstance(cur, int) or cur in seen:
-                return False
-            seen.add(cur)
-            t = self._lt.get(str(cur)) or {}
-            if not isinstance(t, dict):
-                return False
-            if t.get("holder") == cid:
-                return True
-            cur = t.get("de_facto_liege")
-        return False
-
-    def _papal_seat_tid(self):
-        """Papal-seat title id (`k_papal_state`; None when absent); memoized."""
-        memo = getattr(self, "_papal_seat_tid_memo", None)
+        `situation_manager.database[<id>].history` of the situation whose `type` is
+        the_christian_church; every row is `{catalyst: {value, catalyst, phase, date, character}}`."""
+        memo = getattr(self, "_church_hist_memo", None)
         if memo is not None:
             return memo
-        tid = None
-        for _tid, t in self._lt.items():
-            if isinstance(t, dict) and t.get("key") == "k_papal_state":
-                tid = int(_tid) if str(_tid).isdigit() else _tid
+        out = []
+        db = (self.melt.get("situation_manager") or {}).get("database") or {}
+        for s in db.values():
+            if not isinstance(s, dict) or str(s.get("type") or "") != self._CHURCH_SITUATION:
+                continue
+            for h in (s.get("history") or []):
+                if isinstance(h, dict) and isinstance(h.get("catalyst"), dict):
+                    out.append(h)
+        out.sort(key=lambda h: cl.date_key(str(h["catalyst"].get("date") or "")))
+        self._church_hist_memo = out
+        return out
+
+    def _church_actor(self, c, date=None):
+        """Name of the character one church row names, '' when it names none.
+
+        Rows of the church's own doings (a schism, a heresy outbreak) carry the empty id, and a name
+        that cannot be resolved (a character the save has pruned) keeps the actor out of the line
+        instead of leaving a placeholder there."""
+        cid = c.get("character")
+        if not isinstance(cid, int) or cid == self._NO_CHARACTER:
+            return ""
+        nm = self.event_name(cid, date=date) or self.name(cid, date=date) or ""
+        return "" if nm in self._PLACEHOLDER_NAMES else nm
+
+    def _church_window(self):
+        """(start, end) of the church rows this volume covers, as date keys.
+
+        A decade volume covers its own ten years — the same window as the timeline — so an earlier
+        volume never repeats a later council or bull; a final volume covers everything up to
+        `as_of`. `None` on a side means open, and the phase line is a state at `as_of` rather than
+        an event, so it ignores the start."""
+        lo = cl.date_key(self._bio_window_start()) if self.decade else None
+        hi = cl.date_key(self.as_of) if self.as_of else None
+        return lo, hi
+
+    @staticmethod
+    def _in_church_window(d, win):
+        try:
+            dk = cl.date_key(d)
+        except Exception:                                        # noqa: BLE001
+            return False
+        lo, hi = win
+        return (lo is None or dk > lo) and (hi is None or dk <= hi)
+
+    def church_phase_line(self, date=None):
+        """The phase the church stands in at `date`, as one fact line; [] when unknown.
+
+        The phase name is the game's own phase localization key (`concord`, `fragile_unity` …,
+        pam_christian_situation_l_simp_chinese.yml:23-56) of the last log row up to `date`."""
+        phase = ""
+        ao = cl.date_key(date) if date else None
+        for h in self._church_history():
+            c = h["catalyst"]
+            d = str(c.get("date") or "")
+            if ao is not None and d and cl.date_key(d) > ao:
                 break
-        self._papal_seat_tid_memo = tid
-        return tid
+            if c.get("phase"):
+                phase = str(c["phase"])
+        if not phase:
+            return []
+        word = L.loc(self.table, phase) or ""
+        if not word or word.startswith(("$", "[")):
+            return []
+        return [f"教会局面：截至{self.date(date or self.as_of or '')}，本朝教会处于「{word}」之世。"]
 
-    def _papal_vote_tally(self, tid=None):
-        """Papal election → (elector count, [(candidate cid, votes)] by votes desc,
-        {candidate cid: faction key}).
+    def church_event_lines(self, date=None):
+        """One line per church event — council, papal bull, schism, antipope, heresy, new rite — up
+        to `date`, in date order.
 
-        Votes are `succession_election.nominations[].strength` summed per candidate, which matches
-        the title's `heir` order entry by entry; missing data yields (0, [], {})."""
-        if tid is None:
-            tid = self._papal_seat_tid()
-        t = self._lt.get(str(tid)) or {}
-        se = t.get("succession_election") if isinstance(t, dict) else None
-        if not isinstance(se, dict):
-            return 0, [], {}
-        tally = {}
-        for n in (se.get("nominations") or []):
-            if not isinstance(n, dict) or not isinstance(n.get("candidate"), int):
+        Each line is 「<date>，<actor><phrase>。」, the phrase being the game's own catalyst wording
+        and the actor dropped when the row names none. A council the engine logs twice (ordinary and
+        secular) yields one line, the more specific wording winning."""
+        by_key = {k: (kind, rank, phrase) for k, kind, rank, phrase in self._CHURCH_CATALYSTS}
+        win = self._church_window()
+        picked, order = {}, []
+        for h in self._church_history():
+            c = h["catalyst"]
+            meta = by_key.get(str(c.get("catalyst") or ""))
+            if meta is None:
                 continue
-            try:
-                tally[n["candidate"]] = tally.get(n["candidate"], 0.0) \
-                    + float(n.get("strength") or 0)
-            except (TypeError, ValueError):
+            d = str(c.get("date") or "")
+            if not d:
                 continue
-        fac = {}
-        for cs in (se.get("candidate_sources") or []):
-            if isinstance(cs, dict) and isinstance(cs.get("character"), int):
-                fac[cs["character"]] = str(cs.get("key") or "")
-        rows = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
-        return len(se.get("electors") or []), rows, fac
+            if win[1] is not None and cl.date_key(d) > win[1]:
+                break
+            if not self._in_church_window(d, win):
+                continue
+            kind, rank, phrase = meta
+            slot = (d, kind)
+            cur = picked.get(slot)
+            if cur is None:
+                order.append(slot)
+                picked[slot] = (rank, phrase, h)
+            elif rank > cur[0]:
+                picked[slot] = (rank, phrase, h)
+        rows = []
+        for d, _kind in order:
+            _rank, phrase, h = picked[(d, _kind)]
+            who = self._church_actor(h["catalyst"], date=d)
+            rows.append(f"{self.date(d)}，{who}{phrase}。" if who
+                        else f"{self.date(d)}，{phrase}。")
+        return rows
 
-    def _papal_score(self, cid):
-        """Papal-candidate prestige (`pam_papabile_score`, fixed point ×100000) as a number, or
-        None.
+    def _rite_tenet_ruling_lines(self, cid, date=None):
+        """Lines for the rulings that allowed, forbade or made known a tenet of the subject's rite.
 
-        Only cardinals are meaningful here: the pope carries the variable too but no
-        `cardinal_flag`."""
-        v = self._char_var(cid, "pam_papabile_score")
-        return (v / 100000.0) if isinstance(v, (int, float)) else None
+        Source: the latched status map of `rite_tenets_history`, which holds every status (see
+        cache_lib). A tenet entering or leaving `core` is the core teaching itself and is already
+        written by `rite_tenet_changes` (the same section's mid part), so only the moves between
+        允许 / 禁止 / 已知 appear here. The game dates no tenet change, so the year is the snapshot
+        the change was first seen in: it happened between the previous snapshot and this one. Only
+        the rite head can change a rite's tenets, so the clause names him."""
+        rid = self._rite_id(cid, date)
+        if rid is None:
+            return []
+        hist = ((self.cache.get("rite_tenets_history") or {}).get(str(rid)) or [])
+        win = self._church_window()
+        words = dict(self._TENET_STATUS_WORDS)
+        allowed = ("permitted", "prohibited", "known")
+        rows, prev = [], None
+        for h in hist:
+            d = h.get("from")
+            if not d or (win[1] is not None and cl.date_key(d) > win[1]):
+                break
+            ten = h.get("tenets") or {}
+            if not isinstance(ten, dict):
+                continue
+            cur = {str(t): str(s) for s, ks in ten.items() for t in (ks or [])}
+            if prev is not None and self._in_church_window(d, win):
+                yr = str(d).split(".")[0]
+                head = self._leader_clause(h, d)
+                for t in sorted(cur):
+                    old, new = prev.get(t), cur[t]
+                    if old == new or new not in allowed or old not in allowed:
+                        continue
+                    nm = self.tenet_name(t, rid)
+                    if not nm:
+                        continue
+                    lead = f"{head}将" if head else "本礼将"
+                    rows.append(f"{yr}年起，{lead}「{nm}」列为{words[new]}，"
+                                f"此前为{words[old]}。")
+            prev = cur
+        return rows
 
-    def papal_election_lines(self, cid=None, date=None):
-        """Fact lines for the third 《礼仪志》 block: college of cardinals and papal election.
+    def doctrine_name(self, key):
+        """Doctrine key → Chinese name, `doctrine_<key>_descriptive_name` first and
+        `doctrine_<key>_name` second (religion_l_simp_chinese.yml); '' when neither resolves.
 
-        Three gates must hold at once: ① present state — `date` is not earlier than
-        `cache.last_date`, because election data has no history (`succession_election` and the
-        papabile score are current fields only), so an earlier decade emits nothing instead of a
-        later shortlist; ② the faith of the rite the subject follows that year owns this college;
-        ③ either a vassal of the subject sits in it or the subject is a cardinal himself.
-        Rows: seat count, vassal cardinals (seat name + name + papabile score), reigning pope and
-        since when, next nominees with votes, factions, canvassing."""
+        The descriptive name is the one the game shows inside a doctrine slot
+        (doctrine_consanguinity_restricted_descriptive_name = 禁止近亲通婚), so two values of one
+        slot read apart."""
+        if not key:
+            return ""
+        k = str(key)
+        for c in (f"{k}_descriptive_name", f"{k}_name"):
+            v = L.loc(self.table, c)
+            if v and v != c:
+                return v
+        return ""
+
+    def _doctrine_slot_lines(self, drop, add):
+        """One sentence fragment per doctrine group whose value changed.
+
+        A doctrine group is one slot of a faith — `doctrine_consanguinity` holds the near-kin
+        marriage rules — so one key leaving a group and another entering it reads as one rule
+        replaced by another rather than as two unrelated lines. A group the game files do not
+        define falls back to naming the keys themselves; a key without a resolvable name drops its
+        whole fragment."""
+        out_by_group, in_by_group = {}, {}
+        for k in sorted(drop):
+            out_by_group.setdefault(L.doctrine_group_key(k) or "", []).append(k)
+        for k in sorted(add):
+            in_by_group.setdefault(L.doctrine_group_key(k) or "", []).append(k)
+        rows = []
+        for g in sorted(set(out_by_group) | set(in_by_group)):
+            outs = out_by_group.get(g) or []
+            inns = in_by_group.get(g) or []
+            onames = [self.doctrine_name(k) for k in outs]
+            inames = [self.doctrine_name(k) for k in inns]
+            if not all(onames) or not all(inames):
+                continue
+            o = "、".join(f"「{x}」" for x in onames)
+            i = "、".join(f"「{x}」" for x in inames)
+            gname = ""
+            if g:
+                v = L.loc(self.table, f"{g}_name") or ""
+                gname = v if v and not v.startswith(("$", "[")) else ""
+            if outs and inns:
+                rows.append(f"{gname}由{o}改为{i}。" if gname else f"{o}改为{i}。")
+            elif inns:
+                rows.append(f"{gname}列为{i}。" if gname else f"新增{i}。")
+            else:
+                rows.append(f"{gname}的{o}不再列为信条。" if gname else f"去{o}。")
+        return rows
+
+    def _rite_doctrine_lines(self, cid, date=None):
+        """Lines for the doctrine changes of the subject's rite (the near-kin marriage rules and the
+        like).
+
+        Source: the latched doctrine set `rite_doctrine_history` (see cache_lib). The set has no
+        history in the save, so the year is the snapshot the change was first seen in. Only the rite
+        head can change a rite's doctrines, so the clause names him."""
+        rid = self._rite_id(cid, date)
+        if rid is None:
+            return []
+        hist = ((self.cache.get("rite_doctrine_history") or {}).get(str(rid)) or [])
+        win = self._church_window()
+        rows, prev = [], None
+        for h in hist:
+            d = h.get("from")
+            if not d or (win[1] is not None and cl.date_key(d) > win[1]):
+                break
+            cur = {str(x) for x in (h.get("doctrines") or [])}
+            if prev is not None and self._in_church_window(d, win):
+                head = self._leader_clause(h, d)
+                lead = f"{head}改本礼信条：" if head else "本礼信条更改："
+                yr = str(d).split(".")[0]
+                for frag in self._doctrine_slot_lines(prev - cur, cur - prev):
+                    rows.append(f"{yr}年起，{lead}{frag}")
+            prev = cur
+        return rows
+
+    def _faith_doctrine_lines(self, cid, date=None):
+        """Line for the loss of ecumenical standing of the subject's faith, when it happened.
+
+        Declaring a rite heretical takes `special_doctrine_ecumenical_christian` out of that faith's
+        doctrine set and detaches the rite into a new faith (pam_bull_events.txt:271-276,
+        pam_effects.txt:6752-6754), which is what the latched doctrine set marks. Every other
+        doctrine change of a faith belongs to that faith's own history and stays unwritten here."""
+        fid = self._faith_id(cid, date)
+        if fid is None:
+            return []
+        hist = ((self.cache.get("faith_doctrine_history") or {}).get(str(fid)) or [])
+        win = self._church_window()
+        rows, prev = [], None
+        for h in hist:
+            d = h.get("from")
+            if not d or (win[1] is not None and cl.date_key(d) > win[1]):
+                break
+            cur = {str(x) for x in (h.get("doctrines") or [])}
+            if prev is not None and self._ECUMENICAL_DOCTRINE in prev \
+                    and self._ECUMENICAL_DOCTRINE not in cur \
+                    and self._in_church_window(d, win):
+                yr = str(d).split(".")[0]
+                nm = cl.faith_name_of(self.melt, fid)
+                rows.append(f"{yr}年起，{nm}失去大公教会地位，别立新信仰。" if nm
+                            else f"{yr}年起，本礼失去大公教会地位，别立新信仰。")
+            prev = cur
+        return rows
+
+    def church_chronicle_lines(self, cid=None, date=None):
+        """Fact lines for the third 《礼仪志》 block: the church's own record of this reign.
+
+        Only a Christian subject gets lines — the log is that church's, and a ruler outside it has
+        no part in its councils and bulls. Rows: the phase the church stands in, its councils,
+        bulls, schism, antipopes, heresies and new rites up to `date`, then the rulings and doctrine
+        changes of the subject's own rite."""
         pid = int(cid) if isinstance(cid, int) else self.cache.get("player_id")
         if pid is None:
             return []
-        last = self.cache.get("last_date")
-        if date and last and cl.date_key(str(date)) < cl.date_key(str(last)):
-            return []
-        fid = self._faith_id(pid, date)
-        if fid is None:
-            return []
-        seats = self._cardinal_seats(fid)
-        if not seats:
-            return []
-        mine = {tid: s for tid, s in seats.items()
-                if isinstance(s.get("holder"), int)
-                and s["holder"] != pid
-                and self._seat_in_realm_of(tid, pid)}
-        if not mine and not any(s.get("holder") == pid for s in seats.values()):
+        _ftag, rtag = self._faith_tags(pid, date)
+        if rtag not in self._CHRISTIAN_RELIGIONS:
             return []
         rows = []
-        entry = cl.faith_entry(self.melt, fid)
-        act = [x for x in (entry.get("active_clerical_electors") or [])]
-        n_act = len(act) or len([s for s in seats.values()
-                                 if isinstance(s.get("holder"), int)])
-        # Seated cardinals only: a vacant cardinal seat is the normal state of the college and
-        # says nothing about the election, so the vacancy count stays out of the fact layer
-        # (the model read it as a decline narrative and inflated it). The seated count is what
-        # the election rows below are built on.
-        rows.append(f"枢机团：在位枢机 {n_act} 席。")
-        if mine:
-            word = self._cardinal_word()
-            parts = []
-            for tid, s in sorted(mine.items(), key=lambda kv: int(kv[0])
-                                 if str(kv[0]).isdigit() else 0)[:self._CARDINAL_LIST_MAX]:
-                h = s["holder"]
-                # Seat name + 「枢机」 + bare name: `event_name` already carries title words such
-                # as 「枢机」, so concatenating its result would duplicate them.
-                nm = self.name_or(h) or self.event_name(h, date=date) or ""
-                seat = s.get("name") or self.title(tid) or ""
-                seg = f"{seat}{word}{nm}" if seat else f"{word}{nm}"
-                sc = self._papal_score(h)
-                if sc is not None:
-                    # the score is written in natural language, never as a parenthetical
-                    seg += f"，教宗候选声望 {_num_word(sc)}"
-                parts.append(seg)
-            rows.append(f"本朝封臣入枢机者 {len(mine)} 人："
-                        + "；".join(parts) + "。")
-        pap = self._papal_seat_tid()
-        holder = (self._lt.get(str(pap)) or {}).get("holder") if pap is not None else None
-        if isinstance(holder, int):
-            # The reigning pope is written with a bare name: his `event_name` still carries the
-            # antipope appellation after a promotion, which contradicts his current office.
-            nm = self.name_with_regnal(holder, date=date) or self.name(holder, date=date) or ""
-            since = self._title_holder_since(pap, holder, date)
-            _tail = (f"自{self.date(since)}起" if since else "")
-            _b = self.regnal_birth_name(holder, date)
-            _note = "，".join(x for x in ((f"本名{_b}" if _b else ""), _tail) if x)
-            rows.append(f"现任教宗：{nm}" + (f"，{_note}" if _note else "") + "。")
-        else:
-            rows.append("现任教宗：宗座出缺。")
-        n_el, tally, fac = self._papal_vote_tally(pap)
-        if tally:
-            def _nm(_c):
-                return self.event_name(_c, date=date) or self.name_or(_c)
-
-            seg = "、".join(f"{_nm(c)} {_num_word(v)} 票" for c, v in tally)
-            rows.append(f"下届选举：{n_el or '全'} 位枢机推举 {len(tally)} 人 —— {seg}；"
-                        f"第一顺位为{_nm(tally[0][0])}。")
-            _fw = dict(self._PAPAL_FACTION_WORDS)
-            fparts = [f"{_nm(c)}属{_fw[k]}" for c, _v in tally
-                      if (k := fac.get(c)) and k in _fw]
-            if fparts:
-                rows.append("派别：" + "，".join(fparts) + "。")
-            # canvassing: cardinals leaning towards one candidate; only ≥2 are written so a
-            # single cardinal does not produce noise
-            lean = {}
-            for s in seats.values():
-                h = s.get("holder")
-                if not isinstance(h, int):
-                    continue
-                tgt = self._char_var(h, "pam_papabile_leaning_target")
-                if isinstance(tgt, int):
-                    lean[tgt] = lean.get(tgt, 0) + 1
-            for tgt, n in sorted(lean.items(), key=lambda kv: (-kv[1], kv[0])):
-                if n >= 2 and tgt in dict(tally):
-                    rows.append(f"奔走：{n} 位枢机在替{_nm(tgt)}奔走。")
-                    break
+        rows += self.church_phase_line(date)
+        rows += self.church_event_lines(date)
+        rows += self._rite_tenet_ruling_lines(pid, date)
+        rows += self._rite_doctrine_lines(pid, date)
+        rows += self._faith_doctrine_lines(pid, date)
         return rows
-
     # ---- execution method (approximates the send_option list of execute_prisoner_interaction) ----
 
     def execution_method(self, killer_id, victim_id, date=None):
@@ -13129,31 +13214,56 @@ class Facts:
             return cl.house_name_zh(self.melt, hid)
         return ""
 
-    def realm_name(self, tid):
-        """Realm name of an Islamic ruler: k_ → {dynasty}苏丹国; e_/h_ → {dynasty}哈里发国 when he is
-        also caliph, else {dynasty}帝国.
+    def _realm_house_name(self, cid):
+        """House name of a dynasty-named realm, through the engine's own fallback chain: the
+        holder's house, else the house it descends from, else the dynasty (see
+        `cl.house_realm_name_zh`).
 
-        Returns '' for non-Islamic, non-kingdom/empire tier or missing dynasty name, which then take
-        the regular rendering. Nomad government does not qualify: it uses
-        `uses_culture_and_house_head_named_realms`, so its realms are dynamic culture + house + tribe
-        titles rather than an Islamic special name."""
+        The engine names such realms after the house, not the dynasty: its own rename log
+        (`landed_titles[*].title_name_data.title_history_names`) writes dynn_Seljuk for k_daylam
+        while that holder's dynasty is Oghuz, dynn_Samanid for d_ferghana whose dynasty is Mihran,
+        and dynn_Zaydid for d_tabaristan whose dynasty is Hashimid; 168 of the 198 resolvable log
+        rows follow the house and the rest differ by a holder the title has since changed."""
+        hid = ((self.cache.get("characters") or {}).get(str(cid)) or {}).get("dynasty_house")
+        if hid is None:
+            hid = (self._chars.get(str(cid)) or {}).get("dynasty_house")
+        if isinstance(hid, int):
+            nm = cl.house_realm_name_zh(self.melt, hid)
+            if nm:
+                return nm
+        return self.dynasty_name(cid)
+
+    def realm_name(self, tid):
+        """Realm name of a house-named ruler: k_ → {house}苏丹国; e_/h_ → {house}哈里发国 when he is
+        also caliph, else {house}帝国.
+
+        Returns '' for a title the engine does not name after a house, for a non-Islamic ruler or a
+        missing house name, which then take the regular rendering. Two gates reproduce the engine's:
+        the government must carry `dynasty_named_realms = yes` in the game files (clan_government,
+        feudal_government, mandala_government; administrative, nomad, celestial, steppe,
+        meritocratic and tribal governments write `no` or carry no key), and the title itself must
+        not be exempted by `can_be_named_after_dynasty = no` (h_dar_al_islam, d_sunni, the Mongol
+        khanates). An administrative e_arabia therefore keeps its own name 阿拉伯帝国 instead of
+        taking a house name."""
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
         holder = t.get("holder")
         if not key.startswith(("k_", "e_", "h_")) or not isinstance(holder, int):
             return ""
-        if self._title_government(tid, self.as_of) == "nomad_government":
+        if not L.dynasty_named_government(self._title_government(tid, self.as_of)):
+            return ""
+        if L.title_name_locked(key):
             return ""
         if not self.is_islamic(holder):
             return ""
-        dyn = self.dynasty_name(holder)
-        if not dyn:
+        house = self._realm_house_name(holder)
+        if not house:
             return ""
         if key.startswith("k_"):
-            return f"{dyn}苏丹国"
+            return f"{house}苏丹国"
         if self.is_caliph(holder):
-            return f"{dyn}哈里发国"
-        return f"{dyn}帝国"
+            return f"{house}哈里发国"
+        return f"{house}帝国"
 
     # ---- culture / faith / traits / government ----
     def culture_template(self, cid):
@@ -23708,10 +23818,11 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # snapshot; the key is deliberately distinct from the removed `rite_tenets` allow/forbid
         # list)
         "rite_tenet_changes": f.rite_tenet_changes(cache.get("player_id"), as_of),
-        # the college of cardinals and papal elections -- material for 《礼仪志》's third
-        # section. Non-empty only in the current state and when this piece's protagonist has a
-        # vassal in the college (an empty list means the section is omitted entirely).
-        "papal_election": f.papal_election_lines(cache.get("player_id"), as_of),
+        # the church's own record of this reign -- material for 《礼仪志》's third section: the
+        # phase the church stands in, its councils, bulls, schism, antipopes, heresies and new
+        # rites, and the rulings and doctrine changes of the subject's own rite. Empty for a
+        # non-Christian subject (an empty list means the section is omitted entirely).
+        "church_chronicle": f.church_chronicle_lines(cache.get("player_id"), as_of),
         # the Facts instance (biography needs its methods, e.g. to render relation causes)
         "_facts": f,
     }

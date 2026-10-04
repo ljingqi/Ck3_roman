@@ -710,6 +710,197 @@ def short_titles(cfg=None):
     return _SHORT_TITLES
 
 
+# Government and title naming rules
+# `facts.realm_name` reproduces the engine's house-named realms, which needs two static facts from
+# the game files:
+#   · common/governments/*.txt : `dynasty_named_realms = yes` marks the governments whose realms
+#     are named after the holder's house (clan_government, feudal_government, mandala_government).
+#     administrative_government, nomad_government, celestial_government, steppe_admin_government,
+#     meritocratic_government and the Japanese administrative governments carry no such key.
+#   · common/landed_titles/*.txt : `can_be_named_after_dynasty = no` exempts one title key from
+#     the rule (h_dar_al_islam, d_sunni); the default is yes (_landed_titles.info:117-122).
+
+def _governments_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "governments.json")
+
+
+_TOP_BLOCK_OPEN_RE = re.compile(r"([A-Za-z0-9_]+)\s*=\s*\{")
+
+
+def _iter_top_block_flags(txt, flag_re):
+    """Yield (top-level block key, flag value) for every line matching `flag_re` inside a block,
+    comments removed. The flag may sit several levels deep, as `dynasty_named_realms` does inside a
+    government's `government_rules` block, and still belongs to the outermost key.
+
+    The depth is counted from the braces of each line, so one line holding several `{` / `}` (or a
+    whole block on one line) leaves the next line's depth right; a stack popped once per `}` would
+    desync there and later attribute a flag to whichever older key was still on it."""
+    depth, cur = 0, ""
+    for ln in txt.splitlines():
+        code = ln.split("#", 1)[0]
+        if depth >= 1:
+            m = flag_re.match(code.strip())
+            if m:
+                yield cur, m.group(1)
+        opens, closes = code.count("{"), code.count("}")
+        if depth == 0 and opens:
+            m = _TOP_BLOCK_OPEN_RE.match(code.strip())
+            if m:
+                cur = m.group(1)
+        depth = max(0, depth + opens - closes)
+
+
+def _parse_governments(path, out):
+    """Collect the government keys carrying `dynasty_named_realms = yes` from one governments file."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as fp:
+            txt = fp.read()
+    except Exception:
+        return
+    flag_re = re.compile(r"dynasty_named_realms\s*=\s*(\w+)")
+    for key, val in _iter_top_block_flags(txt, flag_re):
+        if val.lower() in ("yes", "true"):
+            out.add(key)
+
+
+def build_governments(cfg):
+    """Game + enabled mods' common/governments/*.txt -> the set of dynasty-named governments."""
+    out = set()
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        for dp, _dn, fns in os.walk(root):
+            if "governments" not in dp or "localization" in dp:
+                continue
+            for fn in sorted(fns):
+                if fn.endswith(".txt"):
+                    _parse_governments(os.path.join(dp, fn), out)
+    return out
+
+
+def save_governments(cfg, keys, path=None):
+    path = path or _governments_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump({"schema": 1, "entries": len(keys),
+                   "dynasty_named": sorted(keys)}, fp, ensure_ascii=False)
+    return path
+
+
+def load_governments(cfg=None, force=False):
+    cfg = cfg or llm.load_config()
+    path = _governments_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1:
+                return set(data.get("dynasty_named") or [])
+        except Exception:
+            pass
+    keys = build_governments(cfg)
+    save_governments(cfg, keys, path)
+    return keys
+
+
+_GOVERNMENTS = None
+
+
+def governments(cfg=None):
+    """Set of government keys whose realms the engine names after the holder's house
+    (module-level singleton; the first call builds and writes data/governments.json)."""
+    global _GOVERNMENTS
+    if _GOVERNMENTS is None:
+        _GOVERNMENTS = load_governments(cfg or llm.load_config())
+    return _GOVERNMENTS
+
+
+def dynasty_named_government(gov, cfg=None):
+    """Whether this government key follows the dynasty-named-realms rule."""
+    return bool(gov) and str(gov) in governments(cfg)
+
+
+def _title_name_flags_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "landed_title_flags.json")
+
+
+def _parse_landed_titles_name_locked(path, out):
+    """Collect the `can_be_named_after_dynasty = no` title keys from one landed_titles.txt."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as fp:
+            txt = fp.read()
+    except Exception:
+        return
+    flag_re = re.compile(r"can_be_named_after_dynasty\s*=\s*(\w+)")
+    for key, val in _iter_top_block_flags(txt, flag_re):
+        if val.lower() in ("no", "false") and key.startswith(_TITLE_KEY_PREFIXES):
+            out.add(key)
+
+
+def build_title_name_flags(cfg):
+    """Game + enabled mods' common/landed_titles/*.txt -> the set of title keys that keep their own
+    name (`can_be_named_after_dynasty = no`)."""
+    out = set()
+    roots = []
+    g = game_dir(cfg)
+    if g:
+        roots.append(g)
+    roots += enabled_mod_dirs(cfg)
+    for root in roots:
+        for dp, _dn, fns in os.walk(root):
+            if "landed_titles" not in dp or "localization" in dp:
+                continue
+            for fn in sorted(fns):
+                if fn.endswith(".txt"):
+                    _parse_landed_titles_name_locked(os.path.join(dp, fn), out)
+    return out
+
+
+def save_title_name_flags(cfg, keys, path=None):
+    path = path or _title_name_flags_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump({"schema": 1, "entries": len(keys),
+                   "name_locked": sorted(keys)}, fp, ensure_ascii=False)
+    return path
+
+
+def load_title_name_flags(cfg=None, force=False):
+    cfg = cfg or llm.load_config()
+    path = _title_name_flags_path(cfg)
+    if not force and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fp:
+                data = json.load(fp)
+            if data.get("schema") == 1:
+                return set(data.get("name_locked") or [])
+        except Exception:
+            pass
+    keys = build_title_name_flags(cfg)
+    save_title_name_flags(cfg, keys, path)
+    return keys
+
+
+_TITLE_NAME_FLAGS = None
+
+
+def title_name_flags(cfg=None):
+    """Set of title keys that keep their own name (module-level singleton; the first call builds and
+    writes data/landed_title_flags.json)."""
+    global _TITLE_NAME_FLAGS
+    if _TITLE_NAME_FLAGS is None:
+        _TITLE_NAME_FLAGS = load_title_name_flags(cfg or llm.load_config())
+    return _TITLE_NAME_FLAGS
+
+
+def title_name_locked(key, cfg=None):
+    """Whether this title key is exempt from being named after the holder's house."""
+    return bool(key) and str(key) in title_name_flags(cfg)
+
+
 def load_province_map(cfg, force=False):
     path = _province_map_path(cfg)
     if not force and os.path.isfile(path):
@@ -2761,13 +2952,18 @@ def _param_flags(body):
 
 def build_doctrine_parameters(cfg):
     """Game + enabled mods' doctrine_types/*.txt and tenet_types/*.txt ->
-    {"doctrines": {doctrine: [parameters...]}, "by_parameter": {parameter: [doctrines...]}}; a
-    same-named mod doctrine replaces the entry.
+    {"doctrines": {doctrine: [parameters...]}, "by_parameter": {parameter: [doctrines...]},
+     "groups": {doctrine: group}}; a same-named mod doctrine replaces the entry.
 
     Both directories are scanned because the tenets moved to tenet_types and use a bare flag list
     while doctrines use `special_parameters`; reading only doctrine_types with the `key = value`
-    syntax would lose human_sacrifice_active and friends."""
+    syntax would lose human_sacrifice_active and friends.
+
+    `groups` records each doctrine's `doctrine_group_type`, the slot a doctrine occupies within a
+    faith (doctrine_consanguinity holds the near-kin marriage rules), so a doctrine change can be
+    written as one slot moving from one value to another."""
     by_doctrine = {}
+    groups = {}
     roots = []
     g = game_dir(cfg)
     if g:
@@ -2794,13 +2990,17 @@ def build_doctrine_parameters(cfg):
                             params |= _param_flags(pblk)
                     if params:
                         by_doctrine[key] = sorted(params)
+                    gm = re.search(r"doctrine_group_type\s*=\s*([a-z0-9_]+)", body or "")
+                    if gm:
+                        groups[key] = gm.group(1)
     by_param = {}
     for doc, params in by_doctrine.items():
         for p in params:
             by_param.setdefault(p, []).append(doc)
     for p in by_param:
         by_param[p] = sorted(by_param[p])
-    return {"schema": 2, "doctrines": by_doctrine, "by_parameter": by_param}
+    return {"schema": 3, "doctrines": by_doctrine, "by_parameter": by_param,
+            "groups": groups}
 
 
 def save_doctrine_parameters(cfg, data):
@@ -2820,7 +3020,7 @@ def load_doctrine_parameters(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 2 and data.get("by_parameter"):
+            if data.get("schema") == 3 and data.get("by_parameter") and data.get("groups"):
                 return data
         except Exception:
             pass
@@ -2828,6 +3028,30 @@ def load_doctrine_parameters(cfg=None, force=False):
     if data.get("by_parameter"):
         save_doctrine_parameters(cfg, data)
     return data
+
+
+_DOCTRINE_TABLE = None
+
+
+def doctrine_table(cfg=None, force=False):
+    """The doctrine parameter/group table (module-level singleton; the first call builds and writes
+    data/doctrine_parameters.json)."""
+    global _DOCTRINE_TABLE
+    if _DOCTRINE_TABLE is None or force:
+        _DOCTRINE_TABLE = load_doctrine_parameters(cfg or llm.load_config(), force=force)
+    return _DOCTRINE_TABLE
+
+
+def doctrine_group_key(doctrine_key, cfg=None):
+    """Group key of a doctrine (`doctrine_consanguinity` for the near-kin marriage rules); '' when
+    the game/mod files do not define the doctrine. The group's Chinese name is the localization key
+    `<group>_name` (religion_l_simp_chinese.yml)."""
+    if not doctrine_key:
+        return ""
+    try:
+        return str((doctrine_table(cfg).get("groups") or {}).get(str(doctrine_key)) or "")
+    except Exception:
+        return ""
 
 
 # Built-in fallback so human sacrifice can still be detected when the game files are

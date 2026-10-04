@@ -350,6 +350,50 @@ def house_name_zh(melt, house_id):
         return ""
 
 
+def house_realm_name_zh(melt, house_id, depth=0):
+    """House id -> the Chinese name the engine gives a house-named realm, through its own fallback
+    chain: this house's own name, else the house it descends from (`parent_dynasty_house`), else the
+    dynasty name. '' when none of the three yields one.
+
+    `localized_name` is deliberately left out of the first step. The save carries it for houses that
+    have no name of their own — a place-like label — and the engine's rename log falls back to the
+    parent house or the dynasty there: k_khorasan is written dynn_Tahirid, its holder's parent
+    house, while that holder's own house is labelled 内沙布尔."""
+    if house_id is None or depth > 4:
+        return ""
+    try:
+        dh = (melt.get("dynasties") or {}).get("dynasty_house") or {}
+        e = dh.get(str(house_id)) or {}
+        t = localization.table()
+        name = str(e.get("name") or "")
+        if name:
+            for cand in (name, name[len("dynn_"):] if name.startswith("dynn_") else name):
+                v = localization.loc(t, cand)
+                if v and v != cand:
+                    return v
+            bare = name[len("dynn_"):] if name.startswith("dynn_") else name
+            dec = zh(decode_codepoints(bare))
+            if dec and any("\u3400" <= ch <= "\u9fff" for ch in dec):
+                return dec
+        hkey = e.get("key")
+        if isinstance(hkey, str) and hkey:
+            v = house_name_of_key(hkey) \
+                or _dynn_lookup(t, hkey[len("house_"):] if hkey.startswith("house_") else hkey)
+            if v:
+                return v
+        parent = e.get("parent_dynasty_house")
+        if isinstance(parent, int) and parent != house_id:
+            v = house_realm_name_zh(melt, parent, depth + 1)
+            if v:
+                return v
+        did = e.get("dynasty")
+        if did is not None:
+            return dynasty_name_zh(melt, did)
+        return ""
+    except Exception:
+        return ""
+
+
 def house_found_date(melt, house_id):
     """House id -> dynasty_house[<id>].found_date; '' when absent.
 
@@ -2690,6 +2734,28 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 if not _th or _th[-1].get("tenets") != _ten:
                     _th.append({"from": date_label, "tenets": _ten,
                                 "head": _head})
+            # Doctrine set of the same rite (marriage between near kin and the like are members of
+            # it). The game writes only the current set and no date, so the set is latched per
+            # snapshot and facts diffs the change points, exactly as the tenets above.
+            _doc = sorted(str(x) for x in (rite_data(melt, _prid).get("doctrine") or [])
+                          if isinstance(x, str))
+            if _doc:
+                _dh = cache.setdefault("rite_doctrine_history", {}).setdefault(str(_prid), [])
+                if not _dh or _dh[-1].get("doctrines") != _doc:
+                    _dh.append({"from": date_label, "doctrines": _doc,
+                                "head": head_of_rite(melt, _prid)})
+            # Doctrine set of that rite's faith: declaring a rite heretical removes
+            # `special_doctrine_ecumenical_christian` from this set (pam_bull_events.txt:271-276),
+            # so the same diff marks the loss of ecumenical standing.
+            _pfid = faith_id_of_rite(melt, _prid)
+            _fd = faith_entry(melt, _pfid).get("doctrine") if _pfid is not None else None
+            if isinstance(_fd, str):
+                _fd = [_fd]
+            _fd = sorted(str(x) for x in (_fd or []) if isinstance(x, str))
+            if _pfid is not None and _fd:
+                _fh = cache.setdefault("faith_doctrine_history", {}).setdefault(str(_pfid), [])
+                if not _fh or _fh[-1].get("doctrines") != _fd:
+                    _fh.append({"from": date_label, "doctrines": _fd})
 
     # Kill victims join the target set so their names and records resolve
     for _cid in list(targets):

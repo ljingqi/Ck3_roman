@@ -2394,6 +2394,11 @@ def _table_builders():
         ("省份→伯爵领", loc._province_map_path, loc.build_province_map,
          loc.save_province_map),
         ("简称头衔", loc._short_titles_path, loc.build_short_titles, loc.save_short_titles),
+        # dynasty_named_realms governments (common/governments) and the titles exempt from the
+        # rule (can_be_named_after_dynasty = no), both read by facts.realm_name
+        ("王朝冠名政体", loc._governments_path, loc.build_governments, loc.save_governments),
+        ("头衔冠名豁免", loc._title_name_flags_path, loc.build_title_name_flags,
+         loc.save_title_name_flags),
         ("币种档位", loc._currency_levels_path, loc.build_currency_levels,
          loc.save_currency_levels),
         ("头衔风味规则", fl._path, fl.build_flavorization, fl.save_flavorization),
@@ -2406,7 +2411,8 @@ def _count_keys(obj):
     plain len() would count the province_map shape {province: {county, barony}} as its row count."""
     _PRIMARY = ("table", "entries", "traits", "tracks", "arms", "positions", "tasks",
                 "hook_types", "doctrines", "by_parameter", "map", "titles",
-                "dynasties", "houses", "rules", "positions")
+                "dynasties", "houses", "rules", "positions",
+                "dynasty_named", "name_locked")
     if isinstance(obj, tuple):
         obj = obj[0] if obj else {}
     if isinstance(obj, dict):

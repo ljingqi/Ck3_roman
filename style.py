@@ -99,7 +99,7 @@ SECTION_TITLES = {
     "artifacts": {"lead": "开篇·传家重宝", "mid": "纪事·流转始末", "tail": None},
     "secrets": {"lead": "开篇·隐事之始",   "mid": "纪事·阴私秘辛", "tail": None},
     "liyi":    {"lead": "开篇·所奉礼仪", "mid": "纪事·礼仪与教义沿革",
-                "tail": "纪事·枢机团与教宗选举"},
+                "tail": "纪事·大公会议与教宗诏书"},
 }
 
 # Household wording follows the material available: asked for marriage, divorce and
@@ -245,9 +245,9 @@ SECTION_REQ = {
                "年月、缘由与涉及的人事照本篇给出的写法书写。",
         # Fallback wording only: biography._liyi_req builds the real requirement
         # per board from the blocks that are actually sent.
-        "tail": "写本朝枢机在下届教宗选举中的形势：在位枢机席数、本朝封臣入枢机者、"
-                "现任教宗、下届推举的人选与票数、派别与奔走，"
-                "皆照本篇给出的事实行写出。",
+        "tail": "写本朝教会的大公会议与教宗诏书：教会当下的局面、会议的日期与主持者、"
+                "诏书的颁布者、本礼教义定夺的年份与定夺者、本礼信条与禁忌的更替，"
+                "皆照本篇给出的事实写出。",
     },
 }
 

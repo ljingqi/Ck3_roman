@@ -10,7 +10,8 @@
     `wars.active_wars[].casus_belli.type`。修法: 缓存逐档闩存 `war_history`
     (cache_lib._latch_war_history + tools/backfill_war_history.py), 事实层回查
     (facts._war_cb_from_history) + 项目措辞表 (style.WAR_CB_ZH) + pam 专用句。
-  2 《礼仪志》第三板块「枢机团与教宗选举」(facts.papal_election_lines)。
+  2 《礼仪志》第三板块 (v95: 「枢机团与教宗选举」facts.papal_election_lines —— v100 起该板块
+    由「大公会议与教宗诏书」facts.church_chronicle_lines 取代，本节断言按两代板块名兼容读取)。
   3 本纪/总纲的主角档案去掉「个人教义」演变 (与《礼仪志》重复)。
   4 教育记忆隔日重复折一 (facts._dedupe_education_memories)。
   5 承继句补死法 (「于当日溺死」)。
@@ -136,32 +137,36 @@ def unit_checks():
           or all("1 族" in e["text"] for e in fp.family_purge_events(5)),
           [e["text"] for e in fp.family_purge_events(5)])
 
-    # 问2: 第三板块要求随素材生成
+    # 问2 (v100: the college of cardinals was replaced by the church chronicle
+    # 《大公会议与教宗诏书》; the old snapshots keep the old block name, so both are read here)
     r0 = bio._liyi_req({"rite_profile": ["所奉礼仪：拜上帝会。"], "holy_orders": ["h"]})
-    check("U4a 无枢机素材时 tail 走兜底句",
-          "tail" in r0 and "枢机" in (r0["tail"] or "")
-          and "枢机" not in (r0["focus"] or ""), r0["focus"])
+    check("U4a 无教会素材时 tail 走兜底句",
+          "tail" in r0 and "大公会议" in (r0["tail"] or "")
+          and "大公会议" not in (r0["focus"] or ""), r0["focus"])
     r1 = bio._liyi_req({"rite_profile": ["所奉礼仪：拜上帝会。"],
-                        "papal_election": ["枢机团：在位枢机 33 席。",
-                                           "本朝封臣入枢机者 6 人：阿尔巴诺枢机洪思忠。",
-                                           "现任教宗：亚纳大削三世，本名恂，自946年2月24日起。",
-                                           "下届选举：33 位枢机推举 3 人 —— 甲 12 票；第一顺位为甲。",
-                                           "派别：甲属虔诚派。",
-                                           "奔走：26 位枢机在替甲奔走。"]})
-    check("U4b 有枢机素材时 tail 逐条索要",
-          all(t in r1["tail"] for t in ("在位枢机的席数", "入枢机者", "现任教宗",
-                                       "下届推举", "派别", "奔走")), r1["tail"])
-    check("U4c 题面点出枢机团与下届教宗选举",
-          "枢机" in r1["focus"] and "教宗选举" in r1["focus"], r1["focus"])
+                        "church_chronicle": [
+                            "教会局面：截至999年7月7日，本朝教会处于「协同」之世。",
+                            "954年10月11日，欢乐者尼各老举行大公会议。",
+                            "975年10月13日，欢乐者尼各老颁布教宗诏书。",
+                            "920年2月1日，教会大分裂。",
+                            "978年起，礼仪领袖教宗欢乐者尼各老将「和平之神」列为禁止，"
+                            "此前为允许。",
+                            "989年起，礼仪领袖教宗欢乐者尼各老改本礼信条："
+                            "血亲性关系由「交辈旁系亲属婚姻」改为「不受限制」。"]})
+    check("U4b 有教会素材时 tail 逐条索要",
+          all(t in r1["tail"] for t in ("教会当下的局面", "大公会议", "教宗诏书",
+                                       "本礼教义定夺", "本礼信条", "大分裂")), r1["tail"])
+    check("U4c 题面点出大公会议与教宗诏书",
+          "大公会议" in r1["focus"] and "教宗诏书" in r1["focus"], r1["focus"])
     check("U4d 生成的要求无负向禁令词 (no-negative-prompts)",
           not any(_NEG.search(v or "") for v in
                   (r0["lead"], r0["mid"], r0["tail"], r0["focus"],
                    r1["lead"], r1["mid"], r1["tail"], r1["focus"])))
     check("U4e 板块名与板块键齐备",
-          S.SECTION_TITLES["liyi"].get("tail") == "纪事·枢机团与教宗选举"
+          S.SECTION_TITLES["liyi"].get("tail") == "纪事·大公会议与教宗诏书"
           and bool(S.SECTION_REQ["liyi"].get("tail")))
     check("U4f `_liyi_has_tail` 只看素材",
-          bio._liyi_has_tail({"papal_election": ["x"]}) is True
+          bio._liyi_has_tail({"church_chronicle": ["x"]}) is True
           and bio._liyi_has_tail({}) is False)
 
 
@@ -218,24 +223,24 @@ def final_checks(path):
     check("S1c 全篇无 fallback 通用词泄漏 (「战争」不作宣战理由)",
           "以战争" not in blob and "以战争向" not in blob)
 
-    # 问2
+    # 问2 (v100: the tail section is the church chronicle now; the snapshot below predates that
+    # rename and still carries the college-of-cardinals block, so the block is looked up by both
+    # names and checked for material rather than for the removed cardinal rows)
     tail = (blocks.get("liyi_tail") or {})
+    tail_key = next((k for k in ("大公会议与教宗诏书", "枢机团与教宗选举") if k in tail), "")
     check("S2 终传《礼仪志》有第三板块 (liyi_tail)",
-          "枢机团与教宗选举" in tail, sorted(tail))
-    pe = "\n".join(str(x) for x in (tail.get("枢机团与教宗选举") or "").split("\n"))
-    check("S2b 第三板块六行俱全",
-          all(k in pe for k in ("枢机团：在位枢机", "本朝封臣入枢机者", "现任教宗",
-                                "下届选举", "派别", "奔走")), pe[:200])
-    check("S2c 封臣枢机逐人给出席位名与候选声望",
-          "阿尔巴诺枢机洪思忠" in pe and "教宗候选声望" in pe, pe[:200])
-    check("S2d 现任教宗并写本名 (v95 问题7)",
-          "现任教宗：亚纳大削三世，本名恂" in pe, pe[:200])
+          bool(tail_key) and bool(tail.get(tail_key)), sorted(tail))
+    pe = str(tail.get(tail_key) or "")
+    check("S2b 第三板块有事实行",
+          len([x for x in pe.split("\n") if x.strip()]) >= 1, pe[:200])
+    check("S2d 第三板块的板块键与事实面同源",
+          bool(tail_key) == bool(facts.get("church_chronicle")
+                                 or facts.get("papal_election")), sorted(tail))
     check("S2e 礼仪领袖并写本名",
           "礼仪领袖：教宗亚纳大削三世，本名恂" in _block_text(blocks, "liyi_lead"),
           _lines_with(_block_text(blocks, "liyi_lead"), "礼仪领袖")[:1])
     check("S2g 第三板块无括注 (v55 括注自然语言化)",
-          "（本名" not in pe and "（教宗候选声望" not in pe
-          and "，本名恂" in pe and "教宗候选声望" in pe, pe[:200])
+          "（本名" not in pe and "（教宗候选声望" not in pe, pe[:200])
     check("S2f 转正后不再误标对立教宗 (终传无「罗马对立教宗」)",
           "罗马对立教宗" not in blob)
 
@@ -299,9 +304,11 @@ def d3_checks(path):
     facts = d.get("facts") or {}
     blocks = d.get("blocks") or {}
     blob = _blob(facts) + "\n" + _block_text(blocks)
-    check("S7 十年档无第三板块 (选举数据无 history ⇒ 时效闸)",
-          "liyi_tail" not in blocks, sorted(blocks))
-    check("S7b facts.papal_election 为空", not (facts.get("papal_election") or []))
+    check("S7 十年档第三板块按素材决定 (旧档无教会流水即无板块)",
+          ("liyi_tail" in blocks)
+          == bool(facts.get("church_chronicle") or facts.get("papal_election")), sorted(blocks))
+    check("S7b 本档的教会事实面为空",
+          not (facts.get("church_chronicle") or facts.get("papal_election") or []))
     check("S7c 935 档对立教宗行仍在 (在位者未被误删)",
           any(str(x).startswith("对立教宗：") for x in (facts.get("rite_profile") or [])),
           facts.get("rite_profile"))

@@ -12,8 +12,9 @@
 口径与 `step_rebuild_cache` 一致：
   · **空缓存重建**（不是把旧快照重放上去）——重放会让 `trait_history` 的差分拿
     末档 traits 当基线，凭空生成一整轮「获得/消失」区间；
-  · 保留 `player_death` / `bio_generated` / `bio_decades` / `playthrough_id`
-    / `output_folder`（生成进度与战役身份不能丢）；
+  · 保留 `player_death` / `reign_end` / `bio_generated` / `bio_decades` / `playthrough_id`
+    / `output_folder`（生成进度与战役身份不能丢），并在重建后取回更长的 `played_legacy`
+    （熔件的传主链只到该档玩家，后任由 pipeline 的更替路径写进前代缓存）；
   · 结束时跑一次 `_recover_dead_memories`（死者记忆回溯）。
 """
 import json
@@ -81,6 +82,7 @@ def main():
                 return 2
             pids = [pid]
     jobs = []
+    _kept_chain = {}
     for pid in pids:
         cache_path = os.path.join(data_dir, f"player_{pid}.json")
         prev = {}
@@ -96,6 +98,7 @@ def main():
                   "playthrough_id"):
             if prev.get(k):
                 cache[k] = prev[k]
+        _kept_chain[pid] = prev.get("played_legacy") or []
         cache["output_folder"] = prev.get("output_folder") or folder
         jobs.append((pid, cache_path, cache))
         print(f"重建 player_{pid}", flush=True)
@@ -113,6 +116,15 @@ def main():
 
     for pid, cache_path, cache in jobs:
         pipe._recover_dead_memories(cfg, cache)
+        # A melt's `played_character.legacy` stops at the player of that save, and the last melt of a
+        # folder can be older than the campaign's end, so the rebuild can come out with fewer chain
+        # entries than the cache had (the successors a later save records are written into the earlier
+        # caches by pipeline's reign-end path). The longer chain is the campaign's, so it wins.
+        prev_chain = _kept_chain.pop(pid, [])
+        if len(prev_chain) > len(cache.get("played_legacy") or []):
+            print(f"  {pid}: played_legacy {len(cache.get('played_legacy') or [])} -> "
+                  f"{len(prev_chain)} 条 (保留原链)")
+            cache["played_legacy"] = prev_chain
         cl.save_cache(cache, cache_path)
         print(f"已写入: {cache_path} "
               f"(角色 {len(cache['characters'])}, 牵制 {len(cache.get('hooks') or {})})")

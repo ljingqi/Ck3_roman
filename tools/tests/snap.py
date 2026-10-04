@@ -223,7 +223,13 @@ def main():
         # 用末档缓存重跑十年篇时会把 946 年即位的教宗与 947/950 才换的教义写进 935 年);
         # ③疾病动态名去「称号，名字」的逗号 (「皇帝，洪天贵福热」→「皇帝洪天贵福热」)。
         # 见 tools/tests/verify_v96.py; verify_v88 S3 按 schema>=7 分支。
-        "schema": 7,
+        # v100: schema 8 = 含 v100 传输面 (三问) —— ①官职与绰号回滚为直接相连
+        # (「前礼部尚书书吏洪地保」, 撤销 v99 的「，」); ②《礼仪志》第三板块由
+        # 「纪事·大公会议与教宗诏书」+ facts 键 `church_chronicle` 取代枢机团与教宗选举
+        # (会议/诏书/大分裂/异端 + 本礼教义定夺与信条更替, 见 facts.church_chronicle_lines);
+        # ③伊斯兰氏族制国名改取**家族名**并加政体门与头衔门 (行政制的 e_arabia 用头衔名
+        # 「阿拉伯帝国」, 见 facts.realm_name)。见 tools/tests/verify_v100.py。
+        "schema": 8,
         "meta": {
             "folder": folder, "player_id": pid, "as_of": as_of, "decade": decade,
             "melt": melt_name,
