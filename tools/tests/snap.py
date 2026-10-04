@@ -248,7 +248,7 @@ def main():
         import subprocess
         print("  --assert: 跑 tools/tests/verify_fast.py …", flush=True)
         rc = subprocess.call([sys.executable,
-                              os.path.join(ROOT, "tools", "verify_fast.py"),
+                              os.path.join(ROOT, "tools", "tests", "verify_fast.py"),
                               out_path])
         return rc
     return 0

@@ -1181,6 +1181,9 @@ def is_unknown(word):
 # Leading subject designations are stripped: the subject is constant inside a block, so repeating
 # the name there carries no information.
 _SUBJ_DATE_RE = re.compile(r"^\d+年(?:\d+月\d+日)?，")
+# Numeric date at the head of a fact line, for reading the subject's name of that day: a house
+# rename or a name-order change makes an old event carry a name other than the cut-off label.
+_LINE_DATE_RE = re.compile(r"^(\d+)年(?:(\d+)月)?(?:(\d+)日)?")
 
 
 def _strip_subject_prefix(text, label, alt_labels=None, own_names=None):
@@ -20487,7 +20490,16 @@ def _character_profiles(f):
             _own.append(_raw)
         _subs, _aliases = [], []
         for x in mems:
-            y = _strip_subject_prefix(x, _subj, _alts, own_names=_own)
+            # The subject's own name of that day joins the strip keys: a house rename or a
+            # name-order change makes an event of an earlier year carry a name other than
+            # the label of the cut-off date.
+            _lm = _LINE_DATE_RE.match(x)
+            _alt = _alts
+            if _lm:
+                _nm_d = f.name(cid, date=".".join(g for g in _lm.groups() if g))
+                if _nm_d and _nm_d not in _alt:
+                    _alt = _alts + [_nm_d]
+            y = _strip_subject_prefix(x, _subj, _alt, own_names=_own)
             _subs.append(y)
             # After subject omission the sentence body changes, so the three registries
             # keyed by sentence body (name_index / line_owner / line_stated) need an
