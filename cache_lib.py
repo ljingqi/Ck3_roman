@@ -1406,9 +1406,8 @@ def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None)
       1) the character's culture at that date (history, then the cached field), giving
          culture_manager's name_order_convention or the Western default;
       2) otherwise the father's culture;
-      3) otherwise the dynasty template and the name order of a culture sharing it
-         (the house's own naming tradition, which a sibling's later conversion cannot
-         override);
+      3) otherwise the dynasty template and the name order of a culture sharing it: the
+         house's naming tradition, which outranks a brother's recorded conversion;
       4) otherwise the siblings, then the maternal side, spouses and children;
       5) None when nothing resolves, so display_name writes the given name alone.
 
@@ -1476,15 +1475,48 @@ def _template_of_culture(melt, cul):
     return e.get("culture_template") or ""
 
 
+def _first_observable_date(cache, cid):
+    """The earliest date a character's culture could have been recorded: the campaign's first
+    merged save, or his birth when he was born into the recorded years; None when neither is
+    known."""
+    rec = (cache.get("characters") or {}).get(str(cid)) or {}
+    cands = []
+    srcs = cache.get("sources") or []
+    if srcs:
+        cands.append(str(srcs[0]))
+    if rec.get("birth"):
+        cands.append(str(rec["birth"]))
+    if not cands:
+        return None
+    return max(cands, key=date_key)
+
+
+def _is_converted_kin(cache, cid):
+    """True when a relative's recorded culture is the product of an observed change.
+
+    `culture_history` also holds a first observation (a record whose culture was still unknown
+    takes an entry at its first snapshot), so a change counts as a conversion only when it
+    falls after the relative's first observable date; anything at or before that date is the
+    value he was first seen with."""
+    rec = (cache.get("characters") or {}).get(str(cid)) or {}
+    hist = [h for h in (rec.get("culture_history") or []) if h.get("from")]
+    if not hist:
+        return False
+    floor = _first_observable_date(cache, cid)
+    if floor is None:
+        return False
+    return min(date_key(h["from"]) for h in hist) > date_key(floor)
+
+
 def _culture_template_of(cache, cid, melt, chars=None, memo=None):
     """A character's culture template (norse/han...), used for patronymics and name order.
 
     The naming culture follows the paternal line, so every step reads a character's OWN
     culture and only the paternal line recurses; house members, siblings, mother and the
     language table are read without recursing, which keeps in-law and step-parent cultures
-    out. Order: own culture, paternal line, house members, siblings, mother, language
-    lookup. chars is the prebuilt full-character index, memo the cache for this inference
-    run."""
+    out. Order: own culture, paternal line, siblings without a recorded conversion, house
+    members, siblings with one, mother, language lookup. chars is the prebuilt full-character
+    index, memo the cache for this inference run."""
     if melt is None or cid is None:
         return ""
     memo = memo if memo is not None else {}
@@ -1545,10 +1577,20 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
         t = self_tpl(cur)
         if t:
             return t
-    # 3) house members: the most reliable paternal fallback, ahead of the mother and of the
-    # siblings -- an agnatic house carries the paternal naming culture, while a younger
-    # brother may have converted to his own or his wife's culture long after the subject's
-    # death (the cache keeps no date for that conversion).
+    # 3) siblings, own culture only and no recursion (keeps in-law cultures out). One who
+    # changed culture during the recorded years witnesses his own conversion (see
+    # `_is_converted_kin`), not this lineage's naming culture, so those are held back until
+    # after the house.
+    converted_sibs = []
+    for sib in fam_of(cid, ("siblings",)):
+        if _is_converted_kin(cache, sib):
+            converted_sibs.append(sib)
+            continue
+        t = self_tpl(sib)
+        if t:
+            return t
+    # 4) house members: the most reliable paternal fallback, ahead of the mother and of a
+    # converted sibling -- an agnatic house carries the paternal naming culture.
     dh = rec.get("dynasty_house")
     if dh is not None:
         hkey = f"__house_{dh}__"
@@ -1581,22 +1623,27 @@ def _culture_template_impl(cache, cid, melt, chars, memo):
                     if t:
                         found = t
                         break
+            if not found:
+                # The house is silent: a converted brother is still better evidence than the
+                # mother or the language table.
+                for sib in converted_sibs:
+                    t = self_tpl(sib)
+                    if t:
+                        found = t
+                        break
             memo[hkey] = found
-        # A house with no readable culture leaves the later steps reachable; returning the
-        # empty result here would hide the siblings, the mother and the languages.
-        if found:
-            return found
-    # 4) siblings, own culture only and no recursion (keeps in-law cultures out)
-    for sib in fam_of(cid, ("siblings",)):
+        return found
+    # 5) converted siblings, when there is no house to speak for the lineage
+    for sib in converted_sibs:
         t = self_tpl(sib)
         if t:
             return t
-    # 5) mother
+    # 6) mother
     for m in fam_of(cid, ("mother",)):
         t = self_tpl(m)
         if t:
             return t
-    # 6) language lookup, the last step when the kinship chain is empty
+    # 7) language lookup, the last step when the kinship chain is empty
     c = chars.get(str(cid)) or {}
     langs = rec.get("languages") or (c.get("alive_data") or {}).get("languages") or []
     cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
@@ -1752,7 +1799,7 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
     A patronymic culture gives "given·patronymic", which replaces the house name;
     otherwise the name order applies, where an Eastern order takes the DYNASTY name as
     surname (the game's $DYNASTY$ template) and a Western order the HOUSE name
-    ($HOUSE$). Inference runs along the paternal line, the house, the siblings, the
+    ($HOUSE$). Inference runs along the paternal line, the siblings, the house, the
     mother and the language table, and when it fails only the given name is returned,
     never a wrongly ordered "surname+given".
 
