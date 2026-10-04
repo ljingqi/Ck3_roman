@@ -811,22 +811,24 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         lines.append(p["language_bridge"])
     # One relative per sentence: the father, the mother and the sibling list are separate
     # statements, so the sibling list can never be read together with the mother's name.
+    # The family sizes (`facts._kin_counts_line`) sit directly behind the father's sentence,
+    # since they count HIS children, and the mother's row keeps its distance from them.
     kin_bits = []
     if p.get("father"):
         kin_bits.append(f"父{p['father']}。")
-    if p.get("mother"):
-        kin_bits.append(f"母{p['mother']}。")
+    # family sizes counted by the program (facts._kin_counts_line), so the model reads the
+    # group sizes instead of summing them up itself
+    if p.get("kin_counts"):
+        kin_bits.append(p["kin_counts"])
     if with_real_parentage and p.get("real_father") \
             and p.get("real_father") != p.get("father"):
         kin_bits.append(f"实父{p['real_father']}。")
+    if p.get("mother"):
+        kin_bits.append(f"母{p['mother']}。")
     # per-person profiles omit siblings; the protagonist's own profile keeps the line
     if cid is None and p.get("siblings"):
         kin_bits.append(f"兄弟姊妹{p['siblings']}。")
     lines.extend(kin_bits)
-    # family sizes counted by the program (facts._kin_counts_line), so the model reads the
-    # group sizes instead of summing them up itself
-    if p.get("kin_counts"):
-        lines.append(p["kin_counts"])
     # barony-level places, same source as the assassin article's victim_place; with_death=False drops the place
     _bp = p.get("birth_place") or ""
     _dp = (p.get("death_place") or "") if with_death else ""
