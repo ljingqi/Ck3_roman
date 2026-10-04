@@ -19658,13 +19658,15 @@ def _kin_counts_line(f, pid, father_id, father_fam, sibs):
     rank = (order.index(pid) + 1) if pid in order else 0
     mothers = {_mother_of(c) for c in kids}
     head = f"{f.kin_label(father_id) or f.name_or(father_id)}共{_count_zh(len(kids))}个子女"
-    # The number of mothers is stated only when every child has a recorded mother, so the
-    # sentence never implies a family structure the data does not support.
+    # The number of mothers is stated only when every child has a recorded mother, and it is
+    # tied to the children ("these N people") so that it cannot be read as the father's own
+    # parentage: "X has eight children, of three mothers" leaves X's role open.
     if mothers and None not in mothers:
-        head += f"，分属{_count_zh(len(mothers))}位母亲"
+        head += (f"；此{_count_zh(len(kids))}人分属"
+                 f"{_count_zh(len(mothers))}位母亲")
     tail = []
     if rank:
-        tail.append(f"{f.kin_label(pid) or f.name_or(pid)}行{_kin_rank_zh(rank)}")
+        tail.append(f"{f.kin_label(pid) or f.name_or(pid)}在诸子女中行{_kin_rank_zh(rank)}")
     if sibs:
         tail.append(f"兄弟姊妹{_count_zh(len(sibs))}人")
     if not tail:
