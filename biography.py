@@ -1646,7 +1646,8 @@ def _article_facts(facts, cache, key, section=None):
             cc = list(facts.get("church_chronicle") or [])
             _set_block(blocks, "大公会议与教宗诏书", "\n".join(cc) if cc else "")
         else:
-            # `rite_tenet_changes` lists changes among the rite's own core tenets
+            # `rite_tenet_changes` lists changes among the rite's own core tenets; v101 moved them
+            # into the church tail block, so the key is empty for a subject that block covers
             if pt:
                 _set_block(blocks, "个人教义沿革", "\n".join(pt))
             if hos:
@@ -2886,12 +2887,15 @@ def _liyi_req(facts):
             tail_bits.append("大分裂与对立教宗之立")
         if _cc_hit("异端爆发", "异端礼仪", "异端复兴", "新礼仪", "分歧礼仪"):
             tail_bits.append("异端之兴与新礼之立")
-        if _cc_hit("列为"):
-            tail_bits.append("本礼教义定夺的年份、定夺者与原委")
-            tail_focus.append("本礼教义的定夺")
+        if _cc_hit("将原先", "将「", "列为", "改为"):
+            tail_bits.append("会议与诏书定夺的教义条目、旧新之别与定夺的年月")
+            tail_focus.append("会议与诏书所定夺的教义")
         if _cc_hit("改本礼信条", "本礼信条更改"):
             tail_bits.append("本礼信条与禁忌的更替")
             tail_focus.append("本礼信条之更替")
+        if _cc_hit("改本礼核心教义", "增定核心教义", "核心教义去"):
+            tail_bits.append("本礼核心教义的更替与定夺者")
+            tail_focus.append("本礼核心教义之更替")
         if _cc_hit("大公教会地位"):
             tail_bits.append("本礼失去大公教会地位之事")
         if not tail_focus:

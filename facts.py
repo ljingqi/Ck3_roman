@@ -11383,6 +11383,11 @@ class Facts:
     def rite_tenet_changes(self, cid, date=None):
         """Sentences for changes of this rite's own core tenets (《礼仪志》 chronicle).
 
+        Kept for a subject the church block does not cover: since v101 the church block writes the
+        subject's core-tenet history itself, each change attached to the council, bull or declared
+        core tenet that caused it, so `facts()` leaves this key empty for a Christian subject and
+        only a ruler outside the Christian church still gets these lines.
+
         Source: cached `rite_tenets_history[<rid>]` (latched per tier, see
         `cache_lib.extract_snapshot`), truncated at `date` and diffed tier by tier. The game
         keeps only current state, so exact dates bracket to the snapshot interval, as with every
@@ -11920,13 +11925,30 @@ class Facts:
         return [f"教会局面：截至{self.date(date or self.as_of or self.cache.get('last_date') or '')}，"
                 f"本朝教会处于「{word}」之世。"]
 
-    def church_event_lines(self, date=None):
-        """One line per church event — council, papal bull, schism, antipope, heresy, new rite — up
-        to `date`, in date order.
+    # A council's rulings settle as its debates conclude, so a ruling may be first seen in a
+    # snapshot up to three years after the council it belongs to; a bull and a core-tenet
+    # declaration take effect at once, so theirs must fall inside the ruling's own change window.
+    # See docs/方案_v101_洪氏2四问题.md §2.2.
+    _CHURCH_COUNCIL_LAG_DAYS = 3 * 365
+    # Event kinds that can carry a ruling (a council or bull changes tenets and doctrines; a
+    # declared core tenet is the core-teaching swap)
+    _CHURCH_RULE_KINDS = ("council", "bull", "tenet")
 
-        Each line is 「<date>，<actor><phrase>。」, the phrase being the game's own catalyst wording
-        and the actor dropped when the row names none. A council the engine logs twice (ordinary and
-        secular) yields one line, the more specific wording winning."""
+    @staticmethod
+    def _church_days(dk):
+        """Rough day count for a date key, for the council lag (month lengths averaged).
+
+        Only differences matter and the tolerance is years wide, so the approximation is safe."""
+        return dk[0] * 372 + dk[1] * 31 + dk[2]
+
+    def church_events(self, date=None):
+        """The church's own events up to `date`, oldest first, one dict each.
+
+        Keys: `date`, `kind`, `phrase` (the game's own catalyst wording with its `[concept|E]`
+        markup dropped), `actor` (name of the character the row names, '' when it names none) and
+        `rules` (True for the kinds that can carry a ruling, `_CHURCH_RULE_KINDS`). A council the
+        engine logs twice (ordinary and secular) yields one entry, the more specific wording
+        winning."""
         by_key = {k: (kind, rank, phrase) for k, kind, rank, phrase in self._CHURCH_CATALYSTS}
         win = self._church_window()
         picked, order = {}, []
@@ -11953,28 +11975,52 @@ class Facts:
         rows = []
         for d, _kind in order:
             _rank, phrase, h = picked[(d, _kind)]
-            who = self._church_actor(h["catalyst"], date=d)
-            rows.append(f"{self.date(d)}，{who}{phrase}。" if who
-                        else f"{self.date(d)}，{phrase}。")
+            rows.append({"date": d, "kind": _kind, "phrase": phrase,
+                         "actor": self._church_actor(h["catalyst"], date=d),
+                         "rules": _kind in self._CHURCH_RULE_KINDS})
         return rows
 
-    def _rite_tenet_ruling_lines(self, cid, date=None):
-        """Lines for the rulings that allowed, forbade or made known a tenet of the subject's rite.
+    def _event_line(self, e, clauses=None):
+        """One event as 「<date>，<actor><phrase>[，<ruling>；<ruling>]。」"""
+        body = f"{e['actor']}{e['phrase']}" if e["actor"] else e["phrase"]
+        text = f"{self.date(e['date'])}，{body}"
+        if clauses:
+            text = f"{text}，{'；'.join(clauses)}"
+        return f"{text}。"
 
-        Source: the latched status map of `rite_tenets_history`, which holds every status (see
-        cache_lib). A tenet entering or leaving `core` is the core teaching itself and is already
-        written by `rite_tenet_changes` (the same section's mid part), so only the moves between
-        允许 / 禁止 / 已知 appear here. The game dates no tenet change, so the year is the snapshot
-        the change was first seen in: it happened between the previous snapshot and this one. Only
-        the rite head can change a rite's tenets, so the clause names him."""
+    def church_event_lines(self, date=None):
+        """One line per church event — council, papal bull, schism, antipope, heresy, new rite —
+        up to `date`, in date order, without their rulings.
+
+        `church_chronicle_lines` writes the lines with the rulings merged in; this plain form is
+        kept for callers that want the events alone."""
+        return [self._event_line(e) for e in self.church_events(date)]
+
+    # Ruling kinds in the order a single change point writes them: the core teaching first, then
+    # the incoming/outgoing tenets, then the doctrine (faith rule) swaps.
+    _RULING_ORDER = {"core": 0, "tenet": 1, "doctrine": 2}
+
+    def _rite_ruling_rows(self, cid, date=None):
+        """Every ruling this rite saw inside the volume window, oldest first, as
+        `{from, prev, kind, text, leader}`.
+
+        `from` is the snapshot the change was first seen in and `prev` the previous change point,
+        so the change happened in the half-open interval `(prev, from]` (the game dates no tenet or
+        doctrine change; `cache_lib` latches the sets per snapshot). `kind` is one of
+        `_RULING_ORDER`; `text` is the verb phrase the section writes, e.g.
+        「将原先禁止的「华夏综摄主义」改为允许」 or 「改本礼信条：血亲性关系由…改为…」; `leader` is
+        the rite head's clause at that point, used for a ruling no event claims.
+
+        Core moves are the rite's own core teaching: a swap is written as one 「改本礼核心教义」 row,
+        and the two tenets it moves stay out of the status rows."""
         rid = self._rite_id(cid, date)
         if rid is None:
             return []
-        hist = ((self.cache.get("rite_tenets_history") or {}).get(str(rid)) or [])
         win = self._church_window()
         words = dict(self._TENET_STATUS_WORDS)
-        allowed = ("permitted", "prohibited", "known")
-        rows, prev = [], None
+        rows = []
+        hist = ((self.cache.get("rite_tenets_history") or {}).get(str(rid)) or [])
+        prev_map, prev_d, prev_core = None, None, None
         for h in hist:
             d = h.get("from")
             if not d or (win[1] is not None and cl.date_key(d) > win[1]):
@@ -11983,21 +12029,86 @@ class Facts:
             if not isinstance(ten, dict):
                 continue
             cur = {str(t): str(s) for s, ks in ten.items() for t in (ks or [])}
-            if prev is not None and self._in_church_window(d, win):
-                yr = str(d).split(".")[0]
+            core = sorted(str(x) for x in (ten.get("core") or []))
+            if prev_map is not None and self._in_church_window(d, win):
                 head = self._leader_clause(h, d)
+                if set(core) != set(prev_core):
+                    out = [self.tenet_name(k, rid) or k for k in prev_core if k not in core]
+                    inn = [self.tenet_name(k, rid) or k for k in core if k not in prev_core]
+                    if out and inn:
+                        text = (f"改本礼核心教义：「{'、'.join(out)}」换成"
+                                f"「{'、'.join(inn)}」")
+                    elif inn:
+                        text = f"为本礼增定核心教义「{'、'.join(inn)}」"
+                    else:
+                        text = f"本礼核心教义去「{'、'.join(out)}」"
+                    rows.append({"from": d, "prev": prev_d, "kind": "core",
+                                 "text": text, "leader": head})
                 for t in sorted(cur):
-                    old, new = prev.get(t), cur[t]
-                    if old == new or new not in allowed or old not in allowed:
+                    old, new = prev_map.get(t), cur[t]
+                    if old == new or new not in words or new == "core" or old == "core":
                         continue
                     nm = self.tenet_name(t, rid)
                     if not nm:
                         continue
-                    lead = f"{head}将" if head else "本礼将"
-                    rows.append(f"{yr}年起，{lead}「{nm}」列为{words[new]}，"
-                                f"此前为{words[old]}。")
-            prev = cur
+                    if old in words:
+                        text = f"将原先{words[old]}的「{nm}」改为{words[new]}"
+                    else:
+                        text = f"将「{nm}」列为{words[new]}"
+                    rows.append({"from": d, "prev": prev_d, "kind": "tenet",
+                                 "text": text, "leader": head})
+            prev_map, prev_d, prev_core = cur, d, core
+        dhist = ((self.cache.get("rite_doctrine_history") or {}).get(str(rid)) or [])
+        prev_set, prev_dd = None, None
+        for h in dhist:
+            d = h.get("from")
+            if not d or (win[1] is not None and cl.date_key(d) > win[1]):
+                break
+            cur = {str(x) for x in (h.get("doctrines") or [])}
+            if prev_set is not None and self._in_church_window(d, win):
+                head = self._leader_clause(h, d)
+                for frag in self._doctrine_slot_lines(prev_set - cur, cur - prev_set):
+                    rows.append({"from": d, "prev": prev_dd, "kind": "doctrine",
+                                 "text": f"改本礼信条：{frag.rstrip('。')}", "leader": head})
+            prev_set, prev_dd = cur, d
+        rows.sort(key=lambda r: (cl.date_key(r["from"]), self._RULING_ORDER[r["kind"]]))
         return rows
+
+    def _merge_rulings(self, events, rows):
+        """(event lines with their rulings merged in, rulings no event claims).
+
+        A ruling whose change window `(prev, from]` holds a bull or a declared core tenet belongs
+        to the last such event; when it holds no such event it falls to the last council started at
+        most `_CHURCH_COUNCIL_LAG_DAYS` before `from`, since a council's debates settle over the
+        years after it opens. Everything else keeps its own line, dated by the year it was first
+        seen and led by the rite head of that point."""
+        claimed, free = {}, []
+        for r in rows:
+            dk = cl.date_key(r["from"])
+            pk = cl.date_key(r["prev"]) if r.get("prev") else None
+            cands = []
+            for e in events:
+                if not e["rules"]:
+                    continue
+                ek = cl.date_key(e["date"])
+                if ek > dk:
+                    continue
+                if e["kind"] == "council":
+                    if self._church_days(dk) - self._church_days(ek) \
+                            <= self._CHURCH_COUNCIL_LAG_DAYS:
+                        cands.append(e)
+                elif pk is None or ek > pk:
+                    cands.append(e)
+            if not cands:
+                free.append(r)
+                continue
+            best = max(cands, key=lambda e: cl.date_key(e["date"]))
+            claimed.setdefault(id(best), []).append(r["text"])
+        lines = [self._event_line(e, claimed.get(id(e))) for e in events]
+        for r in free:
+            yr = str(r["from"]).split(".")[0]
+            lines.append(f"{yr}年起，{r['leader']}{r['text']}。")
+        return lines
 
     def doctrine_name(self, key):
         """Doctrine key → Chinese name, `doctrine_<key>_descriptive_name` first and
@@ -12050,33 +12161,6 @@ class Facts:
                 rows.append(f"{gname}的{o}不再列为信条。" if gname else f"去{o}。")
         return rows
 
-    def _rite_doctrine_lines(self, cid, date=None):
-        """Lines for the doctrine changes of the subject's rite (the near-kin marriage rules and the
-        like).
-
-        Source: the latched doctrine set `rite_doctrine_history` (see cache_lib). The set has no
-        history in the save, so the year is the snapshot the change was first seen in. Only the rite
-        head can change a rite's doctrines, so the clause names him."""
-        rid = self._rite_id(cid, date)
-        if rid is None:
-            return []
-        hist = ((self.cache.get("rite_doctrine_history") or {}).get(str(rid)) or [])
-        win = self._church_window()
-        rows, prev = [], None
-        for h in hist:
-            d = h.get("from")
-            if not d or (win[1] is not None and cl.date_key(d) > win[1]):
-                break
-            cur = {str(x) for x in (h.get("doctrines") or [])}
-            if prev is not None and self._in_church_window(d, win):
-                head = self._leader_clause(h, d)
-                lead = f"{head}改本礼信条：" if head else "本礼信条更改："
-                yr = str(d).split(".")[0]
-                for frag in self._doctrine_slot_lines(prev - cur, cur - prev):
-                    rows.append(f"{yr}年起，{lead}{frag}")
-            prev = cur
-        return rows
-
     def _faith_doctrine_lines(self, cid, date=None):
         """Line for the loss of ecumenical standing of the subject's faith, when it happened.
 
@@ -12109,9 +12193,10 @@ class Facts:
         """Fact lines for the third 《礼仪志》 block: the church's own record of this reign.
 
         Only a Christian subject gets lines — the log is that church's, and a ruler outside it has
-        no part in its councils and bulls. Rows: the phase the church stands in, its councils,
-        bulls, schism, antipopes, heresies and new rites up to `date`, then the rulings and doctrine
-        changes of the subject's own rite."""
+        no part in its councils and bulls. Rows: the phase the church stands in, then the church's
+        councils, bulls, schism, antipopes, heresies and new rites up to `date` — each carrying the
+        rulings of the subject's own rite that belong to it — then the rulings no event claims and
+        the loss of the faith's ecumenical standing."""
         pid = int(cid) if isinstance(cid, int) else self.cache.get("player_id")
         if pid is None:
             return []
@@ -12120,9 +12205,7 @@ class Facts:
             return []
         rows = []
         rows += self.church_phase_line(date)
-        rows += self.church_event_lines(date)
-        rows += self._rite_tenet_ruling_lines(pid, date)
-        rows += self._rite_doctrine_lines(pid, date)
+        rows += self._merge_rulings(self.church_events(date), self._rite_ruling_rows(pid, date))
         rows += self._faith_doctrine_lines(pid, date)
         return rows
     # ---- execution method (approximates the send_option list of execute_prisoner_interaction) ----
@@ -23749,6 +23832,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
             continue
         for _row in f.seat_succession(_kid):
             _seat_succ.append(dict(_row, victim=_kid))
+    # the church's own record (v101): computed once here because `rite_tenet_changes` is suppressed
+    # for a subject this block covers (see its key below)
+    _church = f.church_chronicle_lines(_pid0, as_of)
     facts = {
         # dynasty name (the surname under eastern name order) plus house/branch for flavour
         "house": _dynasty_display(_pdn or cache.get("dynasty_name"),
@@ -23839,13 +23925,18 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "holy_orders": f.holy_order_lines(cache.get("player_id"), as_of),
         # changes to this rite's core tenets themselves (latched and diffed snapshot by
         # snapshot; the key is deliberately distinct from the removed `rite_tenets` allow/forbid
-        # list)
-        "rite_tenet_changes": f.rite_tenet_changes(cache.get("player_id"), as_of),
+        # list). v101 moved the subject's core-tenet history into the church block, where each
+        # change is attached to the council, bull or declared core tenet that caused it, so this
+        # key is empty whenever that block carries the subject (the church log exists); a subject
+        # outside the Christian church keeps it as his only channel.
+        "rite_tenet_changes": ([] if _church else
+                               f.rite_tenet_changes(cache.get("player_id"), as_of)),
         # the church's own record of this reign -- material for 《礼仪志》's third section: the
         # phase the church stands in, its councils, bulls, schism, antipopes, heresies and new
-        # rites, and the rulings and doctrine changes of the subject's own rite. Empty for a
-        # non-Christian subject (an empty list means the section is omitted entirely).
-        "church_chronicle": f.church_chronicle_lines(cache.get("player_id"), as_of),
+        # rites, each carrying the rulings of the subject's own rite, and the loss of the faith's
+        # ecumenical standing. Empty for a non-Christian subject (an empty list means the section
+        # is omitted entirely).
+        "church_chronicle": _church,
         # the Facts instance (biography needs its methods, e.g. to render relation causes)
         "_facts": f,
     }

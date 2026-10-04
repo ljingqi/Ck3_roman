@@ -80,10 +80,12 @@ def main():
 
     print("[③-源代码守卫] 教会事实行不再产出空缺席数")
     # v100 replaced the college-of-cardinals section with the church chronicle, so the guard runs on
-    # the surviving section: a vacant seat count stays out of the fact layer.
+    # the surviving section: a vacant seat count stays out of the fact layer. v101 split the ruling
+    # lines into rows plus the merge that attaches them to the event that caused them.
     src = "".join(inspect.getsource(m) for m in (
         F.Facts.church_chronicle_lines, F.Facts.church_phase_line, F.Facts.church_event_lines,
-        F.Facts._rite_tenet_ruling_lines, F.Facts._rite_doctrine_lines, F.Facts._faith_doctrine_lines))
+        F.Facts.church_events, F.Facts._rite_ruling_rows, F.Facts._merge_rulings,
+        F.Facts._faith_doctrine_lines))
     check("教会事实行源内无「虚悬」", "虚悬" not in src)
     check("教会事实行仍出「教会局面」", "教会局面" in src)
 

@@ -98,6 +98,80 @@ def test_window():
           win4 == (cl.date_key("938.6.1"), None), win4)
 
 
+class Stub:
+    """Facts stand-in for the church helpers: the class constants come from Facts, the state here."""
+    _CHURCH_COUNCIL_LAG_DAYS = F.Facts._CHURCH_COUNCIL_LAG_DAYS
+    _CHURCH_RULE_KINDS = F.Facts._CHURCH_RULE_KINDS
+    _RULING_ORDER = F.Facts._RULING_ORDER
+    _church_days = staticmethod(F.Facts._church_days)
+    date = staticmethod(lambda d: F.llm.fmt_cn_date(d))
+
+    def _event_line(self, e, clauses=None):
+        return F.Facts._event_line(self, e, clauses)
+
+    _merge_rulings = F.Facts._merge_rulings
+
+
+def ev(date, kind, phrase, actor="欢乐者尼各老"):
+    return {"date": date, "kind": kind, "phrase": phrase, "actor": actor,
+            "rules": kind in F.Facts._CHURCH_RULE_KINDS}
+
+
+def row(frm, prev, kind, text, leader="礼仪领袖欢乐者尼各老"):
+    return {"from": frm, "prev": prev, "kind": kind, "text": text, "leader": leader}
+
+
+def test_merge():
+    print("[B] 事件↔定夺配对与合写")
+    s = Stub()
+    # ① 诏书：即时类，落在定夺窗口内 ⇒ 合写（用户样例的形状）
+    out = s._merge_rulings(
+        [ev("982.12.18", "bull", "颁布教宗诏书")],
+        [row("983.1.1", "982.1.1", "tenet", "将原先禁止的「隐修」改为允许")])
+    check("诏书与定夺合写一行",
+          out == ["982年12月18日，欢乐者尼各老颁布教宗诏书，将原先禁止的「隐修」改为允许。"], out)
+    # ② 大公会议：延迟类，允许晚至 3 年
+    out = s._merge_rulings(
+        [ev("980.3.20", "council", "举行大公会议", actor="里昂总主教区总主教厄德·罗贝尔")],
+        [row("982.1.1", "979.1.1", "tenet", "将原先允许的「华夏综摄主义」改为禁止")])
+    check("大公会议的定夺归到会议（延迟 1.8 年）",
+          out == ["980年3月20日，里昂总主教区总主教厄德·罗贝尔举行大公会议，"
+                  "将原先允许的「华夏综摄主义」改为禁止。"], out)
+    # ③ 会议超过 3 年不再认领
+    out = s._merge_rulings(
+        [ev("980.3.20", "council", "举行大公会议", actor="甲")],
+        [row("985.1.1", "983.1.1", "tenet", "将「圣洁自然」列为禁止")])
+    check("会议滞后超过 3 年则独立成行",
+          out == ["980年3月20日，甲举行大公会议。",
+                  "985年起，礼仪领袖欢乐者尼各老将「圣洁自然」列为禁止。"], out)
+    # ④ 即时类必须在窗口内：晚于锁存点的诏书不认领
+    out = s._merge_rulings(
+        [ev("978.9.9", "bull", "颁布教宗诏书")],
+        [row("978.1.1", "976.1.1", "tenet", "将原先允许的「天主的和平」改为禁止")])
+    check("晚于锁存点的诏书不认领",
+          out[0] == "978年9月9日，欢乐者尼各老颁布教宗诏书。"
+          and out[1].startswith("978年起，"), out)
+    # ⑤ 即时类早于上一变更点也不认领
+    out = s._merge_rulings(
+        [ev("975.10.13", "bull", "颁布教宗诏书")],
+        [row("982.1.1", "979.1.1", "tenet", "将原先允许的「华夏综摄主义」改为禁止")])
+    check("早于上一变更点的诏书不认领",
+          out[1].startswith("982年起，"), out)
+    # ⑥ 一个事件可带多条定夺，用「；」连接；核心教义在前
+    out = s._merge_rulings(
+        [ev("980.3.20", "council", "举行大公会议", actor="厄德·罗贝尔")],
+        [row("982.1.1", "979.1.1", "core", "改本礼核心教义：「武装朝圣」换成「圣人敬礼」"),
+         row("982.1.1", "979.1.1", "tenet", "将原先允许的「华夏综摄主义」改为禁止"),
+         row("982.1.1", "979.1.1", "doctrine", "改本礼信条：丧葬传统由「亲族葬礼」改为「制为木乃伊」")])
+    check("多条定夺按 核心→教义→信条 排、以「；」连接",
+          out == ["980年3月20日，厄德·罗贝尔举行大公会议，"
+                  "改本礼核心教义：「武装朝圣」换成「圣人敬礼」；"
+                  "将原先允许的「华夏综摄主义」改为禁止；"
+                  "改本礼信条：丧葬传统由「亲族葬礼」改为「制为木乃伊」。"], out)    # ⑦ 无主使人的事件行
+    out = s._merge_rulings([ev("973.4.4", "bull", "颁布教宗诏书", actor="")], [])
+    check("主使人缺失时只写短语", out == ["973年4月4日，颁布教宗诏书。"], out)
+
+
 def load_snaps():
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if args:
@@ -111,6 +185,7 @@ def load_snaps():
 
 def main():
     test_window()
+    test_merge()
     snaps = load_snaps()
     print(f"(快照 {len(snaps)} 份：{[os.path.basename(s) for s in snaps]})")
     print("PASS" if OK else "FAIL")
