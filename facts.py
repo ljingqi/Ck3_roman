@@ -5431,6 +5431,21 @@ class Facts:
             return str(srcs[0]) if srcs else ""
         return self._decade_cutoff(n - 1) or (str(srcs[0]) if srcs else "")
 
+    def _player_tenure_start(self):
+        """Date this subject became the played character (`played_character.legacy`), '' for
+        none.
+
+        The chain's entry for `player_id` carries the hand-over date, which is the start of the
+        subject's own reign as a played character — earlier than the campaign's first save when
+        the predecessor was played in the same campaign."""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return ""
+        for e in (self.cache.get("played_legacy") or []):
+            if isinstance(e, dict) and e.get("cid") == int(pid):
+                return str(e.get("date") or "")
+        return ""
+
     def spouse_active_in_window(self, other, win_start=None):
         """True when this spouse was still married to the subject inside this biography's window.
 
@@ -11859,11 +11874,18 @@ class Facts:
     def _church_window(self):
         """(start, end) of the church rows this volume covers, as date keys.
 
-        A decade volume covers its own ten years — the same window as the timeline — so an earlier
-        volume never repeats a later council or bull; a final volume covers everything up to
-        `as_of`. `None` on a side means open, and the phase line is a state at `as_of` rather than
-        an event, so it ignores the start."""
-        lo = cl.date_key(self._bio_window_start()) if self.decade else None
+        The block records what happened while this subject was the played character, so the start
+        is his own hand-over date (`played_legacy`); a decade volume additionally never reaches
+        back past its own window. An unknown hand-over date falls back to the volume window, and
+        the end is `as_of`. `None` on a side means open, and the phase line is a state at `as_of`
+        rather than an event, so it ignores the start."""
+        starts = [self._player_tenure_start()]
+        if self.decade:
+            starts.append(self._bio_window_start())
+        elif not starts[0]:
+            starts.append(self._bio_window_start())
+        starts = [s for s in starts if s]
+        lo = max(cl.date_key(s) for s in starts) if starts else None
         hi = cl.date_key(self.as_of) if self.as_of else None
         return lo, hi
 
@@ -11895,7 +11917,8 @@ class Facts:
         word = L.loc(self.table, phase) or ""
         if not word or word.startswith(("$", "[")):
             return []
-        return [f"教会局面：截至{self.date(date or self.as_of or '')}，本朝教会处于「{word}」之世。"]
+        return [f"教会局面：截至{self.date(date or self.as_of or self.cache.get('last_date') or '')}，"
+                f"本朝教会处于「{word}」之世。"]
 
     def church_event_lines(self, date=None):
         """One line per church event — council, papal bull, schism, antipope, heresy, new rite — up
