@@ -19609,6 +19609,65 @@ def _asof_ids(f, ids):
     return out
 
 
+def _kin_rank_zh(n):
+    """Birth-order word for a kinship row: 4 -> 四. Plain digits, so that 2 never reads
+    "两" the way the object counter `_count_zh` spells it."""
+    digits = "零一二三四五六七八九"
+    if n < 10:
+        return digits[n]
+    if n < 20:
+        return "十" + (digits[n - 10] if n > 10 else "")
+    if n < 100:
+        t, r = divmod(n, 10)
+        return digits[t] + "十" + (digits[r] if r else "")
+    return str(n)
+
+
+def _kin_counts_line(f, pid, father_id, father_fam, sibs):
+    """Family-size sentence printed beside the protagonist's kinship row: how many children
+    the father has, how many mothers they have, and the subject's birth rank among them.
+
+    All numbers are counted here so that the material states each group size itself: with
+    only the list of brothers and sisters, the subject is added to the listed siblings and
+    the total is reported as the mother's children, while that total belongs to the father
+    (whose children may have several mothers). '' when the father or his children are
+    unknown."""
+    if father_id is None:
+        return ""
+    chars = f.cache.get("characters") or {}
+    melt_chars = getattr(f, "_chars", {}) or {}
+    kids = [c for c in _asof_ids(f, (father_fam or {}).get("child") or []) if f.name(c)]
+    if not kids:
+        return ""
+
+    def _crec(c):
+        return chars.get(str(c)) or {}
+
+    def _mother_of(c):
+        """Birth mother id of a child: the cache first, then the melt's family_data."""
+        m = (_crec(c).get("family") or {}).get("mother") or []
+        if not m:
+            m = ((melt_chars.get(str(c)) or {}).get("family_data") or {}).get("mother") or []
+        return m[0] if m and isinstance(m[0], int) else None
+
+    order = sorted(kids, key=lambda c: cl.date_key(_crec(c).get("birth") or "9999.1.1"))
+    rank = (order.index(pid) + 1) if pid in order else 0
+    mothers = {_mother_of(c) for c in kids}
+    head = f"{f.kin_label(father_id) or f.name_or(father_id)}共{_count_zh(len(kids))}个子女"
+    # The number of mothers is stated only when every child has a recorded mother, so the
+    # sentence never implies a family structure the data does not support.
+    if mothers and None not in mothers:
+        head += f"，分属{_count_zh(len(mothers))}位母亲"
+    tail = []
+    if rank:
+        tail.append(f"{f.kin_label(pid) or f.name_or(pid)}行{_kin_rank_zh(rank)}")
+    if sibs:
+        tail.append(f"兄弟姊妹{_count_zh(len(sibs))}人")
+    if not tail:
+        return head + "。"
+    return head + "；" + "，".join(tail) + "。"
+
+
 def _protagonist(f):
     """The protagonist's profile facts (clean Chinese)."""
     cache = f.cache
@@ -20040,6 +20099,12 @@ def _protagonist(f):
         f.kin_label(x) for x in (fam.get("mother") or []) if f.name(x))
     p["siblings"] = "、".join(
         f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
+    # Family sizes counted by the program, printed with the kinship row above (see
+    # `_kin_counts_line`); the sibling list alone leaves the group sizes to be summed by
+    # the reader, which attributes the father's children to the mother.
+    p["kin_counts"] = _kin_counts_line(
+        f, pid, father_id, fd_fam,
+        [x for x in (fam.get("siblings") or []) if f.name(x)])
     # ids of the relatives already named in this profile's kinship rows: the section stage
     # (KinScope.seed) reads this to know a kinship is stated and stops repeating the modifier.
     p["kin_ids"] = sorted({int(x) for x in (
