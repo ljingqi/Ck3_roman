@@ -16330,7 +16330,7 @@ def _sf_word(v):
 
 
 # Drop the comma between a title (<= 4 CJK chars) and the following name. Game-rendered names
-# carry it too (save envelope `meta_player_name`, disease names; see `_plague_facts`).
+# carry it too (save envelope `meta_player_name`, disease names; see `_disease_dynamic_name`).
 _TITLE_COMMA_RE = re.compile(r"([\u4e00-\u9fff]{1,4})，(?=[\u4e00-\u9fff]{2,})")
 
 
@@ -23428,105 +23428,6 @@ def _nomad_stations(f):
     return out[:40]
 
 
-_PLAGUE_INTENSITY_ZH = {"minor": "轻疫", "major": "重疫", "apocalyptic": "毁灭之疫"}
-
-
-def _plague_facts(f):
-    """Plague colour: the save's epidemics with their game-generated dynamic names and spread.
-    Only an epidemic touching the player's domain or county of residence is written, plus one
-    the player or a family member caught; distant plagues are never written. Names come from the
-    save's `name` field, falling back to the disease localization (trait_smallpox = 天花)."""
-    cache = f.cache
-    pid = cache.get("player_id")
-    if pid is None:
-        return {}
-    db = (f.melt.get("epidemics") or {}).get("database") or {}
-    if not isinstance(db, dict) or not db:
-        return {}
-    rec = (cache.get("characters") or {}).get(str(pid)) or {}
-    ld = rec.get("landed") or {}
-    # provinces relevant to the player: each domain title's capital, the estate/yurt domicile,
-    # and the current county
-    mine = set()
-    lt = f._lt
-    for t in (ld.get("domain") or []):
-        cap = (lt.get(str(t)) or {}).get("capital")
-        if isinstance(cap, int):
-            mine.add(cap)
-    dom_prov = ((rec.get("landed") or {}).get("domicile_province")
-                or ld.get("domicile_province"))
-    if isinstance(dom_prov, int):
-        mine.add(dom_prov)
-    loc_prov = f.character_location_province(pid)
-    if isinstance(loc_prov, int):
-        mine.add(loc_prov)
-    if not mine:
-        return {}
-    fam = rec.get("family") or {}
-    kin = [pid]
-    for k in ("primary_spouse", "spouse", "former_spouses", "concubine",
-              "former_concubines", "child", "father", "mother", "siblings"):
-        for x in fam.get(k) or []:
-            if isinstance(x, int) and x not in kin:
-                kin.append(x)
-    lines = []
-    for eid, e in db.items():
-        if not isinstance(e, dict):
-            continue
-        typ = e.get("type") or ""
-        # the comma in the game-rendered "title, name" plague name is stripped here too (this
-        # function reads the melt directly and bypasses `_disease_dynamic_name`)
-        name = _strip_title_comma(str(e.get("name") or ""))
-        disease = _trait_name(f.table, typ) if typ else ""
-        label = name or disease
-        if not label:
-            continue
-        created = str(e.get("creation_date") or "")
-        if f.as_of and created and cl.date_key(created) > cl.date_key(f.as_of):
-            continue
-        known = cache.get("epidemics") or {}
-        hist = known.get(str(eid)) or {}
-        if hist.get("lost_at") and f.as_of \
-                and cl.date_key(hist["lost_at"]) <= cl.date_key(f.as_of):
-            continue            # the epidemic has subsided
-        where = disease if (disease and disease != name) else ""
-        intensity = _PLAGUE_INTENSITY_ZH.get(str(e.get("intensity") or ""), "")
-        # ① whether the player or a family member caught it (the disease trait shares the
-        # epidemic's type name)
-        hit_kin = []
-        if typ:
-            for cid in kin:
-                if f._has_trait_at(cid, typ):
-                    hit_kin.append(f.kin_label(cid) if cid != pid
-                                   else (f.person_label(pid, date=f.as_of, style="brief")
-                                         or f.name_or(pid)))
-        # ② whether the player's domain or county is among its infections
-        inf = {int(x) for x in (e.get("infections") or {}) if str(x).isdigit()}
-        hit_prov = sorted(mine & inf)
-        if not hit_kin and not hit_prov:
-            continue
-        head = f"{f.date(created)}，{label}"
-        if where:
-            # no parenthetical: "…，赤烈咳，属肺痨，轻疫"
-            head += f"，属{where}"
-        if intensity:
-            head += f"，{intensity}"
-        bits = [head]
-        if hit_prov:
-            ctid = f.county_at_province(hit_prov[0])
-            cname = f.title(ctid) if ctid is not None else ""
-            bits.append(f"疫及主角封地{cname}" if cname else "疫及主角所居之地")
-            n = e.get("num_infected_provinces") or len(inf)
-            if n:
-                bits.append(f"蔓及{n}州")
-        if hit_kin:
-            bits.append("、".join(hit_kin) + "染此疫")
-        lines.append("，".join(bits) + "。")
-    if not lines:
-        return {}
-    return {"lines": lines[:4]}
-
-
 def _court_luminaries(f):
     """Court luminaries: for an administrative-government player, the notable court figures
     among the player's relations who have political memories or high titles. Passers-by are
@@ -24006,9 +23907,6 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "wandering": _wandering_trail(f),
         # secrets (player/family/close servants, knowers, leverage) -- the source of 《阴私录》
         "secrets": _secrets_facts(f),
-        # plague colour (game dynamic names plus infection spread; only plagues touching the
-        # player's domain or family)
-        "plagues": _plague_facts(f),
         # chronology of the player's status and station changes (source of the shared-prefix
         # 【主角处境】)
         "protagonist_stations": _protagonist_stations(f),

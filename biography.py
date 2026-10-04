@@ -1840,11 +1840,6 @@ def _shared_facts_block(facts, subject=None, key=None):
     nomad_st = facts.get("nomad_stations") or []
     if nomad_st:
         nomad_txt = _render_block("【游牧行踪】", nomad_st)
-    # plague flavour uses the game's dynamic plague names, sent only when a plague touches the protagonist's domain or family
-    plague_txt = ""
-    pl = (facts.get("plagues") or {}).get("lines") or []
-    if pl:
-        plague_txt = _render_block("【瘟疫】", pl)
     stats_txt = ""
     ds = facts.get("decade_stats") or []
     if ds:
@@ -1856,8 +1851,6 @@ def _shared_facts_block(facts, subject=None, key=None):
         out.append("\n\n" + stations_txt)
     if nomad_txt:
         out.append("\n\n" + nomad_txt)
-    if plague_txt:
-        out.append("\n\n" + plague_txt)
     if stats_txt:
         out.append("\n\n" + stats_txt)
     return F.sanitize_fact_text("".join(out), where="共享前缀") + ""

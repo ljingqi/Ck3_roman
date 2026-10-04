@@ -63,17 +63,6 @@ def _melt_tables(f, facts):
         cap = (f._lt.get(str(t)) or {}).get("capital")
         if isinstance(cap, int):
             caps[str(t)] = cap
-    epi = {}
-    for eid, e in ((melt.get("epidemics") or {}).get("database") or {}).items():
-        if not isinstance(e, dict):
-            continue
-        epi[str(eid)] = {
-            "name": e.get("name"), "type": e.get("type"),
-            "intensity": e.get("intensity"), "creation_date": e.get("creation_date"),
-            "start_province": e.get("start_province"),
-            "num_infected_provinces": e.get("num_infected_provinces"),
-            "infections": sorted((e.get("infections") or {}).keys(), key=str)[:400],
-        }
     act = {}
     for sid in (ld.get("council") or []):
         e = ((melt.get("council_task_manager") or {}).get("active") or {}).get(str(sid))
@@ -86,7 +75,6 @@ def _melt_tables(f, facts):
              | {ld.get("domicile_province"), f.character_location_province(pid)})
             - {None}),
         "domain_capitals": caps,
-        "epidemics": epi,
         "council_active": act,
         "cp_scope": f.court_position_scope(),
         "council_seats": [
