@@ -1635,7 +1635,8 @@ def _father_name_of(cache, cid, melt, names_path, chars=None):
 def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None):
     """Patronymic middle name: prefix + father's name + suffix for patronymic cultures
     (a distinct form for sons and for daughters); the culture template comes from the
-    kinship chain."""
+    kinship chain. '' for a culture without Chinese affixes, which the game uses no
+    patronymic for on the display name."""
     if melt is None:
         return ""
     key = str(cid)
@@ -1655,6 +1656,13 @@ def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None):
         tpl = _culture_template_of(cache, fid, melt, chars=chars, memo=memo)
     rules = _patronym_rules_table().get(tpl or "")
     if not rules:
+        return ""
+    # A template whose Chinese affixes are all empty is no patronymic on the display name:
+    # the game declares catalan through `always_use_patronym` alone (it governs how a new
+    # cadet house is named, see common/culture/name_lists/00_iberian.txt) and albanian's
+    # suffix is the empty article `dynnpat_suf_i`. Composing them would yield the bare
+    # father's name, so nothing is emitted here.
+    if not any(rules.get(k) for k in ("pm_zh", "pf_zh", "sm_zh", "sf_zh")):
         return ""
     fname = _father_name_of(cache, cid, melt, names_path, chars=chars)
     if not fname:
