@@ -468,9 +468,75 @@ KIN_WORDS = {
     "great_granddaughter_daughter": ("", "外曾孙女"),
     "great_grandson":      ("relation_greatgrandson", "（外）曾孙"),
     "great_granddaughter": ("relation_greatgranddaughter", "（外）曾孙女"),
+    # ---- Issue 5: deep blood lines beyond the fixed cascade (common-ancestor BFS) ----
+    # Group M, direct ancestors four generations and up (高祖/天祖/烈祖/太祖/远祖/鼻祖)
+    "ancestor4_male":   ("", "高祖父"),   "ancestor4_female": ("", "高祖母"),
+    "ancestor5_male":   ("", "天祖父"),   "ancestor5_female": ("", "天祖母"),
+    "ancestor6_male":   ("", "烈祖父"),   "ancestor6_female": ("", "烈祖母"),
+    "ancestor7_male":   ("", "太祖父"),   "ancestor7_female": ("", "太祖母"),
+    "ancestor8_male":   ("", "远祖父"),   "ancestor8_female": ("", "远祖母"),
+    "ancestor9_male":   ("", "鼻祖父"),   "ancestor9_female": ("", "鼻祖母"),
+    # Group N, direct descendants four generations and down (玄孙/来孙/晜孙/仍孙/云孙/耳孙)
+    "descendant4_male": ("", "玄孙"),     "descendant4_female": ("", "玄孙女"),
+    "descendant5_male": ("", "来孙"),     "descendant5_female": ("", "来孙女"),
+    "descendant6_male": ("", "晜孙"),     "descendant6_female": ("", "晜孙女"),
+    "descendant7_male": ("", "仍孙"),     "descendant7_female": ("", "仍孙女"),
+    "descendant8_male": ("", "云孙"),     "descendant8_female": ("", "云孙女"),
+    "descendant9_male": ("", "耳孙"),     "descendant9_female": ("", "耳孙女"),
+    # Group O, same-generation collateral beyond first cousins (再从/三从; 五服 boundary),
+    # with the same seniority split the first-cousin group uses (再从堂兄/再从堂弟…)
+    "cousin2_pat_brother_older":   ("", "再从堂兄"), "cousin2_pat_brother_younger": ("", "再从堂弟"),
+    "cousin2_pat_sister_older":    ("", "再从堂姐"), "cousin2_pat_sister_younger":  ("", "再从堂妹"),
+    "cousin2_mat_brother_older":   ("", "再从表兄"), "cousin2_mat_brother_younger": ("", "再从表弟"),
+    "cousin2_mat_sister_older":    ("", "再从表姐"), "cousin2_mat_sister_younger":  ("", "再从表妹"),
+    "cousin2_pat_brother": ("", "再从堂兄弟"), "cousin2_pat_sister": ("", "再从堂姊妹"),
+    "cousin2_mat_brother": ("", "再从表兄弟"), "cousin2_mat_sister": ("", "再从表姊妹"),
+    "cousin3_pat_brother_older":   ("", "三从堂兄"), "cousin3_pat_brother_younger": ("", "三从堂弟"),
+    "cousin3_pat_sister_older":    ("", "三从堂姐"), "cousin3_pat_sister_younger":  ("", "三从堂妹"),
+    "cousin3_mat_brother_older":   ("", "三从表兄"), "cousin3_mat_brother_younger": ("", "三从表弟"),
+    "cousin3_mat_sister_older":    ("", "三从表姐"), "cousin3_mat_sister_younger":  ("", "三从表妹"),
+    "cousin3_pat_brother": ("", "三从堂兄弟"), "cousin3_pat_sister": ("", "三从堂姊妹"),
+    "cousin3_mat_brother": ("", "三从表兄弟"), "cousin3_mat_sister": ("", "三从表姊妹"),
+    "clan_brother": ("", "同族兄弟"), "clan_sister": ("", "同族姊妹"),
+    # Group P, asymmetric collateral (generation gap -> 族伯叔/族侄/族祖/族孙)
+    "clan_uncle":        ("", "族伯叔"),   "clan_aunt":          ("", "族姑"),
+    "clan_grandfather":  ("", "族祖父"),   "clan_grandmother":   ("", "族祖母"),
+    "clan_nephew":       ("", "族侄"),     "clan_niece":         ("", "族侄女"),
+    "clan_grandson":     ("", "族孙"),     "clan_granddaughter": ("", "族孙女"),
+    "clan_ancestor":     ("", "族祖"),     "clan_descendant":    ("", "族孙"),
+    "clansman":          ("", "族人"),
 }
 
 _KIN_TEXT_CACHE = {}
+
+# ---- scripted relations (issue 3): a relation word prefixed to a blood-kin attributive ----
+# kind -> Chinese, from game_concepts_l_simp_chinese.yml (friend=朋友 … favorite_child=最宠爱的孩子).
+# The kind stored on an opinion names the OWNER's own role, so cid's role toward the subject is the
+# kind on the (owner=cid, target=subject) opinion; the reverse opinion is mapped through
+# RELATION_COUNTERPART. Only kinds present in the save's scripted_relations are listed.
+RELATION_WORDS = {
+    "soulmate": "灵魂伴侣", "best_friend": "至交", "nemesis": "死敌",
+    "blood_brother": "结义兄弟", "lover": "情人", "rival": "仇敌",
+    "friend": "朋友", "grudge": "怨恨者", "crush": "恋慕者",
+    "guardian": "监护人", "ward": "被监护人", "mentor": "导师", "student": "学生",
+    "elder": "恩师", "disciple": "门生",
+    "bully": "霸凌者", "victim": "出气筒", "favorite_child": "最宠爱的孩子",
+}
+# When one person holds several relations, the most significant wins (advanced > basic > childhood),
+# so only one relation word is prefixed, matching the game's single-key RelationToMe.
+RELATION_PRIORITY = (
+    "soulmate", "best_friend", "nemesis", "blood_brother", "lover", "rival", "friend",
+    "grudge", "elder", "disciple", "mentor", "student", "guardian", "ward",
+    "crush", "bully", "victim", "favorite_child",
+)
+# Asymmetric relations: the counterpart role, used when only the subject's opinion is stored.
+RELATION_COUNTERPART = {
+    "bully": "victim", "victim": "bully",
+    "guardian": "ward", "ward": "guardian",
+    "mentor": "student", "student": "mentor",
+    "elder": "disciple", "disciple": "elder",
+}
+
 
 # Non-blood keys (affinal, step, spouse); negating this set yields the blood tier, which wins for a
 # person related both by blood and by marriage.
@@ -637,7 +703,110 @@ def kin_rev_index(chars):
     return {"sib": sib, "kid": kid}
 
 
-def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
+_DEEP_MAXD = 5              # generations each side for the common-ancestor BFS (covers 三从 & 天祖/来孙)
+
+_ANCESTOR_ZH = {4: ("高祖父", "高祖母"), 5: ("天祖父", "天祖母"), 6: ("烈祖父", "烈祖母"),
+                7: ("太祖父", "太祖母"), 8: ("远祖父", "远祖母"), 9: ("鼻祖父", "鼻祖母")}
+_DESCENDANT_ZH = {4: ("玄孙", "玄孙女"), 5: ("来孙", "来孙女"), 6: ("晜孙", "晜孙女"),
+                  7: ("仍孙", "仍孙女"), 8: ("云孙", "云孙女"), 9: ("耳孙", "耳孙女")}
+
+
+def _deep_anc_index(x, fath, moth, memo):
+    """{ancestor_id: (depth, all_male_path)} for x, depth 0 (x itself) .. _DEEP_MAXD.
+
+    all_male_path is True only when every link up is a father link — the 堂 (patrilineal) test.
+    Memoized per id so repeated calls in one run reuse the walk."""
+    idx = memo.get(x)
+    if idx is not None:
+        return idx
+    out = {x: (0, True)}
+    cur = [(x, True)]
+    for d in range(1, _DEEP_MAXD + 1):
+        nxt = []
+        for a, pmale in cur:
+            for f in fath(a):
+                if f not in out:
+                    out[f] = (d, pmale)
+                    nxt.append((f, pmale))
+            for m in moth(a):
+                if m not in out:
+                    out[m] = (d, False)
+                    nxt.append((m, False))
+        if not nxt:
+            break
+        cur = nxt
+    memo[x] = out
+    return out
+
+
+def _deep_kin_key(s, c, fath, moth, anc_memo, c_female, older):
+    """Common-ancestor fallback for blood relations the fixed cascade above cannot reach
+    (issue 5): direct lines four+ generations (玄孙/五代), 再从/三从 cousins, and 五服 collateral.
+    Returns a KIN_WORDS key or ''; only ever called on a cascade miss, so it only ADDS labels.
+    `older(a, b)` reports whether a is older than b (None when either birth year is missing)."""
+    anc_s = _deep_anc_index(s, fath, moth, anc_memo)
+    anc_c = _deep_anc_index(c, fath, moth, anc_memo)
+    best = None                                  # (up_s+up_c, up_s, up_c, all_male_s, all_male_c)
+    for A, (ds, ms) in anc_s.items():
+        hc = anc_c.get(A)
+        if not hc:
+            continue
+        dc, mc = hc
+        if ds == 0 and dc == 0:
+            continue
+        cand = (ds + dc, ds, dc, ms, mc)
+        if best is None or cand[:3] < best[:3]:
+            best = cand
+    if best is None:
+        return "clansman"                        # same clan, no common ancestor within range
+    up_s, up_c, ms, mc = best[1], best[2], best[3], best[4]
+    # --- direct line: c is an ancestor of s (up_c==0) or a descendant of s (up_s==0) ---
+    if up_c == 0:
+        if up_s < 4 or c_female is None:
+            return ""
+        return f"ancestor{min(up_s, 9)}_{'female' if c_female else 'male'}"
+    if up_s == 0:
+        if up_c < 4 or c_female is None:
+            return ""
+        return f"descendant{min(up_c, 9)}_{'female' if c_female else 'male'}"
+    # --- collateral ---
+    if max(up_s, up_c) <= 2:
+        return ""                                # within 2 generations: the cascade above owns it
+    if up_s == up_c:                             # same generation -> 从数 cousins
+        if c_female is None:
+            return ""
+        r = up_s - 1                             # 从数: (3,3)->再从, (4,4)->三从
+        if r <= 1:
+            return ""                            # first cousins: the cascade owns them
+        pat = ms and mc                          # 堂 only when both paths are all-male
+        sex = "sister" if c_female else "brother"
+        side = "pat" if pat else "mat"
+        if r in (2, 3):
+            sen = older(c, s)                    # 长幼 split like 堂兄/堂弟; None -> neutral 兄弟/姊妹
+            tag = "" if sen is None else ("_older" if sen else "_younger")
+            return f"cousin{r}_{side}_{sex}{tag}"
+        return "clan_sister" if c_female else "clan_brother"
+    # --- asymmetric collateral: generation gap picks 族伯叔/族侄/族祖/族孙 ---
+    gap = up_s - up_c                            # >0: c senior; <0: c junior
+    if gap > 0:
+        if gap == 1:
+            return "clan_uncle" if c_female is not True else "clan_aunt"
+        if gap == 2:
+            if c_female is None:
+                return "clan_ancestor"
+            return "clan_grandmother" if c_female else "clan_grandfather"
+        return "clan_ancestor"
+    gap = -gap
+    if gap == 1:
+        return "clan_nephew" if c_female is not True else "clan_niece"
+    if gap == 2:
+        if c_female is None:
+            return "clan_descendant"
+        return "clan_granddaughter" if c_female else "clan_grandson"
+    return "clan_descendant"
+
+
+def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_memo=None):
     """Kinship key of cid relative to subject ('father', 'cousin_pat_brother_older', ...).
 
     Blood relations win over affinal ones; '' when undecidable. Pure over the cache."""
@@ -974,6 +1143,20 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None):
     for sid in sorted(sp_s):
         if c in _kids(sid) and c not in _kids(s):
             return "step_daughter" if c_female else "step_son"
+    # 13) Deep-blood fallback (issue 5): relations the fixed cascade above cannot reach —
+    #     玄孙/五代 direct lines, 再从/三从 cousins, and 五服 collateral. Common-ancestor BFS,
+    #     gated to the same clan (dynasty_name, or the same dynasty_house) so the
+    #     overwhelmingly-unrelated pairs never pay for the search. Runs only on a cascade miss,
+    #     so it only ever ADDS a label.
+    dh_s = rs.get("dynasty_house")
+    dn_s = rs.get("dynasty_name")
+    same_clan = (dh_s is not None and dh_s == rc.get("dynasty_house")) \
+        or (dn_s and dn_s == rc.get("dynasty_name"))
+    if same_clan:
+        deep = _deep_kin_key(s, c, _fath, _moth,
+                             {} if anc_memo is None else anc_memo, c_female, _older)
+        if deep:
+            return deep
     return ""
 
 
@@ -1033,11 +1216,15 @@ class KinScope:
         w = facts.kin_word_for(cidi, subj)
         if not w:
             return ""
+        rel = facts.relation_word_for(cidi, subj)
+        if rel:
+            w = f"{w}兼{rel}"          # game word order: 亲属词兼关系词 (「母亲兼朋友」)
         self.stats[w] = self.stats.get(w, 0) + 1
         return w
 
     def mark(self, cid, base, facts, date=None):
-        """Prefix cid's term `base` with a kin attributive (first occurrence only); returns the final text."""
+        """Prefix cid's term `base` with a kin attributive, extended with a scripted relation as
+        「亲属词兼关系词」 when the two also share one (first occurrence only); returns the final text."""
         if not base or cid is None or self.subject is None:
             return base
         try:
@@ -1050,6 +1237,9 @@ class KinScope:
         w = facts.kin_word_for(cidi, self.subject)
         if not w:
             return base
+        rel = facts.relation_word_for(cidi, self.subject)
+        if rel:
+            w = f"{w}兼{rel}"          # game word order: 亲属词兼关系词 (「姐姐兼霸凌者」)
         self.stats[w] = self.stats.get(w, 0) + 1
         return f"{w}{base}"
 
@@ -2893,6 +3083,12 @@ class Facts:
             return specific
         base = (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()
         best = self._history_name_at(tid, date)
+        # A `cn_*` entry in title_history_names is a cultural_names artifact, not a scripted
+        # realm rename: the engine folds the current holder's cultural name into
+        # title_name_data.name (k_scotland shows 阿尔巴 under a Gaelic holder yet keeps a
+        # map-generation cn_pictland dated 210.1.1). Trust the resolved base name over it.
+        if base and best is not None and str(best).startswith("cn_"):
+            return base
         if best is not None:
             v = L.loc(self.table, str(best))
             if v:
@@ -4371,6 +4567,64 @@ class Facts:
         if not kin_key_is_blood(key):
             return ""
         return kin_text(key)
+
+    def _sibling_spouse_note(self, subject, sib, as_of=None):
+        """A comma clause naming the marriage when a sibling was also the subject's spouse or
+        concubine (「，曾为其妻」/「，兼为其妻」); '' when the sibling was never a spouse.
+
+        A decade chapter's spouse row is window-filtered, so a sibling who married the subject and
+        died before the window opens is dropped from it and survives only in the sibling row. Left
+        bare, the sibling row says 「兄弟姊妹X」 while the recycled lead still calls X a queen, and the
+        model resolves the clash by denying the marriage (「而非任何一位王后」). Naming the role here keeps
+        the two rows consistent. Tense follows `spouse_end` against as_of."""
+        as_of = as_of or self.as_of
+        try:
+            subject, sib = int(subject), int(sib)
+        except (TypeError, ValueError):
+            return ""
+        if subject == sib:
+            return ""
+        chars = self.cache.get("characters") or {}
+        fs = (chars.get(str(subject)) or {}).get("family") or {}
+        fo = (chars.get(str(sib)) or {}).get("family") or {}
+        sp_keys = ("primary_spouse", "spouse", "former_spouses")
+        conc_keys = ("concubine", "former_concubines")
+        is_sp = any(sib in (fs.get(k) or []) for k in sp_keys) \
+            or any(subject in (fo.get(k) or []) for k in sp_keys)
+        is_conc = any(sib in (fs.get(k) or []) for k in conc_keys) \
+            or any(subject in (fo.get(k) or []) for k in conc_keys)
+        if not (is_sp or is_conc):
+            return ""
+        fem = self._is_female(subject)
+        if is_conc and not is_sp:
+            rank = "男宠" if fem else "妾"
+        else:
+            rank = "夫" if fem else "妻"
+        ended = any(sib in (fs.get(k) or []) for k in ("former_spouses", "former_concubines"))
+        if not ended:
+            se = self.spouse_end(subject, sib)
+            if se and se[0] and as_of and cl.date_key(se[0]) <= cl.date_key(as_of):
+                ended = True
+        return f"，曾为其{rank}" if ended else f"，兼为其{rank}"
+
+    def sibling_list(self, subject, fam, as_of=None):
+        """Render a profile's sibling list, annotating any sibling who was also the subject's
+        spouse/concubine (see `_sibling_spouse_note`). The separator switches to 「；」 once any entry
+        carries a comma clause, matching `_annotate`."""
+        as_of = as_of or self.as_of
+        out, noted = [], False
+        for x in (fam.get("siblings") or []):
+            if not self.name(x):
+                continue
+            nm = self.kin_label(x)
+            if not nm:
+                continue
+            note = self._sibling_spouse_note(subject, x, as_of)
+            if note:
+                noted = True
+            out.append(nm + note)
+        return ("；" if noted else "、").join(out)
+
 
     def consort_of_line(self, cid):
         """Rank line for the character's own file when the subject took her but her file does not
@@ -13132,6 +13386,48 @@ class Facts:
                     best = d
         return best
 
+    def _relation_kinds_between(self, cid, subject):
+        """Scripted-relation kinds naming `cid`'s role toward `subject`, from both the melt and the
+        per-tier cache latch. The kind on the opinion cid owns toward subject is cid's own role; the
+        reverse opinion (subject owns it) is mapped through RELATION_COUNTERPART to cid's side.
+        `potential_*` kinds are absent from RELATION_WORDS and so drop out."""
+        out = set()
+        for idx in (self._any_opinion_index(), self._cached_opinion_index()):
+            for k in (idx.get((cid, subject)) or {}):
+                if k in RELATION_WORDS:
+                    out.add(k)
+            for k in (idx.get((subject, cid)) or {}):
+                ck = RELATION_COUNTERPART.get(k, k)
+                if ck in RELATION_WORDS:
+                    out.add(ck)
+        return out
+
+    def relation_word_for(self, cid, subject):
+        """The Chinese relation word for `cid`'s role toward `subject` (「朋友」/「仇敌」…), or '' when
+        they share no scripted relation that already existed by as_of.
+
+        When several relations hold, RELATION_PRIORITY picks the single most significant one, matching
+        the game's one-key RelationToMe. Kinds with a known memory type are gated by `_rel_mem_date`
+        (the same rule `relation_reasons` uses) so a decade chapter never shows a friendship or feud
+        formed after its cutoff; childhood/TGP kinds with no memory type pass ungated."""
+        try:
+            cid, subject = int(cid), int(subject)
+        except (TypeError, ValueError):
+            return ""
+        if cid == subject:
+            return ""
+        kinds = self._relation_kinds_between(cid, subject)
+        if not kinds:
+            return ""
+        for k in RELATION_PRIORITY:
+            if k not in kinds:
+                continue
+            mtypes = self._REL_REASON_KINDS.get(k)
+            if mtypes and not self._rel_mem_date(cid, mtypes, base=subject):
+                continue            # relation formed after as_of -> not rendered this decade
+            return RELATION_WORDS.get(k, "")
+        return ""
+
     # ---- the victim behind a "killed a close one" feud ----
     # The game's own wording for `rival_murderer` names the two parties only ("X杀害了Y的亲近之人")
     # and the save stores no `involved_character` for it, so the sentence would stay anonymous and
@@ -13697,6 +13993,13 @@ class Facts:
                 name = L.loc(self.table, tpl) or CULTURE_TEMPLATE_ZH.get(tpl) or ""
                 if name:
                     return name if name.endswith("人") else f"{name}人"
+            # hybrid/runtime culture: no template, so take the entry's literal name
+            lit = cl._culture_literal_name(self.melt, cul)
+            if lit:
+                name = lit if not re.search(r"[A-Za-z_]", lit) \
+                    else (L.loc(self.table, lit) or "")
+                if name:
+                    return name if name.endswith("人") else f"{name}人"
         tpl = self.culture_template(cid) or ""
         name = L.loc(self.table, tpl) or CULTURE_TEMPLATE_ZH.get(tpl) or ""
         if name:
@@ -13904,6 +14207,13 @@ class Facts:
             return ""
         tpl = cl._template_of_culture(self.melt, cul)
         name = L.loc(self.table, tpl) or CULTURE_TEMPLATE_ZH.get(tpl) or ""
+        if not name:
+            # hybrid/runtime cultures have no culture_template; their name is stored literally
+            # on the culture_manager entry (希柏耳尼亚-诺斯), an ASCII value being a loc key
+            lit = cl._culture_literal_name(self.melt, cul)
+            if lit:
+                name = lit if not re.search(r"[A-Za-z_]", lit) \
+                    else (L.loc(self.table, lit) or "")
         if name:
             return name if name.endswith("人") else f"{name}人"
         return ""
@@ -20110,8 +20420,7 @@ def _protagonist(f):
         f.kin_label(x) for x in (fam.get("father") or []) if f.name(x))
     p["mother"] = "、".join(
         _mark_lone_name(f.kin_label(x)) for x in (fam.get("mother") or []) if f.name(x))
-    p["siblings"] = "、".join(
-        f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
+    p["siblings"] = f.sibling_list(pid, fam)
     # Family sizes counted by the program, printed with the kinship row above (see
     # `_kin_counts_line`); the sibling list alone leaves the group sizes to be summed by
     # the reader, which attributes the father's children to the mother.
@@ -20425,8 +20734,7 @@ def _character_profiles(f):
                     # its own.
                     prof["mother_note"] = f"生母为{_bl}之{_rel}。"
         if not _is_pchild:
-            prof["siblings"] = "、".join(
-                f.kin_label(x) for x in (fam.get("siblings") or []) if f.name(x))
+            prof["siblings"] = f.sibling_list(cid, fam)
         if f.is_custom_start(cid):
             prof["custom_start"] = True
         # same as `_protagonist_facts`: the real father is emitted only for a true

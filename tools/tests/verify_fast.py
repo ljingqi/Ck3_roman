@@ -1581,6 +1581,9 @@ def group_v45(snap_path):
         def kin_word_for(self, cid, subject):
             return "兄长" if (cid, subject) == (2, 1) else ""
 
+        def relation_word_for(self, cid, subject):
+            return ""
+
     ff = _FakeFacts()
     sc = F.KinScope(1)
     check("[1] 首见加定语", sc.mark(2, "受试者乙", ff) == "兄长受试者乙", "")
@@ -1700,10 +1703,13 @@ def group_v45(snap_path):
             n_chars += len(w)
         for cid, w, _subj in sc.words:
             n_word += 1
-            if not w or w not in kin_ok:
+            # issue 3: word_for may return 「亲属词兼关系词」; the basis-selection invariant is on the
+            # kinship part, so strip the relation suffix before comparing it against kin_word_for.
+            wkin = w.split("兼", 1)[0] if w else w
+            if not wkin or wkin not in kin_ok:
                 bad_word.append((key, cid, w))
             # v63: 词必须能按**实际算词基准**复算 (句中第三方人名按本行主语算)
-            elif f.kin_word_for(cid, _subj) != w:
+            elif f.kin_word_for(cid, _subj) != wkin:
                 bad_rep.append((key, cid, w, f"基准{_subj}→"
                                 f"{f.kin_word_for(cid, _subj)}"))
             if not w:
@@ -2391,7 +2397,9 @@ def v63_audit(facts, f, pairs):
         for cid, w, base in got:
             want_base = subj if (owner is None or int(cid) == owner) else owner
             want = f.kin_word_for(cid, want_base)
-            if base != want_base or w != want:
+            # issue 3: w may carry a 「兼关系词」 suffix; the basis invariant is on the kinship part.
+            wkin = w.split("兼", 1)[0] if w else w
+            if base != want_base or wkin != want:
                 bad.append((before[:60], cid, f"{w}@{base}", f"应={want}@{want_base}"))
                 continue
             label = next((lab for c, lab in (names or []) if int(c) == int(cid)), "")

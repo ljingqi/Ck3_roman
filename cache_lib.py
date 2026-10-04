@@ -1396,6 +1396,91 @@ def _family_name_order(cache, rec, melt, chars=None, keys=KIN_ORDER_PATERNAL):
     return None
 
 
+def _name_full_order(rec):
+    """Eastern/Western order implied by a stored name_full, or None when it does not decide.
+
+    The Western form is exactly "given·house"; the Eastern form is "surname+given" (surname =
+    the dynasty or house name). Lets the naming tradition be read off a relative whose own
+    culture was cleared at death and never recorded again."""
+    nf = (rec.get("name_full") or "").strip()
+    nm = (rec.get("name_zh") or "").strip()
+    if not nf or not nm:
+        return None
+    if "·" in nf and nf.startswith(nm):
+        return ""
+    for sur in ((rec.get("dynasty_name") or "").strip(),
+                (rec.get("house_name") or "").strip()):
+        if sur and nf == sur + nm:
+            return "DYNASTY_ALWAYS_FIRST"
+    return None
+
+
+def _house_name_order(cache, rec, melt, memo=None):
+    """The predominant name order of the character's house, or None when undecidable.
+
+    A house carries one naming tradition; a foreign-born or converted member is a minority.
+    Counted first from the members' own CULTURES (culture_manager's name_order_convention),
+    which is ground truth straight from the melt and cannot be skewed by how a name was
+    rendered. Most dead members have their culture cleared, so the vote runs over whichever
+    members still carry one; only when that vote is empty or tied does it fall back to the
+    stored name_full order (Eastern "surname+given" vs Western "given·house"), which is
+    self-reinforcing and therefore a weaker signal. This is what tells an Eastern house
+    (洪, 大江) whose male line happens to bear a foreign culture tag from a genuinely
+    Western house (胡马尼耶) with an Eastern mother. Memoized as a house->(east,west)
+    index built in one pass over the cache."""
+    dh = rec.get("dynasty_house")
+    if dh is None:
+        return None
+    if memo is None:
+        memo = {}
+    idx = memo.get("__house_cul_order_idx__")
+    if idx is None:
+        cultures = ((melt or {}).get("culture_manager") or {}).get("cultures") or {}
+        idx = {}
+        for _cid, r in (cache.get("characters") or {}).items():
+            if not isinstance(r, dict) or not r.get("name_zh"):
+                continue
+            h = r.get("dynasty_house")
+            if h is None:
+                continue
+            cul = r.get("culture")
+            if cul is None:
+                hist = r.get("culture_history") or []
+                if hist and isinstance(hist[-1], dict):
+                    cul = hist[-1].get("culture")
+            if cul is None or str(cul) not in cultures:
+                continue
+            o = (cultures.get(str(cul)) or {}).get("name_order_convention") or ""
+            ce, cw = idx.get(h, (0, 0))
+            idx[h] = (ce + 1, cw) if o in EASTERN_NAME_ORDERS else (ce, cw + 1)
+        memo["__house_cul_order_idx__"] = idx
+    ce, cw = idx.get(dh, (0, 0))
+    if ce != cw:
+        return "DYNASTY_ALWAYS_FIRST" if ce > cw else ""
+    # No culture vote (or a tie): fall back to the stored name_full order.
+    fidx = memo.get("__house_order_idx__")
+    if fidx is None:
+        fidx = {}
+        for _cid, r in (cache.get("characters") or {}).items():
+            if not isinstance(r, dict) or not r.get("name_zh"):
+                continue
+            h = r.get("dynasty_house")
+            if h is None:
+                continue
+            o = _name_full_order(r)
+            if o is None:
+                continue
+            e, w = fidx.get(h, (0, 0))
+            fidx[h] = (e + 1, w) if o in EASTERN_NAME_ORDERS else (e, w + 1)
+        memo["__house_order_idx__"] = fidx
+    e, w = fidx.get(dh, (0, 0))
+    if e > w:
+        return "DYNASTY_ALWAYS_FIRST"
+    if w > e:
+        return ""
+    return None
+
+
 def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None):
     """Resolve a character's name order (the single chain shared by display_name and
     Facts.name_order).
@@ -1405,7 +1490,9 @@ def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None)
 
       1) the character's culture at that date (history, then the cached field), giving
          culture_manager's name_order_convention or the Western default;
-      2) otherwise the father's culture;
+      2) otherwise an Eastern house tradition (the members' surname-first name_full), which
+         outranks a foreign paternal personal culture so it cannot invert an Eastern house;
+         then the father's culture;
       3) otherwise the dynasty template and the name order of a culture sharing it: the
          house's naming tradition, which outranks a brother's recorded conversion;
       4) otherwise the siblings, then the maternal side, spouses and children;
@@ -1424,6 +1511,13 @@ def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None)
         return (cultures.get(str(cul)) or {}).get("name_order_convention") or ""
     if melt is None:
         return None
+    # Own culture undecidable. A foreign paternal personal culture must not invert an Eastern
+    # house: when the house's own naming tradition is Eastern (its members are surname-first),
+    # it outranks the father's culture. Only an Eastern house result preempts -- a Western or
+    # undecided house falls through to the existing chain, so Western houses are untouched.
+    ho = _house_name_order(cache, rec, melt, memo=memo)
+    if ho in EASTERN_NAME_ORDERS:
+        return ho
     order = _family_name_order(cache, rec, melt, chars=chars,
                                keys=KIN_ORDER_PATERNAL)
     if order is not None:
@@ -1473,6 +1567,19 @@ def _template_of_culture(melt, cul):
     cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
     e = cultures.get(str(cul)) or {}
     return e.get("culture_template") or ""
+
+
+def _culture_literal_name(melt, cul):
+    """A culture's own display name straight from its culture_manager entry; '' when absent.
+
+    Hybrid and other runtime-created cultures carry no culture_template -- the engine stores
+    their (already localized) name literally on the entry, e.g. 希柏耳尼亚-诺斯. Static cultures
+    store a localization key here instead, so callers resolve an ASCII result through the table."""
+    if melt is None or cul is None:
+        return ""
+    cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
+    e = cultures.get(str(cul)) or {}
+    return (e.get("name") or "").strip() if isinstance(e, dict) else ""
 
 
 def _first_observable_date(cache, cid):

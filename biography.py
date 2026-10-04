@@ -1257,7 +1257,8 @@ _KIN_MARKS = tuple(sorted(set(_KIN_MARKS) | {w for w in F.kin_texts() if len(w) 
                           key=len, reverse=True))
 # generic non-blood relation words in death sentences count as stated too
 _KIN_MARKS = tuple(sorted(set(_KIN_MARKS) | {"亲属", "仇人", "友人", "情人",
-                                             "灵魂伴侣", "挚友", "死敌", "生父"},
+                                             "灵魂伴侣", "挚友", "死敌", "生父"}
+                          | set(F.RELATION_WORDS.values()),
                           key=len, reverse=True))
 _KIN_MARK_RE = re.compile("|".join(_KIN_MARKS))
 
