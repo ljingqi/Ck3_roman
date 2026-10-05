@@ -1560,13 +1560,90 @@ def _patronym_rules_table():
     return _PATRONYM_RULES_CACHE
 
 
-def _template_of_culture(melt, cul):
-    """Culture id -> culture_template (norse/han...); '' when unknown."""
+_NAME_LIST_TEMPLATE_CACHE = None
+
+
+def _as_name_list(v):
+    """A culture entry's `name_list` as a list.
+
+    Clausewitz/rakaly writes the key once per parent, so a hybrid culture carries two
+    (`["name_list_norse", "name_list_irish"]` after `_merge_dup_pairs`), while a static or a
+    single-parent divergence carries one string (`"name_list_bodpa"`)."""
+    if isinstance(v, str):
+        return [v] if v else []
+    if isinstance(v, list):
+        return [str(x) for x in v if x]
+    return []
+
+
+def _patronymic_template(tpl):
+    """True when a culture template actually composes a patronymic in Chinese.
+
+    The rules table carries templates whose Chinese affixes are all empty (catalan declares
+    `always_use_patronym` alone; albanian's suffix is the empty article), and `_patronym_of` emits
+    nothing for those. They are kept out of the name-list table so that a runtime culture whose own
+    name list resolves to such a template keeps the old behaviour (the paternal/house chain decides)
+    instead of losing a patronymic it already had."""
+    rules = _patronym_rules_table().get(tpl or "") or {}
+    return any(rules.get(k) for k in ("pm_zh", "pf_zh", "sm_zh", "sf_zh"))
+
+
+def _name_list_templates(melt):
+    """name_list -> culture_template, derived from the static cultures of this melt (memoized).
+
+    Runtime-created cultures (hybrids, divergences) carry no `culture_template`, but they do
+    carry the parent name lists; static cultures pair a name list with a template, so that
+    pairing is the lookup table. The first static culture claiming a name list wins, which keeps
+    `name_list_norse` on norse. Only templates that compose a Chinese patronymic are indexed (see
+    `_patronymic_template`), so the fallback can only ever *give* a patronymic, never remove one."""
+    global _NAME_LIST_TEMPLATE_CACHE
+    if _NAME_LIST_TEMPLATE_CACHE is not None and _NAME_LIST_TEMPLATE_CACHE[0] is melt:
+        return _NAME_LIST_TEMPLATE_CACHE[1]
+    out = {}
+    for e in ((melt.get("culture_manager") or {}).get("cultures") or {}).values():
+        if not isinstance(e, dict) or not e.get("culture_template"):
+            continue
+        if not _patronymic_template(e["culture_template"]):
+            continue
+        for nl in _as_name_list(e.get("name_list")):
+            out.setdefault(nl, e["culture_template"])
+    _NAME_LIST_TEMPLATE_CACHE = (melt, out)
+    return out
+
+
+def _template_of_culture(melt, cul, _depth=0):
+    """Culture id -> culture_template (norse/han...); '' when unknown.
+
+    A static culture stores the template itself. A runtime-created culture (hybrid, divergence)
+    has no `culture_template`, so the template is recovered through its `name_list` -- the first
+    list is the naming side the engine uses (`name_list_norse` for 希柏耳尼亚-诺斯, whose
+    patronymic suffix the save's own rendered strings confirm) -- and, failing that, through
+    `parents[0]`."""
     if melt is None or cul is None:
         return ""
     cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
     e = cultures.get(str(cul)) or {}
-    return e.get("culture_template") or ""
+    if not isinstance(e, dict):
+        return ""
+    tpl = e.get("culture_template") or ""
+    if tpl:
+        return tpl
+    table = _name_list_templates(melt)
+    for nl in _as_name_list(e.get("name_list")):
+        t = table.get(nl) or ""
+        if t:
+            return t
+    if _depth >= 2:
+        return ""
+    parents = e.get("parents")
+    for p in (parents if isinstance(parents, list) else [parents]):
+        t = _template_of_culture(melt, p, _depth + 1)
+        # Only a parent template that itself composes a patronymic may stand in: a hybrid carrying a
+        # non-patronymic parent culture (鲁塞尼亚 -> russian) would otherwise *lose* the patronymic
+        # its paternal/house chain already resolved, so "" is the safer answer there.
+        if t and _patronymic_template(t):
+            return t
+    return ""
 
 
 def _culture_literal_name(melt, cul):
@@ -2931,6 +3008,82 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 _fh = cache.setdefault("faith_doctrine_history", {}).setdefault(str(_pfid), [])
                 if not _fh or _fh[-1].get("doctrines") != _fd:
                     _fh.append({"from": date_label, "doctrines": _fd})
+            # Tenet set of the faith's *mainline* rite (`faiths.database[<fid>].main_rite`), the one
+            # a papal bull and an ecumenical council always move (`pam_effects.txt`
+            # pam_set_pope_rite_mainline_effect / pam_ecumenical_council_effects.txt). The subject's
+            # own rite changes under him, so latching his rite alone loses every church-level core
+            # declaration made in the years after he changed rite (docs/方案_v104 问题 2).
+            _mid = faith_entry(melt, _pfid).get("main_rite") if _pfid is not None else None
+            if isinstance(_mid, int):
+                _mten = {}
+                for _e in (rite_data(melt, _mid).get("tenets") or []):
+                    if type(_e) is dict and _e.get("tenet"):
+                        _mten.setdefault(str(_e.get("status") or "known"), []).append(
+                            str(_e["tenet"]))
+                if _mten:
+                    for _v in _mten.values():
+                        _v.sort()
+                    _mh = cache.setdefault("faith_tenets_history", {}) \
+                        .setdefault(str(_pfid), [])
+                    _mhead = head_of_rite(melt, _mid)
+                    if (not _mh or _mh[-1].get("tenets") != _mten
+                            or _mh[-1].get("main_rite") != _mid):
+                        _mh.append({"from": date_label, "main_rite": _mid, "tenets": _mten,
+                                    "head": _mhead})
+        # Theological-agent puppet slot of the played character ("clerical puppet"): the field the
+        # game keeps on the *master* (`characters.<id>.playable_data.puppets`), one entry per
+        # puppet with its type. A secular ruler can only host an ecumenical council while he holds
+        # one (`ecumenical_council.txt: can_host_ecumenical_council_tt`), so this is the only place
+        # the cleric "through whose hands" the council was held can be named (docs/方案_v104 问题 3).
+        _pp = (((chars.get(str(player_id)) or {}).get("playable_data") or {})
+               .get("puppets") or [])
+        _prow = []
+        for _e in _pp if isinstance(_pp, list) else []:
+            if isinstance(_e, dict) and isinstance(_e.get("character"), int):
+                _prow.append({"character": _e["character"], "type": str(_e.get("type") or "")})
+        _prow.sort(key=lambda d: (d["character"], d["type"]))
+        _ph = cache.setdefault("puppet_history", [])
+        if not _ph or (_ph[-1].get("puppets") or []) != _prow:
+            _ph.append({"from": date_label, "puppets": _prow})
+
+    # Ecumenical-council activities of this snapshot. `activity_manager.database` keeps one entry
+    # per running or recently finished activity, and a council's entry names its host, its single
+    # location province (`ecumenical_council.txt: is_single_location = yes`, so the first phase's
+    # province is the seat and the log's opening entry repeats it) and the topics under debate.
+    # The object is destroyed 90 days after completion (`00_defines.txt
+    # ACTIVITY_DESTROY_AFTER_COMPLETE_WAIT_DAYS`), so a council is only recoverable when a saved
+    # snapshot falls inside its lifetime; every sighting is latched here so facts can give a place
+    # to the councils it can (docs/方案_v104 问题 4).
+    _amb = ((melt.get("activity_manager") or {}).get("database") or {})
+    _ch = cache.setdefault("council_history", [])
+    _seen_acts = {str(e.get("activity")) for e in _ch}
+    for _aid, _a in _amb.items():
+        if not isinstance(_a, dict):
+            continue
+        _body = _a.get("data") if isinstance(_a.get("data"), dict) else _a
+        if str(_body.get("type") or "") != "activity_ecumenical_council":
+            continue
+        if str(_aid) in _seen_acts:
+            continue
+        _prov = None
+        for _ph in (_body.get("phases") or []):
+            if isinstance(_ph, dict) and isinstance(_ph.get("province"), int):
+                _prov = _ph["province"]
+                break
+        if _prov is None:
+            for _lg in (_body.get("log") or []):
+                if isinstance(_lg, dict) and isinstance(_lg.get("province"), int):
+                    _prov = _lg["province"]
+                    break
+        _ch.append({"seen_at": date_label,
+                    "activity": str(_aid),
+                    "creation_date": str(_body.get("creation_date") or ""),
+                    "active_start_date": str(_body.get("active_start_date") or ""),
+                    "host": (_body.get("host") if isinstance(_body.get("host"), int) else None),
+                    "province": _prov,
+                    "tenets": [str(x) for x in (_body.get("tenets") or [])
+                               if isinstance(x, str)]})
+        _seen_acts.add(str(_aid))
 
     # Kill victims join the target set so their names and records resolve
     for _cid in list(targets):

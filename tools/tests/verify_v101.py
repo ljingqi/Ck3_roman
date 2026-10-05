@@ -161,14 +161,14 @@ def test_merge():
     # ⑥ 一个事件可带多条定夺，用「；」连接；核心教义在前
     out = s._merge_rulings(
         [ev("980.3.20", "council", "举行大公会议", actor="厄德·罗贝尔")],
-        [row("982.1.1", "979.1.1", "core", "改本礼核心教义：「武装朝圣」换成「圣人敬礼」"),
+        [row("982.1.1", "979.1.1", "core", "改天主教主流礼仪核心教义：「武装朝圣」换成「圣人敬礼」"),
          row("982.1.1", "979.1.1", "tenet", "将原先允许的「华夏综摄主义」改为禁止"),
-         row("982.1.1", "979.1.1", "doctrine", "改本礼信条：丧葬传统由「亲族葬礼」改为「制为木乃伊」")])
+         row("982.1.1", "979.1.1", "doctrine", "改天主教主流礼仪信条：丧葬传统由「亲族葬礼」改为「制为木乃伊」")])
     check("多条定夺按 核心→教义→信条 排、以「；」连接",
           out == ["980年3月20日，厄德·罗贝尔举行大公会议，"
-                  "改本礼核心教义：「武装朝圣」换成「圣人敬礼」；"
+                  "改天主教主流礼仪核心教义：「武装朝圣」换成「圣人敬礼」；"
                   "将原先允许的「华夏综摄主义」改为禁止；"
-                  "改本礼信条：丧葬传统由「亲族葬礼」改为「制为木乃伊」。"], out)    # ⑦ 无主使人的事件行
+                  "改天主教主流礼仪信条：丧葬传统由「亲族葬礼」改为「制为木乃伊」。"], out)    # ⑦ 无主使人的事件行
     out = s._merge_rulings([ev("973.4.4", "bull", "颁布教宗诏书", actor="")], [])
     check("主使人缺失时只写短语", out == ["973年4月4日，颁布教宗诏书。"], out)
 
@@ -290,9 +290,12 @@ def snap_checks(path):
     lq = facts.get("_liyi_req") or {}
     check("⑤ 中场要求不再索要核心教义演变",
           "核心教义" not in (lq.get("mid") or ""), lq.get("mid"))
+    # v104 renamed the rite label to the game's own words (主流礼仪 + the religion); a snapshot taken
+    # before that rename still carries the old 「本礼…」 topic, so both wordings pass here.
     check("⑤ 末场要求索要合写的定夺",
           "会议与诏书定夺的教义条目" in (lq.get("tail") or "")
-          and "本礼核心教义" in (lq.get("tail") or ""), lq.get("tail"))
+          and ("主流礼仪核心教义" in (lq.get("tail") or "")
+               or "本礼核心教义" in (lq.get("tail") or "")), lq.get("tail"))
     check("⑤ 生成的要求无负向禁令词",
           not any(NEG.search(lq.get(k) or "") for k in ("lead", "mid", "tail", "focus")),
           {k: lq.get(k) for k in ("lead", "mid", "tail", "focus")})

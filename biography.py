@@ -781,24 +781,32 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     conc_lbl = "男宠" if fem else "妾"
     former_conc_lbl = "前男宠" if fem else "前妾"
     fam_bits = []
+    # Consorts and children are two sentences: one run of 「，」 put the subject's wives and the
+    # children in one statement, and the last wife then read as the mother of the names that
+    # followed her -- her own two husbands among them (docs/方案_v104 问题 6-A).
+    spouse_bits = []
+    child_bits = []
     if p.get("spouses"):
-        fam_bits.append(f"{spouse_lbl}{p['spouses']}")
+        spouse_bits.append(f"{spouse_lbl}{p['spouses']}")
     if p.get("former_spouses"):
-        fam_bits.append(f"{former_lbl}{p['former_spouses']}")
+        spouse_bits.append(f"{former_lbl}{p['former_spouses']}")
     if p.get("concubines"):
-        fam_bits.append(f"{conc_lbl}{p['concubines']}")
+        spouse_bits.append(f"{conc_lbl}{p['concubines']}")
     if p.get("former_concubines"):
-        fam_bits.append(f"{former_conc_lbl}{p['former_concubines']}")
+        spouse_bits.append(f"{former_conc_lbl}{p['former_concubines']}")
     # children split by sex: a mixed list makes the model promote daughters to sons
     if p.get("children_sons"):
-        fam_bits.append(f"子{p['children_sons']}")
+        child_bits.append(f"子{p['children_sons']}")
     if p.get("children_daughters"):
-        fam_bits.append(f"女{p['children_daughters']}")
+        child_bits.append(f"女{p['children_daughters']}")
     if p.get("children") and not (p.get("children_sons")
                                   or p.get("children_daughters")):
-        fam_bits.append(f"子女{p['children']}")
-    if fam_bits:
-        lines.append("，".join(fam_bits) + "。")
+        child_bits.append(f"子女{p['children']}")
+    fam_bits = spouse_bits + child_bits
+    if spouse_bits:
+        lines.append("，".join(spouse_bits) + "。")
+    if child_bits:
+        lines.append("，".join(child_bits) + "。")
     # the spouse's children by another parent: own sentence, household article only (facts.wife_other_children_line)
     if cid is None and p.get("wife_other_children") and with_real_parentage:
         lines.append(p["wife_other_children"])
@@ -2727,6 +2735,17 @@ def _chrono_split(periods, cap=None):
     return out
 
 
+def _uniq_names(seq):
+    """The list without repeats, order kept (a household roster lists kin, and a wife who is also
+    a daughter is named once per group, not once per mention)."""
+    out, seen = [], set()
+    for x in seq:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
 def _mid_req_for_group(base_req, idx, total, group):
     """Board requirement for one household group request: prefixes `base_req` with the
     scope of this group — kind "spouse" one wife's house, kind "child" one group of children."""
@@ -2735,7 +2754,23 @@ def _mid_req_for_group(base_req, idx, total, group):
     kind = (group or {}).get("kind") or "spouse"
     mates = list((group or {}).get("mates") or [])
     names = [str(x) for x in ((group or {}).get("names") or []) if x]
-    who = "、".join(names) if names else label
+    # `names` is the household's kin in one flat list -- the wives first, then the children born to
+    # them (facts.household_groups). Read as one run of 「、」 it put a wife and her own two husbands
+    # side by side and let the model take a brother for her son (docs/方案_v104 问题 6-A), so the
+    # roster now states the two groups.
+    n_mates = min(len(mates), len(names))
+    mate_names = _uniq_names(names[:n_mates])
+    kid_names = _uniq_names(names[n_mates:])
+    who = ""
+    if kind == "spouse" and (mate_names or kid_names):
+        bits = []
+        if mate_names:
+            bits.append("妻妾：" + "、".join(mate_names))
+        if kid_names:
+            bits.append("子女：" + "、".join(kid_names))
+        who = "；".join(bits)
+    if not who:
+        who = "、".join(names) if names else label
     head = ""
     if kind == "child":
         head = f"本请求只写这一组子女：{who}"
@@ -2892,16 +2927,16 @@ def _liyi_req(facts):
         if _cc_hit("将原先", "将「", "列为", "改为"):
             tail_bits.append("会议与诏书定夺的教义条目、旧新之别与定夺的年月")
             tail_focus.append("会议与诏书所定夺的教义")
-        if _cc_hit("改本礼信条", "本礼信条更改"):
-            tail_bits.append("本礼信条与禁忌的更替")
-            tail_focus.append("本礼信条之更替")
-        if _cc_hit("改本礼核心教义", "增定核心教义", "核心教义去"):
+        if _cc_hit("改本礼信条", "主流礼仪信条", "本礼信条更改"):
+            tail_bits.append("主流礼仪信条与禁忌的更替")
+            tail_focus.append("主流礼仪信条之更替")
+        if _cc_hit("改本礼核心教义", "增定核心教义", "核心教义去", "主流礼仪核心教义"):
             # The tail's own request carries this topic; it stays out of `focus`, which every
             # section of the article receives, and the mid section no longer has core-tenet
             # material (v101 moved it here).
-            tail_bits.append("本礼核心教义的更替与定夺者")
+            tail_bits.append("主流礼仪核心教义的更替与定夺者")
         if _cc_hit("大公教会地位"):
-            tail_bits.append("本礼失去大公教会地位之事")
+            tail_bits.append("失去大公教会地位之事")
         if not tail_focus:
             tail_focus.append("教会局面")
     return {

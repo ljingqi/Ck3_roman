@@ -806,6 +806,47 @@ def _deep_kin_key(s, c, fath, moth, anc_memo, c_female, older):
     return "clan_descendant"
 
 
+def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older):
+    """KIN_WORDS key for one blood route: the shared ancestor A is `up_s` generations above the
+    subject and `up_c` above the relative, `ms`/`mc` say the subject's/relative's hops up to A are
+    all father edges, `older` reports whether the relative is the elder.
+
+    Same decision table as `_deep_kin_key`, without its guards: those hold the *closest* route back
+    so it cannot override the cascade, while a route reaching here is known to be a second,
+    independent line (see `Facts.blood_kin_words_for`), which is exactly the label to add."""
+    if up_c == 0:
+        return f"ancestor{min(up_s, 9)}_{'female' if c_female else 'male'}"
+    if up_s == 0:
+        return f"descendant{min(up_c, 9)}_{'female' if c_female else 'male'}"
+    if c_female is None:
+        return ""
+    if up_s == up_c:                             # same generation -> 从数 cousins
+        r = up_s - 1
+        pat = ms and mc                          # 堂 only when both paths are all-male
+        sex = "sister" if c_female else "brother"
+        side = "pat" if pat else "mat"
+        if r == 1:
+            if older is None:
+                return f"cousin_{side}_{sex}"
+            return f"cousin_{side}_{sex}_{'older' if older else 'younger'}"
+        if r in (2, 3):
+            tag = "" if older is None else ("_older" if older else "_younger")
+            return f"cousin{r}_{side}_{sex}{tag}"
+        return "clan_sister" if c_female else "clan_brother"
+    gap = up_s - up_c                            # >0: the relative is senior
+    if gap > 0:
+        if gap == 1:
+            return "clan_aunt" if c_female else "clan_uncle"
+        if gap == 2:
+            return "clan_grandmother" if c_female else "clan_grandfather"
+        return "clan_ancestor"
+    if gap == -1:
+        return "clan_niece" if c_female else "clan_nephew"
+    if gap == -2:
+        return "clan_granddaughter" if c_female else "clan_grandson"
+    return "clan_descendant"
+
+
 def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_memo=None):
     """Kinship key of cid relative to subject ('father', 'cousin_pat_brother_older', ...).
 
@@ -1202,8 +1243,9 @@ class KinScope:
     def word_for(self, cid, facts, subject=None):
         """On first occurrence return this person's kin attributive and claim the slot, else ''.
 
-        Concurrent relations are joined with 「兼」 (at most three: blood tie, primary kin term,
-        scripted relation; see `Facts.kin_chain_words_for`).
+        Concurrent relations are joined with 「兼」 in reading order -- primary kin term, further
+        blood routes (three blood terms at most), the one scripted relation, then every court office
+        the person holds in the subject's court (see `Facts.kin_chain_words_for`).
         `subject` overrides the reference person for sentences with their own subject."""
         subj = self.subject if subject is None else subject
         if cid is None or subj is None:
@@ -1224,8 +1266,8 @@ class KinScope:
 
     def mark(self, cid, base, facts, date=None):
         """Prefix cid's term `base` with its kin attributive, joined with 「兼」 when several relations
-        hold concurrently (blood tie, primary kin term, scripted relation; first occurrence only);
-        returns the final text."""
+        hold concurrently (primary kin term, blood routes, the one scripted relation, then every
+        court office; first occurrence only); returns the final text."""
         if not base or cid is None or self.subject is None:
             return base
         try:
@@ -4567,30 +4609,202 @@ class Facts:
             return ""
         return kin_text(key)
 
-    def kin_chain_words_for(self, cid, subject):
-        """The concurrent relation labels of `cid` to `subject`, in reading order, for the caller to
-        join with 「兼」 (at most three): blood tie, then the primary kin term, then the scripted
-        relation. e.g. a spouse who is also a clan niece and a lover -> [族侄女, 妻子, 情人].
+    # Blood terms one composed kin attributive may carry (user 2026-10-05: 「血缘关系最多同时有
+    # 三个」); the primary kin term, the single scripted relation and the offices are extra.
+    _KIN_CHAIN_BLOOD_MAX = 3
 
-        The cascade ranks by degree, so a spouse+blood double relation always reads as the spouse and
-        the blood tie is lost; the blood term is recovered here (spouse edge masked) only when the
-        primary term is affinal/spousal, which keeps pure-blood people on a single, unchanged label."""
+    def _spouse_kind_of(self, cid):
+        """The marriage word of `cid` to the subject: 妻子/丈夫 (妾/男宠 for a concubine); '' when
+        they are not married now.
+
+        The kin vocabulary's own words (`KIN_WORDS`, the same outlet `kin_text` uses), because a
+        composed chain is a kin attributive (「妻子兼女儿」). Read from the subject's own family
+        record with the spouse latch merged, the same source `consort_of_line` uses. Split out
+        because the composed kin chain states the marriage before the blood routes, while the
+        cascade ranks a blood tie above it."""
+        pid = self.cache.get("player_id")
+        if pid is None or cid is None or int(cid) == int(pid):
+            return ""
+        pfam_raw = ((self.cache.get("characters") or {}).get(str(pid)) or {}).get("family") or {}
+        # `merge_spouse_latch` mutates in place, so a copy must be passed (see consort_of_line).
+        pfam = dict(pfam_raw)
+        for _k in ("primary_spouse", "spouse", "concubine"):
+            if _k in pfam:
+                pfam[_k] = list(pfam[_k] or [])
+        pfam = self.merge_spouse_latch(pfam, self.as_of)
+        female = self._is_female(pid)
+        if cid in (pfam.get("primary_spouse") or []) or cid in (pfam.get("spouse") or []):
+            return kin_text("husband" if female else "wife")
+        if cid in (pfam.get("concubine") or []):
+            return "男宠" if female else "妾"
+        return ""
+
+    def _court_positions_of(self, cid, date=None):
+        """Office words `cid` holds in the subject's court as of `date` (roster order, deduped).
+
+        `cache["court_positions"]` records the player's court roster per snapshot as
+        `[{date, positions: [{type, employee, hire_date}]}]`, and `court_position_word` resolves the
+        game's own wording (私人医生 → 医学博士). The subject's own offices are not in it: the roster
+        holds his retainers, which is the sense 「兼军事总管兼乳母兼处刑人」 carries (user
+        2026-10-05: offices are all listed)."""
+        if cid is None:
+            return []
+        try:
+            want = int(cid)
+        except (TypeError, ValueError):
+            return []
+        hist = self.cache.get("court_positions") or []
+        cut = date or self.as_of
+        if cut:
+            hist = [h for h in hist if cl.date_key(h.get("date")) <= cl.date_key(cut)]
+        if not hist:
+            return []
+        out, seen = [], set()
+        for p in (hist[-1].get("positions") or []):
+            if not isinstance(p, dict) or p.get("employee") != want:
+                continue
+            zh = self.court_position_word(p.get("type")) or ""
+            if not zh or zh == p.get("type") or zh in seen:
+                continue
+            seen.add(zh)
+            out.append(zh)
+        return out
+
+    def _parent_maps(self):
+        """(father_of, mother_of) maps over the cache's kinship graph, built once per run.
+
+        `blood_kin_words_for` walks them to find the routes that do *not* run through the other
+        person, which needs the two edges apart: `family_data.father` and `mother` are separate."""
+        if getattr(self, "_pmaps", None) is None:
+            fath, moth = {}, {}
+            for cid, rec in (self.cache.get("characters") or {}).items():
+                try:
+                    k = int(cid)
+                except (TypeError, ValueError):
+                    continue
+                fam = (rec or {}).get("family") or {}
+                for src, dst in ((fam.get("father"), fath), (fam.get("mother"), moth)):
+                    for p in (src or []):
+                        try:
+                            dst.setdefault(k, int(p))
+                        except (TypeError, ValueError):
+                            pass
+            self._pmaps = (fath, moth)
+        return self._pmaps
+
+    @staticmethod
+    def _ancestor_routes(x, fath, moth, banned, maxd=_DEEP_MAXD):
+        """{ancestor: (depth, all_male)} along the routes from `x` that avoid `banned`.
+
+        Depth 0 is x itself; the first (shortest) route to an ancestor wins, and `all_male` is True
+        only while every hop was a father edge. `blood_kin_words_for` bans the other person, so only
+        routes that do not pass through him survive: a plain daughter reaches her grandfather only
+        through her father, and banning him leaves nothing, while a cousin reached through an uncle
+        keeps her route."""
+        out = {x: (0, True)}
+        frontier = [(x, 0, True)]
+        while frontier:
+            nxt = []
+            for node, d, male in frontier:
+                if d >= maxd:
+                    continue
+                for parent, is_father in ((fath.get(node), True), (moth.get(node), False)):
+                    if parent is None or parent in banned or parent in out:
+                        continue
+                    out[parent] = (d + 1, male and is_father)
+                    nxt.append((parent, d + 1, male and is_father))
+            frontier = nxt
+        return out
+
+    def blood_kin_words_for(self, cid, subject, limit=None):
+        """Blood terms of `cid` relative to `subject`, one per independent route (at most `limit`).
+
+        The cascade gives the closest term; a pair related through a second, independent line -- a
+        wife who is the subject's daughter by one route and his cousin by another -- gets a term per
+        route, so a chain can read 「妻子兼女儿兼堂姐兼表妹」 (user 2026-10-05). A route passing
+        through the other person is the same relation seen from further along the line (a daughter
+        is also her grandfather's granddaughter), so it is dropped."""
+        if cid is None or subject is None:
+            return []
+        limit = self._KIN_CHAIN_BLOOD_MAX if limit is None else limit
+        try:
+            s, c = int(subject), int(cid)
+        except (TypeError, ValueError):
+            return []
+        if s == c:
+            return []
+        words, seen = [], set()
+        primary = self.blood_kin_word_for(c, s)
+        if primary:
+            words.append(primary)
+            seen.add(primary)
+        if len(words) >= limit:
+            return words
+        fath, moth = self._parent_maps()
+        routes = self._ancestor_routes(s, fath, moth, {c})
+        croutes = self._ancestor_routes(c, fath, moth, {s})
+        sigs = []
+        for anc, (ds, ms) in routes.items():
+            hc = croutes.get(anc)
+            if hc is None or (ds == 0 and hc[0] == 0):
+                continue
+            sigs.append((ds + hc[0], ds, hc[0], ms, hc[1]))
+        sigs.sort()
+        chars = self.cache.get("characters") or {}
+        cfemale = self._is_female(c)
+        for _tot, ds, dc, ms, mc in sigs:
+            older = _older_rec(chars.get(str(c)) or {}, chars.get(str(s)) or {})
+            w = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older))
+            if w and w not in seen:
+                seen.add(w)
+                words.append(w)
+                if len(words) >= limit:
+                    break
+        return words
+
+    def kin_chain_words_for(self, cid, subject):
+        """The concurrent relation labels of `cid` to `subject`, in reading order, to be joined with
+        「兼」: the primary kin term, then the further blood routes (three blood terms at most in
+        all), then the one scripted relation, then every office the person holds in the subject's
+        court. e.g. a wife who is also the subject's daughter and cousin, and his marshal ->
+        [妻子, 女儿, 堂姐, 军事总管].
+
+        Reading order and caps follow the user's 2026-10-05 ruling: a character holds at most one
+        scripted relation to another (nobody is both a rival and a lover), while offices are all
+        listed. The cascade ranks by degree, so a spouse+blood pair otherwise reads as the spouse
+        and the blood tie is lost; that tie is recovered from the routes."""
         key = kin_key(self.cache, subject, cid,
                       spouse_back=self._spouse_back_index(),
                       rev=self._kin_rev_index())
-        w = kin_text(key)
-        if not w:
-            return []
         parts = []
-        if not kin_key_is_blood(key):
-            blood = self.blood_kin_word_for(cid, subject)
-            if blood and blood != w:
-                parts.append(blood)
-        parts.append(w)
+        spouse = self._spouse_kind_of(cid)
+        blood_cap = self._KIN_CHAIN_BLOOD_MAX
+        if spouse:
+            # Marriage first: the cascade ranks a blood tie above a marriage, so a wife who is also
+            # the subject's daughter would otherwise read 女儿 alone (user 2026-10-05
+            # 「妻子兼女儿兼堂姐兼表妹」).
+            parts.append(spouse)
+        else:
+            w = kin_text(key)
+            if not w:
+                return []
+            parts.append(w)
+            if kin_key_is_blood(key):
+                blood_cap -= 1                  # the primary term is itself a blood word
+        n_blood = 0
+        for b in self.blood_kin_words_for(cid, subject):
+            if n_blood >= blood_cap:
+                break
+            if b and b not in parts:
+                parts.append(b)
+                n_blood += 1
         rel = self.relation_word_for(cid, subject)
         if rel and rel not in parts:
             parts.append(rel)
-        return parts[:3]
+        for off in self._court_positions_of(cid):
+            if off and off not in parts:
+                parts.append(off)
+        return parts
 
     def _sibling_spouse_note(self, subject, sib, as_of=None):
         """A comma clause naming the marriage when a sibling was also the subject's spouse or
@@ -4695,7 +4909,11 @@ class Facts:
         stated = any(pid in (own.get(k) or [])
                      for k in ("primary_spouse", "spouse", "concubine"))
         if bk:
-            return f"本为{who}之{bk}" if stated else f"本为{who}之{bk}，入侍为其{kind}"
+            # The marriage side is stated by her own rows, so the phrase states the *current* rank
+            # instead of "entered as": her file then reads 「本为…之女儿，今为其妻」 and the model
+            # no longer lacks the present relation (it wrote 「本是耀国的女儿，却成了他的女儿」).
+            return f"本为{who}之{bk}，今为其{kind}" if stated \
+                else f"本为{who}之{bk}，入侍为其{kind}"
         if stated:
             return ""
         return f"为{who}之{kind}"
@@ -12267,10 +12485,12 @@ class Facts:
                 f"本朝教会处于「{word}」之世。"]
 
     # A council's rulings settle as its debates conclude, so a ruling may be first seen in a
-    # snapshot up to three years after the council it belongs to; a bull and a core-tenet
+    # snapshot up to four years after the council it belongs to; a bull and a core-tenet
     # declaration take effect at once, so theirs must fall inside the ruling's own change window.
-    # See docs/方案_v101_洪氏2四问题.md §2.2.
-    _CHURCH_COUNCIL_LAG_DAYS = 3 * 365
+    # See docs/方案_v101_洪氏2四问题.md §2.2 and docs/方案_v104_洪氏2六问题.md (user 2026-10-05:
+    # the window is four years, and a ruling claimed by a council is dated by the council's own
+    # opening year, which the event line carries).
+    _CHURCH_COUNCIL_LAG_DAYS = 4 * 365
     # Event kinds that can carry a ruling (a council or bull changes tenets and doctrines; a
     # declared core tenet is the core-teaching swap)
     _CHURCH_RULE_KINDS = ("council", "bull", "tenet")
@@ -12286,10 +12506,15 @@ class Facts:
         """The church's own events up to `date`, oldest first, one dict each.
 
         Keys: `date`, `kind`, `phrase` (the game's own catalyst wording with its `[concept|E]`
-        markup dropped), `actor` (name of the character the row names, '' when it names none) and
-        `rules` (True for the kinds that can carry a ruling, `_CHURCH_RULE_KINDS`). A council the
-        engine logs twice (ordinary and secular) yields one entry, the more specific wording
-        winning."""
+        markup dropped), `actor` (name of the character the row names, '' when it names none),
+        `rules` (True for the kinds that can carry a ruling, `_CHURCH_RULE_KINDS`) and `secular`
+        (a council a secular ruler held through a cleric). A council the engine logs twice
+        (ordinary and secular) yields one entry, the more specific wording winning.
+
+        Two phrases are enriched here rather than in the wording table, because both need a date:
+        a secular council names the cleric it was held through (`_secular_council_phrase`) and a
+        council names the place it was seated in (`_council_place`), each only when the save has
+        it -- the bare phrase stands otherwise."""
         by_key = {k: (kind, rank, phrase) for k, kind, rank, phrase in self._CHURCH_CATALYSTS}
         win = self._church_window()
         picked, order = {}, []
@@ -12316,10 +12541,103 @@ class Facts:
         rows = []
         for d, _kind in order:
             _rank, phrase, h = picked[(d, _kind)]
+            secular = (str(h["catalyst"].get("catalyst") or "")
+                       == self._SECULAR_COUNCIL_CATALYST)
+            if secular:
+                phrase = self._secular_council_phrase(d)
+            if _kind == "council":
+                place = self._council_place(d)
+                if place:
+                    phrase = phrase.replace("举行大公会议", f"举行{place}大公会议")
             rows.append({"date": d, "kind": _kind, "phrase": phrase,
                          "actor": self._church_actor(h["catalyst"], date=d),
-                         "rules": _kind in self._CHURCH_RULE_KINDS})
+                         "rules": _kind in self._CHURCH_RULE_KINDS,
+                         "secular": secular})
         return rows
+
+    # The catalyst the engine writes for a council a *secular* ruler held through a cleric; its own
+    # wording names the concept only (「世俗[ruler]通过[clerical_puppet]举行…」), never a person.
+    _SECULAR_COUNCIL_CATALYST = "catalyst_secular_hosted_ecumenical_council"
+    # A puppet slot is only visible in the snapshots that caught it (the game writes it on the
+    # master's `playable_data.puppets` while the puppet lives), so a council between two snapshots
+    # takes the first slot recorded within this many days *after* it, which is still the puppet it
+    # was held through: a secular ruler can only host a council while he holds one
+    # (`ecumenical_council.txt: can_host_ecumenical_council_tt`). User 2026-10-05, option (b).
+    _PUPPET_LOOKAHEAD_DAYS = 2 * 365
+    # `council_history` keys a council activity by the day it was created, which is the day the
+    # catalyst was written, so an ordinary slack matches it to the event row.
+    _COUNCIL_MATCH_DAYS = 30
+
+    def _clerical_puppet_at(self, date=None):
+        """(name, type word) of the subject's theological-agent puppet in force around `date`.
+
+        The cleric "through whose hands" a secular council was held: read from the master's own
+        puppet slot, since neither the catalyst wording nor the log row names him. A slot recorded
+        on or before `date` wins (the state at the event); otherwise the first slot within
+        `_PUPPET_LOOKAHEAD_DAYS` after it is taken. ('', '') when the save never recorded one."""
+        hist = [h for h in (self.cache.get("puppet_history") or []) if h.get("from")]
+        if not hist:
+            return "", ""
+        dk = cl.date_key(date) if date else None
+        pick = None
+        for h in hist:
+            if dk is None or cl.date_key(h["from"]) <= dk:
+                pick = h
+            else:
+                break
+        if pick is None and dk is not None:
+            for h in hist:
+                lag = self._church_days(cl.date_key(h["from"])) - self._church_days(dk)
+                if 0 <= lag <= self._PUPPET_LOOKAHEAD_DAYS:
+                    pick = h
+                    break
+        if pick is None:
+            return "", ""
+        slot = pick.get("puppets") or []
+        if not slot:
+            return "", ""
+        cid = slot[0].get("character")
+        if not isinstance(cid, int):
+            return "", ""
+        nm = self._church_actor({"character": cid}, date=pick.get("from") or date)
+        key = str(slot[0].get("type") or "")
+        tw = L.loc(self.table, key) if key else ""
+        if not tw or tw.startswith(("$", "[")):
+            tw = "教士傀儡"
+        return nm, tw
+
+    def _secular_council_phrase(self, date=None):
+        """The wording for a secular-hosted council, naming the cleric when the save has him."""
+        nm, tw = self._clerical_puppet_at(date)
+        if nm:
+            return f"借其{tw}、{nm}之手举行大公会议"
+        return "借教士之手举行大公会议"
+
+    def _council_place(self, date=None):
+        """Barony/county name of the council opened at `date`; '' when no snapshot caught it.
+
+        `council_history` holds one row per council activity a saved snapshot found alive, and the
+        activity records the province it was seated in (all phases share it). A council whose
+        activity no snapshot caught -- the object is destroyed 90 days after completion
+        (`00_defines.txt ACTIVITY_DESTROY_AFTER_COMPLETE_WAIT_DAYS`) -- keeps the bare wording, and
+        no place is inferred for it."""
+        if not date:
+            return ""
+        dk = cl.date_key(date)
+        best, best_dk = None, None
+        for row in (self.cache.get("council_history") or []):
+            cd = str(row.get("creation_date") or "")
+            if not cd:
+                continue
+            cdk = cl.date_key(cd)
+            lag = abs(self._church_days(cdk) - self._church_days(dk))
+            if lag > self._COUNCIL_MATCH_DAYS:
+                continue
+            if best_dk is None or lag < best_dk:
+                best, best_dk = row, lag
+        if not best:
+            return ""
+        return self._place_of_province(best.get("province"))
 
     def _event_line(self, e, clauses=None):
         """One event as 「<date>，<actor><phrase>[，<ruling>；<ruling>]。」"""
@@ -12340,29 +12658,58 @@ class Facts:
     # Ruling kinds in the order a single change point writes them: the core teaching first, then
     # the incoming/outgoing tenets, then the doctrine (faith rule) swaps.
     _RULING_ORDER = {"core": 0, "tenet": 1, "doctrine": 2}
+    # The game's own word for a faith's mainline rite (`game_concept_mainline_rite`). A council and
+    # a bull always move the mainline rite, so the chronicle labels the rite by its religion
+    # (天主教主流礼仪) instead of naming one rite (拜上帝会): the label stays right after the
+    # subject himself changes rite (docs/方案_v104 问题 1/2, user 2026-10-05).
+    _MAINLINE_RITE_WORD = "主流礼仪"
 
-    def _rite_ruling_rows(self, cid, date=None):
-        """Every ruling this rite saw inside the volume window, oldest first, as
+    def _faith_label(self, cid, date=None):
+        """The rite label the church chronicle writes, e.g. 「天主教主流礼仪」."""
+        nm = self._faith_name(self._faith_id(cid, date)) or ""
+        return f"{nm}{self._MAINLINE_RITE_WORD}" if nm else self._MAINLINE_RITE_WORD
+
+    def _rite_chain_rids(self):
+        """Every rite the subject has been in while the years were recorded, oldest first.
+
+        `cache_lib.extract_snapshot` latches each snapshot's tenets and doctrines under the rite
+        the subject held *in that snapshot*, so a subject who changed rite keeps one history per
+        rite (耀国·洪堡: 拜上帝会 154 through 1055, 不列颠礼 185 from 1058). Reading only the rite
+        he holds at the volume's cut-off hides every ruling the earlier rites saw -- which is what
+        dropped all pre-1057 rulings from the terminal volume while the same events still carried
+        theirs in a volume cut off before the conversion."""
+        keys = {str(k) for k in (self.cache.get("rite_tenets_history") or {})}
+        keys |= {str(k) for k in (self.cache.get("rite_doctrine_history") or {})}
+        firsts = {}
+        for key in ("rite_tenets_history", "rite_doctrine_history"):
+            for rid, hist in (self.cache.get(key) or {}).items():
+                for h in (hist or []):
+                    d = h.get("from")
+                    if d and (rid not in firsts or cl.date_key(d) < cl.date_key(firsts[rid])):
+                        firsts[rid] = d
+        return sorted(keys, key=lambda r: (cl.date_key(firsts.get(r) or "1.1.1"), r))
+
+    def _one_rite_ruling_rows(self, rid, win, words, label, ten_hist=None, doc_hist=None):
+        """Every ruling one rite saw inside `win`, oldest first, as
         `{from, prev, kind, text, leader}`.
 
         `from` is the snapshot the change was first seen in and `prev` the previous change point,
         so the change happened in the half-open interval `(prev, from]` (the game dates no tenet or
         doctrine change; `cache_lib` latches the sets per snapshot). `kind` is one of
         `_RULING_ORDER`; `text` is the verb phrase the section writes, e.g.
-        「将原先禁止的「华夏综摄主义」改为允许」 or 「改本礼信条：血亲性关系由…改为…」; `leader` is
-        the rite head's clause at that point, used for a ruling no event claims.
+        「将原先禁止的「华夏综摄主义」改为允许」 or 「改天主教主流礼仪信条：血亲性关系由…改为…」;
+        `leader` is the rite head's clause at that point, used for a ruling no event claims.
 
-        Core moves are the rite's own core teaching: a swap is written as one 「改本礼核心教义」 row,
+        `ten_hist` / `doc_hist` override the histories read from the cache by rite id: the faith's
+        mainline rite is latched under the faith (`faith_tenets_history`), not under the rite.
+
+        Core moves are the rite's own core teaching: a swap is written as one 「改…核心教义」 row,
         and the two tenets it moves stay out of the status rows."""
-        rid = self._rite_id(cid, date)
-        if rid is None:
-            return []
-        win = self._church_window()
-        words = dict(self._TENET_STATUS_WORDS)
         rows = []
-        hist = ((self.cache.get("rite_tenets_history") or {}).get(str(rid)) or [])
+        if ten_hist is None:
+            ten_hist = ((self.cache.get("rite_tenets_history") or {}).get(str(rid)) or [])
         prev_map, prev_d, prev_core = None, None, None
-        for h in hist:
+        for h in (ten_hist or []):
             d = h.get("from")
             if not d or (win[1] is not None and cl.date_key(d) > win[1]):
                 break
@@ -12377,12 +12724,12 @@ class Facts:
                     out = [self.tenet_name(k, rid) or k for k in prev_core if k not in core]
                     inn = [self.tenet_name(k, rid) or k for k in core if k not in prev_core]
                     if out and inn:
-                        text = (f"改本礼核心教义：「{'、'.join(out)}」换成"
+                        text = (f"改{label}核心教义：「{'、'.join(out)}」换成"
                                 f"「{'、'.join(inn)}」")
                     elif inn:
-                        text = f"为本礼增定核心教义「{'、'.join(inn)}」"
+                        text = f"为{label}增定核心教义「{'、'.join(inn)}」"
                     else:
-                        text = f"本礼核心教义去「{'、'.join(out)}」"
+                        text = f"{label}核心教义去「{'、'.join(out)}」"
                     rows.append({"from": d, "prev": prev_d, "kind": "core",
                                  "text": text, "leader": head})
                 for t in sorted(cur):
@@ -12399,9 +12746,10 @@ class Facts:
                     rows.append({"from": d, "prev": prev_d, "kind": "tenet",
                                  "text": text, "leader": head})
             prev_map, prev_d, prev_core = cur, d, core
-        dhist = ((self.cache.get("rite_doctrine_history") or {}).get(str(rid)) or [])
+        dhist = doc_hist if doc_hist is not None else (
+            (self.cache.get("rite_doctrine_history") or {}).get(str(rid)) or [])
         prev_set, prev_dd = None, None
-        for h in dhist:
+        for h in (dhist or []):
             d = h.get("from")
             if not d or (win[1] is not None and cl.date_key(d) > win[1]):
                 break
@@ -12410,8 +12758,58 @@ class Facts:
                 head = self._leader_clause(h, d)
                 for frag in self._doctrine_slot_lines(prev_set - cur, cur - prev_set):
                     rows.append({"from": d, "prev": prev_dd, "kind": "doctrine",
-                                 "text": f"改本礼信条：{frag.rstrip('。')}", "leader": head})
+                                 "text": f"改{label}信条：{frag.rstrip('。')}", "leader": head})
             prev_set, prev_dd = cur, d
+        return rows
+
+    def _faith_main_rite_rows(self, cid, win, words, label, date=None):
+        """Rulings the faith's *mainline* rite saw inside `win`, oldest first.
+
+        The church's own line: a papal core-tenet declaration and a bull move the faith's mainline
+        rite (`faiths.database[<fid>].main_rite`, kept by `pam_set_pope_rite_mainline_effect`), so
+        its history is the one place a declaration made after the subject changed rite is visible
+        (1057.9.1 for 耀国·洪堡: mainline rite 154's core goes tenet_hyperdulia -> tenet_ora_et_labora
+        while his own new rite 185 keeps hyperdulia). The history carries no doctrine set, so only
+        the tenet side is read here."""
+        fid = self._faith_id(cid, date)
+        if fid is None:
+            return []
+        hist = ((self.cache.get("faith_tenets_history") or {}).get(str(fid)) or [])
+        if not hist:
+            return []
+        mid = hist[-1].get("main_rite")
+        return self._one_rite_ruling_rows(int(mid) if isinstance(mid, int) else fid,
+                                          win, words, label, ten_hist=hist, doc_hist=[])
+
+    def _rite_ruling_rows(self, cid, date=None):
+        """Every ruling the subject's rites and his faith's mainline rite saw inside the window.
+
+        One row set per rite of `_rite_chain_rids()`: each rite is diffed within itself (a change
+        of rite is not a change of tenets, so nothing is diffed across two rites), plus the faith's
+        mainline rite (`_faith_main_rite_rows`). Identical rows -- the same change read from two
+        histories, which is the normal case while the subject's own rite *is* the mainline one --
+        collapse. See `_one_rite_ruling_rows` for the row shape."""
+        win = self._church_window()
+        words = dict(self._TENET_STATUS_WORDS)
+        label = self._faith_label(cid, date)
+        rids = self._rite_chain_rids()
+        if not rids:
+            rid = self._rite_id(cid, date)      # no latch at all: keep the single-rite path
+            rids = [] if rid is None else [rid]
+        rows, seen = [], set()
+        for rid in rids:
+            for r in self._one_rite_ruling_rows(rid, win, words, label):
+                key = (r["from"], r["kind"], r["text"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(r)
+        for r in self._faith_main_rite_rows(cid, win, words, label, date):
+            key = (r["from"], r["kind"], r["text"])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(r)
         rows.sort(key=lambda r: (cl.date_key(r["from"]), self._RULING_ORDER[r["kind"]]))
         return rows
 
@@ -12536,8 +12934,10 @@ class Facts:
         Only a Christian subject gets lines — the log is that church's, and a ruler outside it has
         no part in its councils and bulls. Rows: the phase the church stands in, then the church's
         councils, bulls, schism, antipopes, heresies and new rites up to `date` — each carrying the
-        rulings of the subject's own rite that belong to it — then the rulings no event claims and
-        the loss of the faith's ecumenical standing."""
+        rulings that belong to it (every rite the subject has been in, plus his faith's mainline
+        rite) — then the rulings no event claims and the loss of the faith's ecumenical standing.
+        A council line also names the cleric a secular ruler held it through and the place the
+        snapshot caught it in, when the save has them."""
         pid = int(cid) if isinstance(cid, int) else self.cache.get("player_id")
         if pid is None:
             return []
@@ -20791,6 +21191,7 @@ def _character_profiles(f):
             if _sn:
                 prof["seat_note"] = _sn
         mems = []
+        _mems_dated = []
         # read the memories from the cache (the old code read `prof.get("memories")`, a key that never
         # existed, so every "传主行迹" said "（无行迹记录）")
         # pair up inheritance sentences first: memories consumed by a pair no longer become rows
@@ -20815,10 +21216,13 @@ def _character_profiles(f):
             _md = f.mem_date(cid, mem)
             if f.as_of and _md and cl.date_key(_md) > cl.date_key(f.as_of):
                 continue
-            mems.append(f"{f.date(_md)}，{s}")
+            _mems_dated.append((str(_md or ""), f"{f.date(_md)}，{s}"))
         for _line, _ids, _dd in _ipairs.values():
-            mems.append(f"{f.date(_dd)}，{_line}")
-        mems.sort()
+            _mems_dated.append((str(_dd or ""), f"{f.date(_dd)}，{_line}"))
+        # Sort by the date, not by the rendered string: "1063年12月8日" sorts before "1063年8月17日"
+        # as text, which reordered a character's own row of events (docs/方案_v104 问题 6-A).
+        _mems_dated.sort(key=lambda t: cl.date_key(t[0]) if t[0] else (0, 0, 0))
+        mems = [t[1] for t in _mems_dated]
         prof["events"] = mems
         # "传主行迹" uses the subject-omitted form (the block's subject is always the biographee). Strip
         # keys are the profile label plus a same-shaped key without the accolade prefix: an accolade

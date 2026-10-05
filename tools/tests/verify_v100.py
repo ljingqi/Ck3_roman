@@ -177,14 +177,14 @@ def unit_sections():
                             "将原先禁止的「华夏综摄主义」改为允许。",
                             "920年2月1日，教会大分裂。",
                             "980年3月20日，厄德·罗贝尔举行大公会议，"
-                            "改本礼核心教义：「武装朝圣」换成「圣人敬礼」；"
+                            "改天主教主流礼仪核心教义：「武装朝圣」换成「圣人敬礼」；"
                             "将原先允许的「华夏综摄主义」改为禁止。",
                             "986年12月18日，欢乐者尼各老举行大公会议，"
-                            "改本礼信条：血亲性关系由「交辈旁系亲属婚姻」改为「无限制婚姻」。"]})
+                            "改天主教主流礼仪信条：血亲性关系由「交辈旁系亲属婚姻」改为「无限制婚姻」。"]})
     check("tail 逐条索要（局面/会议/诏书/定夺/信条/核心教义/大分裂）",
           all(t in r1["tail"] for t in ("教会当下的局面", "大公会议", "教宗诏书",
-                                       "会议与诏书定夺的教义条目", "本礼信条",
-                                       "本礼核心教义", "大分裂")), r1["tail"])
+                                       "会议与诏书定夺的教义条目", "主流礼仪信条",
+                                       "主流礼仪核心教义", "大分裂")), r1["tail"])
     check("题面点出大公会议与教宗诏书",
           "大公会议" in r1["focus"] and "教宗诏书" in r1["focus"], r1["focus"])
     check("要求无负向禁令词 (no-negative-prompts)",
@@ -241,9 +241,12 @@ def snap_checks(path):
           not any(("改礼仪核心教义" in x or "为礼仪增定" in x or "礼仪核心教义去" in x
                    or "列为核心教义" in x) for x in cc),
           [x for x in cc if "核心教义" in x][:3])
+    # v104 renamed the rite label to the game's own words (主流礼仪 + the religion name); a snapshot
+    # taken before that rename still carries 「改本礼信条」, so both wordings pass here.
     check("④ 信条（禁忌）更替行有分组名",
-          any("改本礼信条" in x and "血亲性关系" in x for x in cc),
-          [x for x in cc if "改本礼信条" in x][:3])
+          any(("改天主教主流礼仪信条" in x or "改本礼信条" in x) and "血亲性关系" in x
+              for x in cc),
+          [x for x in cc if "信条" in x][:3])
 
     # ⑤ 传输面卫生
     bare = sorted(set(BARE.findall(joined)))
