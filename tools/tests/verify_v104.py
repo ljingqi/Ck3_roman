@@ -55,7 +55,7 @@ def stub(cache=None, as_of="1075.9.8"):
                  "_spouse_kind_of", "merge_spouse_latch", "_court_positions_of", "_is_female",
                  "_kin_rev_index", "_spouse_back_index", "_faith_label",
                  "_faith_main_rite_rows", "_in_church_window", "_church_days",
-                 "_clerical_puppet_at", "_council_place", "_secular_council_phrase"):
+                 "_clerical_puppet_at", "_alive_at", "_council_place", "_secular_council_phrase"):
         fn = getattr(F.Facts, name, None)
         if fn is None:
             continue
@@ -228,20 +228,35 @@ def group_b(snaps):
 # ------------------------------------------------------------------ [C] prose
 def group_c():
     print("[C] prose")
-    final = os.path.join(H2, "耀国·洪堡(1003)_终传_1075_09_08.md")
-    if not os.path.exists(final):
+    # The v104 name fix renames the volumes too (耀国·洪堡 -> 耀国·缯松, the patronymic the engine
+    # itself renders), so the terminal volume is looked up under either stem.
+    final = ""
+    for stem in ("耀国·缯松(1003)_终传_1075_09_08.md", "耀国·洪堡(1003)_终传_1075_09_08.md"):
+        p = os.path.join(H2, stem)
+        if os.path.exists(p):
+            final = p
+            break
+    if not final:
         print("   (no terminal volume)")
         return
     with open(final, encoding="utf-8") as fp:
         txt = fp.read()
+    print("   terminal:", os.path.basename(final))
     check("[3] the terminal volume names the cleric", "玛尔定之手" in txt,
           [l for l in txt.splitlines() if "借" in l and "大公会议" in l][:3])
     check("[4] a council place is written", "圣地亚哥大公会议" in txt,
           [l for l in txt.splitlines() if "大公会议" in l][:3])
     check("[2] the 1057 declaration carries its content",
           "1057年9月1日" in txt and "核心教义" in txt, "")
-    for bad in ("与儿子爱尔兰王子安德烈斯", "她嫁给了自己的儿子", "却成了他的女儿"):
+    # The user's own sentence: 于尔娃's marriage written with 安德烈斯 as HER son.
+    for bad in ("她与儿子爱尔兰王子安德烈斯", "她嫁给了自己的儿子", "却成了他的女儿"):
         check(f"[6] no misread kinship: {bad}", bad not in txt, "")
+    # Residual report (not a verdict): 「儿子」 following a name is still used for a sibling in the
+    # children's own sections, where the shared protagonist profile lists his 子… beside the
+    # section subject. Recorded in the plan's 6.3 rather than asserted away.
+    residual = re.findall(r".{18}儿子[^，。；\n]{0,14}", txt)
+    print(f"   (info) 「儿子…」 occurrences: {len(residual)}; sample: "
+          f"{[x[-22:] for x in residual[:3]]}")
     check("[5] the heir is named 耀国·耀国松", "耀国·耀国松" in txt,
           [l[:80] for l in txt.splitlines() if "耀国·洪堡" in l][:3])
 

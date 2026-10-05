@@ -12572,39 +12572,72 @@ class Facts:
         """(name, type word) of the subject's theological-agent puppet in force around `date`.
 
         The cleric "through whose hands" a secular council was held: read from the master's own
-        puppet slot, since neither the catalyst wording nor the log row names him. A slot recorded
-        on or before `date` wins (the state at the event); otherwise the first slot within
-        `_PUPPET_LOOKAHEAD_DAYS` after it is taken. ('', '') when the save never recorded one."""
+        puppet slot, since neither the catalyst wording nor the log row names him. The slot is
+        latched at its change points only, and a puppet who died while holding the slot keeps it
+        until the next change point, so a state is only accepted while its puppet was alive at
+        `date`; when the last state before the event was already dead (耀国·洪堡's realm priest
+        帕甘 died in 1030, yet the slot still named him in 1056), the first state recorded within
+        `_PUPPET_LOOKAHEAD_DAYS` after it is taken -- the puppet the council was held through, since
+        a secular ruler can only host one while he holds a live one
+        (`ecumenical_council.txt: can_host_ecumenical_council_tt`). ('', '') when the save never
+        recorded a live one."""
         hist = [h for h in (self.cache.get("puppet_history") or []) if h.get("from")]
-        if not hist:
+        if not hist or not date:
             return "", ""
-        dk = cl.date_key(date) if date else None
-        pick = None
+        dk = cl.date_key(date)
+        before = None
+        after = None
         for h in hist:
-            if dk is None or cl.date_key(h["from"]) <= dk:
-                pick = h
+            hk = cl.date_key(h["from"])
+            if hk <= dk:
+                before = h
             else:
-                break
-        if pick is None and dk is not None:
-            for h in hist:
-                lag = self._church_days(cl.date_key(h["from"])) - self._church_days(dk)
+                lag = self._church_days(hk) - self._church_days(dk)
                 if 0 <= lag <= self._PUPPET_LOOKAHEAD_DAYS:
-                    pick = h
-                    break
-        if pick is None:
-            return "", ""
-        slot = pick.get("puppets") or []
-        if not slot:
-            return "", ""
-        cid = slot[0].get("character")
-        if not isinstance(cid, int):
-            return "", ""
-        nm = self._church_actor({"character": cid}, date=pick.get("from") or date)
-        key = str(slot[0].get("type") or "")
-        tw = L.loc(self.table, key) if key else ""
-        if not tw or tw.startswith(("$", "[")):
-            tw = "教士傀儡"
-        return nm, tw
+                    after = h
+                break
+        for pick in (before, after):
+            if not pick:
+                continue
+            slot = pick.get("puppets") or []
+            for entry in slot:
+                cid = entry.get("character")
+                if not isinstance(cid, int) or not self._alive_at(cid, date):
+                    continue
+                nm = self._church_actor({"character": cid}, date=pick.get("from") or date)
+                key = str(entry.get("type") or "")
+                tw = L.loc(self.table, key) if key else ""
+                if not tw or tw.startswith(("$", "[")):
+                    tw = "教士傀儡"
+                return nm, tw
+        return "", ""
+
+    def _alive_at(self, cid, date):
+        """Whether a character was alive on `date` (birth on or before it, death after it).
+
+        A missing birth year counts as alive; a missing death year too, since only the recorded
+        dates can rule a life out."""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        try:
+            dk = cl.date_key(date)
+        except Exception:                                             # noqa: BLE001
+            return True
+        b = str(rec.get("birth") or "")
+        if b:
+            try:
+                if cl.date_key(b) > dk:
+                    return False
+            except Exception:                                         # noqa: BLE001
+                pass
+        d = rec.get("death")
+        d = (d or {}).get("date") if isinstance(d, dict) else d
+        d = str(d or "")
+        if d:
+            try:
+                return cl.date_key(d) > dk
+            except Exception:                                         # noqa: BLE001
+                return True
+        return True
 
     def _secular_council_phrase(self, date=None):
         """The wording for a secular-hosted council, naming the cleric when the save has him."""
