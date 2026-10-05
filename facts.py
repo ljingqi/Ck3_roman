@@ -20073,14 +20073,17 @@ _MERGE_CAP = 10  # max merged names; beyond this they collapse to "…等N人"
 # the guest farewell event `coronation_events.0312` at
 # `events/activities/coronation_activity/coronation_events.txt:5137`, non-AI guests only), so they land
 # on adjacent days and the ceremony would otherwise appear twice. Rule: same type + same host within
-# `_ACTIVITY_MERGE_DAYS` -> one row, first day, witnesses unioned. The window spans one whole
-# ceremony: its phases run 6 + 8 + 3 weeks and a guest may arrive up to 5 months late
-# (`coronation.txt:1739,2112,2138,1596`), so one ceremony's own rows land up to 87 days apart here,
-# while the closest two DIFFERENT ceremonies in this campaign are 409 days apart - 90 days keeps the
-# two apart.
-_ACTIVITY_WINDOW_TYPES = ("witnessed_a_coronation_memory",
-                          "grand_wedding_completed_guest")
-_ACTIVITY_MERGE_DAYS = 90
+# that type's window -> one row, first day, witnesses unioned. Each window spans one whole ceremony
+# of its own type. A coronation's phases run 6 + 8 + 3 weeks and a guest may arrive up to 5 months
+# late (`coronation.txt:1739,2112,2138,1596`), so one ceremony's own rows land up to 87 days apart
+# here, while the closest two DIFFERENT ceremonies in this campaign are 409 days apart - 90 days keeps
+# the two apart. A grand wedding's two rows are a day apart, so it keeps the 7-day window it shipped
+# with; nothing here has measured a wedding's phase spread, and 90 would merge untested ground.
+_ACTIVITY_MERGE_DAYS = {
+    "witnessed_a_coronation_memory": 90,
+    "grand_wedding_completed_guest": 7,
+}
+_ACTIVITY_WINDOW_TYPES = tuple(_ACTIVITY_MERGE_DAYS)
 
 # Coronation feud reasons: the `reason` keys the coronation guest-intent petition rulings write into
 # `scripted_relations` (`events/activities/coronation_activity/guest_intent_coronation_events.txt`,
@@ -20113,6 +20116,7 @@ def _drop_ceremony_witnesses(events, idents, ceremony_feuds):
     merged "…等N人见证" row loses only the guests who opposed the ceremony."""
     if not ceremony_feuds:
         return events
+    win = _ACTIVITY_MERGE_DAYS["witnessed_a_coronation_memory"]
     out = []
     for e in events:
         if e[1] == "witnessed_a_coronation_memory":
@@ -20122,7 +20126,7 @@ def _drop_ceremony_witnesses(events, idents, ceremony_feuds):
             if isinstance(host, int) and isinstance(owner, int) and host != owner:
                 pair = frozenset((owner, host))
                 _dn = _daynum(e[0])
-                if any(p == pair and abs(_dn - _daynum(fd)) <= _ACTIVITY_MERGE_DAYS
+                if any(p == pair and abs(_dn - _daynum(fd)) <= win
                        for p, fd in ceremony_feuds):
                     continue
         out.append(e)
@@ -20148,6 +20152,7 @@ def _merge_activity_windows(events, f=None):
         if not spec:
             continue
         pat = spec["pat"]
+        win = _ACTIVITY_MERGE_DAYS[typ]
 
         def _body(e):
             b = e.get("text") or ""
@@ -20166,7 +20171,7 @@ def _merge_activity_windows(events, f=None):
             placed = False
             for g in groups:
                 if g[0] == gkey and _daynum(e.get("date")) - _daynum(g[1][0].get("date")) \
-                        <= _ACTIVITY_MERGE_DAYS:
+                        <= win:
                     g[1].append(e)
                     placed = True
                     break
