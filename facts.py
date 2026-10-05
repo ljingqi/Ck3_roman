@@ -1740,9 +1740,13 @@ def _render_killer_loc(table, loc_key, kname):
 
 
 # Death reasons that are public by themselves: common/deathreasons/*.txt marks them with
-# `public_knowledge = yes` (death_execution, death_murder_known), so the killer counts as common
-# knowledge; the others depend on the save flag `dead_data.killer_known`.
-_PUBLIC_DEATH_REASONS = frozenset({"death_execution", "death_murder_known"})
+# `public_knowledge = yes` (death_execution, death_murder_known, and the two human-sacrifice
+# reasons at 00_event_deaths.txt:258-259 and :732-733, whose rite is performed before the court),
+# so the killer counts as common knowledge; the others depend on the save flag
+# `dead_data.killer_known`.
+_PUBLIC_DEATH_REASONS = frozenset({
+    "death_execution", "death_murder_known",
+    "death_sacrificed_to_gods", "death_sacrificed_to_foreign_gods"})
 
 # Public-archive death wording. `style.FLAVOR_DEATH_ZH` is omniscient and belongs to the assassin
 # chapter only; the public reading is the game localization value, listed here when it differs.
@@ -1850,6 +1854,38 @@ def _date_ord(d):
     return y * 372 + (m - 1) * 31 + dd
 
 
+def _adopt_campaign_cultures(cache, campaign):
+    """Fill a character's missing culture from another volume of the same campaign.
+
+    A character a volume sees only in a late snapshot (typically a long-dead ancestor) carries no
+    culture there: `culture` is None and `culture_history` empty. Without a culture
+    `cache_lib._patronym_of` cannot run, so `display_name` degrades to given+house - which can be
+    word-for-word the name of his same-named son of the same house (135480 耀国·缯松 reads
+    耀国·洪堡 in the volumes that see him only after 1076, and his son is 耀国·洪堡). A volume that
+    saw him alive holds both fields, and the culture history is what makes the name date-correct
+    (he converted in 1022, so a death in 1026 is written with the patronymic of his later culture).
+    Copied only when this cache has neither field, so a culture recorded here always wins."""
+    chars = cache.get("characters") or {}
+    if not chars:
+        return
+    for peer in (campaign or {}).values():
+        if peer is cache:
+            continue
+        pchars = peer.get("characters") or {}
+        if not pchars:
+            continue
+        for cid, rec in chars.items():
+            if not isinstance(rec, dict) \
+                    or rec.get("culture") is not None or rec.get("culture_history"):
+                continue
+            pr = pchars.get(cid)
+            if not isinstance(pr, dict) or pr.get("culture") is None:
+                continue
+            rec["culture"] = pr.get("culture")
+            if pr.get("culture_history"):
+                rec["culture_history"] = list(pr["culture_history"])
+
+
 class Facts:
     """Context of one build_facts run: cache + melt + name/title/localization resolution.
 
@@ -1869,6 +1905,7 @@ class Facts:
         self.campaign = dict(campaign or {})
         if cache.get("player_id") is not None:
             self.campaign.setdefault(cache.get("player_id"), cache)
+        _adopt_campaign_cultures(cache, self.campaign)
         # Config: single source of truth for switches (defaults to config.json).
         self.cfg = cfg if cfg is not None else llm.load_config()
         # Whether Carnalitas event opinion families reach the facts (off by default).
@@ -14064,7 +14101,7 @@ class Facts:
                     out.append(s)
         return out
 
-    def relation_reason_for_pair(self, a, b, kinds, styled=False):
+    def relation_reason_for_pair(self, a, b, kinds, styled=False, keys=False):
         """Game reason sentences for any pair — same conventions as `relation_reasons` but with a
         reference person other than the subject, for pairs where neither side is the subject.
 
@@ -14072,7 +14109,9 @@ class Facts:
         `cache["relation_reasons"]`. Time gate as in `relation_reasons` (the relation must exist
         before as_of). Returns rendered sentences, melt first with the latch filling gaps (same key
         order conventions). With `styled=True` all three appellations go through `event_name`,
-        matching the rest of the fact layer."""
+        matching the rest of the fact layer. With `keys=True` each item is `(reason key, sentence)`,
+        which lets a caller tell WHICH occasion a reason describes (a coronation feud names the
+        ceremony the witness memory also reports)."""
         if not isinstance(a, int) or not isinstance(b, int) or a == b:
             return []
         melt_idx = self._any_opinion_index()
@@ -14115,7 +14154,7 @@ class Facts:
                 s = s.strip("。") + "。" if s else ""
                 if s and s not in seen:
                     seen.add(s)
-                    out.append(s)
+                    out.append((reason, s) if keys else s)
         return out
 
     def dynasty_name(self, cid):
@@ -19437,6 +19476,9 @@ def _timeline(f):
     events = []        # (date, type, text)
     idents = {}        # (date, type, text) -> {"owner", "parts"}: mirror/imprisonment pairing
     seen_keys = set()  # paired-event dedup: (type, creation_date, participant set)
+    # Feuds whose game reason places them at a coronation: [(the two people, the feud date)], used
+    # to drop the witness rows of that same ceremony (see `_drop_ceremony_witnesses`).
+    ceremony_feuds = []
     deaths = {}        # deceased id -> (priority, date, type, text)
     births = {}        # (date, birth key) -> (priority, date, type, text)
     for cid, rec in (cache.get("characters") or {}).items():
@@ -19667,11 +19709,16 @@ def _timeline(f):
                 for _o in _others[:1]:
                     try:
                         _rs = f.relation_reason_for_pair(
-                            _o, pid, _FEUD_RIVAL_KINDS, styled=True)
+                            _o, pid, _FEUD_RIVAL_KINDS, styled=True, keys=True)
                     except Exception:                       # noqa: BLE001
                         _rs = []
                     if _rs:
-                        _text = _rs[0].rstrip("。") + "，二人由此结仇。"
+                        _rk, _rt = _rs[0]
+                        _text = _rt.rstrip("。") + "，二人由此结仇。"
+                        # This feud happened at a coronation, which also leaves both people a
+                        # witness memory at on_complete: record the pair so the duplicate row goes.
+                        if _rk in _CORONATION_FEUD_REASONS:
+                            ceremony_feuds.append((frozenset((pid, _o)), _md))
                         break
             events.append((_md, ev_type, _text,
                            _TYPE2MODULE.get(ev_type, "")))
@@ -19742,6 +19789,10 @@ def _timeline(f):
             lok = cl.date_key(lo)
             events = [e for e in events if e[0] and cl.date_key(e[0]) >= lok]
     events.sort(key=lambda x: cl.date_key(x[0]))
+    # One coronation writes both a feud row (the prelude petition ruling) and a witness row per
+    # guest (on_complete); the feud row keeps the occasion, the duplicate witness rows go. Runs
+    # before the overview counts so that "witnessed N coronations" agrees with the surviving rows.
+    events = _drop_ceremony_witnesses(events, idents, ceremony_feuds)
     # Decade/lifetime overview counts, computed before aggregation straight from the program
     # (they feed the overview block); only events naming the protagonist in the text count,
     # so family and outsider births and feuds stay out
@@ -20014,10 +20065,60 @@ _MERGE_CAP = 10  # max merged names; beyond this they collapse to "…等N人"
 # the guest farewell event `coronation_events.0312` at
 # `events/activities/coronation_activity/coronation_events.txt:5137`, non-AI guests only), so they land
 # on adjacent days and the ceremony would otherwise appear twice. Rule: same type + same host within
-# `_ACTIVITY_MERGE_DAYS` -> one row, first day, witnesses unioned.
+# `_ACTIVITY_MERGE_DAYS` -> one row, first day, witnesses unioned. The window spans one whole
+# ceremony: its phases run 6 + 8 + 3 weeks and a guest may arrive up to 5 months late
+# (`coronation.txt:1739,2112,2138,1596`), so one ceremony's own rows land up to 87 days apart here,
+# while the closest two DIFFERENT ceremonies in this campaign are 409 days apart - 90 days keeps the
+# two apart.
 _ACTIVITY_WINDOW_TYPES = ("witnessed_a_coronation_memory",
                           "grand_wedding_completed_guest")
-_ACTIVITY_MERGE_DAYS = 7
+_ACTIVITY_MERGE_DAYS = 90
+
+# Coronation feud reasons: the `reason` keys the coronation guest-intent petition rulings write into
+# `scripted_relations` (`events/activities/coronation_activity/guest_intent_coronation_events.txt`,
+# nine keys at 2544,2558,3167,3212,3261,3291,3315,3438,3493), each with its `_corresponding`
+# mirror. A feud carrying one of these happened AT a coronation, and that same ceremony hands every
+# guest a `witnessed_a_coronation_memory` at `on_complete` - one occasion, two rows, 79-84 days
+# apart in this campaign.
+_CORONATION_FEUD_REASONS = frozenset(
+    _k + _s for _k in (
+        "rival_opposed_coronation_openly",
+        "rival_demanded_to_go_first",
+        "rival_despised_mutual_coronation",
+        "rival_outshine_coronation",
+        "rival_coronation_pledge_scandal",
+        "rival_coronation_yeeted_from_coronation",
+        "rival_crown_stolen",
+        "rival_publicly_denounced_at_coronation",
+        "rival_coronation_dynasty_insult",
+    ) for _s in ("", "_corresponding"))
+
+
+def _drop_ceremony_witnesses(events, idents, ceremony_feuds):
+    """Drop the witness rows of a coronation whose feud row already reports the same occasion.
+
+    One ceremony writes both rows: the petition ruling sets the rival relation during the prelude
+    (the feud row, dated by the ruling, carrying the game's own reason) and `on_complete` gives
+    every guest a witness memory weeks later. Read together the two contradict each other ("he
+    boycotted that coronation" then "he witnessed that coronation"), so the feud row is the one
+    kept. Runs before the overview counts and before `_merge_activity_windows`, per person, so a
+    merged "…等N人见证" row loses only the guests who opposed the ceremony."""
+    if not ceremony_feuds:
+        return events
+    out = []
+    for e in events:
+        if e[1] == "witnessed_a_coronation_memory":
+            ident = idents.get((e[0], e[1], e[2])) or {}
+            host = (ident.get("parts") or {}).get("host")
+            owner = ident.get("owner")
+            if isinstance(host, int) and isinstance(owner, int) and host != owner:
+                pair = frozenset((owner, host))
+                _dn = _daynum(e[0])
+                if any(p == pair and abs(_dn - _daynum(fd)) <= _ACTIVITY_MERGE_DAYS
+                       for p, fd in ceremony_feuds):
+                    continue
+        out.append(e)
+    return out
 
 
 def _merge_activity_windows(events, f=None):
@@ -20404,52 +20505,50 @@ def _kin_rank_zh(n):
     return str(n)
 
 
-def _kin_counts_line(f, pid, father_id, father_fam, sibs):
-    """Family-size sentence printed beside the protagonist's kinship row: how many children
-    the father has, how many mothers they have, and the subject's birth rank among them.
+def _kin_rank_word(rank, total):
+    """Familial ordinal for a birth rank: 老大 for the eldest, 老幺 for the youngest, 老二…老九
+    in between, and 老十/老十一… for a rank past nine that is still not the youngest."""
+    if rank == total:
+        return "老幺"
+    if rank == 1:
+        return "老大"
+    return "老" + _kin_rank_zh(rank)
 
-    All numbers are counted here so that the material states each group size itself: with
-    only the list of brothers and sisters, the subject is added to the listed siblings and
-    the total is reported as the mother's children, while that total belongs to the father
-    (whose children may have several mothers). '' when the father or his children are
-    unknown."""
-    if father_id is None:
-        return ""
+
+def _kin_counts_line(f, pid, fam, father_id, father_fam):
+    """Birth-rank sentence printed beside the protagonist's kinship row: which parent's children
+    he ranks among, and where in that order.
+
+    The sentence names one parent noun and one rank and no group size. A count written beside the
+    parent's name is re-read by the model as that parent's own parentage ("父亲X共十一子女，分属五母"
+    comes out as "母亲是X的五名父亲之一"), and a bare sibling list leaves the totals to be summed
+    by the reader. A matrilineal (uxorilocal) marriage ranks the subject among the MOTHER's
+    children, since the game assigns those children to her house; every other marriage ranks him
+    among the father's. Returns (line, parent_word); the line is '' when the parent, his children
+    or the subject's own rank is unknown, and '' also leaves only one child, whose rank states
+    nothing beyond the parentage rows already given."""
+    mother_id = (fam.get("mother") or [None])[0]
+    parent_id, parent_fam, parent_word = father_id, father_fam, "父亲"
+    if father_id is not None and mother_id is not None \
+            and f.is_matrilineal(father_id, mother_id, before=f.as_of):
+        parent_id, parent_word = mother_id, "母亲"
+        parent_fam = ((f.cache.get("characters") or {}).get(str(mother_id)) or {}).get("family") or {}
+    if parent_id is None:
+        return "", ""
     chars = f.cache.get("characters") or {}
-    melt_chars = getattr(f, "_chars", {}) or {}
-    kids = [c for c in _asof_ids(f, (father_fam or {}).get("child") or []) if f.name(c)]
-    # one child leaves no group size to state, and no sibling list to confuse it with
+    kids = [c for c in _asof_ids(f, (parent_fam or {}).get("child") or []) if f.name(c)]
     if len(kids) < 2:
-        return ""
+        return "", ""
 
     def _crec(c):
         return chars.get(str(c)) or {}
 
-    def _mother_of(c):
-        """Birth mother id of a child: the cache first, then the melt's family_data."""
-        m = (_crec(c).get("family") or {}).get("mother") or []
-        if not m:
-            m = ((melt_chars.get(str(c)) or {}).get("family_data") or {}).get("mother") or []
-        return m[0] if m and isinstance(m[0], int) else None
-
     order = sorted(kids, key=lambda c: cl.date_key(_crec(c).get("birth") or "9999.1.1"))
     rank = (order.index(pid) + 1) if pid in order else 0
-    mothers = {_mother_of(c) for c in kids}
-    head = f"{f.kin_label(father_id) or f.name_or(father_id)}共{_count_zh(len(kids))}个子女"
-    # The number of mothers is stated only when every child has a recorded mother, and it is
-    # tied to the children ("these N people") so that it cannot be read as the father's own
-    # parentage: "X has eight children, of three mothers" leaves X's role open.
-    if mothers and None not in mothers:
-        head += (f"；此{_count_zh(len(kids))}人分属"
-                 f"{_count_zh(len(mothers))}位母亲")
-    tail = []
-    if rank:
-        tail.append(f"{f.kin_label(pid) or f.name_or(pid)}在诸子女中行{_kin_rank_zh(rank)}")
-    if sibs:
-        tail.append(f"兄弟姊妹{_count_zh(len(sibs))}人")
-    if not tail:
-        return head + "。"
-    return head + "；" + "，".join(tail) + "。"
+    if not rank:
+        return "", ""
+    return (f"{f.kin_label(pid) or f.name_or(pid)}在{parent_word}子女中排"
+            f"{_kin_rank_word(rank, len(order))}。"), parent_word
 
 
 def _protagonist(f):
@@ -20882,12 +20981,10 @@ def _protagonist(f):
     p["mother"] = "、".join(
         _mark_lone_name(f.kin_label(x)) for x in (fam.get("mother") or []) if f.name(x))
     p["siblings"] = f.sibling_list(pid, fam)
-    # Family sizes counted by the program, printed with the kinship row above (see
-    # `_kin_counts_line`); the sibling list alone leaves the group sizes to be summed by
-    # the reader, which attributes the father's children to the mother.
-    p["kin_counts"] = _kin_counts_line(
-        f, pid, father_id, fd_fam,
-        [x for x in (fam.get("siblings") or []) if f.name(x)])
+    # Birth rank among the children of the parent whose house the subject belongs to (see
+    # `_kin_counts_line`); the rank sits next to that parent's own row.
+    p["kin_counts"], _kc_parent = _kin_counts_line(f, pid, fam, father_id, fd_fam)
+    p["kin_counts_parent"] = _kc_parent
     # ids of the relatives already named in this profile's kinship rows: the section stage
     # (KinScope.seed) reads this to know a kinship is stated and stops repeating the modifier.
     p["kin_ids"] = sorted({int(x) for x in (
@@ -21722,6 +21819,44 @@ def _chrono_joko_clause(f, cid, date):
     return "，称上皇"
 
 
+def _chrono_death_clause(f, cid, death, rec=None):
+    """Cause-and-agent clause for a chronicle death item: `death_clause` fed from the most complete
+    record across caches. The player's own death is read from `cache["player_death"]`, since
+    `pipeline._backfill_tail_deaths` skips him and `characters[]` therefore never carries it."""
+    _d0 = (rec if rec is not None else _chrono_rec(f, cid)).get("death") or {}
+    _reason = _d0.get("reason") or ""
+    _killer = _d0.get("killer")
+    if str(cid) == str(f.cache.get("player_id")):
+        _pd = f.cache.get("player_death") or {}
+        _reason = _reason or _pd.get("reason") or ""
+        if _killer is None:
+            _killer = _pd.get("killer")
+    try:
+        # The killer's title is read as of the day before the event (the same rule as `_anchor_date`:
+        # on the death day the title has already passed to the heir), else the killer would be named
+        # by an office he had just acquired.
+        return f.death_clause(cid, date=death, reason=_reason, killer=_killer,
+                              killer_date=_day_before(death))
+    except Exception:                     # noqa: BLE001
+        return ""
+
+
+def _holder_death_note(f, cid):
+    """Compact death note for a name-list item: "，卒{日}，{死因}". '' when the holder's death is
+    unknown.
+
+    The chronicle's opening name list used to carry each holder's accession alone, so a holder who
+    died in office had no death material anywhere in that block and the model filled the gap with a
+    remark of its own about how long he lived."""
+    rec = _chrono_rec(f, cid)
+    death = (rec.get("death") or {}).get("date") or f._char_death_date(cid) or ""
+    if not death:
+        return ""
+    note = "，卒" + f.date(death)
+    _clause = _chrono_death_clause(f, cid, death, rec=rec)
+    return note + ("，" + _clause if _clause else "")
+
+
 def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
                        vacant=False, is_h=False, family=False, nm=None,
                        prev_date=None, dtor=False):
@@ -21765,24 +21900,7 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
         _age = _chrono_year_age(birth, death)
         if _age is not None:
             dead_bits.append("享年%d岁" % _age)
-        _reason = _d0.get("reason") or ""
-        _killer = _d0.get("killer")
-        if str(cid) == str(f.cache.get("player_id")):
-            # `death_clause` reads the cause and the killer from `characters[]` too, so the player's
-            # own death has to hand them over explicitly.
-            _pd = f.cache.get("player_death") or {}
-            _reason = _reason or _pd.get("reason") or ""
-            if _killer is None:
-                _killer = _pd.get("killer")
-        try:
-            # The killer's title is read as of the day before the event (the same rule as `_anchor_date`:
-            # on the death day the title has already passed to the heir), else the killer would be named
-            # by an office he had just acquired.
-            _clause = f.death_clause(cid, date=death, reason=_reason,
-                                     killer=_killer,
-                                     killer_date=_day_before(death))
-        except Exception:
-            _clause = ""
+        _clause = _chrono_death_clause(f, cid, death, rec=rec)
         if _clause:
             dead_bits.append(_clause)
     word = _chrono_accession_reason(f, cid, tid, hist_type, date)
@@ -21946,46 +22064,15 @@ def _chrono_war_lines(f, tid):
     return out
 
 
-def _chrono_base_name(f, tid, date=None):
-    """The title's base name, without the tier word: k_qingxu -> "青徐".
-
-    The same form as `_base_name` inside `_realm_facts`, which is a closure, hence this
-    module-level copy."""
-    t = f._lt.get(str(tid)) or {}
-    key = t.get("key") or ""
-    if not key:
-        return ""
-    d = date or f.as_of or f.cache.get("last_date")
-    nm = f._name_at_date(tid, d) or L.loc(f.table, key) or key
-    nm = str(nm).strip()
-    return nm if not re.search(r"[A-Za-z_]", nm) else ""
-
-
 def _chrono_sub_lines(f, tid, pid=None):
-    """Capital / territory rows of this reign: the capital comes from the already computed
-    `protagonist.capital` (the same output as the profile, so the two cannot disagree),
-    and the territory row lists the vassal titles hanging under this title. A row is
-    omitted entirely when unavailable."""
+    """Capital row of this reign, taken from the already computed `protagonist.capital` (the same
+    output as the profile, so the two cannot disagree). Omitted entirely when unavailable."""
     out = []
     capname = ""
     if pid is not None:
         capname = (getattr(f, "_protagonist_cache", None) or {}).get("capital") or ""
     if capname:
         out.append("治所：" + str(capname))
-    holders = {}
-    for h in (f.cache.get("realm_history") or []):
-        for k, v in (h.get("holders") or {}).items():
-            if v is not None:
-                holders[str(k)] = v
-    subs = []
-    for k in holders:
-        t = f._lt.get(str(k)) or {}
-        if (t.get("de_facto_liege") or t.get("liege")) == tid:
-            nm = _chrono_base_name(f, int(k))
-            if nm and nm not in subs:
-                subs.append(nm)
-    if subs:
-        out.append("本朝所辖：" + "、".join(subs[:12]))
     return out
 
 
@@ -22261,13 +22348,13 @@ def _is_final_bio_spec(facts):
         return str(as_of) == str(end)
 
 
-def _top_title_history(f, group_lines=None):
+def _top_title_history(f):
     """The succession history of this reign, material for the part title 《XX历代记》: the holders of
     the protagonist's current top title since the campaign start. Returns (common name for the part
     title, [summary lines...], part material); ("", [], {}) when there is nothing to write.
 
-    One line per dynasty as "{国号}{tier word}（{起}至{止}）" (preceded by "本朝：", followed by
-    本朝疆域 / 主角本朝任期 lines), then its holders oldest to newest as "{名}（{即位日}{缘由}）"; a
+    One line per dynasty as "{国号}{tier word}（{起}至{止}）" (preceded by "本朝：", followed by the
+    主角本朝任期 line), then its holders oldest to newest as "{名}（{即位日}{缘由}{卒日}{死因}）"; a
     vacancy with the mandate destroyed but the dynasty name unchanged reads "群雄争霸". Reasons come
     from the save's `history.<date>.type` (see `_SUCC_WORD`; no type = regular inheritance)."""
     pid = f.cache.get("player_id")
@@ -22437,6 +22524,8 @@ def _top_title_history(f, group_lines=None):
                     _txt += "，随后于" + f.date(_ld) \
                         + ("失去天命" if is_h else "失去头衔")
                     break
+            # the holder's death closes his item, so a reign that ended in death says so here
+            _txt += _holder_death_note(f, _h)
             _items.append(_txt + "）")
         periods.append({"name": _hdr, "start": _st, "vacant": bool(_vac0),
                         "ids": [x[2] for x in _hs], "rows": []})
@@ -22448,9 +22537,6 @@ def _top_title_history(f, group_lines=None):
                          + "天命中绝，天下无主")
         else:
             lines.append("其间无主")
-    gl = (group_lines or {}).get(tid)
-    if gl:
-        lines.append("本朝疆域：" + gl.split("：", 1)[-1])
     ivs = (f._hold_intervals(pid) or {}).get(tid) or []
     if own and ivs:
         _g, _l = ivs[-1][0], ivs[-1][1]
@@ -22466,29 +22552,9 @@ def _top_title_history(f, group_lines=None):
 
 
 def _realm_facts(f):
-    """Realm data: the player's liege chain + holder changes of empire/kingdom-tier titles."""
+    """Realm data: holder changes of empire/kingdom-tier titles."""
     out = {}
-    # The player's liege chain (last snapshot). When as_of predates the last snapshot (a decade
-    # biography) the current melt's chain is late-snapshot state, which cannot be rebuilt per period, so
-    # it is omitted rather than written wrongly.
     pid = f.cache.get("player_id")
-    if pid is not None and not (f.as_of and cl.date_key(f.as_of) < cl.date_key(
-            f.cache.get("last_date") or f.as_of or "9999.9.9")):
-        prov = f.character_location_province(pid)
-        county_tid = f.county_at_province(prov)
-        chain = f.liege_chain(county_tid) if county_tid else []
-        if chain:
-            parts = []
-            for tid, hid in chain:
-                hn = f.name_or(hid, "") if hid is not None else ""
-                # title joined straight to its holder ("唐皇朝李漼"), no parenthetical
-                # appositive
-                parts.append(f"{f.title(tid)}{hn}" if hn else f.title(tid))
-            # When the protagonist tops the chain, say he is independent, so the model does
-            # not confuse his own polity with the other titles in the same table.
-            top_hid = chain[-1][1]
-            tail = "，自立，上无领主" if top_hid == pid else ""
-            out["liege_chain"] = " → ".join(parts) + tail
     # Holder changes of high titles (h_/e_/k_): exact title-history dates with realm_history snapshots as
     # fallback, the title name following the tenure so renames show. Only "relevant" high titles are
     # collected (liege chain + titles once held by related characters); court offices (e_minister_*) stay out.
@@ -22725,9 +22791,7 @@ def _realm_facts(f):
         if len(bits) > 1:
             changes.append("，".join(bits) + _group_suffix(tid))
     # Group the titles of one liege into a row, so "唐皇朝" and "青徐国" read as superior and
-    # subordinate in one court rather than as two coexisting polities. The grouping rows are
-    # also stored by liege tid for the territory row of 《XX历代记》.
-    group_lines = {}
+    # subordinate in one court rather than as two coexisting polities.
     for sup in sorted(vassal_groups):
         names = []
         for tid in vassal_groups[sup]:
@@ -22739,9 +22803,7 @@ def _realm_facts(f):
         snm = _base_name(sup) or _simple_name(sup)
         if not snm:
             continue
-        _gln = f"{snm}朝廷所辖，同属一廷：" + "、".join(names)
-        changes.append(_gln)
-        group_lines[sup] = _gln
+        changes.append(f"{snm}朝廷所辖，同属一廷：" + "、".join(names))
     # order: liege-chain titles first (by descending rank), the rest as they are
     def _sort_key(ln):
         nm = ln.split("：", 1)[0]
@@ -22771,8 +22833,7 @@ def _realm_facts(f):
     # Succession history of this reign: the dynasty-name evolution and successive holders of the
     # protagonist's current top title since the campaign start (《XX历代记》; an estate holder writes the
     # top liege's title history, an adventurer camp is skipped). `holder_changes` remains for other callers.
-    _tt_common, _tt_lines, _tt_chronicle = _top_title_history(
-        f, group_lines=group_lines)
+    _tt_common, _tt_lines, _tt_chronicle = _top_title_history(f)
     if _tt_lines:
         out["top_title_history"] = _tt_lines
         out["top_title_name"] = _tt_common

@@ -819,20 +819,20 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         lines.append(p["language_bridge"])
     # One relative per sentence: the father, the mother and the sibling list are separate
     # statements, so the sibling list can never be read together with the mother's name.
-    # The family sizes (`facts._kin_counts_line`) sit directly behind the father's sentence,
-    # since they count HIS children, and the mother's row keeps its distance from them.
+    # The birth rank (`facts._kin_counts_line`) sits directly behind the row of the parent it
+    # counts: the father's for a standard marriage, the mother's for a matrilineal one.
     kin_bits = []
     if p.get("father"):
         kin_bits.append(f"父{p['father']}。")
-    # family sizes counted by the program (facts._kin_counts_line), so the model reads the
-    # group sizes instead of summing them up itself
-    if p.get("kin_counts"):
+    if p.get("kin_counts") and p.get("kin_counts_parent") != "母亲":
         kin_bits.append(p["kin_counts"])
     if with_real_parentage and p.get("real_father") \
             and p.get("real_father") != p.get("father"):
         kin_bits.append(f"实父{p['real_father']}。")
     if p.get("mother"):
         kin_bits.append(f"母{p['mother']}。")
+    if p.get("kin_counts") and p.get("kin_counts_parent") == "母亲":
+        kin_bits.append(p["kin_counts"])
     # per-person profiles omit siblings; the protagonist's own profile keeps the line
     if cid is None and p.get("siblings"):
         kin_bits.append(f"兄弟姊妹{p['siblings']}。")
@@ -1523,8 +1523,6 @@ def _article_facts(facts, cache, key, section=None):
         # data sources: realm.top_title_history (dynasty names and holders) and realm.dynasty_chronicle (one row per ruler)
         realm = facts.get("realm") or {}
         dashi = []
-        if realm.get("liege_chain"):
-            dashi.append(f"主角所处疆域：{realm['liege_chain']}")
         dc = realm.get("dynasty_chronicle") or {}
         _segs = (section or {}).get("periods") \
             if _sec_key(section) not in ("lead",) else None
@@ -1546,8 +1544,8 @@ def _article_facts(facts, cache, key, section=None):
             if wars:
                 _set_block(blocks, "本朝战事", "\n".join(_chrono_dedup_wars(wars)))
             if (section or {}).get("is_last"):
-                # The closing section's own requirement promises this reign's capital, territory and
-                # the protagonist's tenure in it, so those reach the section that has to write them
+                # The closing section's own requirement promises this reign's capital and the
+                # protagonist's tenure in it, so those reach the section that has to write them
                 # rather than only the opening. The current holder goes with them: the rows stop at the
                 # last accession, and without a name on the seat the closing has nothing to go on.
                 _close = [x for x in (dc.get("subs") or []) if x]
@@ -1556,7 +1554,7 @@ def _article_facts(facts, cache, key, section=None):
                 if _tenure:
                     _close.append(_tenure)
                 if _close:
-                    _set_block(blocks, "本朝疆域", "\n".join(_close))
+                    _set_block(blocks, "本朝治所与任期", "\n".join(_close))
                 if dc.get("holder_now"):
                     _set_block(blocks, "本朝现任", dc["holder_now"])
         else:
@@ -3178,7 +3176,7 @@ def build_articles(facts, cache, cfg):
         _t_fam = "家族历代" if _fam else "王朝的世代更替与改朝换代"
         _f_fam = ("按先世的辈分次序与他们持有的头衔，写家族的世代传承与传主的兴起"
                   if _fam else
-                  "按各朝代的起止与历代统治者的继位缘由，写改朝换代、疆域归并与主角的起落")
+                  "按各朝代的起止与历代统治者的继位缘由和卒讯，写改朝换代与主角的起落")
         articles.append(
             {"key": "chaoju", "title": f"{_ttl}历代记", "subject": None,
              "theme": _t_fam, "focus": _f_fam,

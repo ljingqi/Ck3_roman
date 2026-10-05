@@ -87,10 +87,11 @@ def run(path):
         n = len([x for x in body.split("\n") if x.strip()])
         check(f"① {k} 纪事 ≥2 行", n >= 2, n)
 
-    # ④ 末节补齐疆域、任期与现任
+    # ④ 末节补齐治所、任期与现任
     mid3 = blocks.get("chaoju_mid3") or {}
-    close = mid3.get("本朝疆域") or ""
+    close = mid3.get("本朝治所与任期") or ""
     check("④ 末节有治所", "治所：罗马" in close, close[:120])
+    check("④ 末节只留治所与任期（无所辖清单）", "所辖" not in close, close[:200])
     check("④ 末节有主角任期且无「至今」",
           "主角本朝任期：975年9月24日–999年7月7日" in close, close[:200])
     holder = mid3.get("本朝现任") or ""
