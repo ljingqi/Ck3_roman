@@ -40,12 +40,21 @@ def check(label, ok, detail=""):
     return bool(ok)
 
 
+def _daynum(d):
+    """Same approximation facts._date_ord uses, so the window here is the window under test."""
+    try:
+        y, m, dd = (int(x) for x in str(d).split(".")[:3])
+    except (TypeError, ValueError):
+        return -10 ** 9
+    return y * 372 + (m - 1) * 31 + dd
+
+
 def main():
     paths = sys.argv[1:] or [
         os.path.join(ROOT, "output", "洪氏2", "data", "snap_135480_final.json")]
     bad = 0
-    for p in paths:
-        snap = json.load(open(p, encoding="utf-8"))
+    snaps = [(p, json.load(open(p, encoding="utf-8"))) for p in paths]
+    for p, snap in snaps:
         rows = all_text(snap)
         facts = facts_of(snap)
         print("=" * 78)
@@ -70,26 +79,44 @@ def main():
 
         # ---- 问题2：一场加冕礼不再既出结仇行又出见证行 ----
         print("\n[2] 加冕礼结仇行与见证行")
-        feud = [(w, ln) for w, ln in rows if "抵制" in ln or "结仇" in ln]
-        wit = [(w, ln) for w, ln in rows if "见证" in ln and "加冕" in ln]
-        print("    结仇/抵制行 %d 条，见证加冕行 %d 条" % (len(feud), len(wit)))
-        for w, ln in feud[:6]:
-            print("     F", w, "|", ln[:150])
-        for w, ln in wit[:6]:
-            print("     W", w, "|", ln[:150])
-        tl = facts.get("timeline") or []
-        pairs = set()
-        for w, ln in feud:
-            if "抵制" in ln and "的加冕礼" in ln:
-                m = re.search(r"抵制(.+?)的加冕礼", ln)
-                if m:
-                    pairs.add(m.group(1))
+        tl = [e for e in (facts.get("timeline") or []) if isinstance(e, dict)]
+        wit = [e for e in tl if e.get("type") == "witnessed_a_coronation_memory"]
+        feud = [e for e in tl if e.get("type") == "became_rivals"
+                and "的加冕礼" in (e.get("text") or "")]
+        print("    结仇行 %d 条，见证加冕行 %d 条" % (len(feud), len(wit)))
+        for e in feud[:6]:
+            print("     F", e.get("date"), "|", (e.get("text") or "")[:120])
+        for e in wit[:6]:
+            print("     W", e.get("date"), "|", (e.get("text") or "")[:120])
+        chars = facts.get("characters") or {}
+
+        # The invariant facts._drop_ceremony_witnesses enforces: a witness row goes when the same
+        # pair (owner, host) also produced a coronation feud within _ACTIVITY_MERGE_DAYS - and an
+        # aggregate row loses just the guests who boycotted that same ceremony.
         clash = []
-        for nm in pairs:
-            for w, ln in wit:
-                if nm in ln:
-                    clash.append((nm, ln[:120]))
-        bad += not check("抵制过的人不再出现在同一场加冕的见证行里", not clash, clash[:3])
+        names = [(cid, (rec or {}).get("name") or "")
+                 for cid, rec in chars.items()]
+        names = [(cid, n) for cid, n in names if n]
+        for e in wit:
+            ident = e.get("ident") or {}
+            host = (ident.get("parts") or {}).get("host")
+            owner = ident.get("owner")
+            hnm = (chars.get(str(host)) or {}).get("name") or ""
+            onm = (chars.get(str(owner)) or {}).get("name") or ""
+            near = [g for g in feud
+                    if abs(_daynum(e.get("date")) - _daynum(g.get("date"))) <= 90]
+            for g in near:
+                gt = g.get("text") or ""
+                if hnm and onm and hnm in gt and onm in gt:
+                    clash.append((e.get("date"), onm, hnm, gt[:80]))
+                if hnm and hnm in gt:
+                    # every other person the feud row names boycotted this ceremony
+                    for cid, n in names:
+                        if n != hnm and n in gt and n in (e.get("text") or ""):
+                            clash.append((e.get("date"), n, hnm, gt[:80]))
+        bad += not check("同一场加冕礼（90日内）的抵制者不再出现在见证行里", not clash, clash[:3])
+        bad += not check("别场加冕的见证行仍在（未过度删除）", bool(wit),
+                         [e.get("date") for e in wit][:4])
 
         # ---- 问题3a：历代记死因带凶手 ----
         print("\n[3a] 历代记死因")
@@ -120,16 +147,68 @@ def main():
         bad += not check("治所行保留", bool(cap), cap[:1])
         ten = [r for r in rows if r[1].startswith("主角本朝任期：")]
         bad += not check("主角本朝任期保留", bool(ten), ten[:1])
+        chaoju_mids = sorted(k for k in blocks_of(snap)
+                             if re.fullmatch(r"chaoju_mid\d+", k))
+        last = blocks_of(snap).get(chaoju_mids[-1]) if chaoju_mids else {}
         bad += not check("末节块改名 本朝治所与任期",
-                         "本朝治所与任期" in (blocks_of(snap).get("chaoju_mid_last")
-                                              or blocks_of(snap).get("chaoju_mid3") or {}),
-                         sorted(k for k in blocks_of(snap) if k.startswith("chaoju")))
+                         "本朝治所与任期" in (last or {}),
+                         [chaoju_mids, sorted((last or {}).keys())])
+        bad += not check("末节之外的历代记节不带治所块",
+                         not any("本朝治所与任期" in (blocks_of(snap).get(k) or {})
+                                 for k in chaoju_mids[:-1]),
+                         chaoju_mids[:-1])
 
         # ---- 问题4：跨卷人名 ----
         print("\n[4] 人名口径")
         nm = prof.get("name") or ""
         print("    本卷传主名:", nm)
         print("    facts.realm 键:", sorted((facts.get("realm") or {}).keys()))
+        # A cross-volume degraded name reads exactly like a relative's, so two distinct people
+        # end up sharing one string (135480 耀国·缯松 fell back to 耀国·洪堡).
+        chars4 = facts.get("characters") or {}
+        by_name = {}
+        for cid, rec in chars4.items():
+            n2 = (rec or {}).get("name") or ""
+            if n2:
+                by_name.setdefault(n2, []).append(cid)
+        dup = {k: v for k, v in by_name.items() if len(v) > 1}
+        if dup:
+            print("    同名（供参考，两人可能本就同名）:", list(dup.items())[:6])
+        pid4 = str(facts.get("player_id") or "")
+        pnm4 = (chars4.get(pid4) or {}).get("name") or nm
+        bad += not check("传主的名不与他人相撞（跨卷降级会撞成同名亲属）",
+                         pnm4 not in dup, [pnm4, dup.get(pnm4)])
+
+    if len(snaps) > 1:
+        print("=" * 78)
+        print("[4′] 跨卷同人口径")
+        # A volume that only ever saw a man after his death carries no culture for him, so
+        # display_name degrades to given+house - which can be word-for-word a relative's name.
+        own = {}
+        for p, snap in snaps:
+            f = facts_of(snap)
+            cid = str(f.get("player_id") or "")
+            rec = (f.get("characters") or {}).get(cid) or {}
+            if cid and rec.get("name"):
+                own[cid] = (rec["name"], os.path.basename(p))
+        clash4 = []
+
+        def _core(n):
+            # A regnal ordinal or an earned nickname is date-dependent (the son is 耀国·耀国松
+            # until his father dies, then 耀国二世·耀国松; 残忍者 arrives with the first kill),
+            # so neither is a cross-volume disagreement - the given+patronymic core is.
+            n = re.sub(r"[一二三四五六七八九十]+世", "", n or "")
+            return n.rsplit("·", 1)[-1]
+
+        for p, snap in snaps:
+            for cid, rec in (facts_of(snap).get("characters") or {}).items():
+                if cid in own and (rec or {}).get("name") \
+                        and _core(rec["name"]) != _core(own[cid][0]):
+                    clash4.append((cid, rec["name"], own[cid][0], own[cid][1],
+                                   os.path.basename(p)))
+        bad += not check("他卷传主在本卷的名与其本卷同一个本名（跨卷降级会换成亲属的名）",
+                         not clash4, clash4[:6])
+
     print("=" * 78)
     print("FAIL 计数:", bad)
     return 1 if bad else 0
