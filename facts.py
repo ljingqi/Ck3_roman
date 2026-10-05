@@ -1854,36 +1854,44 @@ def _date_ord(d):
     return y * 372 + (m - 1) * 31 + dd
 
 
-def _adopt_campaign_cultures(cache, campaign):
-    """Fill a character's missing culture from another volume of the same campaign.
+def _adopt_campaign_cultures(cache, campaign, melt_chars=None):
+    """Fill one volume's protagonist culture into another volume's record of the same man.
 
-    A character a volume sees only in a late snapshot (typically a long-dead ancestor) carries no
+    A character a volume sees only in a late snapshot (typically a long-dead predecessor) carries no
     culture there: `culture` is None and `culture_history` empty. Without a culture
     `cache_lib._patronym_of` cannot run, so `display_name` degrades to given+house - which can be
     word-for-word the name of his same-named son of the same house (135480 耀国·缯松 reads
-    耀国·洪堡 in the volumes that see him only after 1076, and his son is 耀国·洪堡). A volume that
-    saw him alive holds both fields, and the culture history is what makes the name date-correct
-    (he converted in 1022, so a death in 1026 is written with the patronymic of his later culture).
-    Copied only when this cache has neither field, so a culture recorded here always wins."""
+    耀国·洪堡 in the volumes that see him only after 1076, and his son is 耀国·洪堡, so the
+    chronicle pins the son with the father's killings). The volume he is the protagonist of holds
+    both fields, and its culture history is what makes the name date-correct (he converted in 1022,
+    so a death in 1026 is written with the patronymic of his later culture).
+
+    Two guards keep this to the case it exists for: only a protagonist of another volume is filled
+    (his own volume is the authority on him, and everyone else keeps the name the inference chain
+    already builds from the paternal line, the siblings and the house), and only when this volume's
+    melt carries no culture for him either - a melt that still knows him knows him as of THIS
+    volume's date, which beats a peer's later latched value."""
     chars = cache.get("characters") or {}
     if not chars:
         return
-    for peer in (campaign or {}).values():
-        if peer is cache:
+    melt_chars = melt_chars or {}
+    for peer_pid, peer in (campaign or {}).items():
+        if peer is cache or peer_pid is None:
             continue
-        pchars = peer.get("characters") or {}
-        if not pchars:
+        cid = str(peer_pid)
+        rec = chars.get(cid)
+        pr = (peer.get("characters") or {}).get(cid)
+        if not isinstance(rec, dict) or not isinstance(pr, dict):
             continue
-        for cid, rec in chars.items():
-            if not isinstance(rec, dict) \
-                    or rec.get("culture") is not None or rec.get("culture_history"):
-                continue
-            pr = pchars.get(cid)
-            if not isinstance(pr, dict) or pr.get("culture") is None:
-                continue
-            rec["culture"] = pr.get("culture")
-            if pr.get("culture_history"):
-                rec["culture_history"] = list(pr["culture_history"])
+        if rec.get("culture") is not None or rec.get("culture_history"):
+            continue
+        if pr.get("culture") is None:
+            continue
+        if (melt_chars.get(cid) or {}).get("culture") is not None:
+            continue
+        rec["culture"] = pr.get("culture")
+        if pr.get("culture_history"):
+            rec["culture_history"] = list(pr["culture_history"])
 
 
 class Facts:
@@ -1905,7 +1913,6 @@ class Facts:
         self.campaign = dict(campaign or {})
         if cache.get("player_id") is not None:
             self.campaign.setdefault(cache.get("player_id"), cache)
-        _adopt_campaign_cultures(cache, self.campaign)
         # Config: single source of truth for switches (defaults to config.json).
         self.cfg = cfg if cfg is not None else llm.load_config()
         # Whether Carnalitas event opinion families reach the facts (off by default).
@@ -1917,6 +1924,7 @@ class Facts:
         self._lt = ((melt.get("landed_titles") or {}).get("landed_titles") or {})
         self._tl = melt.get("traits_lookup") or []
         self._chars = cl.all_characters(melt)
+        _adopt_campaign_cultures(cache, self.campaign, self._chars)
         self.table = L.table()
         self.provmap = L.province_map()
         # Currency band table (defines thresholds for piety/prestige/influence/merit)

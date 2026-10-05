@@ -557,16 +557,21 @@ def _feud_sentences(facts, cache, cid, reasons, rel_date):
     pid = cache.get("player_id")
     if gi is None or pid is None or not reasons:
         return []
-    plabels = [((cache.get("characters") or {}).get(str(pid)) or {}).get("name_full"),
+    plabels = [gi.name_or(pid, "") or "",
+               ((cache.get("characters") or {}).get(str(pid)) or {}).get("name_full"),
                ((cache.get("characters") or {}).get(str(pid)) or {}).get("name_zh"),
                gi.person_label(pid, date=rel_date, style="brief"),
                gi.name_with_regnal(pid, rel_date) or "",
                (facts.get("protagonist") or {}).get("name") or ""]
-    elabels = [((cache.get("characters") or {}).get(str(cid)) or {}).get("name_full"),
-               ((cache.get("characters") or {}).get(str(cid)) or {}).get("name_zh"),
+    # `name_or` leads so the tail names the enemy exactly as the cause sentence does (both go
+    # through `_sub_relation_loc`): the cached `name_full` can be a stale rendering computed
+    # before this volume knew the enemy's culture (see facts._adopt_campaign_cultures).
+    elabels = [gi.name_or(cid, "") or "",
                gi.person_label(cid, date=rel_date, style="brief"),
                gi.name_with_regnal(cid, rel_date) or "",
-               ((facts.get("characters") or {}).get(str(cid)) or {}).get("name") or ""]
+               ((facts.get("characters") or {}).get(str(cid)) or {}).get("name") or "",
+               ((cache.get("characters") or {}).get(str(cid)) or {}).get("name_full"),
+               ((cache.get("characters") or {}).get(str(cid)) or {}).get("name_zh")]
     plabels = [x for x in plabels if x]
     elabels = [x for x in elabels if x]
     elabel = elabels[0] if elabels else ""

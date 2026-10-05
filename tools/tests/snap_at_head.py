@@ -23,8 +23,10 @@ _CODE = ("facts.py", "biography.py", "cache_lib.py", "localization.py",
 
 
 def git(*args):
+    # encoding pinned: the sources are UTF-8 while `text=True` alone decodes with the console
+    # locale (GBK here), which fails mid-file and leaves stdout None.
     return subprocess.run(["git"] + list(args), cwd=ROOT,
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding="utf-8")
 
 
 def main():
