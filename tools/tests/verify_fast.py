@@ -1584,6 +1584,16 @@ def group_v45(snap_path):
         def relation_word_for(self, cid, subject):
             return ""
 
+        def kin_chain_words_for(self, cid, subject):
+            w = self.kin_word_for(cid, subject)
+            if not w:
+                return []
+            parts = [w]
+            rel = self.relation_word_for(cid, subject)
+            if rel and rel not in parts:
+                parts.append(rel)
+            return parts[:3]
+
     ff = _FakeFacts()
     sc = F.KinScope(1)
     check("[1] 首见加定语", sc.mark(2, "受试者乙", ff) == "兄长受试者乙", "")

@@ -1202,6 +1202,8 @@ class KinScope:
     def word_for(self, cid, facts, subject=None):
         """On first occurrence return this person's kin attributive and claim the slot, else ''.
 
+        Concurrent relations are joined with 「兼」 (at most three: blood tie, primary kin term,
+        scripted relation; see `Facts.kin_chain_words_for`).
         `subject` overrides the reference person for sentences with their own subject."""
         subj = self.subject if subject is None else subject
         if cid is None or subj is None:
@@ -1213,18 +1215,17 @@ class KinScope:
         if cidi == subj or cidi in self.seen:
             return ""
         self.seen.add(cidi)
-        w = facts.kin_word_for(cidi, subj)
-        if not w:
+        parts = facts.kin_chain_words_for(cidi, subj)
+        if not parts:
             return ""
-        rel = facts.relation_word_for(cidi, subj)
-        if rel:
-            w = f"{w}兼{rel}"          # game word order: 亲属词兼关系词 (「母亲兼朋友」)
+        w = "兼".join(parts)
         self.stats[w] = self.stats.get(w, 0) + 1
         return w
 
     def mark(self, cid, base, facts, date=None):
-        """Prefix cid's term `base` with a kin attributive, extended with a scripted relation as
-        「亲属词兼关系词」 when the two also share one (first occurrence only); returns the final text."""
+        """Prefix cid's term `base` with its kin attributive, joined with 「兼」 when several relations
+        hold concurrently (blood tie, primary kin term, scripted relation; first occurrence only);
+        returns the final text."""
         if not base or cid is None or self.subject is None:
             return base
         try:
@@ -1234,12 +1235,10 @@ class KinScope:
         if cidi == self.subject or cidi in self.seen:
             return base
         self.seen.add(cidi)
-        w = facts.kin_word_for(cidi, self.subject)
-        if not w:
+        parts = facts.kin_chain_words_for(cidi, self.subject)
+        if not parts:
             return base
-        rel = facts.relation_word_for(cidi, self.subject)
-        if rel:
-            w = f"{w}兼{rel}"          # game word order: 亲属词兼关系词 (「姐姐兼霸凌者」)
+        w = "兼".join(parts)
         self.stats[w] = self.stats.get(w, 0) + 1
         return f"{w}{base}"
 
@@ -4568,6 +4567,31 @@ class Facts:
             return ""
         return kin_text(key)
 
+    def kin_chain_words_for(self, cid, subject):
+        """The concurrent relation labels of `cid` to `subject`, in reading order, for the caller to
+        join with 「兼」 (at most three): blood tie, then the primary kin term, then the scripted
+        relation. e.g. a spouse who is also a clan niece and a lover -> [族侄女, 妻子, 情人].
+
+        The cascade ranks by degree, so a spouse+blood double relation always reads as the spouse and
+        the blood tie is lost; the blood term is recovered here (spouse edge masked) only when the
+        primary term is affinal/spousal, which keeps pure-blood people on a single, unchanged label."""
+        key = kin_key(self.cache, subject, cid,
+                      spouse_back=self._spouse_back_index(),
+                      rev=self._kin_rev_index())
+        w = kin_text(key)
+        if not w:
+            return []
+        parts = []
+        if not kin_key_is_blood(key):
+            blood = self.blood_kin_word_for(cid, subject)
+            if blood and blood != w:
+                parts.append(blood)
+        parts.append(w)
+        rel = self.relation_word_for(cid, subject)
+        if rel and rel not in parts:
+            parts.append(rel)
+        return parts[:3]
+
     def _sibling_spouse_note(self, subject, sib, as_of=None):
         """A comma clause naming the marriage when a sibling was also the subject's spouse or
         concubine (「，曾为其妻」/「，兼为其妻」); '' when the sibling was never a spouse.
@@ -4632,8 +4656,9 @@ class Facts:
 
         Needed because the concubinage pointer is stored on the other party's record, leaving the
         concubine's own file with no husband line. Returns a phrase naming the blood tie and the consort
-        rank (no final period), or '' when undeterminable or when her own file already states the
-        relation.
+        rank (no final period). A blood tie is always returned (her file states the marriage but not the
+        consanguinity); the bare consort rank is dropped when her own file already states the relation,
+        and '' is returned only when there is neither a blood tie nor an unstated rank.
         """
         pid = self.cache.get("player_id")
         if pid is None or cid is None or int(cid) == int(pid):
@@ -4658,18 +4683,21 @@ class Facts:
             kind = "男宠" if self._is_female(pid) else "妾"
         if not kind:
             return ""
-        # skip when her own spouse/concubine rows already state it (read-only, also unlatched, or
-        # this test would always be true)
-        own = ((self.cache.get("characters") or {}).get(str(cid)) or {}).get("family") or {}
-        for k in ("primary_spouse", "spouse", "concubine"):
-            if pid in (own.get(k) or []):
-                return ""
         who = self.kin_label(pid, self.as_of)
         if not who:
             return ""
         bk = self.blood_kin_word_for(cid, pid)
+        # Her own spouse/concubine rows may already state the marriage (read-only, unlatched, or this
+        # test would always be true), which suppresses the redundant consort rank -- but never the
+        # blood tie: her file states the marriage yet not the consanguinity, and left bare the model
+        # invents the relation and may even flip the generation (niece read as aunt).
+        own = ((self.cache.get("characters") or {}).get(str(cid)) or {}).get("family") or {}
+        stated = any(pid in (own.get(k) or [])
+                     for k in ("primary_spouse", "spouse", "concubine"))
         if bk:
-            return f"本为{who}之{bk}，入侍为其{kind}"
+            return f"本为{who}之{bk}" if stated else f"本为{who}之{bk}，入侍为其{kind}"
+        if stated:
+            return ""
         return f"为{who}之{kind}"
 
     def _kin_rev_index(self):
