@@ -233,26 +233,43 @@ def main():
         # the live run binds a real Facts instance, whose kin_chain_words_for(桑莎, 传主) is
         # [妻子, 妹妹]; these are the words the pass refuses to touch. Emulate it so the proof does
         # not rest on the stub's AttributeError path (which only widens the rewrite).
-        _chain = types.SimpleNamespace(
-            kin_chain_words_for=lambda cid, subj: (["妻子", "妹妹"] if int(cid) == SANG else []))
+        _CHAIN = {(SANG, PID): ["妻子", "妹妹", "族侄女"],
+                  (SANG, BRI): ["母亲"]}
+
+        def _chain_of(cid, subj):
+            return list(_CHAIN.get((int(cid), int(subj)), []))
+
+        _chain = types.SimpleNamespace(kin_chain_words_for=_chain_of)
         facts_live = {"_facts": _chain, "characters": {}}
+        # the section's subject: 诸子行迹·布里基纳 runs with members=[布里基纳], so a possessive
+        # with no nameable possessor (「孩子」) belongs to that child, not to the protagonist
         for label, txt in CASES:
             out = bio._fix_kin_roles(txt, facts, cache)
             out_live = bio._fix_kin_roles(txt, facts_live, cache)
+            out_subj = bio._fix_kin_roles(txt, facts_live, cache, subject_ids=[BRI])
             w("  == %s" % label)
-            w("     in       : %s" % txt)
-            w("     out(stub) : %s" % out)
-            w("     out(live) : %s" % out_live)
-            w("     changed   : stub=%s live=%s" % (out != txt, out_live != txt))
+            w("     in            : %s" % txt)
+            w("     out(传主段)    : %s" % out_live)
+            w("     out(布里基纳段): %s" % out_subj)
+            w("     changed       : 传主段=%s 布里基纳段=%s"
+              % (out_live != txt, out_subj != txt))
             w()
         cur = bio._fix_kin_roles(CASES[0][1], facts_live, cache)
-        claim(cur == CASES[0][1], "成稿原句经 _fix_kin_roles 后逐字不变（后处理看不见这处错）")
-        cur3 = bio._fix_kin_roles(CASES[2][1], facts_live, cache)
-        claim(cur3 == CASES[2][1], "第 6 个十年原句经 _fix_kin_roles 后逐字不变")
-        fix_me = bio._fix_kin_roles(CASES[3][1], facts_live, cache)
-        claim("布里基纳·耀国松的妹妹是桑莎" in fix_me,
-              "对照：正确句「布里基纳的母亲是桑莎·洪堡」被后处理改写成「…的妹妹是桑莎·洪堡」"
-              "（后处理会**制造**这类病句）→ %s" % fix_me)
+        claim(cur == CASES[0][1], "成稿原句在传主段经 _fix_kin_roles 后逐字不变（传主视角下「妹妹」合规）")
+        fixed = bio._fix_kin_roles(CASES[0][1], facts_live, cache, subject_ids=[BRI])
+        claim("孩子的母亲是桑莎·洪堡" in fixed,
+              "★主修：成稿原句在布里基纳段被改回「孩子的母亲是桑莎·洪堡」→ %s" % fixed)
+        cur3 = bio._fix_kin_roles(CASES[2][1], facts_live, cache, subject_ids=[BRI])
+        claim("妹妹是桑莎" not in cur3,
+              "第 6 个十年原句在布里基纳段不再写「妹妹是桑莎」→ %s" % cur3)
+        fix_me = bio._fix_kin_roles(CASES[3][1], facts_live, cache, subject_ids=[BRI])
+        claim("布里基纳·耀国松的母亲是桑莎" in fix_me,
+              "对照：正确句「布里基纳的母亲是桑莎·洪堡」在布里基纳段保持逐字不变 → %s" % fix_me)
+        # a multi-role chain is correct prose (user 2026-10-06) and is never shortened to one word
+        for chain_in in ("他的妻子兼妹妹兼族侄女是桑莎·洪堡。",
+                         "他的妻子兼妹妹是桑莎·洪堡。"):
+            chain_out = bio._fix_kin_roles(chain_in, facts_live, cache)
+            claim(chain_out == chain_in, "兼链逐字保留：%s → %s" % (chain_in, chain_out))
 
     # ---------------------------------------------------------------- 第 3 层 渲染
     w("-" * 78)

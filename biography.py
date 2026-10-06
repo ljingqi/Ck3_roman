@@ -2176,30 +2176,114 @@ def _fix_person_names(text, facts, cache):
     return _dedup_adjacent_words(out)
 
 
-def _accepted_kin_words(fi, cid, pid, row_words):
-    """Words the fact layer itself composes or prints for one relative: the composed kin chain
-    (`Facts.kin_chain_words_for`: 「妻子兼妹妹X」) plus the marriage word of the row they are listed
-    in (「配偶X」 is the council's consort seat, 「妻室X」 the row head). `_fix_kin_roles` leaves all of
-    them alone; '' is not a word and is filtered by the caller."""
+def _accepted_kin_words(fi, cid, subj, row_words):
+    """Words the fact layer itself composes or prints for one relative **as seen from `subj`**: the
+    composed kin chain (`Facts.kin_chain_words_for`: 「妻子兼妹妹X」) plus the marriage word of the row
+    they are listed in (「配偶X」 is the council's consort seat, 「妻室X」 the row head). `_fix_kin_roles`
+    leaves all of them alone; '' is not a word and is filtered by the caller."""
     out = set(row_words or ())
     try:
-        out |= {w for w in (fi.kin_chain_words_for(cid, pid) or ()) if w}
+        out |= {w for w in (fi.kin_chain_words_for(cid, subj) or ()) if w}
     except Exception:                                        # noqa: BLE001
         pass
     return out
 
 
-def _fix_kin_roles(text, facts, cache):
+def _kin_chain_for(fi, cid, subj):
+    """`Facts.kin_chain_words_for` behind a guard: test stubs and a missing Facts instance yield []."""
+    try:
+        return [w for w in (fi.kin_chain_words_for(cid, subj) or ()) if w]
+    except Exception:                                        # noqa: BLE001
+        return []
+
+
+# A kin word with no explicit possessor belongs to the sentence's own subject; these nouns name that
+# subject indirectly (「孩子的妹妹」) and resolve to the section subject rather than to the protagonist.
+_POSSESSOR_GENERIC = ("孩子", "此人", "本人", "该人", "当事人", "对方", "自己", "他", "她", "其")
+
+
+def _possessor_words(cache, facts, pid, subject_ids):
+    """(name → id, generic fallback id) for resolving whose kin word a possessive phrase states.
+
+    Only close relatives of the protagonist (the pass's own span set) plus the protagonist and the
+    section subjects can be possessors: a possessive inside a sentence about one of them is the
+    realistic case, and anything outside this set resolves to None so the pass leaves the word alone
+    (a wrong rewrite is worse than a missed one). The generic fallback is the section subject when the
+    section is about one person (a child's 诸子行迹 section, a wife's 门庭恩怨 section), else the
+    protagonist."""
+    chars = cache.get("characters") or {}
+    fchars = (facts or {}).get("characters") or {}
+    ids = set()
+    for x in (subject_ids or ()):
+        try:
+            ids.add(int(x))
+        except (TypeError, ValueError):
+            continue
+    fam = chars.get(str(pid)) or {}
+    fam = (fam.get("family") or {})
+    for key in ("primary_spouse", "spouse", "ever_spouses", "former_spouses",
+                "concubine", "former_concubines", "father", "mother", "child", "siblings"):
+        for x in (fam.get(key) or []):
+            if isinstance(x, int):
+                ids.add(x)
+    ids.add(int(pid))
+    names = {}
+    for cid in ids:
+        rec = chars.get(str(cid)) or {}
+        for nm in (rec.get("name_full"), rec.get("name_zh"),
+                   (fchars.get(str(cid)) or {}).get("name")):
+            if nm and len(nm) >= 2 and nm not in names:
+                names[nm] = cid
+    subs = [x for x in (subject_ids or ()) if x is not None]
+    generic = int(subs[0]) if len(subs) == 1 else int(pid)
+    return names, generic
+
+
+def _possessor_at(out, end, names_ordered, generic):
+    """Person id the kin word ending at `end` belongs to, or None when the possessor is unresolvable.
+
+    The possessor is the noun phrase before the last 「的」 within 24 characters to the left (「孩子的」
+    → the section subject, 「耀国·缯松的」 → the protagonist, 「布里基纳·耀国松的」 → that child). No
+    「的」 at all means the sentence states a kin word with no possessor, which belongs to the
+    sentence's own subject (the section subject)."""
+    win = out[max(0, end - 24):end]
+    j = win.rfind("的")
+    if j < 0:
+        return generic
+    head = win[:j]
+    # only a 「的」 that sits directly on the kin word owns it; a farther 「的」 governs something else
+    # (「他是…的第三子，妹妹是桑莎」: that possessor owns 第三子, and 妹妹 belongs to the sentence's
+    # own subject)
+    if win[j + 1:].strip("之") != "":
+        return generic
+    for nm, cid in names_ordered:
+        if head.endswith(nm):
+            return cid
+    tail = head.strip("，。；、：　 「」『』——-·")[-3:]
+    for g in _POSSESSOR_GENERIC:
+        if tail.endswith(g):
+            return generic
+    return None
+
+
+def _fix_kin_roles(text, facts, cache, subject_ids=None):
     """Rewrite the kin word attached to a name when it disagrees with the archive (the last kin word
     in the 12 characters before the name). Pure and idempotent; truth is the cache kin graph plus the
-    words the fact layer composes for that person.
+    words the fact layer composes for that person **as seen from the possessor of that word**.
 
-    Two guards keep it from destroying correct prose, both proven by logs/v106_fixkin_probe2.txt:
+    Three guards keep it from destroying correct prose, all proven by logs/v106_fixkin_probe2.txt and
+    logs/v107_kin_subject.txt:
       * name spans are matched longest-first and non-overlapping, so a relative whose `name_zh` is a
         bare substring of another relative's name (the father's 「耀国」 inside 「海伦·耀国斯多蒂尔」)
         cannot claim the other person's characters;
       * a word the archive itself writes for that person is never replaced, so the composed chain
-        「妻子兼妹妹X」 survives (without it the pass rewrites 妹妹 into the cascade's 妻子).
+        「妻子兼妹妹X」 survives (without it the pass rewrites 妹妹 into the cascade's 妻子);
+      * the word's possessor decides the truth: 「孩子的妹妹是桑莎」 names the child's mother, so the
+        truth for a child-section sentence comes from `kin_word(孩子=段主语, 桑莎)` (母亲), not from
+        `kin_word(传主, 桑莎)` (妹妹). An unresolvable possessor leaves the word untouched.
+    The user ruled 2026-10-06 that a multi-role chain in prose (「X是Y的女儿兼妹妹兼族侄女」) is
+    correct rather than redundant, so a 「兼」 chain is rewritten at its own width and never shortened
+    to one word.
     """
     if not text:
         return text
@@ -2293,25 +2377,62 @@ def _fix_kin_roles(text, facts, cache):
         if cid is not None:
             accepted.append((st, cid, true_word, row_words))
     # right to left, so a rewrite never invalidates a span to its left
+    _words_desc = sorted(all_words, key=len, reverse=True)
+    names_map, generic_subj = _possessor_words(cache, facts, pid, subject_ids)
+    names_ordered = sorted(names_map.items(), key=lambda kv: -len(kv[0]))
     for st, cid, true_word, row_words in sorted(accepted, key=lambda t: -t[0]):
         win = out[max(0, st - 12):st]
-        best_w, best_p = "", -1
+        best_w, best_end = "", -1
         for w in all_words:
-            if w == true_word:
-                continue
             j = win.rfind(w)
             if j < 0:
                 continue        # word absent from the window (rfind -1 must not win)
-            # at equal positions prefer the longest word (伯祖父 ⊃ 祖父), else a precise word gets
-            # replaced by a coarser one (the table holds 42 mutually suffixing pairs).
-            if j > best_p or (j == best_p and len(w) > len(best_w)):
-                best_w, best_p = w, j
-        if not best_w or best_w in row_words:
+            # the candidate reaching furthest right wins; at the same end the longest one wins, so a
+            # specific word claims 「族侄女」 rather than leaving 「族」 + 「侄女」 to be repaired apart
+            e = j + len(w)
+            if e > best_end or (e == best_end and len(w) > len(best_w)):
+                best_w, best_end = w, e
+        if not best_w:
             continue
-        if best_w in _accepted_kin_words(fi, cid, pid, row_words):
+        at = max(0, st - 12) + best_end - len(best_w)
+        # whose kin word is this? 「孩子的妹妹」 is the child's mother, not the protagonist's sister
+        poss = _possessor_at(out, at, names_ordered, generic_subj)
+        if poss is None:
             continue
-        at = max(0, st - 12) + best_p
-        out = out[:at] + true_word + out[at + len(best_w):]
+        try:
+            true_poss = F.kin_word(cache, poss, cid, chars=chars) or true_word
+        except Exception:                                    # noqa: BLE001
+            true_poss = true_word
+        if not true_poss:
+            continue
+        acc = {w for w in _kin_chain_for(fi, cid, poss)}
+        if int(poss) == int(pid):
+            acc |= set(row_words or ())
+        if not acc:
+            acc = _accepted_kin_words(fi, cid, poss, row_words)
+        # the «兼» chain the model wrote at this slot: a multi-role chain is correct prose (user
+        # 2026-10-06), so it is measured at its own width and never shortened to one word
+        run_start, run_words = at, [best_w]
+        while run_start >= 1 and out[run_start - 1] == "兼":
+            cut = run_start - 1
+            hit = ""
+            for w in _words_desc:
+                if cut - len(w) >= 0 and out[cut - len(w):cut] == w:
+                    hit = w
+                    break
+            if not hit:
+                break
+            run_words.insert(0, hit)
+            run_start -= len(hit) + 1
+        if all(w in acc for w in run_words):
+            continue
+        if len(run_words) >= 2:
+            repl = _kin_chain_for(fi, cid, poss) or [true_poss]
+            while len(repl) < len(run_words):
+                repl.append(true_poss)
+            out = out[:run_start] + "兼".join(repl[:len(run_words)]) + out[at + len(best_w):]
+        else:
+            out = out[:at] + true_poss + out[at + len(best_w):]
     # rewriting must not create adjacent duplicates, so it funnels through the same gate as the finished section
     return _dedup_adjacent_words(out)
 
@@ -3440,18 +3561,21 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     intro = llm.clean_number_spaces(intro)
     intro = llm.normalize_zh_punct(intro)
     # the intro is injected verbatim into every article lead, so kin-word slips are corrected first
-    intro = _fix_kin_roles(intro, facts, cache)
+    intro = _fix_kin_roles(intro, facts, cache, subject_ids=[facts.get("player_id")])
     intro = _fix_person_names(intro, facts, cache)
 
     sec_cfg = dict(cfg)
     sec_cfg["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)
 
-    def _draft_section(msg, sec_title, article_title):
+    def _draft_section(msg, sec_title, article_title, subject_ids=None):
         """Draft one section body, then check it with _tail_issue: a dangling bracket or
-        unclosed emphasis means upstream truncation, so regenerate once, else trim the tail."""
+        unclosed emphasis means upstream truncation, so regenerate once, else trim the tail.
+        `subject_ids` are the people this section is about: a possessive kin word with no nameable
+        possessor (「孩子的妹妹」) belongs to them, not to the protagonist (`_fix_kin_roles`)."""
         def _one(text):
             body = _fix_kin_roles(
-                _normalize_section(text, sec_title, article_title), facts, cache)
+                _normalize_section(text, sec_title, article_title), facts, cache,
+                subject_ids=subject_ids)
             body = _fix_person_names(body, facts, cache)
             return body, _tail_issue(body)
 
@@ -3471,7 +3595,9 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
         try:
             msg = build_lead_messages(article, facts, cache, intro, cfg)
             body = _draft_section(msg, article["sections"][0]["title"],
-                                  article["title"])
+                                  article["title"],
+                                  subject_ids=[_article_subject(facts, cache,
+                                                                article["key"])])
             body = re.sub(r"(?<!\n)\n(?!\n)", "\n\n", body)
             return article["key"], body
         except Exception as e:
@@ -3490,7 +3616,10 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
         try:
             msg = build_section_messages(article, section, facts, cache,
                                          leads[article["key"]], cfg)
-            body = _draft_section(msg, section["title"], article["title"])
+            body = _draft_section(msg, section["title"], article["title"],
+                                  subject_ids=(list(section.get("members") or [])
+                                               or [_article_subject(facts, cache,
+                                                                    article["key"])]))
             return article["key"], section["key"], body
         except Exception as e:
             llm.log(f"板块《{section['title']}》生成失败: {e}")
