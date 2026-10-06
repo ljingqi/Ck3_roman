@@ -422,6 +422,25 @@ KIN_WORDS = {
     "sister_in_law_younger": ("", "弟媳"),
     "brother_in_law_older":  ("", "姐夫"),
     "brother_in_law_younger": ("", "妹夫"),
+    # Group F2, the spouse's own siblings (v109; word by the spouse's sex, the sibling's sex and
+    # the sibling's seniority against the spouse, which is what real Chinese usage keys on:
+    # the wife's elder brother is 内兄, the husband's younger sister 小姑子). No game keys.
+    "wife_brother_older":      ("", "内兄"),
+    "wife_brother_younger":    ("", "内弟"),
+    "wife_sister_older":       ("", "姨姐"),
+    "wife_sister_younger":     ("", "姨妹"),
+    "husband_brother_older":   ("", "大伯子"),
+    "husband_brother_younger": ("", "小叔子"),
+    "husband_sister_older":    ("", "大姑子"),
+    "husband_sister_younger":  ("", "小姑子"),
+    # Group F3, the spouse's sibling's spouse: two men married to two sisters are 连襟, two
+    # women married to two brothers are 妯娌 (v109; distinct from 姐夫/妹夫, which are one's own
+    # sisters' husbands). No game keys.
+    "co_brother_in_law":     ("", "连襟"),
+    "co_sister_in_law":      ("", "妯娌"),
+    # Group G2, a parent's other spouse: 继父/继母 (v109; the mirror of 继子/继女). No game keys.
+    "step_father":           ("", "继父"),
+    "step_mother":           ("", "继母"),
     # ---- Wider coverage: every related character gets a word ----
     # Uppercase relation keys take the game localization (GRANDFATHER/...); the rest are fallbacks.
     # Group H, direct ancestors: grandparents and great-grandparents (side by the first hop only)
@@ -1221,6 +1240,23 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_mem
             return "sister_in_law" if c_female else "brother_in_law"
     for sid in sorted(_primary_spouses(s)):
         if c in _sibs(sid):
+            # v109: the spouse's own sibling was the coarse 姻亲兄弟/姻亲姊妹 whatever the sexes and
+            # the seniority; real Chinese usage names it (the wife's elder brother 内兄, her younger
+            # sister 姨妹, the husband's elder brother 大伯子, his younger sister 小姑子). The word
+            # turns on the spouse's sex, the sibling's sex and the sibling's seniority **against the
+            # spouse**. The coarse word stays as the fallback whenever a sex or the seniority is
+            # unrecorded, so no pair loses a label.
+            sif = _female(sid)
+            older = _older(c, sid)
+            if c_female is not None and older is not None:
+                if sif is True:
+                    if c_female:
+                        return "wife_sister_older" if older else "wife_sister_younger"
+                    return "wife_brother_older" if older else "wife_brother_younger"
+                if sif is False:
+                    if c_female:
+                        return "husband_sister_older" if older else "husband_sister_younger"
+                    return "husband_brother_older" if older else "husband_brother_younger"
             return "sister_in_law" if c_female else "brother_in_law"
     # 12) Stepchildren (the spouse's children that are not mine)
     for sid in sorted(sp_s):
@@ -2153,6 +2189,26 @@ class Facts:
                 "start": str(_v.get("start_date") or ""),
             })
         self._diarchies.sort(key=lambda x: cl.date_key(x["start"] or "9999.9.9"))
+        # Regents are a diarchy type of their own (`regency` / `temporary_regency` /
+        # `nomad_regency` / `vizierate`; the game's list is common/diarchies/diarchy_types and
+        # `diarchy_is_regency` marks them). They are kept apart from the co-ruler list above, which
+        # the co-ruler address words read, and are worded by `regency_of` (v109 §2.1). The save
+        # stores no end date: a regency that ended is simply absent from that melt's table.
+        self._regencies = []
+        for _v in ((melt.get("diarchies") or {}).get("database") or {}).values():
+            if not isinstance(_v, dict):
+                continue
+            _t = str(_v.get("type") or "")
+            if _t.startswith("co_") or "regen" not in _t:
+                continue
+            _l, _d2 = _v.get("liege"), _v.get("diarch")
+            if not isinstance(_l, int) or not isinstance(_d2, int):
+                continue
+            self._regencies.append({
+                "liege": int(_l), "diarch": int(_d2), "type": _t,
+                "start": str(_v.get("start_date") or ""),
+            })
+        self._regencies.sort(key=lambda x: cl.date_key(x["start"] or "9999.9.9"))
         self._co_ruler_flag = set()   # character ids carrying use_co_ruler_title
         for _cid, _c in self._chars.items():
             if not isinstance(_c, dict):
@@ -4746,35 +4802,109 @@ class Facts:
             return "男宠" if female else "妾"
         return ""
 
-    def _court_positions_of(self, cid, date=None):
-        """Office words `cid` holds in the subject's court as of `date` (roster order, deduped).
+    def _court_roster(self, subject, date=None):
+        """Raw court-position rows of `subject`'s court as of `date`.
+
+        `cache["court_positions"]` holds the **protagonist's** roster only (cache_lib filters
+        `employer == player`, cache_lib.py:2829-2856), so another reference person's court has to be
+        read from the melt's `court_positions.database`, the table cache_lib itself reads; the rows
+        are normalized to the cache's own shape. [] when the melt is absent (a kinship-only test
+        harness runs without one)."""
+        if subject is None:
+            subject = self.cache.get("player_id")
+        try:
+            subject = int(subject)
+        except (TypeError, ValueError):
+            return []
+        if subject == self.cache.get("player_id"):
+            hist = self.cache.get("court_positions") or []
+            cut = date or self.as_of
+            if cut:
+                hist = [h for h in hist if cl.date_key(h.get("date")) <= cl.date_key(cut)]
+            if not hist:
+                return []
+            return [dict(p) for p in (hist[-1].get("positions") or []) if isinstance(p, dict)]
+        cpd = (self.melt.get("court_positions") or {}).get("database") or {}
+        out = []
+        for e in cpd.values():
+            if not isinstance(e, dict):
+                continue
+            try:
+                if e.get("employer") is None or int(e.get("employer")) != subject:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if not e.get("court_position"):
+                continue
+            out.append({"type": e.get("court_position"), "employee": e.get("employee"),
+                        "hire_date": e.get("hire_date"), "task": e.get("task_type")})
+        return out
+
+    def _court_positions_of(self, cid, date=None, subject=None):
+        """Office words `cid` holds in `subject`'s court as of `date` (roster order, deduped).
 
         `cache["court_positions"]` records the player's court roster per snapshot as
         `[{date, positions: [{type, employee, hire_date}]}]`, and `court_position_word` resolves the
         game's own wording (私人医生 → 医学博士). The subject's own offices are not in it: the roster
         holds his retainers, which is the sense 「兼军事总管兼乳母兼处刑人」 carries (user
-        2026-10-05: offices are all listed)."""
+        2026-10-05: offices are all listed).
+
+        v109 adds the reference person: with `subject` omitted (or equal to the protagonist) the
+        player's roster is read as before; for anyone else the melt's `court_positions.database` is
+        filtered by `employer == subject`, so a person can be named by their office in a third
+        party's court as well. No data means no word (fail-open)."""
         if cid is None:
             return []
         try:
             want = int(cid)
         except (TypeError, ValueError):
             return []
-        hist = self.cache.get("court_positions") or []
-        cut = date or self.as_of
-        if cut:
-            hist = [h for h in hist if cl.date_key(h.get("date")) <= cl.date_key(cut)]
-        if not hist:
-            return []
         out, seen = [], set()
-        for p in (hist[-1].get("positions") or []):
-            if not isinstance(p, dict) or p.get("employee") != want:
+        for p in self._court_roster(subject, date):
+            if p.get("employee") != want:
                 continue
             zh = self.court_position_word(p.get("type")) or ""
             if not zh or zh == p.get("type") or zh in seen:
                 continue
             seen.add(zh)
             out.append(zh)
+        return out
+
+    def _council_seats_of(self, cid, subject=None, date=None):
+        """Council-seat words `cid` holds in `subject`'s court (protagonist when omitted).
+
+        A save stores the seats as task ids plus a holder, and the seat name comes from
+        `council_tasks.position` with the government variant (see `council_line`). This is a
+        separate outlet from `_court_positions_of` because the two tables are different: a celestial
+        family head's 提管 is the spymaster seat
+        (`councillor_spymaster_celestial_family_head`) and never appears as a court position."""
+        if cid is None:
+            return []
+        if subject is None:
+            subject = self.cache.get("player_id")
+        try:
+            want, sub = int(cid), int(subject)
+        except (TypeError, ValueError):
+            return []
+        act = (self.melt.get("council_task_manager") or {}).get("active") or {}
+        if not act:
+            return []
+        gov, imperial = self._council_scope(cid=sub)
+        out, seen = [], set()
+        for e in act.values():
+            if not isinstance(e, dict):
+                continue
+            owner = e.get("court_owner")
+            if not isinstance(owner, int) or owner != sub:
+                continue
+            if e.get("owner") != want:
+                continue
+            word = L.council_seat_word(self.table, self._council_tasks, e.get("type") or "",
+                                       gov, imperial)
+            if not word or word in seen:
+                continue
+            seen.add(word)
+            out.append(word)
         return out
 
     def _parent_maps(self):
@@ -4881,49 +5011,264 @@ class Facts:
                     break
         return words
 
+    # Order of the categories in a composed identity list (user 2026-10-05): the marriage first,
+    # then the blood routes (three at most), then the affinal routes (two at most), then the one
+    # scripted relation, then every office the person holds in the reference person's court.
+    _IDENTITY_ORDER = ("marriage", "blood", "affinal", "relation", "office")
+    # Affinal terms one composed identity list may carry. A budget of its own, so an in-law route
+    # never eats into the blood routes' budget (user 2026-10-06: both ties must be visible on the
+    # same person, 「兄弟兼堂表兄弟兼姻亲兄弟兼朋友」).
+    _KIN_CHAIN_AFFINAL_MAX = 2
+
+    def _sex_of(self, cid):
+        """Recorded sex of `cid` as True/False; None when the cache does not record it."""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return None
+        return _female_rec((self.cache.get("characters") or {}).get(str(cid)) or {})
+
+    def _fam_ids(self, cid, key):
+        """Ids recorded under one `family` row of `cid`."""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return []
+        fam = ((self.cache.get("characters") or {}).get(str(cid)) or {}).get("family") or {}
+        return [int(x) for x in (fam.get(key) or []) if isinstance(x, int)]
+
+    def _sibling_ids(self, cid):
+        """Blood siblings of `cid`: the forward row unioned with the reverse index."""
+        out = set(self._fam_ids(cid, "siblings"))
+        keys = self._kin_rev_index().get("sib") or {}
+        out |= {int(x) for x in (keys.get(int(cid)) or [])}
+        out.discard(int(cid))
+        return out
+
+    def _child_ids(self, cid):
+        """Children of `cid`: the forward row unioned with the reverse index."""
+        out = set(self._fam_ids(cid, "child"))
+        keys = self._kin_rev_index().get("kid") or {}
+        out |= {int(x) for x in (keys.get(int(cid)) or [])}
+        return out
+
+    def _parent_ids(self, cid):
+        """Recorded parents of `cid` (every father/mother row, `real_father` included)."""
+        fath, moth = self._parent_maps()
+        return set(fath.get(int(cid)) or []) | set(moth.get(int(cid)) or [])
+
+    def _primary_spouse_ids(self, cid):
+        """Current primary spouses of `cid`. A reverse edge counts only when the other side records
+        it as primary too, the same two-way union `kin_key`'s level 11 makes: affinal words belong
+        to a primary marriage, so a concubine's brother is not a brother-in-law."""
+        out = set(self._fam_ids(cid, "primary_spouse"))
+        for y in (self._spouse_back_index().get(int(cid)) or []):
+            if int(cid) in set(self._fam_ids(y, "primary_spouse")):
+                out.add(int(y))
+        return out
+
+    def _older_ids(self, a, b):
+        """Whether `a` is older than `b`; None when a birth date is missing (twins go by cid)."""
+        chars = self.cache.get("characters") or {}
+        return _older_rec(chars.get(str(a)) or {}, chars.get(str(b)) or {}, a, b)
+
+    def _spouse_sibling_word(self, subject, sp, cid):
+        """Word of `cid`, a sibling of the subject's primary spouse `sp`.
+
+        The word turns on the spouse's sex, the sibling's sex and the sibling's seniority against
+        the spouse (the wife's elder brother is 内兄, her younger sister 姨妹, the husband's elder
+        brother 大伯子, his younger sister 小姑子). The coarse 姻亲兄弟/姻亲姊妹 is the fallback
+        whenever a sex or the seniority is unrecorded, so no pair loses a label."""
+        spf, cf = self._sex_of(sp), self._sex_of(cid)
+        older = self._older_ids(cid, sp)
+        if cf is None or older is None:
+            return kin_text("sister_in_law" if cf else "brother_in_law")
+        if spf is True:
+            if cf:
+                return kin_text("wife_sister_older" if older else "wife_sister_younger")
+            return kin_text("wife_brother_older" if older else "wife_brother_younger")
+        if spf is False:
+            if cf:
+                return kin_text("husband_sister_older" if older else "husband_sister_younger")
+            return kin_text("husband_brother_older" if older else "husband_brother_younger")
+        return kin_text("sister_in_law" if cf else "brother_in_law")
+
+    def _sibling_spouse_word(self, subject, sib, cid):
+        """Word of `cid`, the primary spouse of the subject's sibling `sib`: 嫂/弟媳 for a
+        brother's wife, 姐夫/妹夫 for a sister's husband (seniority against the subject)."""
+        sf = self._sex_of(sib)
+        older = self._older_ids(sib, subject)
+        if sf is None or older is None:
+            return kin_text("sister_in_law" if self._sex_of(cid) else "brother_in_law")
+        if sf:
+            return kin_text("brother_in_law_older" if older else "brother_in_law_younger")
+        return kin_text("sister_in_law_older" if older else "sister_in_law_younger")
+
+    def _spouse_parent_word(self, subject, sp, cid):
+        """Word of `cid`, a parent of the subject's primary spouse `sp`: 岳父/岳母 when the spouse
+        is the subject's wife, 公公/婆婆 when the spouse is her husband; '' when undecidable."""
+        spf, cf = self._sex_of(sp), self._sex_of(cid)
+        if cf is None:
+            return ""
+        if spf is True:
+            return kin_text("mother_in_law" if cf else "father_in_law")
+        if spf is False:
+            return kin_text("husband_mother" if cf else "husband_father")
+        return ""
+
+    def _co_sibling_in_law_word(self, subject, sp, sib, cid):
+        """Word of `cid`, the primary spouse of the subject's spouse's sibling `sib`: two men
+        married to two sisters are 连襟, two women married to two brothers are 妯娌. '' for every
+        other pairing, which real Chinese usage leaves unnamed."""
+        if sp is None or sib is None:
+            return ""
+        if self._sex_of(sp) is True and self._sex_of(sib) is True and self._sex_of(cid) is False:
+            return kin_text("co_brother_in_law")
+        if self._sex_of(sp) is False and self._sex_of(sib) is False and self._sex_of(cid) is True:
+            return kin_text("co_sister_in_law")
+        return ""
+
+    def affinal_kin_words_for(self, cid, subject, limit=None):
+        """Affinal terms of `cid` relative to `subject`, one per independent marriage route.
+
+        `blood_kin_words_for` walks blood routes only and the cascade returns a single word, so a
+        pair tied both by blood and by marriage lost the marriage. 洪大力 and 洪泰阳 are brothers
+        (弟弟/同族兄弟/表弟) *and* brothers-in-law, because 泰阳 is a brother of 大力's wife; the
+        user's 2026-10-06 list for that pair is 「兄弟兼堂表兄弟兼姻亲兄弟兼朋友」, and only the
+        marriage tie was missing. Every route is tested directly on the cache's family graph, over
+        primary marriages only, and an undecidable route yields no word rather than a guess."""
+        if cid is None or subject is None:
+            return []
+        limit = self._KIN_CHAIN_AFFINAL_MAX if limit is None else limit
+        try:
+            s, c = int(subject), int(cid)
+        except (TypeError, ValueError):
+            return []
+        if s == c:
+            return []
+        words, seen = [], set()
+
+        def _add(w):
+            """Append one word and report whether the budget is now spent."""
+            if w and w not in seen:
+                seen.add(w)
+                words.append(w)
+            return len(words) >= limit
+
+        # (1) the spouse's own siblings -- the route the cascade can only answer coarsely
+        for sp in sorted(self._primary_spouse_ids(s)):
+            if c in self._sibling_ids(sp) and _add(self._spouse_sibling_word(s, sp, c)):
+                return words
+        # (2) one's own siblings' spouses
+        for sb in sorted(self._sibling_ids(s)):
+            if c in self._primary_spouse_ids(sb) and _add(self._sibling_spouse_word(s, sb, c)):
+                return words
+        # (3) one's children's spouses
+        cf = self._sex_of(c)
+        for kid in sorted(self._child_ids(s)):
+            if c in self._primary_spouse_ids(kid):
+                if cf is not None and _add(kin_text("daughter_in_law" if cf else "son_in_law")):
+                    return words
+        # (4) the spouse's parents
+        for sp in sorted(self._primary_spouse_ids(s)):
+            if c in self._parent_ids(sp) and _add(self._spouse_parent_word(s, sp, c)):
+                return words
+        # (5) the spouse's siblings' spouses
+        for sp in sorted(self._primary_spouse_ids(s)):
+            for sb in sorted(self._sibling_ids(sp)):
+                if c in self._primary_spouse_ids(sb) \
+                        and _add(self._co_sibling_in_law_word(s, sp, sb, c)):
+                    return words
+        # (6) a parent's other spouse (继父/继母), never a parent of one's own
+        if c not in self._parent_ids(s):
+            for par in sorted(self._parent_ids(s)):
+                if c in self._primary_spouse_ids(par):
+                    if cf is not None and _add(kin_text("step_mother" if cf else "step_father")):
+                        return words
+        return words
+
+    def identity_parts(self, cid, subject):
+        """Ordered `[(category, word, source)]` identities of `cid` as seen from `subject`.
+
+        The single outlet for a composed identity attributive; `kin_chain_words_for` joins the
+        words with 「兼」. `subject` is the reference person and is never inferred from the ambient
+        protagonist here: the identity list of a person is asked for by whoever the sentence is
+        about (user 2026-10-06 「计算的依据是该板块的主角」). Categories follow `_IDENTITY_ORDER`;
+        every lookup is cid-based, and an undecidable relation contributes no word at all rather
+        than a guess.
+
+        `source` names where the word came from (a `KIN_WORDS` key, `relation`, `court`, `council`),
+        which is what the regression scripts pin their assertions to."""
+        out = []
+        if cid is None or subject is None:
+            return out
+        try:
+            s, c = int(subject), int(cid)
+        except (TypeError, ValueError):
+            return out
+        if s == c:
+            return out
+        key = kin_key(self.cache, s, c,
+                      spouse_back=self._spouse_back_index(),
+                      rev=self._kin_rev_index())
+        blood_cap = self._KIN_CHAIN_BLOOD_MAX
+        seen = set()
+
+        def _put(cat, word, src):
+            if word and word not in seen:
+                seen.add(word)
+                out.append((cat, word, src))
+
+        spouse = self._spouse_kind_of(c, s)
+        if spouse:
+            # Marriage first: the cascade ranks a blood tie above a marriage, so a wife who is also
+            # the subject's daughter would otherwise read 女儿 alone (user 2026-10-05
+            # 「妻子兼女儿兼堂姐兼表妹」).
+            _put("marriage", spouse, "spouse")
+        else:
+            w = kin_text(key)
+            if w:
+                blood = kin_key_is_blood(key)
+                _put("blood" if blood else "affinal", w, key or "kin")
+                if blood:
+                    blood_cap -= 1              # the primary term is itself a blood word
+        n_blood = 0
+        for b in self.blood_kin_words_for(c, s):
+            if n_blood >= blood_cap:
+                break
+            before = len(out)
+            _put("blood", b, "route")
+            if len(out) > before:
+                n_blood += 1
+        for a in self.affinal_kin_words_for(c, s):
+            _put("affinal", a, "affinal")
+        _put("relation", self.relation_word_for(c, s), "relation")
+        # Regency over the reference person (摄政) is an office of that lord's court, and reads as
+        # one, so it stands with the offices and before them. The regency counts only when the
+        # reference person is the lord she governs, never merely when she is a regent of somebody
+        # (v109 §2.1).
+        if self.regent_of(s, date=self.as_of) == c:
+            _put("office", self.regency_of(c, date=self.as_of), "regency")
+        for off in self._court_positions_of(c, subject=s):
+            _put("office", off, "court")
+        for seat in self._council_seats_of(c, subject=s):
+            _put("office", seat, "council")
+        return out
+
     def kin_chain_words_for(self, cid, subject):
-        """The concurrent relation labels of `cid` to `subject`, in reading order, to be joined with
-        「兼」: the primary kin term, then the further blood routes (three blood terms at most in
-        all), then the one scripted relation, then every office the person holds in the subject's
-        court. e.g. a wife who is also the subject's daughter and cousin, and his marshal ->
+        """The concurrent identity labels of `cid` to `subject`, in reading order, joined with 「兼」.
+
+        Compatibility shell over `identity_parts`: the marriage word first, then the further blood
+        routes (three blood terms at most in all), then the affinal routes (two at most), then the
+        one scripted relation, then every office the person holds in the subject's court. e.g. a
+        wife who is also the subject's daughter and cousin, and his marshal ->
         [妻子, 女儿, 堂姐, 军事总管].
 
         Reading order and caps follow the user's 2026-10-05 ruling: a character holds at most one
         scripted relation to another (nobody is both a rival and a lover), while offices are all
         listed. The cascade ranks by degree, so a spouse+blood pair otherwise reads as the spouse
         and the blood tie is lost; that tie is recovered from the routes."""
-        key = kin_key(self.cache, subject, cid,
-                      spouse_back=self._spouse_back_index(),
-                      rev=self._kin_rev_index())
-        parts = []
-        spouse = self._spouse_kind_of(cid, subject)
-        blood_cap = self._KIN_CHAIN_BLOOD_MAX
-        if spouse:
-            # Marriage first: the cascade ranks a blood tie above a marriage, so a wife who is also
-            # the subject's daughter would otherwise read 女儿 alone (user 2026-10-05
-            # 「妻子兼女儿兼堂姐兼表妹」).
-            parts.append(spouse)
-        else:
-            w = kin_text(key)
-            if not w:
-                return []
-            parts.append(w)
-            if kin_key_is_blood(key):
-                blood_cap -= 1                  # the primary term is itself a blood word
-        n_blood = 0
-        for b in self.blood_kin_words_for(cid, subject):
-            if n_blood >= blood_cap:
-                break
-            if b and b not in parts:
-                parts.append(b)
-                n_blood += 1
-        rel = self.relation_word_for(cid, subject)
-        if rel and rel not in parts:
-            parts.append(rel)
-        for off in self._court_positions_of(cid):
-            if off and off not in parts:
-                parts.append(off)
-        return parts
+        return [w for _cat, w, _src in self.identity_parts(cid, subject)]
 
     def _sibling_spouse_note(self, subject, sib, as_of=None):
         """A comma clause naming the marriage when a sibling was also the subject's spouse or
@@ -4968,19 +5313,22 @@ class Facts:
         """Render a profile's sibling list, annotating any sibling who was also the subject's
         spouse/concubine (see `_sibling_spouse_note`). The separator switches to 「；」 once any entry
         carries a comma clause, matching `_annotate`."""
+        out = self.sibling_entries(subject, fam, as_of=as_of)
+        return ("；" if any("，" in t for t, _c in out) else "、").join(t for t, _c in out)
+
+    def sibling_entries(self, subject, fam, as_of=None):
+        """`sibling_list`'s entries as (text, cid) pairs, so the household block can keep only the
+        siblings a section actually names (v109 §2.2). `sibling_list` is this list joined."""
         as_of = as_of or self.as_of
-        out, noted = [], False
+        out = []
         for x in (fam.get("siblings") or []):
             if not self.name(x):
                 continue
             nm = self.kin_label(x)
             if not nm:
                 continue
-            note = self._sibling_spouse_note(subject, x, as_of)
-            if note:
-                noted = True
-            out.append(nm + note)
-        return ("；" if noted else "、").join(out)
+            out.append((nm + self._sibling_spouse_note(subject, x, as_of), x))
+        return out
 
 
     def consort_of_line(self, cid):
@@ -5295,6 +5643,61 @@ class Facts:
         return (chain[idx].get("date") or start), idx > 0
 
     # ---- co-ruler address forms ----
+
+    def _regency_hit(self, cid, date=None):
+        """Regency record making this character the regent on `date`, or None.
+
+        The save stores only `start_date`, so the record is itself the open interval and a regency
+        that ended is absent from that melt's table (v109 §2.1)."""
+        if cid is None:
+            return None
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return None
+        dk = cl.date_key(date) if date else None
+        hit = None
+        for e in self._regencies:
+            if e["diarch"] != cid:
+                continue
+            if dk is not None and e["start"] and cl.date_key(e["start"]) > dk:
+                continue
+            if e["start"] and (hit is None
+                               or cl.date_key(e["start"]) > cl.date_key(hit["start"])):
+                hit = e
+        return hit
+
+    def regency_of(self, cid, date=None):
+        """The regency word naming this character's role toward his liege (`temporary_regency` ->
+        摄政), or '' when he is not a regent on that date (v109 §2.1).
+
+        The word is the game's own `diarchy_type` localization, the same source `[regency|E]`
+        draws on; '' when no melt is loaded, since the table lives there."""
+        hit = self._regency_hit(cid, date)
+        if not hit:
+            return ""
+        return L.diarchy_type_word(self.table, hit["type"])
+
+    def regent_of(self, liege_cid, date=None):
+        """The character who is regent over `liege_cid` on `date`, or None: the reverse of
+        `regency_of`, for the liege's own archive row."""
+        if liege_cid is None:
+            return None
+        try:
+            liege_cid = int(liege_cid)
+        except (TypeError, ValueError):
+            return None
+        dk = cl.date_key(date) if date else None
+        hit = None
+        for e in self._regencies:
+            if e["liege"] != liege_cid:
+                continue
+            if dk is not None and e["start"] and cl.date_key(e["start"]) > dk:
+                continue
+            if hit is None or (e["start"]
+                               and cl.date_key(e["start"]) > cl.date_key(hit["start"])):
+                hit = e
+        return hit["diarch"] if hit else None
 
     def _co_ruler_hit(self, cid, date=None):
         """Diarchy record (type co_*) making this character a co-ruler on date, or None."""
@@ -15155,10 +15558,11 @@ class Facts:
         """Office plus name, e.g. 「交州刺史应偁」 — the office entry point of person_label."""
         return self.person_label(cid, date=self.as_of, style="office")
 
-    def _council_scope(self):
+    def _council_scope(self, cid=None):
         """(Government, is-empire) for picking council seat words; empire = independent and top
-        title ≥ e_."""
-        pid = self.cache.get("player_id")
+        title ≥ e_. `cid` is the court's owner (the protagonist when omitted), so a seat can also be
+        worded for a third party's court."""
+        pid = self.cache.get("player_id") if cid is None else cid
         rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
         gov = (rec.get("landed") or {}).get("government") or ""
         return gov, (self._top_rank_now(pid) >= 5
@@ -16978,6 +17382,12 @@ def _mem_sentence_body(f, owner_id, mem):
                      rev=f._kin_rev_index())
         _kw = kin_text(_k) if _k else ""
         if _kw:
+            # The bereavement names the cause of death too (user 2026-10-06: the household rows read
+            # as if the relative simply vanished, while every other board states the cause). With
+            # nothing recorded the sentence keeps its old plain form — never an invented cause.
+            _cause = f.death_clause(other_id, date=mem.get("creation_date"))
+            if _cause:
+                return f"{owner}的{_kw}{other}，{_cause}。"
             return f"{owner}的{_kw}{other}去世。"
     # The peer-relation sentences get the same treatment, so a "became friends" row and the later
     # bereavement row for the same pair read alike. The word is relative to the sentence's own
@@ -17177,6 +17587,17 @@ def _mem_sentence_body(f, owner_id, mem):
                               wedding=mem.get("creation_date"))
         if _mv != "成婚":
             s = re.sub(r"成婚。$", _mv + "。", s)
+    # A bond the archive establishes states its occasion as well (user 2026-10-06: the relation rows
+    # gave only the result). The reason is a sentence of its own from the same pair outlet the lover
+    # row uses, appended after a 「；」 exactly as the 恩怨 material already joins a reason. With no
+    # recorded reason the sentence stays as it was.
+    if mtype in _REL_PEER_TYPES and isinstance(other_id, int) and other_id != owner_id:
+        _pk = _PEER_REASON_KINDS.get(mtype)
+        if _pk:
+            _prs = f.relation_reason_for_pair(owner_id, other_id, _pk, styled=True)
+            _pr = (_prs[0] or "").strip() if _prs else ""
+            if _pr and _pr.rstrip("。") not in s:
+                s = s.rstrip("。") + "；" + _pr
     return s
 
 
@@ -17514,6 +17935,24 @@ def _death_sentence(f, cid, killer_pronoun=False, annotated=False, insider=False
     return f.index_names(out, lg, owner=cid)
 
 
+def _death_clause_of(f, cid, killer_pronoun=False, insider=False):
+    """The cause clause alone, worded exactly as `_death_sentence_body` words it.
+
+    The assassin article's merged 死者 line needs the clause on its own (v109 §2.3), so it is not
+    re-derived from the finished sentence: `killer_pronoun=True` shortens the killer to 「其」, the
+    convention of that article, where the killer is always the protagonist."""
+    rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
+    d = rec.get("death") or {}
+    if not d:
+        return ""
+    clause = f.death_clause(cid, date=d.get("date"), imprison=True, insider=insider)
+    if killer_pronoun and d.get("killer") is not None:
+        klabel = f.event_name(d.get("killer"), date=f.as_of)
+        if klabel and klabel in clause:
+            clause = clause.replace(klabel, "其")
+    return clause or ""
+
+
 def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False, insider=False):
     """Character death -> clean Chinese sentence (the cause clause embeds killer/executioner/opponent).
 
@@ -17538,11 +17977,7 @@ def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False, insider=
     hidden = bool(pid is not None and killer is not None and not insider
                   and f.killer_hidden(cid, killer))
     # Use the generic "someone" placeholder when the agent's name is missing
-    clause = f.death_clause(cid, date=d.get("date"), imprison=True, insider=insider)
-    if killer_pronoun and killer is not None:
-        klabel = f.event_name(killer, date=f.as_of)
-        if klabel and klabel in clause:
-            clause = clause.replace(klabel, "其")
+    clause = _death_clause_of(f, cid, killer_pronoun=killer_pronoun, insider=insider)
     if hidden:
         vp = f.victim_place(cid)
         s = (f"{name}于{f.date(d.get('date'))}死于{vp}" if vp
@@ -17942,6 +18377,15 @@ _REL_DIED_TYPES = ("relative_died", "rival_died", "friend_died", "lover_died",
 # its kin word written straight into the sentence (see `_mem_sentence`).
 _REL_PEER_TYPES = ("became_friends", "became_soulmates", "became_blood_brother",
                    "became_rivals", "became_grudge", "became_nemesis")
+
+# The relation kind each newly formed bond asks its reason for (the inverse of
+# `Facts._REL_REASON_KINDS`); a bond the save records no reason for keeps its plain sentence
+# (see `_mem_sentence_body`).
+_PEER_REASON_KINDS = {
+    "became_friends": ("friend",), "became_rivals": ("rival",),
+    "became_grudge": ("grudge",), "became_nemesis": ("nemesis",),
+    "became_soulmates": ("soulmate",), "became_blood_brother": ("blood_brother",),
+}
 
 
 def _count_zh(n):
@@ -20653,6 +21097,16 @@ MARITAL_ROW_WORDS = {
 }
 
 
+def join_consort_entries(entries):
+    """One marital row's entries → its text. "；" once any entry carries a comma clause of its own
+    (the lineality note), so that clause cannot be confused with the "，" separating the entries.
+
+    Shared by the fact layer (`_annotate`) and by the per-section pruning of the household block
+    (`biography._render_household_rows`), which rebuilds a row from the people that survive."""
+    texts = [t for t, _c in (entries or ()) if t]
+    return ("；" if any("，" in x for x in texts) else "、").join(texts)
+
+
 def _consort_row_entry(f, sid, kind="", lineality=False):
     """One entry of a spouse/concubine row: the composed kin attributive in front of the name
     (「妻子兼妹妹时尚公主于尔娃·耀国斯多蒂尔」).
@@ -21034,15 +21488,21 @@ def _protagonist(f):
     if father_id is not None:
         fd_fam = ((cache.get("characters") or {}).get(str(father_id)) or {}).get("family") or {}
 
-    def _annotate(ids, lineality=False, kind=""):
+    def _annotate_pairs(ids, lineality=False, kind=""):
+        """`_annotate`'s entries before they are joined, each paired with its cid.
+
+        The household block prunes itself per section (v109 §2.2), and a pruned row must be
+        rebuildable from the people that survive, so the fact layer hands the entries out
+        unjoined as well."""
         out = []
         for sid in ids:
             e = _consort_row_entry(f, sid, kind=kind, lineality=lineality)
             if e:
-                out.append(e)
-        # "；" once any entry carries a comma clause of its own (the lineality note), so that clause
-        # cannot be confused with the "，" separating the entries
-        return ("；" if any("，" in x for x in out) else "、").join(out)
+                out.append((e, sid))
+        return out
+
+    def _annotate(ids, lineality=False, kind=""):
+        return join_consort_entries(_annotate_pairs(ids, lineality=lineality, kind=kind))
 
     spouse_ids = list(dict.fromkeys(
         _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
@@ -21053,7 +21513,11 @@ def _protagonist(f):
     # chapter's window runs from the previous decade's cut-off date to as_of; a final or living
     # biography starts at the campaign start, so nothing is ever cut).
     spouse_ids = f.spouses_in_window(spouse_ids)
-    p["spouses"] = _annotate(spouse_ids, lineality=True)
+    # Every household row is emitted twice: the joined text the archive prints, and the same entries
+    # as (text, cid) pairs. The pairs let a section drop the relatives its own material never names
+    # and rebuild the row from the survivors (`biography._household_rows` / `_prune_household_rows`).
+    p["spouse_entries"] = _annotate_pairs(spouse_ids, lineality=True)
+    p["spouses"] = join_consort_entries(p["spouse_entries"])
     # One person enters only one marital category: the save's `family_data` lists the current spouse
     # again in `former_spouses` / `former_concubines`, so all four categories formed independently
     # would print "妻室X、前妻X". Priority = print order: wives > former wives > concubines > former.
@@ -21063,21 +21527,24 @@ def _protagonist(f):
     _former_sp = f.spouses_in_window(_former_sp)          # same window rule
     # a former spouse has no marriage word from `_spouse_kind_of` (they are not married now), so the
     # row writes it itself: 前妻/前夫 before the chain
-    p["former_spouses"] = _annotate(_former_sp,
-                                    kind=("前夫" if f._is_female(pid) else "前妻"))
+    p["former_spouse_entries"] = _annotate_pairs(
+        _former_sp, kind=("前夫" if f._is_female(pid) else "前妻"))
+    p["former_spouses"] = join_consort_entries(p["former_spouse_entries"])
     # concubines (forward `concubine` + reverse `concubinist`, merged and deduped in
     # the cache)
     _seen_mar = _sp_set | set(_former_sp)
     _conc = [x for x in _asof_ids(f, fam.get("concubine") or [])
              if x not in _seen_mar]
     _conc = f.spouses_in_window(_conc)                    # same window rule
-    p["concubines"] = _annotate(_conc)
+    p["concubine_entries"] = _annotate_pairs(_conc)
+    p["concubines"] = join_consort_entries(p["concubine_entries"])
     _seen_mar |= set(_conc)
     _fconc = [x for x in _asof_ids(f, fam.get("former_concubines") or [])
               if x not in _seen_mar]
     _fconc = f.spouses_in_window(_fconc)                  # same window rule
-    p["former_concubines"] = _annotate(_fconc,
-                                       kind=("前男宠" if f._is_female(pid) else "前妾"))
+    p["former_concubine_entries"] = _annotate_pairs(
+        _fconc, kind=("前男宠" if f._is_female(pid) else "前妾"))
+    p["former_concubines"] = join_consort_entries(p["former_concubine_entries"])
     child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
     # The household list holds every child whose legal father is the protagonist (illegitimate ones
     # included); children of another legal father stay out of the 本纪 list (家室列传 covers them as
@@ -21089,25 +21556,28 @@ def _protagonist(f):
     _wo_line = f.wife_other_children_line(pid, _wife_other) if _wife_other else ""
     if _wo_line:
         p["wife_other_children"] = _wo_line
-    p["children"] = "、".join(f.kin_label(c) for c in child_ids)
+    p["child_entries"] = [(f.kin_label(c), c) for c in child_ids]
+    p["children"] = "、".join(t for t, _c in p["child_entries"])
     # children split by sex ("子A、B，女C、D"), the same rule as `_character_profiles`
-    p["children_sons"] = "、".join(
-        f.kin_label(c) for c in child_ids if not f._is_female(c))
-    p["children_daughters"] = "、".join(
-        f.kin_label(c) for c in child_ids if f._is_female(c))
+    p["child_son_entries"] = [(t, c) for t, c in p["child_entries"] if not f._is_female(c)]
+    p["child_daughter_entries"] = [(t, c) for t, c in p["child_entries"] if f._is_female(c)]
+    p["children_sons"] = "、".join(t for t, _c in p["child_son_entries"])
+    p["children_daughters"] = "、".join(t for t, _c in p["child_daughter_entries"])
     # the subject's sex, which selects the spouse label "妻室/夫婿" (see
     # `biography._profile_lines`)
     p["female"] = f._is_female(pid)
-    p["father"] = "、".join(
-        f.kin_label(x) for x in (fam.get("father") or []) if f.name(x))
+    p["father_entries"] = [(f.kin_label(x), x) for x in (fam.get("father") or []) if f.name(x)]
+    p["father"] = "、".join(t for t, _c in p["father_entries"])
     # bare names of the same row: the archive drops the full appellation on the 「父」 line when the
     # succession line already carried it, so the same 爱尔兰国王… does not appear twice in one block
     # (`biography._profile_lines`).
     p["father_name"] = "、".join(
         f.name(x) for x in (fam.get("father") or []) if f.name(x))
-    p["mother"] = "、".join(
-        _mark_lone_name(f.kin_label(x)) for x in (fam.get("mother") or []) if f.name(x))
+    p["mother_entries"] = [(_mark_lone_name(f.kin_label(x)), x)
+                           for x in (fam.get("mother") or []) if f.name(x)]
+    p["mother"] = "、".join(t for t, _c in p["mother_entries"])
     p["siblings"] = f.sibling_list(pid, fam)
+    p["sibling_entries"] = f.sibling_entries(pid, fam)
     # Birth rank among the children of the parent whose house the subject belongs to (see
     # `_kin_counts_line`); the rank sits next to that parent's own row.
     p["kin_counts"], _kc_parent = _kin_counts_line(f, pid, fam, father_id, fd_fam)
@@ -22475,6 +22945,51 @@ def _is_final_bio_spec(facts):
         return str(as_of) == str(end)
 
 
+def _anchor_on_top_liege(f, pid, tid, own, as_of):
+    """Move the 《历代记》 anchor from the protagonist's own top title to his top liege's title.
+
+    Under 天朝制/行政制 the protagonist is a governor inside a mandate, so his own title makes a
+    provincial chronicle while the user asked for the mandate's succession (user 2026-10-06,
+    problem 4: 「天朝制/行政制下的历代记改成始终锚定最高头衔」, 最高头衔 = the title of the highest
+    lord he belongs to). Returns (tid, own) unchanged for every other government, for a protagonist
+    who is his own top liege, and when the liege walk reaches no landed title."""
+    try:
+        gov = f._gov_for_word(pid, tid, as_of)
+    except Exception:
+        gov = ""
+    if gov not in Facts._CELESTIAL_LIKE_GOVS:
+        return tid, own
+    try:
+        lid, ltid = f._top_liege_of(pid, tid)
+    except Exception:
+        return tid, own
+    if lid is None or ltid is None or int(lid) == int(pid) or int(ltid) == int(tid):
+        return tid, own
+    return ltid, False
+
+
+def _own_tenure_under(f, pid, tid):
+    """`{起}–{止}（{头衔名}）` for the protagonist's own tenure in the anchored reign.
+
+    The chronicle now anchors above him (see `_anchor_on_top_liege`), so the 本朝任期 line has no
+    interval on the anchored title: this composes it from `tid` — the title the chronicle used
+    before §2.4 — with the exact same interval lookup and open-interval rule as that line, so the
+    line appears whenever it appeared before. Returns '' when that title has no interval."""
+    _ivs = (f._hold_intervals(pid) or {}).get(tid) or []
+    if not _ivs:
+        return ""
+    _g, _l, _lt = _ivs[-1]
+    if not _g:
+        return ""
+    if not _l:
+        _cand = f._char_death_date(pid) or (f.cache.get("reign_end") or {}).get("date") or ""
+        if _cand and not (f.as_of and cl.date_key(_cand) > cl.date_key(f.as_of)):
+            _l = _cand
+    _nm = f.title(tid, _l or _g) or f.title_base_name(tid) or ""
+    _span = f.date(_g) + ("–" + f.date(_l) if _l else " 至今")
+    return f"{_span}（{_nm}）" if _nm else _span
+
+
 def _top_title_history(f):
     """The succession history of this reign, material for the part title 《XX历代记》: the holders of
     the protagonist's current top title since the campaign start. Returns (common name for the part
@@ -22511,6 +23026,11 @@ def _top_title_history(f):
                 tid = _estate_court_tid(f, pid)
     if tid is None:                                  # adventurer camp only -> part skipped
         return "", [], {}
+    # Celestial (天朝制) and administrative (行政制) realms anchor 《历代记》 on the highest lord's
+    # title (the mandate / imperial house), not on the protagonist's own top title (user 2026-10-06,
+    # problem 4). Every other government, and a protagonist who is his own top liege, is untouched.
+    _own_tid = tid                                   # the title the chronicle used before §2.4
+    tid, own = _anchor_on_top_liege(f, pid, tid, own, as_of)
     t = f._lt.get(str(tid)) or {}
     key = t.get("key") or ""
     tnd = t.get("title_name_data") or {}
@@ -22675,6 +23195,12 @@ def _top_title_history(f):
                 _l = _cand
         lines.append("主角本朝任期：" + f.date(_g)
                      + ("–" + f.date(_l) if _l else " 至今"))
+    elif not own:
+        # The anchored title is the highest lord's, so the protagonist holds no interval on it and
+        # the tenure line is composed from the title the chronicle used before §2.4 (v109 §2.4).
+        _ten = _own_tenure_under(f, pid, _own_tid)
+        if _ten:
+            lines.append("主角任期：" + _ten)
     return common, lines, _chrono_build(f, tid, pid, is_h, own, periods, tname)
 
 
@@ -23959,6 +24485,23 @@ def _kill_kin_note(f, members):
     return "同胞兄弟姐妹"
 
 
+def _victim_identity_parts(f, cid, pid):
+    """`Facts.identity_parts` for a victim of the protagonist, with the enmity the roster implies.
+
+    Every entry of 《刺客列传》 was killed by the protagonist, and the save drops the opinion once
+    one side dies, so a scripted relation word is often no longer readable. The enmity the killing
+    itself establishes then takes the relation slot (after the kin words, before the offices), which
+    is exactly where `identity_parts` would have put a scripted one."""
+    parts = list(f.identity_parts(cid, pid))
+    if any(_cat == "relation" for _cat, _w, _src in parts):
+        return parts
+    cut = len(parts)
+    while cut and parts[cut - 1][0] == "office":
+        cut -= 1
+    parts.insert(cut, ("relation", RELATION_WORDS["rival"], "killed"))
+    return parts
+
+
 def _group_killed_by_kin(entries, f):
     """Merge blood kin who died on the same day into one biography entry.
 
@@ -24075,6 +24618,7 @@ def _killed_by_player(f):
         # the killer's appellation shortens to "其" -- in 《刺客列传》 the killer is always
         # the player
         ds = _death_sentence(f, cid, killer_pronoun=True, insider=True)
+        _melt_death_clause = ""
         if not ds:
             mc = f._chars.get(str(cid)) or {}
             mdd = (mc or {}).get("dead_data") or {}
@@ -24091,6 +24635,7 @@ def _killed_by_player(f):
                     klabel = f.event_name(kk, date=f.as_of)
                     if klabel and klabel in clause:
                         clause = clause.replace(klabel, "其")
+                _melt_death_clause = clause
                 ds = f"{f.name_or(cid)}死于{f.date(mdd.get('date'))}，{clause}。"
                 # the melt fallback also appends the victim's location (barony; omitted if
                 # none)
@@ -24107,6 +24652,16 @@ def _killed_by_player(f):
             "birth": f.date(prof.get("birth")),
             "death": ds or "（死因不详）",
             "death_date": (prof.get("death") or {}).get("date") or "9999.9.9",
+            # The three pieces the assassin article's merged 死者 line needs beside the date: the
+            # formatted death date, the cause clause alone, and the victim's age (v109 §2.3).
+            "death_date_cn": f.date((prof.get("death") or {}).get("date")),
+            "death_clause": _death_clause_of(f, cid, killer_pronoun=True, insider=True)
+            or _melt_death_clause,
+            "age": _chrono_year_age(prof.get("birth"), _ddate),
+            # The victim's relation to the article's protagonist, computed from that protagonist as
+            # the reference person (`Facts.identity_parts`), e.g. 仇敌 / 仇敌兼舅舅.
+            "identity": "兼".join(
+                w for _cat, w, _src in _victim_identity_parts(f, cid, pid) if w),
             # the victim's latest knowable barony before death ('' if none, the caller then
             # omits the note)
             "victim_place": f.victim_place(cid),

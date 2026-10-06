@@ -1661,6 +1661,23 @@ def load_council_tasks(cfg=None, force=False):
     return data
 
 
+def diarchy_type_word(table, type_key):
+    """Diarchy type key -> its Chinese word (`temporary_regency` -> 摄政), else ''.
+
+    The value comes from the game's own `<type>_diarchy_type` entry, which is a `[regency|E]`
+    concept reference; it must go through `clean_loc_value`, since the plain lookup returns the
+    unresolved reference (v109 §2.1)."""
+    if not type_key:
+        return ""
+    raw = (table or {}).get(f"{type_key}_diarchy_type")
+    if not raw:
+        return ""
+    v = clean_loc_value(str(raw), table)
+    if not v or v.startswith("$") or v.startswith("["):
+        return ""
+    return v
+
+
 def council_seat_word(table, tasks, task_type, government="", imperial=False):
     """Council task -> that seat's office word per government: <seat>_<government>_government_imperial
     (or _non_imperial), then _government, then the non-celestial variant, then the bare seat key."""

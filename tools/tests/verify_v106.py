@@ -88,10 +88,18 @@ def stub(cache=None, as_of="1085.5.10"):
     o.as_of = as_of
     o.decade = None
     o._KIN_CHAIN_BLOOD_MAX = F.Facts._KIN_CHAIN_BLOOD_MAX
+    o._KIN_CHAIN_AFFINAL_MAX = F.Facts._KIN_CHAIN_AFFINAL_MAX
     o._chars = {}
+    o.melt = {}                    # v109: the identity list reads court/council tables from it
+    o._regencies = []              # v109: regency records live in the melt's diarchies table
     for name in ("_spouse_kind_of", "merge_spouse_latch", "_court_positions_of", "_is_female",
                  "_kin_rev_index", "_spouse_back_index", "_parent_maps", "_ancestor_routes",
                  "blood_kin_words_for", "blood_kin_word_for", "kin_word_for", "kin_chain_words_for",
+                 "identity_parts", "affinal_kin_words_for", "_sex_of", "_fam_ids", "_sibling_ids",
+                 "_child_ids", "_parent_ids", "_primary_spouse_ids", "_older_ids",
+                 "_spouse_sibling_word", "_sibling_spouse_word", "_spouse_parent_word",
+                 "_co_sibling_in_law_word", "_court_roster", "_council_seats_of",
+                 "regency_of", "regent_of", "_council_scope",
                  "language_relation_lines"):
         fn = getattr(F.Facts, name, None)
         if fn is None:

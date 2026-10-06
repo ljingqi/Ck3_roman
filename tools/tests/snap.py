@@ -108,13 +108,19 @@ def main():
     decade = int(argv[3]) if len(argv) > 3 else None
     data = os.path.join(ROOT, "output", folder, "data")
     cache_path = os.path.join(data, f"player_{pid}.json")
-    melts = sorted(x for x in os.listdir(data)
-                   if x.startswith("melt_") and "_idx" not in x
-                   and x.endswith((".json", ".json.gz", ".json.xz")))
+    melts = [x for x in os.listdir(data)
+             if x.startswith("melt_") and "_idx" not in x
+             and x.endswith((".json", ".json.gz", ".json.xz"))]
     if not melts:
         print(f"找不到熔件: {data}")
         return 2
-    melt_name = melt_pick or melts[-1]
+    # Newest melt by the date in its name, not by lexicographic order: a campaign that spans
+    # year 1000 keeps both `melt_999_…` and `melt_1152_…`, and plain sorting picks 999
+    # ("1" < "9"), silently reproducing a biography against a 150-year-old world.
+    def _melt_key(name):
+        m = re.match(r"^melt_(\d+)_(\d{2})_(\d{2})", name)
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+    melt_name = melt_pick or max(melts, key=_melt_key)
     melt_path = os.path.join(data, melt_name)
     names = os.path.join(data, "names.json")
     if not os.path.exists(names):

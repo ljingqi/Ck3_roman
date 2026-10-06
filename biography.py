@@ -645,9 +645,190 @@ def _marital_row(label, text):
     return f"{label}{text}"
 
 
+def _pairs_or_text(p, ekey, tkey):
+    """[(text, cid)] of one household row: the cid-paired entries the fact layer supplies, else the
+    joined row text split back on its separators (each part then has no cid and is never pruned)."""
+    ent = p.get(ekey)
+    if ent:
+        return [(t, c) for t, c in ent if t]
+    txt = p.get(tkey) or ""
+    if not txt:
+        return []
+    return [(x, None) for x in re.split("[、；]", txt) if x]
+
+
+def _household_rows(facts, p, cid, with_real_parentage, spouse_lbl, former_lbl,
+                    conc_lbl, former_conc_lbl):
+    """The household half of the archive as prunable rows, in the order it is written.
+
+    Each row carries its people as (text, cid) pairs, so a section can drop the relatives its own
+    material never names (`_prune_household_rows`). Rows: kind `consort` (the four marital rows,
+    which share one sentence), `kids` (one headed block per sex), `kin` (父/母/兄弟姊妹) and `raw`
+    (the birth rank, the real father, the wife's other children, the language notes)."""
+    rows = []
+    for _lbl, _ek, _tk in ((spouse_lbl, "spouse_entries", "spouses"),
+                           (former_lbl, "former_spouse_entries", "former_spouses"),
+                           (conc_lbl, "concubine_entries", "concubines"),
+                           (former_conc_lbl, "former_concubine_entries",
+                            "former_concubines")):
+        _e = _pairs_or_text(p, _ek, _tk)
+        if _e:
+            rows.append({"kind": "consort", "header": _lbl, "entries": _e, "text": _tk})
+    for _label, _tk, _ek in (("儿子", "children_sons", "child_son_entries"),
+                             ("女儿", "children_daughters", "child_daughter_entries")):
+        _e = _pairs_or_text(p, _ek, _tk)
+        if _e:
+            rows.append({"kind": "kids", "header": _label, "entries": _e})
+    if not (p.get("children_sons") or p.get("children_daughters")) and p.get("children"):
+        _e = _pairs_or_text(p, "child_entries", "children")
+        if _e:
+            rows.append({"kind": "kids", "header": "子女", "entries": _e})
+    # the spouse's children by another parent: own sentence, household article only
+    if cid is None and p.get("wife_other_children") and with_real_parentage:
+        rows.append({"kind": "raw", "text": p["wife_other_children"]})
+    # speech relation: intelligibility or interpreter need decided in facts; the model copies it
+    for _t in ([p["language_relation"]] if p.get("language_relation") else []):
+        rows.append({"kind": "raw", "text": _t})
+    if p.get("language_relations"):
+        rows.extend({"kind": "raw", "text": _t} for _t in p["language_relations"])
+    elif p.get("language_bridge"):
+        rows.append({"kind": "raw", "text": p["language_bridge"]})
+    # One relative per sentence: the father, the mother and the sibling list are separate
+    # statements, so the sibling list can never be read together with the mother's name.
+    # The birth rank (`facts._kin_counts_line`) sits directly behind the row of the parent it
+    # counts: the father's for a standard marriage, the mother's for a matrilineal one.
+    _fe = _pairs_or_text(p, "father_entries", "father")
+    if p.get("father") and _fe:
+        _fl = p["father"]
+        # the succession line above already gives the father's full appellation (「其父、前代传主
+        # 爱尔兰至高王…」), so the 「父」 row carries only his name then
+        if cid is None and p.get("father_name") \
+                and any(p["father_name"] in ln for ln in (p.get("succession") or [])):
+            _fl = p["father_name"]
+        _fl_first = re.split("[、；]", _fl)[0] if _fl else ""
+        _fe = [(_fl_first or t, c) for _t, c in _fe]
+        rows.append({"kind": "kin", "kin": True, "header": "父", "entries": _fe})
+    if p.get("kin_counts") and p.get("kin_counts_parent") != "母亲":
+        rows.append({"kind": "raw", "text": p["kin_counts"], "parent": "父"})
+    if with_real_parentage and p.get("real_father") \
+            and p.get("real_father") != p.get("father"):
+        rows.append({"kind": "raw", "text": f"实父{p['real_father']}。"})
+    _me = _pairs_or_text(p, "mother_entries", "mother")
+    if p.get("mother") and _me:
+        rows.append({"kind": "kin", "kin": True, "header": "母", "entries": _me})
+    if p.get("kin_counts") and p.get("kin_counts_parent") == "母亲":
+        rows.append({"kind": "raw", "text": p["kin_counts"], "parent": "母"})
+    # per-person profiles omit siblings; the protagonist's own profile keeps the line
+    if cid is None and p.get("siblings"):
+        _se = _pairs_or_text(p, "sibling_entries", "siblings")
+        if _se:
+            rows.append({"kind": "kin", "kin": True, "header": "兄弟姊妹", "entries": _se})
+    return rows
+
+
+def _render_household_rows(rows):
+    """Household rows → fact lines, keeping the shape the archive had before the pruning: the four
+    marital rows share one 「，」-joined sentence, a child group gets its headed block, every kinship
+    row one statement of its own."""
+    out = []
+    bits = []
+    for r in rows:
+        _ent = [(t, c) for t, c in (r.get("entries") or []) if t]
+        if r.get("kind") == "consort":
+            if _ent:
+                _row = _marital_row(r.get("header") or "", F.join_consort_entries(_ent))
+                if _row:
+                    bits.append(_row)
+            continue
+        if bits:
+            out.append("，".join(bits) + "。")
+            bits = []
+        if r.get("kind") == "kids":
+            if _ent:
+                out.append(f"{r.get('header')}：")
+                out.extend("　" + t for t, _c in _ent)
+        elif r.get("kind") == "kin":
+            if _ent:
+                out.append(f"{r.get('header')}{'、'.join(t for t, _c in _ent)}。")
+        else:
+            _t = r.get("text") or ""
+            if _t:
+                out.append(_t)
+    if bits:
+        out.append("，".join(bits) + "。")
+    return out
+
+
+def _person_names(facts, cache, cid):
+    """Every written form of one person, longest first. The section material is prose, so the prune
+    test of `_prune_household_rows` asks whether the material names the person, not whether it
+    carries his id."""
+    out = []
+    for _src in ((cache.get("characters") or {}).get(str(cid)) or {},
+                 (facts.get("characters") or {}).get(str(cid)) or {}):
+        for _k in ("name_full", "name_zh", "name", "first_name"):
+            _v = _src.get(_k)
+            if _v and str(_v) not in out:
+                out.append(str(_v))
+    _fi = facts.get("_facts")
+    if _fi is not None:
+        try:
+            _v = _fi.name(cid)
+            if _v and _v not in out:
+                out.append(_v)
+        except Exception:
+            pass
+    return sorted((x for x in out if len(x) >= 2), key=len, reverse=True)
+
+
+def _mentioned_cids(facts, cache, cids, hay):
+    """The subset of cids whose name the section material carries (empty hay keeps none)."""
+    if not hay:
+        return set()
+    return {c for c in cids if c is not None
+            and any(n in hay for n in _person_names(facts, cache, c))}
+
+
+def _prune_household_rows(rows, keep, whole_kin=False):
+    """Drop the household rows whose people this section never mentions.
+
+    The archive shipped one identical household block to every article, so a section about rites or
+    feuds listed wives, parents and children its prose never names (measured: 1266 B / 24 lines
+    repeated into 12 sections of `v107.json`). A person survives when the section's own material or
+    its declared member list carries him; a row whose people carry no id is kept as it stands, and
+    `whole_kin` keeps the 家世 half (父/母/兄弟姊妹) entire for the boards that write about the
+    protagonist's own origin (本纪/交友/仇敌)."""
+    out = []
+    dropped_parents = set()
+    for r in rows:
+        if r.get("kind") in ("consort", "kids", "kin"):
+            _ent = [(t, c) for t, c in (r.get("entries") or []) if t]
+            if not _ent:
+                continue
+            if r.get("kin") and whole_kin:
+                out.append(r)
+                continue
+            if not r.get("kin"):
+                _kept = [(t, c) for t, c in _ent if c is None or c in keep]
+            else:
+                _kept = [(t, c) for t, c in _ent if c is None or c in keep]
+            if r.get("kin") and not _kept and any(c is not None for _t, c in _ent):
+                dropped_parents.add(r.get("header"))
+            if _kept:
+                r = dict(r)
+                r["entries"] = _kept
+                out.append(r)
+        else:
+            _par = r.get("parent")
+            if _par and _par in dropped_parents:
+                continue
+            out.append(r)
+    return out
+
+
 def _profile_lines(facts, cid=None, with_real_parentage=False,
                    with_private_chains=False, scope=None, with_death=True,
-                   with_court=True, household_split=False):
+                   with_court=True, household_split=False, household_rows=None):
     """Profile of the protagonist (cid=None) or of character cid → one prose line per fact class;
     scope = kin register; with_real_parentage/with_private_chains add lineage facts; with_court/with_death suppress court and death data.
     household_split additionally returns the household lines apart: (identity, household, tail)."""
@@ -808,68 +989,14 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # archive that boards which do not write about a family (礼仪志/宝物志/历代记…) never use, so it
     # ships apart from the identity half (`_wants_household_block`).
     _hh_start = len(lines)
-    spouse_bits = []
-    if p.get("spouses"):
-        spouse_bits.append(_marital_row(spouse_lbl, p["spouses"]))
-    if p.get("former_spouses"):
-        spouse_bits.append(_marital_row(former_lbl, p["former_spouses"]))
-    if p.get("concubines"):
-        spouse_bits.append(_marital_row(conc_lbl, p["concubines"]))
-    if p.get("former_concubines"):
-        spouse_bits.append(_marital_row(former_conc_lbl, p["former_concubines"]))
-    # children split by sex: a mixed list makes the model promote daughters to sons. Each group gets
-    # its own headed row with one name per line (user 2026-10-06): in the old single row
-    # 「子A、B…，女C、D…。」 the second group's sex word sat far from its names and the model read the
-    # daughters as sons (第5个十年:188「一生有八个儿子、八个儿子」).
-    if spouse_bits:
-        lines.append("，".join(spouse_bits) + "。")
-    for _label, _key in (("儿子", "children_sons"), ("女儿", "children_daughters")):
-        _names = [x for x in (p.get(_key) or "").split("、") if x]
-        if not _names:
-            continue
-        lines.append(f"{_label}：")
-        lines.extend("　" + x for x in _names)
-    if not (p.get("children_sons") or p.get("children_daughters")) and p.get("children"):
-        _names = [x for x in (p.get("children") or "").split("、") if x]
-        if _names:
-            lines.append("子女：")
-            lines.extend("　" + x for x in _names)
-    # the spouse's children by another parent: own sentence, household article only (facts.wife_other_children_line)
-    if cid is None and p.get("wife_other_children") and with_real_parentage:
-        lines.append(p["wife_other_children"])
-    # speech relation: intelligibility or interpreter need decided in facts; the model copies it
-    if p.get("language_relation"):
-        lines.append(p["language_relation"])
-    if p.get("language_relations"):
-        lines.extend(p["language_relations"])
-    elif p.get("language_bridge"):
-        lines.append(p["language_bridge"])
-    # One relative per sentence: the father, the mother and the sibling list are separate
-    # statements, so the sibling list can never be read together with the mother's name.
-    # The birth rank (`facts._kin_counts_line`) sits directly behind the row of the parent it
-    # counts: the father's for a standard marriage, the mother's for a matrilineal one.
-    kin_bits = []
-    if p.get("father"):
-        _fl = p["father"]
-        # the succession line above already gives the father's full appellation (「其父、前代传主
-        # 爱尔兰至高王…」), so the 「父」 row carries only his name then
-        if cid is None and p.get("father_name") \
-                and any(p["father_name"] in ln for ln in (p.get("succession") or [])):
-            _fl = p["father_name"]
-        kin_bits.append(f"父{_fl}。")
-    if p.get("kin_counts") and p.get("kin_counts_parent") != "母亲":
-        kin_bits.append(p["kin_counts"])
-    if with_real_parentage and p.get("real_father") \
-            and p.get("real_father") != p.get("father"):
-        kin_bits.append(f"实父{p['real_father']}。")
-    if p.get("mother"):
-        kin_bits.append(f"母{p['mother']}。")
-    if p.get("kin_counts") and p.get("kin_counts_parent") == "母亲":
-        kin_bits.append(p["kin_counts"])
-    # per-person profiles omit siblings; the protagonist's own profile keeps the line
-    if cid is None and p.get("siblings"):
-        kin_bits.append(f"兄弟姊妹{p['siblings']}。")
-    lines.extend(kin_bits)
+    # The household half is built as prunable rows: a section drops the relatives its own material
+    # never names (`_prune_household_rows`), so one identical block no longer rides along to every
+    # article of the family. The rendered text is byte-identical to the flat form above.
+    _rows = _household_rows(facts, p, cid, with_real_parentage, spouse_lbl, former_lbl,
+                            conc_lbl, former_conc_lbl)
+    if household_rows is not None:
+        household_rows.extend(_rows)
+    lines.extend(_render_household_rows(_rows))
     _hh_end = len(lines)
     # barony-level places, same source as the assassin article's victim_place; with_death=False drops the place
     _bp = p.get("birth_place") or ""
@@ -1067,6 +1194,45 @@ def _assassin_lead_line(k, facts=None, scope=None):
         else f"死者：{disp}"
 
 
+def _victim_place_of(e):
+    return (e.get("victim_place") or "").strip()
+
+
+def _victim_death_when(e):
+    """`{death date}在{place}{cause}` for one victim, or the fact layer's sentence when the save
+    records no death date. The place is a clause of the same sentence, never a line of its own."""
+    date = (e.get("death_date_cn") or "").strip()
+    if not date:
+        db = _strip_station(e.get("death") or "")
+        for _p in (e.get("label"), e.get("name")):
+            if _p and db.startswith(_p + "死于"):
+                db = "死于" + db[len(_p) + 2:]
+                break
+        return db if db and not F.is_unknown(db) else ""
+    place = _victim_place_of(e)
+    cause = (e.get("death_clause") or "").strip()
+    out = f"{date}在{place}" if place else date
+    return out + cause if cause else out
+
+
+def _victim_merged_line(k, facts, disp):
+    """`死者：{主角}的{身份}{死者}，{死日}在{地点}{死法}，享年{N}岁。`
+    One merged sentence (user 2026-10-06): the identity word, the place and the age ride along the
+    death date instead of filling separate lines. A piece the save does not record is omitted
+    whole, and a victim with no death date keeps the fact layer's own sentence."""
+    pname = ((facts or {}).get("protagonist") or {}).get("name") or ""
+    ident = (k.get("identity") or "").strip()
+    subject = f"{pname}的{ident}{disp}" if (pname and ident) else disp
+    body = _victim_death_when(k)
+    if not body:
+        bd = k.get("birth") or ""
+        return f"死者：{subject}，生于{bd}" if bd else f"死者：{subject}"
+    age = k.get("age")
+    if isinstance(age, int) and (k.get("death_date_cn") or "").strip():
+        body += f"，享年{age}岁"
+    return f"死者：{subject}，{body}。"
+
+
 def _assassin_kill_lines(facts, cache, k, scope=None):
     """Archive lines for one victim (or a kin group): office + name, birth/death, kin, marriage;
     returns 死者：… entries. Grouped kin share a line, and the first mention carries a kin tag."""
@@ -1076,31 +1242,22 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
     off = k.get("office") or ""
     disp = k.get("label") or (f"{off}{nm}" if off else nm)
     disp = _kin_tag(facts, scope, k.get("id"), disp)
-    db = k.get("death") or ""
-    for _p in (disp, nm):
-        if db.startswith(_p + "死于"):
-            db = "死于" + db[len(_p) + 2:]
-            break
-    db = _strip_station(db)  # the place of death is rendered on its own line
     if grp:
         disps = [disp] + [g.get("label") or g.get("name") or "" for g in grp]
         disps = [d for d in disps if d]
         note = k.get("kin_note") or ""
-        tail = "；".join(x for x in (note, db) if x)
+        # the group shares one death date, so the merged sentence carries the leader's place and no
+        # age (the members' ages differ); the members' own rows come only when a place differs
+        tail = "；".join(x for x in (note, _victim_death_when(k)) if x)
         lines.append(f"死者：{'、'.join(disps)}，{tail}" if tail
                      else f"死者：{'、'.join(disps)}")
-    elif db and not F.is_unknown(db):
-        bd = k.get("birth") or ""
-        head = f"，生于{bd}，" if bd else "，"
-        lines.append(f"死者：{disp}{head}{db}")
-    elif k.get("birth"):
-        lines.append(f"死者：{disp}，生于{k.get('birth')}")
     else:
-        lines.append(f"死者：{disp}")
-    # a kill has no scene of its own: anchor on the victim's last known barony, omitted when absent
-    for e in [k] + grp:
-        vp = (e.get("victim_place") or "").strip()
-        if vp:
+        lines.append(_victim_merged_line(k, facts, disp))
+    # a kin group's members may die in different places: a member whose barony differs from the
+    # leader's keeps his own row, so the merged sentence above never claims his place
+    for e in (grp if grp else []):
+        vp = _victim_place_of(e)
+        if vp and vp != _victim_place_of(k):
             lines.append(f"{e.get('name') or ''}死于{vp}。")
     # an uprising's true place (capital → prefecture) on its own line, else the dead move home
     for e in [k] + grp:
@@ -1424,6 +1581,8 @@ def _article_facts(facts, cache, key, section=None):
     pid = facts.get("player_id")
     pname = (facts["protagonist"] or {}).get("name") or ""
     blocks = {}
+    _hh_rows = []
+    _hh_wanted = False
     subject = _article_subject(facts, cache, key)
     scope = F.KinScope(subject) if subject is not None else None
     # profile and year-by-year digest ship per article; the internal file (「实父X」 plus the reveal chain) goes only to
@@ -1442,10 +1601,14 @@ def _article_facts(facts, cache, key, section=None):
                 # the assassin article gets no protagonist death year (death/successor lines)
                 with_death=(key != "assassins"),
                 # the dynasty-chronicle article gets no court details (vassals / council / offices)
-                with_court=(key != "chaoju"), household=True)
+                with_court=(key != "chaoju"), household=True, household_rows=_hh_rows)
             _set_block(blocks, "传主档案", "\n".join(_ident))
-            if _wants_household_block(key, subject):
-                _set_block(blocks, "传主家室", "\n".join(_home))
+            if _wants_household_block(key, subject) and _hh_rows:
+                # The household block keeps its slot in the material order, but is filled at the end
+                # of this function: the pruning asks which of its people this section's own material
+                # names, and that material is built below (v109 §2.2).
+                blocks["传主家室"] = ""
+                _hh_wanted = True
     if key == "benji":
         # lead and chronicle sections take disjoint module slices; 【大事年表】 carries the year anchors
         sk = _sec_key(section)
@@ -1782,6 +1945,22 @@ def _article_facts(facts, cache, key, section=None):
                 blocks["隐事纪年"] = "\n".join(sec["events"])
     # final pass in block order tags the first inline mention of each name (timeline / secrets / feuds).
     _tag_blocks(facts, scope, blocks)
+    if _hh_wanted:
+        # The household block is pruned last, once every other block of this section exists: a
+        # relative stays only when the section's own material (or its declared member list) names
+        # him, so a section about rites or feuds no longer carries the whole family roster.
+        _others = "\n".join(v for k, v in blocks.items() if k != "传主家室" and v)
+        _members = {int(c) for c in (section.get("members") or ())
+                    if isinstance(c, int) or (isinstance(c, str) and str(c).isdigit())}
+        _cands = {c for r in _hh_rows for _t, c in (r.get("entries") or [])}
+        _keep = _members | _mentioned_cids(facts, cache, _cands, _others)
+        _home_text = "\n".join(_render_household_rows(
+            _prune_household_rows(_hh_rows, _keep,
+                                  whole_kin=key in ("benji", "friend", "enemy"))))
+        if _home_text:
+            blocks["传主家室"] = _home_text
+        else:
+            blocks.pop("传主家室", None)
     return blocks
 
 
@@ -1864,15 +2043,16 @@ def _jiashi_variant(facts, cache):
 
 
 def _protagonist_archive_lines(facts, private=False, scope=None, with_death=True,
-                               with_court=True, household=False):
+                               with_court=True, household=False, household_rows=None):
     """Protagonist profile lines, sent per article, not in the shared prefix. private adds the
     real-father line and exposure chains; with_death/with_court drop death/successor and court data.
     household returns (identity lines, household lines) instead of one list; see
-    `_wants_household_block` and `_profile_lines`."""
+    `_wants_household_block` and `_profile_lines`. `household_rows` receives the household rows as
+    records, which the caller prunes per section."""
     lines = _profile_lines(facts, None, with_real_parentage=private,
                            with_private_chains=private, scope=scope,
                            with_death=with_death, with_court=with_court,
-                           household_split=household)
+                           household_split=household, household_rows=household_rows)
     if household:
         before, home, after = lines
         return before + after, home

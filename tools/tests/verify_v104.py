@@ -49,9 +49,16 @@ def stub(cache=None, as_of="1075.9.8"):
     o.cache = cache if cache is not None else {}
     o.as_of = as_of
     o.decade = None
+    o.melt = {}                    # v109: the identity list reads court/council tables from it
+    o._regencies = []              # v109: regency records live in the melt's diarchies table
     for name in ("_rite_chain_rids", "_one_rite_ruling_rows", "_rite_ruling_rows",
                  "_parent_maps", "_ancestor_routes", "blood_kin_words_for",
-                 "blood_kin_word_for", "kin_word_for", "kin_chain_words_for",
+                 "blood_kin_word_for", "kin_word_for", "kin_chain_words_for", "identity_parts",
+                 "affinal_kin_words_for", "_sex_of", "_fam_ids", "_sibling_ids", "_child_ids",
+                 "_parent_ids", "_primary_spouse_ids", "_older_ids", "_spouse_sibling_word",
+                 "_sibling_spouse_word", "_spouse_parent_word", "_co_sibling_in_law_word",
+                 "_court_roster", "_council_seats_of", "_council_scope",
+                 "regency_of", "regent_of",
                  "_spouse_kind_of", "merge_spouse_latch", "_court_positions_of", "_is_female",
                  "_kin_rev_index", "_spouse_back_index", "_faith_label",
                  "_faith_main_rite_rows", "_in_church_window", "_church_days",
@@ -66,6 +73,7 @@ def stub(cache=None, as_of="1075.9.8"):
             setattr(o, name, types.MethodType(fn, o))
     o._church_window = lambda: (None, None)
     o._KIN_CHAIN_BLOOD_MAX = F.Facts._KIN_CHAIN_BLOOD_MAX
+    o._KIN_CHAIN_AFFINAL_MAX = F.Facts._KIN_CHAIN_AFFINAL_MAX
     o._PUPPET_LOOKAHEAD_DAYS = F.Facts._PUPPET_LOOKAHEAD_DAYS
     o._COUNCIL_MATCH_DAYS = F.Facts._COUNCIL_MATCH_DAYS
     o._place_of_province = lambda prov: {1785: "圣地亚哥"}.get(prov, "")
@@ -132,7 +140,7 @@ def group_a():
     st4 = stub({"characters": chars2, "player_id": 4})
     st4._is_female = lambda cid: bool((chars2.get(str(cid)) or {}).get("female"))
     st4.relation_word_for = lambda cid, subject: "仇敌"
-    st4._court_positions_of = lambda cid, date=None: ["乳母", "处刑人"]
+    st4._court_positions_of = lambda cid, date=None, subject=None: ["乳母", "处刑人"]
     chain4 = st4.kin_chain_words_for(8, 4)
     check("[6] order = kin, blood, relation, offices",
           chain4[:2] == ["妻子", "女儿"] and chain4[-3:] == ["仇敌", "乳母", "处刑人"], chain4)
