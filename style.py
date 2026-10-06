@@ -38,9 +38,8 @@ RULES = {
     # rendered by the facts layer, and anything the program can enforce stays out
     # of the prompt.
     "nonfiction": (
-        "「写作依据」：人物、家族、官职、事件、日期与数字，一律照本篇给出的写法书写；"
-        "由本篇人事生发的心理、对话与场景要写足，"
-        "每一句都落到具体的人、时间、地点与事件上。"
+        "「写作依据」：根据提供的信息撰写相关内容，；"
+        "由本篇人事生发的心理、对话与场景要写足。"
     ),
     "narrative_focus": (
         "「行文焦点」：每一句都落在具体的人、时间、地点与事件上，"
@@ -787,9 +786,9 @@ MEMORY_TEMPLATES = {
     # word follows the holder's sex and relation (wife/husband; concubines have their own
     # table, facts._consort_word), and when the mother holds the memory herself the
     # `_no_other` version avoids a self-referential "A's wife A".
-    "child_premature": "{name}之{rel}{other}流产。",
+    "child_premature": "{name}的{rel}{other}流产。",
     "child_premature_no_other": "{name}流产。",
-    "child_stillborn": "{name}之{rel}{other}产下死婴。",
+    "child_stillborn": "{name}的{rel}{other}产下死婴。",
     "child_stillborn_no_other": "{name}产下死婴。",
     "twins_born": "{name}得孪生子。",
     # Births are split by the child's sex.
