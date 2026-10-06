@@ -14407,7 +14407,7 @@ class Facts:
             if not names:
                 continue
             out.append(f"与{names}无共通语：{subj_pron}通{'、'.join(pl)}，"
-                       f"{names}通{'、'.join(key)}，"
+                       f"对方通{'、'.join(key)}，"
                        f"交谈须借通译或以手势、习语往来。")
         return out[:4]
 
@@ -20580,17 +20580,21 @@ MARITAL_ROW_WORDS = {
 
 
 def _consort_row_entry(f, sid, kind="", lineality=False):
-    """One entry of a spouse/concubine row: the composed kin chain in front of the name
+    """One entry of a spouse/concubine row: the composed kin attributive in front of the name
     (「妻子兼妹妹时尚公主于尔娃·耀国斯多蒂尔」).
 
-    The chain comes from `Facts.kin_chain_words_for` — marriage word, further blood routes (three at
-    most), the one scripted relation, then every office in the subject's court — so a wife who is
-    also a sibling reads as both and no trailing clause has to be resolved by the reader. `kind` is
-    the row's own marriage word for someone who is no longer a spouse (前妻/前妾:
-    `_spouse_kind_of` returns nothing for them) and is written before the chain when given.
+    The row states the marriage and the person's own blood tie, in that order, so the reader never
+    has to resolve the trailing clause 「，本为其妹妹」 against the name before it — the misreading
+    that produced 「本为其父…之妻」 (user 2026-10-05; docs/方案_v106 1-B). `kind` is the row's own
+    marriage word for someone who is no longer a spouse (前妻/前妾: `_spouse_kind_of` returns
+    nothing for them) and is written first then.
 
-    The father's marriage history is deliberately absent: the row states the person's own relation to
-    the subject, while her own 家室档案 already gives her husbands (`consort_of_line`).
+    One blood word only: the further independent routes (「兼表妹兼堂姐」) belong to the composed
+    chains the inline attributives carry, where the user asked for them up to three
+    (docs/方案_v104 §6-B); in a five-name row they only lengthen the line.
+
+    The father's marriage history is deliberately absent: her own 家室档案 already gives her
+    husbands (`consort_of_line`).
     """
     nm = f.kin_label(sid, f.as_of)
     if not nm:
@@ -20598,12 +20602,17 @@ def _consort_row_entry(f, sid, kind="", lineality=False):
     pid = f.cache.get("player_id")
     parts = [kind] if kind else []
     try:
-        chain = f.kin_chain_words_for(sid, pid) or []
+        spouse = f._spouse_kind_of(sid)
     except Exception:                                        # noqa: BLE001
-        chain = []
-    for w in chain:
-        if w and w not in parts:
-            parts.append(w)
+        spouse = ""
+    if spouse and spouse not in parts:
+        parts.append(spouse)
+    try:
+        blood = f.blood_kin_word_for(sid, pid)
+    except Exception:                                        # noqa: BLE001
+        blood = ""
+    if blood and blood not in parts:
+        parts.append(blood)
     if not parts:
         return nm
     note = f.marriage_lineality_note(pid, sid, before=f.as_of) if lineality else ""
