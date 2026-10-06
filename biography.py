@@ -630,11 +630,27 @@ def _num1(v, nd=1):
         return ""
 
 
+def _marital_row(label, text):
+    """Head word for one spouse/concubine list: dropped when the first entry already opens with a
+    marriage word of its own (`facts._consort_row_entry` composes 「妻子兼妹妹X」), so the row can
+    never read 「妻室妻子兼妹妹X」."""
+    if not text:
+        return ""
+    head = text.split("；")[0].split("、")[0]
+    for w in sorted(F.MARITAL_ROW_WORDS["former_concubines"]
+                    + F.MARITAL_ROW_WORDS["former_spouses"]
+                    + F.MARITAL_ROW_WORDS["primary_spouse"], key=len, reverse=True):
+        if head.startswith(w):
+            return text
+    return f"{label}{text}"
+
+
 def _profile_lines(facts, cid=None, with_real_parentage=False,
                    with_private_chains=False, scope=None, with_death=True,
-                   with_court=True):
+                   with_court=True, household_split=False):
     """Profile of the protagonist (cid=None) or of character cid → one prose line per fact class;
-    scope = kin register; with_real_parentage/with_private_chains add lineage facts; with_court/with_death suppress court and death data."""
+    scope = kin register; with_real_parentage/with_private_chains add lineage facts; with_court/with_death suppress court and death data.
+    household_split additionally returns the household lines apart: (identity, household, tail)."""
     if cid is None:
         p = facts["protagonist"]
     else:
@@ -789,16 +805,20 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # Consorts and children are two sentences: one run of 「，」 put the subject's wives and the
     # children in one statement, and the last wife then read as the mother of the names that
     # followed her -- her own two husbands among them (docs/方案_v104 问题 6-A).
+    # The household run starts here: from the spouse rows through the kin rows. It is the half of the
+    # archive that boards which do not write about a family (礼仪志/宝物志/历代记…) never use, so it
+    # ships apart from the identity half (`_wants_household_block`).
+    _hh_start = len(lines)
     spouse_bits = []
     child_bits = []
     if p.get("spouses"):
-        spouse_bits.append(f"{spouse_lbl}{p['spouses']}")
+        spouse_bits.append(_marital_row(spouse_lbl, p["spouses"]))
     if p.get("former_spouses"):
-        spouse_bits.append(f"{former_lbl}{p['former_spouses']}")
+        spouse_bits.append(_marital_row(former_lbl, p["former_spouses"]))
     if p.get("concubines"):
-        spouse_bits.append(f"{conc_lbl}{p['concubines']}")
+        spouse_bits.append(_marital_row(conc_lbl, p["concubines"]))
     if p.get("former_concubines"):
-        spouse_bits.append(f"{former_conc_lbl}{p['former_concubines']}")
+        spouse_bits.append(_marital_row(former_conc_lbl, p["former_concubines"]))
     # children split by sex: a mixed list makes the model promote daughters to sons
     if p.get("children_sons"):
         child_bits.append(f"子{p['children_sons']}")
@@ -828,7 +848,13 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # counts: the father's for a standard marriage, the mother's for a matrilineal one.
     kin_bits = []
     if p.get("father"):
-        kin_bits.append(f"父{p['father']}。")
+        _fl = p["father"]
+        # the succession line above already gives the father's full appellation (「其父、前代传主
+        # 爱尔兰至高王…」), so the 「父」 row carries only his name then
+        if cid is None and p.get("father_name") \
+                and any(p["father_name"] in ln for ln in (p.get("succession") or [])):
+            _fl = p["father_name"]
+        kin_bits.append(f"父{_fl}。")
     if p.get("kin_counts") and p.get("kin_counts_parent") != "母亲":
         kin_bits.append(p["kin_counts"])
     if with_real_parentage and p.get("real_father") \
@@ -842,6 +868,7 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     if cid is None and p.get("siblings"):
         kin_bits.append(f"兄弟姊妹{p['siblings']}。")
     lines.extend(kin_bits)
+    _hh_end = len(lines)
     # barony-level places, same source as the assassin article's victim_place; with_death=False drops the place
     _bp = p.get("birth_place") or ""
     _dp = (p.get("death_place") or "") if with_death else ""
@@ -884,6 +911,8 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     if df:
         lines.append("戏剧性事件：" + "；".join(
             str(x).rstrip("。") for x in df) + "。")
+    if household_split:
+        return lines[:_hh_start], lines[_hh_start:_hh_end], lines[_hh_end:]
     return lines
 
 
@@ -1371,6 +1400,22 @@ def _article_subject(facts, cache, key):
     return pid
 
 
+# Boards whose sections write about the protagonist's household. The other boards state no wife,
+# child or parent (style.py's section requirements never ask for one), so the household half of the
+# archive would only spend tokens and pull the model's attention there: 礼仪志 wrote a roster of
+# wives and daughters into a section about rites and doctrine.
+_HOUSEHOLD_BOARD_KEYS = ("benji", "jiashi", "secrets", "qizu", "feuds")
+
+
+def _wants_household_block(key, subject=None):
+    """Whether an article receives the household half of the protagonist archive. The subject
+    articles (friend/enemy) print the protagonist file only in the no-subject fallback, where the
+    archive is the article's own material, so they keep both halves there."""
+    if key in _HOUSEHOLD_BOARD_KEYS:
+        return True
+    return key in ("friend", "enemy") and subject is None
+
+
 def _article_facts(facts, cache, key, section=None):
     """Fact text blocks for one article, as {block name: text}; the assassin article slices by board
     (compressed roster for the lead, time slice per chronicle) and keys a local per-call KinScope."""
@@ -1388,13 +1433,17 @@ def _article_facts(facts, cache, key, section=None):
         # earlier reigns; the lead section keeps the profile.
         _mid_sec = _sec_key(section) not in ("lead", None)
         if not (key == "chaoju" and _mid_sec):
-            _set_block(blocks, "传主档案",
-                       "\n".join(_protagonist_archive_lines(
-                           facts, private=key in private_boards, scope=scope,
-                           # the assassin article gets no protagonist death year (death/successor lines)
-                           with_death=(key != "assassins"),
-                           # the dynasty-chronicle article gets no court details (vassals / council / offices)
-                           with_court=(key != "chaoju"))))
+            # the identity half ships to every board (its bytes stay identical, so the request keeps
+            # its cacheable prefix); the household half only to `_wants_household_block`
+            _ident, _home = _protagonist_archive_lines(
+                facts, private=key in private_boards, scope=scope,
+                # the assassin article gets no protagonist death year (death/successor lines)
+                with_death=(key != "assassins"),
+                # the dynasty-chronicle article gets no court details (vassals / council / offices)
+                with_court=(key != "chaoju"), household=True)
+            _set_block(blocks, "传主档案", "\n".join(_ident))
+            if _wants_household_block(key, subject):
+                _set_block(blocks, "传主家室", "\n".join(_home))
     if key == "benji":
         # lead and chronicle sections take disjoint module slices; 【大事年表】 carries the year anchors
         sk = _sec_key(section)
@@ -1813,12 +1862,19 @@ def _jiashi_variant(facts, cache):
 
 
 def _protagonist_archive_lines(facts, private=False, scope=None, with_death=True,
-                               with_court=True):
+                               with_court=True, household=False):
     """Protagonist profile lines, sent per article, not in the shared prefix. private adds the
-    real-father line and exposure chains; with_death/with_court drop death/successor and court data."""
-    return _profile_lines(facts, None, with_real_parentage=private,
-                          with_private_chains=private, scope=scope,
-                          with_death=with_death, with_court=with_court)
+    real-father line and exposure chains; with_death/with_court drop death/successor and court data.
+    household returns (identity lines, household lines) instead of one list; see
+    `_wants_household_block` and `_profile_lines`."""
+    lines = _profile_lines(facts, None, with_real_parentage=private,
+                           with_private_chains=private, scope=scope,
+                           with_death=with_death, with_court=with_court,
+                           household_split=household)
+    if household:
+        before, home, after = lines
+        return before + after, home
+    return lines
 
 
 def _shared_facts_block(facts, subject=None, key=None):
@@ -2120,9 +2176,31 @@ def _fix_person_names(text, facts, cache):
     return _dedup_adjacent_words(out)
 
 
+def _accepted_kin_words(fi, cid, pid, row_words):
+    """Words the fact layer itself composes or prints for one relative: the composed kin chain
+    (`Facts.kin_chain_words_for`: 「妻子兼妹妹X」) plus the marriage word of the row they are listed
+    in (「配偶X」 is the council's consort seat, 「妻室X」 the row head). `_fix_kin_roles` leaves all of
+    them alone; '' is not a word and is filtered by the caller."""
+    out = set(row_words or ())
+    try:
+        out |= {w for w in (fi.kin_chain_words_for(cid, pid) or ()) if w}
+    except Exception:                                        # noqa: BLE001
+        pass
+    return out
+
+
 def _fix_kin_roles(text, facts, cache):
-    """Rewrite the kin word attached to a name when it disagrees with the archive (last kin
-    word in the 12 characters before it). Pure and idempotent; truth is the cache kin graph."""
+    """Rewrite the kin word attached to a name when it disagrees with the archive (the last kin word
+    in the 12 characters before the name). Pure and idempotent; truth is the cache kin graph plus the
+    words the fact layer composes for that person.
+
+    Two guards keep it from destroying correct prose, both proven by logs/v106_fixkin_probe2.txt:
+      * name spans are matched longest-first and non-overlapping, so a relative whose `name_zh` is a
+        bare substring of another relative's name (the father's 「耀国」 inside 「海伦·耀国斯多蒂尔」)
+        cannot claim the other person's characters;
+      * a word the archive itself writes for that person is never replaced, so the composed chain
+        「妻子兼妹妹X」 survives (without it the pass rewrites 妹妹 into the cascade's 妻子).
+    """
     if not text:
         return text
     pid = cache.get("player_id")
@@ -2130,56 +2208,110 @@ def _fix_kin_roles(text, facts, cache):
     if pid is None or fi is None:
         return text
     fam = ((cache.get("characters") or {}).get(str(pid)) or {}).get("family") or {}
-    kids = set(fam.get("child") or []) | set(fam.get("siblings") or [])
+    # Relatives, each with the marriage words of the row that lists them (MARITAL_ROW_WORDS).
     others = []
-    for key in ("primary_spouse", "spouse", "former_spouses", "ever_spouses",
-                "concubine", "former_concubines", "father", "mother"):
-        others.extend(fam.get(key) or [])
-    others.extend(sorted(kids))
+    for key in ("primary_spouse", "spouse", "ever_spouses", "former_spouses",
+                "concubine", "former_concubines"):
+        for x in (fam.get(key) or []):
+            others.append((x, F.MARITAL_ROW_WORDS.get(key, ())))
+    for x in (fam.get("father") or []) + (fam.get("mother") or []):
+        others.append((x, ()))
+    for x in sorted(set(fam.get("child") or []) | set(fam.get("siblings") or [])):
+        others.append((x, ()))
+    by_cid = {}
+    for x, words in others:
+        try:
+            cid = int(x)
+        except (TypeError, ValueError):
+            continue
+        by_cid.setdefault(cid, set()).update(words)
+    # the protagonist himself is never a subject of this pass, but his name must not be mistaken for
+    # a relative's: his spans are collected as cover only (「本为耀国松之父亲」 must stay the model's
+    # text, not a rewrite site for the father's bare name)
+    cover_only = []
     chars = cache.get("characters") or {}
-    # only multi-character kin words are candidates: a single 子/父/母 also occurs inside the replacement (妻子 contains 子)
+    fchars = (facts or {}).get("characters") or {}
+    _self_rec = chars.get(str(pid)) or {}
+    for nm in dict.fromkeys([_self_rec.get("name_full"), _self_rec.get("name_zh"),
+                             (fchars.get(str(pid)) or {}).get("name")]):
+        if nm:
+            cover_only.append(nm)
+    # only multi-character kin words are candidates: a single 子/父/母 also occurs inside the
+    # replacement (妻子 contains 子)
     all_words = {F.kin_text(k) for k in F.KIN_WORDS}
     all_words = {w for w in all_words if w and len(w) >= 2}
-    # 妻室 is the archive word for a spouse, absent from the kin table, so it is added explicitly
-    all_words |= {"妻室"}
+    # 妻室 is the archive word for a spouse, absent from the kin table, and the former rows write
+    # 前妻/前夫/前妾/前男宠 of their own, so they are added explicitly
+    all_words |= {"妻室"} | set(F.MARITAL_ROW_WORDS["former_spouses"]) \
+        | set(F.MARITAL_ROW_WORDS["former_concubines"])
+    all_words = {w for w in all_words if len(w) >= 2}
+    # a name matches as a whole word: a span glued to a compound name by 「·」 (耀国 inside
+    # 「海伦·耀国斯多蒂尔」 or inside 「耀国·缯松」) belongs to that longer name, not to this relative
+    _GLUE = ("·", "・", "‧")
+    spans = []
+    _MAX_HITS_PER_NAME = 8
+    _MAX_SPANS = 400
     out = text
-    for other in dict.fromkeys(int(x) for x in others
-                               if isinstance(x, int) or str(x).isdigit()):
-        rec = chars.get(str(other)) or {}
+
+    def _collect(nm, cid, true_word, row_words):
+        i = out.find(nm)
+        n = 0
+        while i != -1 and n < _MAX_HITS_PER_NAME and len(spans) < _MAX_SPANS:
+            n += 1
+            j = i + len(nm)
+            if (i > 0 and out[i - 1] in _GLUE) or (j < len(out) and out[j] in _GLUE):
+                i = out.find(nm, i + 1)
+                continue
+            spans.append((i, j, cid, true_word, row_words))
+            i = out.find(nm, i + 1)
+
+    for nm in cover_only:
+        _collect(nm, None, None, ())
+    for cid, row_words in by_cid.items():
+        rec = chars.get(str(cid)) or {}
         names = [rec.get("name_full"), rec.get("name_zh"),
-                 (facts.get("characters", {}).get(str(other)) or {}).get("name")]
+                 (fchars.get(str(cid)) or {}).get("name")]
         names = [n for n in dict.fromkeys(names) if n]
         if not names:
             continue
         try:
-            true_word = F.kin_word(cache, pid, other, chars=chars)
-        except Exception:
+            true_word = F.kin_word(cache, pid, cid, chars=chars)
+        except Exception:                                    # noqa: BLE001
             true_word = ""
         if not true_word:
             continue
         for nm in names:
-            i = out.find(nm)
-            guard = 0
-            while i != -1 and guard < 8:
-                guard += 1
-                win = out[max(0, i - 12):i]
-                best_w, best_p = "", -1
-                for w in all_words:
-                    if not w or w == true_word:
-                        continue
-                    j = win.rfind(w)
-                    if j < 0:
-                        continue        # word absent from the window (rfind -1 must not win)
-                    # at equal positions prefer the longest word (伯祖父 ⊃ 祖父), else a precise word gets
-                    # replaced by a coarser one (the table holds 42 mutually suffixing pairs).
-                    if j > best_p or (j == best_p and len(w) > len(best_w)):
-                        best_w, best_p = w, j
-                if best_w:
-                    at = max(0, i - 12) + best_p
-                    out = out[:at] + true_word + out[at + len(best_w):]
-                    i = out.find(nm, at + len(true_word) + len(nm))
-                else:
-                    i = out.find(nm, i + 1)
+            _collect(nm, cid, true_word, row_words)
+    # longest span first, leftmost on a tie: the daughter's full name claims its characters before
+    # the father's two-character name can match inside them
+    spans.sort(key=lambda t: (-(t[1] - t[0]), t[0]))
+    taken, accepted = [], []
+    for st, en, cid, true_word, row_words in spans:
+        if any(st < e and s < en for s, e in taken):
+            continue
+        taken.append((st, en))
+        if cid is not None:
+            accepted.append((st, cid, true_word, row_words))
+    # right to left, so a rewrite never invalidates a span to its left
+    for st, cid, true_word, row_words in sorted(accepted, key=lambda t: -t[0]):
+        win = out[max(0, st - 12):st]
+        best_w, best_p = "", -1
+        for w in all_words:
+            if w == true_word:
+                continue
+            j = win.rfind(w)
+            if j < 0:
+                continue        # word absent from the window (rfind -1 must not win)
+            # at equal positions prefer the longest word (伯祖父 ⊃ 祖父), else a precise word gets
+            # replaced by a coarser one (the table holds 42 mutually suffixing pairs).
+            if j > best_p or (j == best_p and len(w) > len(best_w)):
+                best_w, best_p = w, j
+        if not best_w or best_w in row_words:
+            continue
+        if best_w in _accepted_kin_words(fi, cid, pid, row_words):
+            continue
+        at = max(0, st - 12) + best_p
+        out = out[:at] + true_word + out[at + len(best_w):]
     # rewriting must not create adjacent duplicates, so it funnels through the same gate as the finished section
     return _dedup_adjacent_words(out)
 
