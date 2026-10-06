@@ -152,44 +152,53 @@ def main():
     def at(n):
         return L[n - 1]
 
-    # the request whose title line is 《诸子行迹·布里基纳·耀国松》
-    head = None
+    def find(need):
+        """First line number holding `need` (logs/prompts.log is rewritten by every run, so the probe
+        anchors on content, not on line numbers)."""
+        for i, s in enumerate(L, 1):
+            if need in s:
+                return i, s
+        return None, ""
+
+    head, _ = find("家室档案·布里基纳·耀国松")
+    claim(head is not None,
+          "logs/prompts.log 有「家室档案·布里基纳·耀国松」块头（实测 %s）" % head)
+    for need, tag in (("母桑莎·洪堡。", "布里基纳档案自带「母」行"),
+                      ("1038年1月5日，母亲桑莎·洪堡去世。", "事件行亦称「母亲」"),
+                      ("妻子兼妹妹桑莎·洪堡", "传主家室：妻室行"),
+                      ("兄弟姊妹桑莎·洪堡，曾为其妻。", "传主档案：兄弟姊妹行")):
+        ln, s = find(need)
+        claim(ln is not None, "prompts.log 含「%s」（%s）→ %s" % (need, tag, s.strip()[:110]))
+    claim(find("母桑莎·洪堡")[0] is not None and find("妻子兼妹妹桑莎·洪堡")[0] is not None,
+          "同一日志内 桑莎 同时以「母」（对布里基纳）与「妹妹」（对传主）出现")
+    w()
+    w("  日志里 桑莎 的几种写法（行号随重生成变化，按内容锚定）：")
+    for need, tag in (("母桑莎·洪堡。", "布里基纳档案（对象=布里基纳）"),
+                      ("1038年1月5日，母亲桑莎·洪堡去世。", "布里基纳事件行（对象=布里基纳）"),
+                      ("妻子兼妹妹桑莎·洪堡", "传主家室（对象=传主）"),
+                      ("兄弟姊妹桑莎·洪堡，曾为其妻。", "传主档案（对象=传主）")):
+        ln, s = find(need)
+        w("    prompts.log:%-6s [%s] %s" % (ln, tag, s.strip()[:110]))
+    w()
+    # the children run itself: v107 turned it from one 「子…，女…」 line into 「儿子：」+ one name
+    # per line. The log is appended to across generations, so the newest form is the last occurrence.
+    kids_ln, old_ln = None, None
     for i, s in enumerate(L, 1):
-        if s.startswith("家室档案·布里基纳·耀国松"):
-            head = i
-    claim(head == 1955, "logs/prompts.log:1955 是「家室档案·布里基纳·耀国松」块头（实测 %s）" % head)
-    for ln, need, tag in ((1964, "母桑莎·洪堡。", "布里基纳档案自带「母」行"),
-                          (1967, "1038年1月5日，母亲桑莎·洪堡去世。", "事件行亦称「母亲」")):
-        s = at(ln)
-        claim(need in s, "prompts.log:%d 含「%s」（%s）→ %s" % (ln, need, tag, s.strip()))
-    # the same request also labels 桑莎 as the protagonist's sister, twice
-    for ln, need, tag in ((2043, "妻子兼妹妹桑莎·洪堡", "传主家室：妻室行"),
-                          (2049, "兄弟姊妹桑莎·洪堡，曾为其妻。", "传主档案：兄弟姊妹行")):
-        s = at(ln)
-        claim(need in s, "prompts.log:%d 含「%s」（%s）" % (ln, need, tag))
-    claim("母桑莎·洪堡" in at(1964) and "妻子兼妹妹桑莎·洪堡" in at(2043),
-          "同一请求内 桑莎 同时以「母」（对布里基纳）与「妹妹」（对传主）出现")
-    w()
-    w("  该请求里 桑莎 的三种写法：")
-    for ln, tag in ((1964, "布里基纳档案（对象=布里基纳）"),
-                    (1967, "布里基纳事件行（对象=布里基纳）"),
-                    (2043, "传主家室（对象=传主）"),
-                    (2049, "传主档案（对象=传主）")):
-        w("    prompts.log:%-5d [%s] %s" % (ln, tag, at(ln).strip()))
-    w()
-    # the children run itself
-    kids = at(2044)
-    w("  子女行（prompts.log:2044，一行两段，无逐人母系）：")
-    w("    " + kids)
-    m = re.match(r"^子(.*?)，女(.*)。$", kids)
-    claim(bool(m), "prompts.log:2044 是「子…，女…」单行两句式（子/女 用「，」相接）")
-    if m:
-        sons = [x for x in m.group(1).split("、") if x]
-        daus = [x for x in m.group(2).split("、") if x]
-        w("    → 子 %d 人、女 %d 人；桑莎的三个儿子正是子列表的前三名：%s"
-          % (len(sons), len(daus), "、".join(sons[:3])))
-        claim(all("桑莎" not in x for x in sons + daus),
-              "子女行内没有任何一处写出「桑莎」或母系，子/女的归属只能靠行外信息")
+        if s == "儿子：":
+            kids_ln = i
+        if "子爱尔兰王子耀国·耀国松" in s:
+            old_ln = i
+    if kids_ln:
+        w("  子女行（prompts.log:%d，v107 形态：带头 + 逐人一行）：" % kids_ln)
+        for i in range(kids_ln - 1, min(kids_ln + 3, len(L))):
+            w("    " + L[i].strip()[:110])
+        claim("　" in L[kids_ln], "prompts.log:%d 的下一行是缩进姓名（全角空格）" % (kids_ln + 1))
+        if old_ln:
+            w("    （同日志 :%d 还留着更早一版的单行旧形态「子…，女…」，来自旧日志世代）" % old_ln)
+    elif old_ln:
+        w("  子女行（prompts.log:%d，v106 旧形态：单行「子…，女…」）：" % old_ln)
+        w("    " + L[old_ln - 1].strip()[:200])
+        claim(False, "日志仍是旧子女行形态（该日志生成于 v107 之前）")
     w()
 
     # ---------------------------------------------------------------- 第 4 层 事实
@@ -289,15 +298,15 @@ def main():
     w("  (a) 逐人档案的两段式（facts 出字段 → biography 拼行）：")
     cite(fa_src, "facts.py", 'p["children_sons"] = "、".join(')
     cite(fa_src, "facts.py", 'prof["children_sons"] = "、".join(')
-    cite(bio_src, "biography.py", 'child_bits.append(f"子{p[\'children_sons\']}")')
-    cite(bio_src, "biography.py", 'child_bits.append(f"女{p[\'children_daughters\']}")')
-    cite(bio_src, "biography.py", 'lines.append("，".join(child_bits) + "。")')
-    w("    ⇒ 子组与女组共用**一行**，行内用「，」相接；组内用「、」。没有任何")
-    w("      代码产出「儿子：/女儿：」这种带头、分行、逐人一行的形态。")
+    cite(bio_src, "biography.py",
+         'for _label, _key in (("儿子", "children_sons"), ("女儿", "children_daughters")):')
+    w("    ⇒ v107 起：先出一行「儿子：」，再把该组按「、」拆开、每人一行（全角空格缩进）；")
+    w("      女儿组同形另起一行，性别字段缺失时退回「子女：」。v107 之前这里是")
+    w("      child_bits 拼「子A、B，女C」的单行形态（本次已删）。")
     w()
-    w("  (b) 终传附录世系走的是另一套（facts._genealogy），连子/女都没分：")
-    cite(fa_src, "facts.py", '("child", "子女"), ("siblings", "兄弟姊妹")')
-    w("    ⇒ 档案面与附录面各写一遍，两处都不是用户要的格式。")
+    w("  (b) 终传附录世系走的是另一套（facts._genealogy）：")
+    cite(fa_src, "facts.py", '("children_by_sex", ""), ("siblings", "兄弟姊妹"),')
+    w("    ⇒ v107 起同改带头 + 逐人一行（`_is_female` 分组），档案面与附录面形态一致。")
     w()
     w("  (c) 已写进测试的现状（改格式会打到它们）：")
     for pat in ("children_sons", "children_daughters"):

@@ -2208,12 +2208,14 @@ _POSSESSOR_SUBJECT_NOUN = ("孩子", "此人", "本人", "该人", "当事人", 
 _POSSESSOR_REFLEXIVE = ("自己", "他", "她", "其")
 
 
-def _reflexive_antecedent(out, end, names_ordered):
-    """Person a 「自己/他/她/其」 before `end` refers to: the first name of the clause it sits in.
+def _reflexive_antecedent(out, end, names_ordered, cid):
+    """Person a 「自己/他/她/其」 before `end` refers to, or None.
 
-    The subject of a Chinese clause tends to be its first named person, and that is the person a
-    reflexive binds to. '' (None) when the clause names nobody → the caller falls back to the section
-    subject, which is how 「一个六岁的孩童，与自己的母亲结为好友」 keeps the child's own mother."""
+    The subject of a Chinese clause tends to be its first named person, and that is what a reflexive
+    binds to; when the clause names nobody, the nearest earlier name is the antecedent. Both rules
+    skip `cid` — the relative the word itself names — because a person's own kin word cannot state
+    itself: 「与母亲桑莎·洪堡结为好友。一个六岁的孩童，与自己的母亲…」 must skip 桑莎 and reach the
+    child, while 「…盖尔韦堡。他的妹妹是桑莎」 takes the previous sentence's 布里基纳."""
     start = 0
     for sep in ("。", "；", "\n", "！", "？"):
         k = out.rfind(sep, 0, end)
@@ -2221,33 +2223,62 @@ def _reflexive_antecedent(out, end, names_ordered):
             start = k + 1
     seg = out[start:end]
     best = None
-    for nm, cid in names_ordered:
+    for nm, cand in names_ordered:
         k = seg.find(nm)
-        if k < 0:
+        if k < 0 or cand == cid:
             continue
         # leftmost wins (the subject comes first); at one position the longer name wins
         if best is None or k < best[0] or (k == best[0] and len(nm) > best[1]):
-            best = (k, len(nm), cid)
-    return best[2] if best else None
+            best = (k, len(nm), cand)
+    if best is not None:
+        return best[2]
+    # no name in the clause: walk back sentence by sentence and take the leading name of the nearest
+    # sentence that names somebody -- not the nearest name anywhere, which would pick the father out
+    # of 「耀国·耀国松是残忍者耀国的长子」 and read the child's mother as the father's sister
+    probe = start
+    for _ in range(4):
+        if probe <= 0:
+            break
+        cut = 0
+        for sep in ("。", "；", "\n", "！", "？"):
+            k = out.rfind(sep, 0, probe)
+            if k >= cut:
+                cut = k + 1
+        prev = out[cut:probe]
+        best = None
+        for nm, cand in names_ordered:
+            k = prev.find(nm)
+            if k < 0 or cand == cid:
+                continue
+            if best is None or k < best[0] or (k == best[0] and len(nm) > best[1]):
+                best = (k, len(nm), cand)
+        if best is not None:
+            return best[2]
+        probe = cut - 1
+    return None
 
 
 def _possessor_words(cache, facts, pid, subject_ids):
-    """(name → id, generic fallback id) for resolving whose kin word a possessive phrase states.
+    """(name → id, the section's own subjects) for resolving whose kin word a possessive states.
 
     Only close relatives of the protagonist (the pass's own span set) plus the protagonist and the
     section subjects can be possessors: a possessive inside a sentence about one of them is the
     realistic case, and anything outside this set resolves to None so the pass leaves the word alone
-    (a wrong rewrite is worse than a missed one). The generic fallback is the section subject when the
-    section is about one person (a child's 诸子行迹 section, a wife's 门庭恩怨 section), else the
-    protagonist."""
+    (a wrong rewrite is worse than a missed one). The subject list is the section's own members — a
+    「诸子行迹·科林布和布里基纳」 section carries two, and 桑莎 is 母亲 to both, so the accepted set is
+    their union and a word true of only one of them is rejected."""
     chars = cache.get("characters") or {}
     fchars = (facts or {}).get("characters") or {}
     ids = set()
+    subs = []
     for x in (subject_ids or ()):
         try:
-            ids.add(int(x))
+            v = int(x)
         except (TypeError, ValueError):
             continue
+        ids.add(v)
+        if v not in subs:
+            subs.append(v)
     fam = chars.get(str(pid)) or {}
     fam = (fam.get("family") or {})
     for key in ("primary_spouse", "spouse", "ever_spouses", "former_spouses",
@@ -2263,38 +2294,36 @@ def _possessor_words(cache, facts, pid, subject_ids):
                    (fchars.get(str(cid)) or {}).get("name")):
             if nm and len(nm) >= 2 and nm not in names:
                 names[nm] = cid
-    subs = [x for x in (subject_ids or ()) if x is not None]
-    generic = int(subs[0]) if len(subs) == 1 else int(pid)
-    return names, generic
+    return names, (subs or [int(pid)])
 
 
-def _possessor_at(out, end, names_ordered, generic):
-    """Person id the kin word ending at `end` belongs to, or None when the possessor is unresolvable.
+def _possessor_at(out, end, names_ordered, subjects, cid):
+    """The people the kin word ending at `end` may belong to, or None when the possessor is
+    unresolvable (then the word is left alone).
 
     The possessor is the noun phrase before the last 「的」 within 24 characters to the left (「孩子的」
-    → the section subject, 「耀国·缯松的」 → the protagonist, 「布里基纳·耀国松的」 → that child). No
-    「的」 at all means the sentence states a kin word with no possessor, which belongs to the
-    sentence's own subject (the section subject)."""
+    → the section subjects, 「耀国·缯松的」 → the protagonist, 「布里基纳·耀国松的」 → that child). No
+    「的」 on the word at all means the sentence states it without a possessor, which belongs to the
+    sentence's own subject; a farther 「的」 (「同母的兄弟，妹妹是…」) governs something else, so the word
+    falls back to the section subjects too."""
     win = out[max(0, end - 24):end]
     j = win.rfind("的")
     if j < 0:
-        return generic
+        return subjects
     head = win[:j]
-    # only a 「的」 that sits directly on the kin word owns it; a farther 「的」 governs something else
-    # (「他是…的第三子，妹妹是桑莎」: that possessor owns 第三子, and 妹妹 belongs to the sentence's
-    # own subject)
     if win[j + 1:].strip("之") != "":
-        return generic
-    for nm, cid in names_ordered:
+        return subjects
+    for nm, cid2 in names_ordered:
         if head.endswith(nm):
-            return cid
+            return [cid2]
     tail = head.strip("，。；、：　 「」『』——-·")[-3:]
     for g in _POSSESSOR_REFLEXIVE:
         if tail.endswith(g):
-            return _reflexive_antecedent(out, max(0, end - 24) + j, names_ordered) or generic
+            ant = _reflexive_antecedent(out, max(0, end - 24) + j, names_ordered, cid)
+            return [ant] if ant is not None else subjects
     for g in _POSSESSOR_SUBJECT_NOUN:
         if tail.endswith(g):
-            return generic
+            return subjects
     return None
 
 
@@ -2410,7 +2439,7 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
             accepted.append((st, cid, true_word, row_words))
     # right to left, so a rewrite never invalidates a span to its left
     _words_desc = sorted(all_words, key=len, reverse=True)
-    names_map, generic_subj = _possessor_words(cache, facts, pid, subject_ids)
+    names_map, section_subjects = _possessor_words(cache, facts, pid, subject_ids)
     names_ordered = sorted(names_map.items(), key=lambda kv: -len(kv[0]))
     for st, cid, true_word, row_words in sorted(accepted, key=lambda t: -t[0]):
         win = out[max(0, st - 12):st]
@@ -2428,20 +2457,26 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
             continue
         at = max(0, st - 12) + best_end - len(best_w)
         # whose kin word is this? 「孩子的妹妹」 is the child's mother, not the protagonist's sister
-        poss = _possessor_at(out, at, names_ordered, generic_subj)
-        if poss is None:
+        poss = _possessor_at(out, at, names_ordered, section_subjects, cid)
+        if not poss:
             continue
-        try:
-            true_poss = F.kin_word(cache, poss, cid, chars=chars) or true_word
-        except Exception:                                    # noqa: BLE001
-            true_poss = true_word
+        # one section can carry several subjects (「诸子行迹·科林布和布里基纳」): the word is accepted
+        # only when it holds for every one of them, and a rewrite writes the first subject's word
+        words = []
+        acc = set()
+        for p in poss:
+            acc |= {w for w in _kin_chain_for(fi, cid, p)}
+            if int(p) == int(pid):
+                acc |= set(row_words or ())
+            try:
+                w = F.kin_word(cache, p, cid, chars=chars)
+            except Exception:                                # noqa: BLE001
+                w = ""
+            if w and w not in words:
+                words.append(w)
+        true_poss = words[0] if words else true_word
         if not true_poss:
             continue
-        acc = {w for w in _kin_chain_for(fi, cid, poss)}
-        if int(poss) == int(pid):
-            acc |= set(row_words or ())
-        if not acc:
-            acc = _accepted_kin_words(fi, cid, poss, row_words)
         # the «兼» chain the model wrote at this slot: a multi-role chain is correct prose (user
         # 2026-10-06), so it is measured at its own width and never shortened to one word
         run_start, run_words = at, [best_w]
@@ -2459,7 +2494,7 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
         if all(w in acc for w in run_words):
             continue
         if len(run_words) >= 2:
-            repl = _kin_chain_for(fi, cid, poss) or [true_poss]
+            repl = [w for p in poss for w in _kin_chain_for(fi, cid, p)] or [true_poss]
             while len(repl) < len(run_words):
                 repl.append(true_poss)
             out = out[:run_start] + "兼".join(repl[:len(run_words)]) + out[at + len(best_w):]

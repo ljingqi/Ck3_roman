@@ -55,9 +55,10 @@ def check(name, cond, extra=None):
 # 桑莎 is 妹妹 to the protagonist and 母亲 to the child — the exact shape of the reported defect.
 # --------------------------------------------------------------------------
 PID, SANG, BRI, SANSHA, GUO = 100, 200, 300, 900, 901
+KEL = 301          # 科林布·洪堡, the second son of PID and SANG (the 双子段 case)
 LABELS = {PID: "爱尔兰国王残忍者耀国·缯松", SANG: "桑莎·洪堡", BRI: "伦斯特伯爵布里基纳·洪堡",
-          SANSHA: "山南王子圣缯·洪堡", GUO: "洪真一"}
-NAMES = {PID: "耀国·缯松", SANG: "桑莎·洪堡", BRI: "布里基纳·洪堡",
+          KEL: "爱尔兰王子科林布·洪堡", SANSHA: "山南王子圣缯·洪堡", GUO: "洪真一"}
+NAMES = {PID: "耀国·缯松", SANG: "桑莎·洪堡", BRI: "布里基纳·洪堡", KEL: "科林布·洪堡",
          SANSHA: "缯·洪堡", GUO: "洪真一"}
 
 
@@ -66,13 +67,16 @@ def fixture_chars():
         str(PID): {"name_zh": "耀国", "name_full": "耀国·缯松", "female": False,
                    "birth": "1003.5.29",
                    "family": {"father": [SANSHA], "mother": [GUO],
-                              "primary_spouse": [SANG], "child": [BRI], "siblings": [SANG]}},
+                              "primary_spouse": [SANG], "child": [BRI, KEL], "siblings": [SANG]}},
         str(SANG): {"name_zh": "桑莎", "name_full": "桑莎·洪堡", "female": True,
                     "birth": "1006.5.14",
                     "family": {"father": [SANSHA], "mother": [GUO], "spouse": [PID],
-                               "child": [BRI], "siblings": [PID]}},
+                               "child": [BRI, KEL], "siblings": [PID]}},
         str(BRI): {"name_zh": "布里基纳", "name_full": "布里基纳·洪堡", "female": False,
                    "birth": "1036.5.24",
+                   "family": {"father": [PID], "mother": [SANG]}},
+        str(KEL): {"name_zh": "科林布", "name_full": "科林布·洪堡", "female": False,
+                   "birth": "1033.6.8",
                    "family": {"father": [PID], "mother": [SANG]}},
         str(SANSHA): {"name_zh": "缯", "name_full": "缯·洪堡", "female": False,
                       "birth": "955.1.1", "family": {"child": [PID, SANG]}},
@@ -156,6 +160,15 @@ def group_a():
     #    …while a clause that names nobody keeps the section subject (the child's own mother)
     keep = "一个六岁的孩童，与自己的母亲桑莎·洪堡结为好友。"
     check("[A] 无名句的反身代词仍按段主语（母亲保留）", run(keep, [BRI]) == keep, run(keep, [BRI]))
+    # ⑩ a section with several subjects: the word must hold for every one of them
+    #    (「诸子行迹·科林布和布里基纳」, both sons of 桑莎)
+    two = "他们是同母的兄弟，妹妹是桑莎·洪堡。"
+    check("[A] 双子段「妹妹是桑莎」纠为母亲",
+          run(two, [BRI, KEL]) == "他们是同母的兄弟，母亲是桑莎·洪堡。", run(two, [BRI, KEL]))
+    # ⑪ a reflexive whose clause names nobody reaches back past the relative itself
+    back = "布里基纳·洪堡生于1036年。他的妹妹是桑莎·洪堡。"
+    check("[A] 反身代词回指上一句的人名（妹妹→母亲）",
+          run(back, [PID]) == "布里基纳·洪堡生于1036年。他的母亲是桑莎·洪堡。", run(back, [PID]))
     # ⑨ idempotent + no crash on empty input
     check("[A] 幂等", run(out, [BRI]) == out, run(out, [BRI]))
     check("[A] 空文本/空 facts 不炸",
