@@ -24391,7 +24391,7 @@ def _genealogy(f):
         rows += [("primary_spouse_key", "正妻"), ("side_spouse_key", "侧室")]
     rows += [("concubine", "妾" if not fem else "男宠"),
              ("former_concubines", "前妾" if not fem else "前男宠"),
-             ("child", "子女"), ("siblings", "兄弟姊妹"),
+             ("children_by_sex", ""), ("siblings", "兄弟姊妹"),
              ("former_spouses", "前夫" if fem else "前妻")]
     # each person appears on one line only: the save also lists current spouses in
     # former_spouses (same source as `_protagonist_facts`)
@@ -24401,6 +24401,20 @@ def _genealogy(f):
             ids = spouses
         elif key == "side_spouse_key":
             ids = side
+        elif key == "children_by_sex":
+            # two rows, one per sex (user 2026-10-06): the single 「子女：A、B…」 row left the
+            # daughters' names under the sons' heading
+            for _lab, _grp in (("儿子", False), ("女儿", True)):
+                bits = []
+                for x in (fam.get("child") or []):
+                    if bool(f._is_female(x)) is not _grp:
+                        continue
+                    n = f.kin_label(x)
+                    if n:
+                        bits.append(n)
+                if bits:
+                    lines.append(f"　{_lab}：{'、'.join(bits)}")
+            continue
         elif key in ("concubine", "former_concubines", "former_spouses"):
             ids = [x for x in (fam.get(key) or []) if x not in _used_mar]
             _used_mar.update(ids)

@@ -272,7 +272,7 @@ def group_d(snaps):
             ident = (blocks.get(bk) or {}).get("传主档案", "")
             bad = [x for x in ident.split("\n")
                    if re.match(r"^(妻子|丈夫|配偶|妻室|妾|男宠|前妻|前夫|前妾|前男宠)[\u4e00-\u9fff]", x)
-                   or x.startswith(("子爱尔兰", "女爱尔兰"))]
+                   or x.startswith(("子爱尔兰", "女爱尔兰", "儿子：", "女儿：", "子女："))]
             check(f"[D] {name} {bk} 身份段没有妻室/子女行", not bad, bad)
 
 

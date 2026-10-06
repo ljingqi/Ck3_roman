@@ -801,7 +801,6 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     former_lbl = "前夫" if fem else "前妻"
     conc_lbl = "男宠" if fem else "妾"
     former_conc_lbl = "前男宠" if fem else "前妾"
-    fam_bits = []
     # Consorts and children are two sentences: one run of 「，」 put the subject's wives and the
     # children in one statement, and the last wife then read as the mother of the names that
     # followed her -- her own two husbands among them (docs/方案_v104 问题 6-A).
@@ -810,7 +809,6 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # ships apart from the identity half (`_wants_household_block`).
     _hh_start = len(lines)
     spouse_bits = []
-    child_bits = []
     if p.get("spouses"):
         spouse_bits.append(_marital_row(spouse_lbl, p["spouses"]))
     if p.get("former_spouses"):
@@ -819,19 +817,23 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         spouse_bits.append(_marital_row(conc_lbl, p["concubines"]))
     if p.get("former_concubines"):
         spouse_bits.append(_marital_row(former_conc_lbl, p["former_concubines"]))
-    # children split by sex: a mixed list makes the model promote daughters to sons
-    if p.get("children_sons"):
-        child_bits.append(f"子{p['children_sons']}")
-    if p.get("children_daughters"):
-        child_bits.append(f"女{p['children_daughters']}")
-    if p.get("children") and not (p.get("children_sons")
-                                  or p.get("children_daughters")):
-        child_bits.append(f"子女{p['children']}")
-    fam_bits = spouse_bits + child_bits
+    # children split by sex: a mixed list makes the model promote daughters to sons. Each group gets
+    # its own headed row with one name per line (user 2026-10-06): in the old single row
+    # 「子A、B…，女C、D…。」 the second group's sex word sat far from its names and the model read the
+    # daughters as sons (第5个十年:188「一生有八个儿子、八个儿子」).
     if spouse_bits:
         lines.append("，".join(spouse_bits) + "。")
-    if child_bits:
-        lines.append("，".join(child_bits) + "。")
+    for _label, _key in (("儿子", "children_sons"), ("女儿", "children_daughters")):
+        _names = [x for x in (p.get(_key) or "").split("、") if x]
+        if not _names:
+            continue
+        lines.append(f"{_label}：")
+        lines.extend("　" + x for x in _names)
+    if not (p.get("children_sons") or p.get("children_daughters")) and p.get("children"):
+        _names = [x for x in (p.get("children") or "").split("、") if x]
+        if _names:
+            lines.append("子女：")
+            lines.extend("　" + x for x in _names)
     # the spouse's children by another parent: own sentence, household article only (facts.wife_other_children_line)
     if cid is None and p.get("wife_other_children") and with_real_parentage:
         lines.append(p["wife_other_children"])
