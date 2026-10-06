@@ -1405,7 +1405,16 @@ def _cond_block(items, groups, op="all", religions=None, split_inline=False):
             else:
                 children.append({"unknown": key})
         else:
-            children.append({"unknown": key})
+            # A trigger this builder does not model: keep the truth value the arm requires, so a
+            # caller that can decide the trigger (a scope slot of the same name) still reaches the
+            # right arm -- `is_governor_or_admin_count = no` is what names a Chinese family head's
+            # spymaster 提管 instead of the governor's 察事. `= yes` keeps the bare `unknown` leaf,
+            # which `cond_match` resolves to True when the slot is supplied.
+            _s = str(val).strip().lower()
+            if kop in ("", "=") and _s in ("no", "false"):
+                children.append({"unknown_not": key})
+            else:
+                children.append({"unknown": key})
     return {"op": op, "children": children} if children else {}
 
 
@@ -1435,8 +1444,17 @@ def cond_match(cond, scope):
         return False
     if not cond:
         return True
-    if "unknown" in cond:
-        return False
+    if "unknown" in cond or "unknown_not" in cond:
+        # The builder marks a trigger it does not model as `{"unknown": <trigger>}` (the arm needs it
+        # true) or `{"unknown_not": <trigger>}` (the arm needs it false). When the caller supplies
+        # that trigger's own value in the scope the arm can still be decided -- the council seat
+        # chain needs `is_governor_or_admin_count` to reach the family-head arm (提管) versus the
+        # governor arm (察事) -- and otherwise, as before, the arm never matches.
+        _neg = "unknown_not" in cond
+        _k = str(cond["unknown_not" if _neg else "unknown"])
+        if _k not in scope:
+            return False
+        return (not bool(scope[_k])) if _neg else bool(scope[_k])
     if "exists" in cond:
         # Truthiness, not mere presence: counting False/0/[] as "exists" made
         # `exists = clerical_elector_title` true for every duke-tier theocratic ruler, so
@@ -1451,7 +1469,10 @@ def cond_match(cond, scope):
     if "tier_min" in cond:
         return (scope.get("tier") or 0) >= cond["tier_min"]
     if "tier_max" in cond:
-        return 0 < (scope.get("tier") or 0) <= cond["tier_max"]
+        # `highest_held_title_tier < tier_X` is also true for a landless character, whose tier is 0,
+        # so a tier the caller supplied counts from 0; a scope without the slot stays unmatched.
+        _t = scope.get("tier")
+        return _t is not None and _t <= cond["tier_max"]
     if "heritage" in cond:
         # `has_cultural_pillar` can name any cultural pillar (heritage_, language_,
         # ethos_, tradition_): a scope carrying a `pillars` set is tested as a set,
@@ -2095,6 +2116,11 @@ def _council_names_path(cfg):
     return os.path.join(cfg.get("data_dir", ""), "council_names.json")
 
 
+#: Bumped when the arm encoding changes, so an older file on disk is rebuilt: schema 3 keeps the
+#: truth value of an unmodelled trigger (`unknown_not`), which decides the family-head seat arm.
+_COUNCIL_NAMES_SCHEMA = 3
+
+
 def _name_arms(block, groups, religions, extra=None):
     """A `name` chain -> [{"desc": loc key or 'actual_bishop_title', "when": tree}...], in order.
     `desc` may be nested (`desc = { first_valid = { ... } }`) and is ANDed with the outer trigger."""
@@ -2146,7 +2172,7 @@ def build_council_names(cfg):
                 arms = _name_arms(src, groups, rel)
                 if arms:
                     positions[key] = arms     # a same-key mod definition replaces the entry
-    return {"schema": 2, "positions": positions}
+    return {"schema": _COUNCIL_NAMES_SCHEMA, "positions": positions}
 
 
 def save_council_names(cfg, table):
@@ -2164,7 +2190,7 @@ def load_council_names(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 2 and data.get("positions"):
+            if data.get("schema") == _COUNCIL_NAMES_SCHEMA and data.get("positions"):
                 return data
         except Exception:
             pass

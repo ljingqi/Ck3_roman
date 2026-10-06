@@ -897,6 +897,18 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older):
     gap = up_s - up_c                            # >0: the relative is senior
     if gap > 0:
         if gap == 1:
+            # One generation above the subject and a sibling of the subject's own parent (`up_c == 1`
+            # with `up_s == 2`): this is the close collateral where the Chinese terms name the side.
+            # The game's own word is 姑姨 (English logic: "aunt" tells 姑 from 姨 no more than it
+            # tells 伯 from 舅), so the route decides instead — a sister of the father is 姑母, a
+            # sister of the mother 姨母 (user 2026-10-06). A deeper route keeps the clan word, and a
+            # route mixing father and mother hops stays undecided and keeps it too. The male arm
+            # needs the father's birth year, which this function is not given, so 伯父/叔父 stays out.
+            if up_c == 1 and c_female:
+                if ms is True:
+                    return "aunt_pat"
+                if ms is False:
+                    return "aunt_mat"
             return "clan_aunt" if c_female else "clan_uncle"
         if gap == 2:
             return "clan_grandmother" if c_female else "clan_grandfather"
@@ -4870,6 +4882,57 @@ class Facts:
             out.append(zh)
         return out
 
+    _MERIT_GOVS = frozenset({"celestial_government", "meritocratic_government",
+                             "steppe_admin_government"})
+
+    def _council_seat_scope(self, liege, who=None, date=None):
+        """Evaluation scope for the game's council seat name chain (`name = { first_valid = … }`).
+
+        The chain tests `highest_held_title_tier`, `government_has_flag = government_has_merit`,
+        `is_independent_ruler` and `is_governor_or_admin_count`, the last of which decides whether a
+        Chinese-style court names its spymaster 提管 (family head) or 察事 (governor). The scope
+        carries those four triggers under the names the chain uses, so `localization.cond_match` can
+        resolve them; `who` is the seat holder (only used for the sex slot)."""
+        d = date or self.as_of
+        gov = self._character_government(liege, d) or ""
+        tier = self._top_rank_now(liege, d)
+        independent = bool(self._is_independent(liege, d)) if liege is not None else False
+        # `is_governor_or_admin_count` (common/scripted_triggers): landed, not the top liege, and
+        # holding a county or above. A house head living on his family estate therefore fails it.
+        return {"tier": tier,
+                "independent": independent,
+                "landless": not tier,
+                "gov_flag": "government_has_merit" if gov in self._MERIT_GOVS
+                else L.government_prefix(gov),
+                "is_governor_or_admin_count": bool(tier and tier >= 2 and not independent),
+                "chaplain_female": (bool(self._is_female(who)) if who is not None else False)}
+
+    def council_seat_arm_word(self, seat, liege, date=None):
+        """The seat word from the game's own name chain, or '' when the chain yields nothing.
+
+        `council_seat_word` reads one key per government variant, which cannot express the chain's
+        ordered arms; the chain is what names a Chinese family head's spymaster 提管
+        (`councillor_spymaster_celestial_family_head`) instead of the generic 间谍首脑. The arm's
+        desc is a localization key, so it goes through `clean_loc_value` (v109 §2.1)."""
+        if not isinstance(seat, dict) or not self._council_names:
+            return ""
+        pos = ((self._council_tasks or {}).get("tasks") or {}).get(seat.get("type") or "") or ""
+        if not pos:
+            return ""
+        owner = seat.get("court_owner")
+        if not isinstance(owner, int):
+            owner = liege
+        if not isinstance(liege, int):
+            return ""
+        scope = self._council_seat_scope(owner, seat.get("owner"), date)
+        desc = L.council_name_desc(self._council_names, pos, scope)
+        if not desc or desc == "actual_bishop_title":
+            return ""
+        v = L.clean_loc_value(str(self.table.get(desc) or ""), self.table)
+        if not v or v.startswith("$") or v.startswith("["):
+            return ""
+        return v
+
     def _council_seats_of(self, cid, subject=None, date=None):
         """Council-seat words `cid` holds in `subject`'s court (protagonist when omitted).
 
@@ -4899,8 +4962,10 @@ class Facts:
                 continue
             if e.get("owner") != want:
                 continue
-            word = L.council_seat_word(self.table, self._council_tasks, e.get("type") or "",
-                                       gov, imperial)
+            word = self.council_seat_arm_word(e, sub, date)
+            if not word:
+                word = L.council_seat_word(self.table, self._council_tasks, e.get("type") or "",
+                                           gov, imperial)
             if not word or word in seen:
                 continue
             seen.add(word)
