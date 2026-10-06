@@ -642,13 +642,15 @@ def _female_rec(rec):
     return bool(v)
 
 
-def _older_rec(ra, rb):
-    """Whether ra is older than rb by birth date; None when either is missing **or they share one**.
+def _older_rec(ra, rb, a=None, b=None):
+    """Whether ra is older than rb by birth date; None when either birth is missing.
 
-    Twins carry the same `birth` and neither is the elder (v108): the old strict `<` made both
-    sides fall into the younger slot, so two siblings born on the same day each read as the other's
-    弟弟/妹妹 (洪氏2: 塞巴斯蒂安/乔丹 both 1052.8.21, 泳清/桂 both 974.3.22). None makes the
-    callers state the game word 兄弟/姊妹, which is what CK3 itself does with no seniority."""
+    Twins share a single `birth` and the game records no seniority between them, so the character
+    id decides (user ruling 2026-10-06：双胞胎按照 cid 判断长幼). CK3 hands ids out in creation
+    order, so the lower id is the one born first; this replaces the old strict `<`, which made both
+    sides fall into the younger slot and read each twin as the other's 弟弟/妹妹 (洪氏2:
+    塞巴斯蒂安/乔丹 both 1052.8.21, 泳清/桂 both 974.3.22). With no ids to compare the answer is
+    None and the callers state the game word 兄弟/姊妹."""
     ba, bb = (ra or {}).get("birth"), (rb or {}).get("birth")
     if not ba or not bb:
         return None
@@ -656,9 +658,17 @@ def _older_rec(ra, rb):
         ka, kb = cl.date_key(ba), cl.date_key(bb)
     except Exception:
         return None
-    if ka == kb:
+    if ka != kb:
+        return ka < kb
+    if a is None or b is None:
         return None
-    return ka < kb
+    try:
+        a, b = int(a), int(b)
+    except (TypeError, ValueError):
+        return None
+    if a == b:
+        return None
+    return a < b
 
 
 def spouses_now_family(fam, chars=None, spouse_back=None):
@@ -934,8 +944,8 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_mem
         return _female_rec(chars.get(str(x)) or {})
 
     def _older(a, b):
-        """Whether a is older than b by birth year; None when either is missing."""
-        return _older_rec(chars.get(str(a)) or {}, chars.get(str(b)) or {})
+        """Whether a is older than b by birth date, id breaking a tie between twins; None when unknown."""
+        return _older_rec(chars.get(str(a)) or {}, chars.get(str(b)) or {}, a, b)
 
     def _cousin(side, female, older):
         """Cousin word: side ∈ {'pat','mat',None}; female = c's sex; older = whether c is older than s."""
@@ -4862,7 +4872,7 @@ class Facts:
         chars = self.cache.get("characters") or {}
         cfemale = self._is_female(c)
         for _tot, ds, dc, ms, mc in sigs:
-            older = _older_rec(chars.get(str(c)) or {}, chars.get(str(s)) or {})
+            older = _older_rec(chars.get(str(c)) or {}, chars.get(str(s)) or {}, c, s)
             w = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older))
             if w and w not in seen:
                 seen.add(w)
