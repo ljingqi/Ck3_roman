@@ -2329,11 +2329,14 @@ _DEDUP_WORDS = (
     "庶出", "私生子",
 )
 _DEDUP_RE = re.compile("(" + "|".join(sorted(_DEDUP_WORDS, key=len, reverse=True))
-                       + r")\1")
+                       + r")(?:\1|兼\1)")
 
 
 def _dedup_adjacent_words(text):
-    """Collapse a word repeated back-to-back into one; see `_DEDUP_WORDS` for the scope."""
+    """Collapse a word repeated back-to-back into one, with or without the 「兼」 of a composed kin
+    attributive between them (「妻子兼妻子」 is the same name twice: v104 §2.6 item 9 keeps one word
+    per route, and the model repeats the row's own word often enough to need the gate). See
+    `_DEDUP_WORDS` for the scope."""
     if not text:
         return text
     return _DEDUP_RE.sub(r"\1", text)

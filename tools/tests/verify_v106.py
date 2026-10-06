@@ -226,6 +226,12 @@ def group_c():
           "妻子兼妹妹" in hh and "父耀国·缯松。" in hh and "排老大" in hh, hh)
     check("[C] 身份段不含家室行",
           "妻子兼妹妹" not in "\n".join(before) and "妻室" not in "\n".join(before), before)
+    # the adjacent-duplicate gate also collapses a word repeated across the 「兼」 of a composed
+    # attributive (the model writes 「妻子兼妻子」 when it copies a row loosely)
+    check("[C] 「X兼X」折成一个", bio._dedup_adjacent_words("妻子兼妻子桑莎") == "妻子桑莎",
+          bio._dedup_adjacent_words("妻子兼妻子桑莎"))
+    check("[C] 普通重复仍折", bio._dedup_adjacent_words("妹妹妹妹") == "妹妹", "")
+    check("[C] 不同词不折", bio._dedup_adjacent_words("妻子兼妹妹") == "妻子兼妹妹", "")
 
 
 # ------------------------------------------------------------------ [D] board gating
