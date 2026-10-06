@@ -14377,7 +14377,8 @@ class Facts:
     def language_relation_lines(self, cid):
         """Language relation sentences between the subject and his spouses/children: only those with
         no common language are listed, grouped by the other side's language. Mutual understanding is
-        never written."""
+        never written. The sentence has no subject, because it sits in the subject's own archive
+        (see `_kin_counts_line`); the other side's appellation comes from `person_label`."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         fam = rec.get("family") or {}
         ids = list(dict.fromkeys(
@@ -14386,9 +14387,7 @@ class Facts:
         pl = self.languages(cid)
         if not pl:
             return []
-        # appellations for the subject and his family match the rest of the text (person_label /
-        # kin_label)
-        na = self.person_label(cid, date=self.as_of, style="brief") or self.name_or(cid)
+        subj_pron = "她" if self._is_female(cid) else "他"
         groups = {}   # the other side's language tuple -> [id]
         for x in ids:
             try:
@@ -14407,8 +14406,9 @@ class Facts:
                              for m in members)
             if not names:
                 continue
-            out.append(f"{na}通{'、'.join(pl)}，{names}通{'、'.join(key)}，"
-                       f"二者无共通语，交谈须借通译或以手势、习语往来。")
+            out.append(f"与{names}无共通语：{subj_pron}通{'、'.join(pl)}，"
+                       f"{names}通{'、'.join(key)}，"
+                       f"交谈须借通译或以手势、习语往来。")
         return out[:4]
 
     def language_bridge_line(self, cid):
@@ -20560,8 +20560,54 @@ def _kin_counts_line(f, pid, fam, father_id, father_fam):
     rank = (order.index(pid) + 1) if pid in order else 0
     if not rank:
         return "", ""
-    return (f"{f.kin_label(pid) or f.name_or(pid)}在{parent_word}子女中排"
-            f"{_kin_rank_word(rank, len(order))}。"), parent_word
+    # no subject in this sentence: the row sits inside the subject's own archive, whose first line
+    # already carries his full appellation, and a second copy only pulls the model's attention there
+    return (f"在{parent_word}子女中排{_kin_rank_word(rank, len(order))}。"), parent_word
+
+
+# Marriage words of the four marital rows (`biography._profile_lines`) and of the cache's own
+# category keys. The rows now open every entry with the composed kin chain (`_consort_row_entry`),
+# so the row head is written only when the entries do not carry the marriage word themselves; the
+# post-pass `biography._fix_kin_roles` reads this table to leave those words exactly as shipped.
+MARITAL_ROW_WORDS = {
+    "primary_spouse": ("妻子", "丈夫", "配偶", "妻室"),
+    "spouse": ("妻子", "丈夫", "配偶", "妻室"),
+    "ever_spouses": ("妻子", "丈夫", "配偶", "妻室"),
+    "former_spouses": ("前妻", "前夫", "妻子", "丈夫", "配偶", "妻室"),
+    "concubine": ("妾", "男宠"),
+    "former_concubines": ("前妾", "前男宠", "妾", "男宠"),
+}
+
+
+def _consort_row_entry(f, sid, kind="", lineality=False):
+    """One entry of a spouse/concubine row: the composed kin chain in front of the name
+    (「妻子兼妹妹时尚公主于尔娃·耀国斯多蒂尔」).
+
+    The chain comes from `Facts.kin_chain_words_for` — marriage word, further blood routes (three at
+    most), the one scripted relation, then every office in the subject's court — so a wife who is
+    also a sibling reads as both and no trailing clause has to be resolved by the reader. `kind` is
+    the row's own marriage word for someone who is no longer a spouse (前妻/前妾:
+    `_spouse_kind_of` returns nothing for them) and is written before the chain when given.
+
+    The father's marriage history is deliberately absent: the row states the person's own relation to
+    the subject, while her own 家室档案 already gives her husbands (`consort_of_line`).
+    """
+    nm = f.kin_label(sid, f.as_of)
+    if not nm:
+        return ""
+    pid = f.cache.get("player_id")
+    parts = [kind] if kind else []
+    try:
+        chain = f.kin_chain_words_for(sid, pid) or []
+    except Exception:                                        # noqa: BLE001
+        chain = []
+    for w in chain:
+        if w and w not in parts:
+            parts.append(w)
+    if not parts:
+        return nm
+    note = f.marriage_lineality_note(pid, sid, before=f.as_of) if lineality else ""
+    return "兼".join(parts) + nm + note
 
 
 def _protagonist(f):
@@ -20897,47 +20943,23 @@ def _protagonist(f):
     # facts would go blank and the model would invent spouses.
     fam = f.merge_spouse_latch(fam, f.as_of)
     rec["family"] = fam
-    # cross-annotation of wives/concubines against the father's marriage history: the
-    # "first the father's wife/concubine, then the son's" relation
+    # The father's own family record is still read (the birth-rank row counts the father's children),
+    # but the wife rows no longer cross-annotate against his marriage history: each row states the
+    # woman's own relation to the subject (see `_consort_row_entry`).
     father_id = (fam.get("father") or [None])[0]
     fd_fam = {}
     if father_id is not None:
         fd_fam = ((cache.get("characters") or {}).get(str(father_id)) or {}).get("family") or {}
 
-    def _annotate(ids, lineality=False):
+    def _annotate(ids, lineality=False, kind=""):
         out = []
-        noted = False
         for sid in ids:
-            nm = f.kin_label(sid, f.as_of)
-            if not nm:
-                continue
-            note = ""
-            # A wife or concubine who is also a blood relative (niece / nephew / cousin ...)
-            # gets the blood kinship term first: given only the marital position the model
-            # would invent the relation.
-            _bk = f.blood_kin_word_for(sid, pid)
-            if _bk:
-                note = f"，本为其{_bk}"
-            if father_id is not None and sid != father_id:
-                for k, label in (("primary_spouse", "妻"), ("spouse", "妻"),
-                                 ("concubine", "妾"), ("former_spouses", "前妻"),
-                                 ("former_concubines", "前妾")):
-                    if sid in (fd_fam.get(k) or []):
-                        # no parentheses: the note is a clause of the same sentence,
-                        # hence the "；" separator
-                        note += (f"，原为父{f.kin_label(father_id, f.as_of)}"
-                                 f"之{label}")
-                        break
-            # matrilineal marriage: the spouse row adds the lineality and the
-            # children's affiliation
-            if lineality:
-                note += f.marriage_lineality_note(pid, sid, before=f.as_of)
-            if note:
-                noted = True
-            out.append(nm + note)
-        # use "；" as the separator when any entry carries a note, so it cannot be
-        # confused with the "，" inside the note
-        return ("；" if noted else "、").join(out)
+            e = _consort_row_entry(f, sid, kind=kind, lineality=lineality)
+            if e:
+                out.append(e)
+        # "；" once any entry carries a comma clause of its own (the lineality note), so that clause
+        # cannot be confused with the "，" separating the entries
+        return ("；" if any("，" in x for x in out) else "、").join(out)
 
     spouse_ids = list(dict.fromkeys(
         _asof_ids(f, (fam.get("primary_spouse") or []) + (fam.get("spouse") or []))))
@@ -20956,7 +20978,10 @@ def _protagonist(f):
     _former_sp = [x for x in _asof_ids(f, fam.get("former_spouses") or [])
                   if x not in _sp_set]
     _former_sp = f.spouses_in_window(_former_sp)          # same window rule
-    p["former_spouses"] = _annotate(_former_sp)
+    # a former spouse has no marriage word from `_spouse_kind_of` (they are not married now), so the
+    # row writes it itself: 前妻/前夫 before the chain
+    p["former_spouses"] = _annotate(_former_sp,
+                                    kind=("前夫" if f._is_female(pid) else "前妻"))
     # concubines (forward `concubine` + reverse `concubinist`, merged and deduped in
     # the cache)
     _seen_mar = _sp_set | set(_former_sp)
@@ -20968,7 +20993,8 @@ def _protagonist(f):
     _fconc = [x for x in _asof_ids(f, fam.get("former_concubines") or [])
               if x not in _seen_mar]
     _fconc = f.spouses_in_window(_fconc)                  # same window rule
-    p["former_concubines"] = _annotate(_fconc)
+    p["former_concubines"] = _annotate(_fconc,
+                                       kind=("前男宠" if f._is_female(pid) else "前妾"))
     child_ids = [c for c in _asof_ids(f, fam.get("child") or []) if f.name(c)]
     # The household list holds every child whose legal father is the protagonist (illegitimate ones
     # included); children of another legal father stay out of the 本纪 list (家室列传 covers them as
@@ -20991,6 +21017,11 @@ def _protagonist(f):
     p["female"] = f._is_female(pid)
     p["father"] = "、".join(
         f.kin_label(x) for x in (fam.get("father") or []) if f.name(x))
+    # bare names of the same row: the archive drops the full appellation on the 「父」 line when the
+    # succession line already carried it, so the same 爱尔兰国王… does not appear twice in one block
+    # (`biography._profile_lines`).
+    p["father_name"] = "、".join(
+        f.name(x) for x in (fam.get("father") or []) if f.name(x))
     p["mother"] = "、".join(
         _mark_lone_name(f.kin_label(x)) for x in (fam.get("mother") or []) if f.name(x))
     p["siblings"] = f.sibling_list(pid, fam)
