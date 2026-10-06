@@ -2260,6 +2260,11 @@ def _reflexive_antecedent(out, end, names_ordered, cids):
         k = seg.find(nm)
         if k < 0 or skip.intersection(cand):
             continue
+        # a one-character name counts only when it opens the clause: 「德娶了自己的母亲」 yes, an
+        # incidental 明/亮 inside a longer word no. Both rules below rely on the clause's first name,
+        # so this changes nothing for multi-character names.
+        if len(nm) == 1 and k != 0:
+            continue
         # leftmost wins (the subject comes first); at one position the longer name wins
         if best is None or k < best[0] or (k == best[0] and len(nm) > best[1]):
             best = (k, len(nm), cand)
@@ -2292,6 +2297,39 @@ def _reflexive_antecedent(out, end, names_ordered, cids):
     return None
 
 
+def _nearest_name_before(out, end, names_ordered, cids):
+    """(the ids of the nearest name to the left of `end` in the same sentence, or None).
+
+    Only ever used to *veto* a rewrite (fail open): a word the archive states for a person named
+    nearer to it than the rewritten name is that person's word. In 洪彝's section the sentence
+    「尼各老正站在庭中，手里攥着父亲洪地保写来的信」 reads 父亲 as the section subject's father
+    (祖父) and would rewrite a correct word; 尼各老 is the nearer name and 父亲 is exactly his word.
+    One-character names are left out: they match inside other words often enough that a false veto
+    would lose real corrections, and a veto is only worth having when the name is unambiguous."""
+    skip = set()
+    for x in (cids or ()):
+        try:
+            skip.add(int(x))
+        except (TypeError, ValueError):
+            pass
+    start = 0
+    for sep in _CLAUSE_BREAK:
+        k = out.rfind(sep, 0, end)
+        if k >= start:
+            start = k + 1
+    seg = out[start:end]
+    best = None
+    for nm, cand in names_ordered:
+        if len(nm) < 2 or skip.intersection(cand):
+            continue
+        k = seg.rfind(nm)
+        if k < 0:
+            continue
+        if best is None or k > best[0] or (k == best[0] and len(nm) > best[1]):
+            best = (k, len(nm), cand)
+    return list(best[2]) if best is not None else None
+
+
 def _possessor_words(cache, facts, pid, subject_ids):
     """(name → the ids it denotes, the section's own subjects) for resolving whose kin word a
     possessive states.
@@ -2306,7 +2344,9 @@ def _possessor_words(cache, facts, pid, subject_ids):
     A name maps to **every** id that carries it (user ruling 2026-10-06 同名亲属用 cid 判断是否是
     同一人): one cache holds three 「耀国·洪堡」, and the old single-id map answered from whichever
     of them a `set` happened to yield first, which is what made 48 probes rewrite a correct word
-    (logs/v108_kin_sweep.txt B). The ids are ordered so the answer is deterministic."""
+    (logs/v108_kin_sweep.txt B). The ids are ordered so the answer is deterministic. One-character
+    names are included too (single-word names like 德/云 appear in 洪氏2); the two callers guard
+    them so a one-character name only answers at a genuine name boundary."""
     chars = cache.get("characters") or {}
     fchars = (facts or {}).get("characters") or {}
     ids = set()
@@ -2332,7 +2372,7 @@ def _possessor_words(cache, facts, pid, subject_ids):
         rec = chars.get(str(cid)) or {}
         for nm in (rec.get("name_full"), rec.get("name_zh"),
                    (fchars.get(str(cid)) or {}).get("name")):
-            if not nm or len(nm) < 2:
+            if not nm:
                 continue
             cur = names.get(nm)
             if cur is None:
@@ -2349,10 +2389,9 @@ def _possessor_at(out, end, names_ordered, subjects, cids):
     The possessor is the noun phrase before the last 「的」 within 24 characters to the left (「孩子的」
     → the section subjects, 「耀国·缯松的」 → the protagonist, 「布里基纳·耀国松的」 → that child) and
     never crosses a sentence end or a closing quote, so a kin word inside quoted speech stays with
-    its own clause instead of becoming the attribute of the name that follows the quote. No 「的」 on
-    the word at all means the sentence states it without a possessor, which belongs to the sentence's
-    own subject; a farther 「的」 (「同母的兄弟，妹妹是…」) governs something else, so the word falls
-    back to the section subjects too.
+    its own clause instead of becoming the attribute of the name that follows the quote. With no 「的」
+    on the word at all, or with a farther 「的」 that governs something else (「同母的兄弟，妹妹是…」),
+    the word belongs to the section subjects.
 
     A name that several people carry yields all of their ids (see `_possessor_words`), and `cids`
     are the people the word itself may name, skipped by the reflexive walk."""
@@ -2368,11 +2407,21 @@ def _possessor_at(out, end, names_ordered, subjects, cids):
         return subjects
     head = win[:j]
     if win[j + 1:].strip("之") != "":
+        # a farther 「的」 governs another phrase, not this word (「他是耀国·缯松的第三子，妹妹是
+        # 桑莎」 states the sister of the section subject, not of 耀国·缯松) — the section subjects
+        # answer for it
         return subjects
+    stripped = head.strip("，。；、：　 「」『』——-·")
     for nm, cands in names_ordered:
-        if head.endswith(nm):
-            return list(cands)
-    tail = head.strip("，。；、：　 「」『』——-·")[-3:]
+        if not head.endswith(nm):
+            continue
+        # a one-character name is the whole possessor phrase here only when nothing else stands in
+        # it: 「德的妹妹」 yes, 「赵云的妹妹」 no (that head is 赵云) — without this a surname
+        # character would answer for any name that merely ends with it
+        if len(nm) == 1 and stripped != nm:
+            continue
+        return list(cands)
+    tail = stripped[-3:]
     for g in _POSSESSOR_REFLEXIVE:
         if tail.endswith(g):
             ant = _reflexive_antecedent(out, max(0, end - 24) + cut + j, names_ordered, cids)
@@ -2381,6 +2430,18 @@ def _possessor_at(out, end, names_ordered, subjects, cids):
         if tail.endswith(g):
             return subjects
     return None
+
+
+# The characters that may stand between a kin word and the name it attributes without breaking the
+# tie: 「兼」 joins two roles in a chain, 「之/的」 are attributive particles, 「是/为/即/乃」 are the
+# copula that introduces the name (「妹妹是桑莎」), the rest is punctuation or markup. A name that
+# carries a title in the archive (「爱尔兰公主海伦·耀国斯多蒂尔」) has its title inside the gap too,
+# so titles are recognised by the negative test below rather than by this list.
+_WORD_NAME_FILLER = frozenset("兼之的是为即乃曰叫唤名、， 　*#「」『』“”")
+# a coordinator directly after the word joins it to something else, so the name that follows is a
+# second member of the coordination, not the word's head: 「这两个妻子与洪玉英所出诸子」 does not
+# call 洪玉英 a wife (logs/v108_kin_sweep.txt D, 尼各老 §纪事·门庭恩怨·洪玉英等2房)
+_WORD_NAME_COORD = frozenset("与及和同跟暨")
 
 
 def _fix_kin_roles(text, facts, cache, subject_ids=None):
@@ -2538,6 +2599,18 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
         if not best_w:
             continue
         at = win_start + best_end - len(best_w)
+        # the word must be one phrase with the name it attributes: it may be glued to it (a 兼 chain,
+        # an attributive 之/的, the copula of 「妹妹是桑莎」, and the title the archive keeps inside a
+        # full name — 「爱尔兰公主海伦·耀国斯多蒂尔」 puts its title in this gap). Anything else
+        # separates them: 「加上前妻娘娘所生的洪彝」 states 前妻 for 娘娘, not for the farther 洪彝,
+        # and reading it onto him rewrote it into 儿子; 「这两个妻子与洪玉英所出诸子」 has no kin word
+        # of 洪玉英's at all (logs/v108_kin_sweep.txt D, 尼各老 §开篇·结缡与离异).
+        gap = out[at + len(best_w):st]
+        if not (all(ch in _WORD_NAME_FILLER for ch in gap)
+                or (gap[:1] not in _WORD_NAME_COORD
+                    and not any(w in gap for w in all_words)
+                    and not any(len(nm) >= 2 and nm in gap for nm in names_map))):
+            continue
         # whose kin word is this? 「孩子的妹妹」 is the child's mother, not the protagonist's sister.
         # Both halves of the question may name several people: the possessor (`poss`) and the named
         # relative (`cids`). The written word is accepted as long as the archive states it for one
@@ -2582,6 +2655,35 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
             run_start -= len(hit) + 1
         if all(w in acc for w in run_words):
             continue
+        # fail open: when this sentence has no 「的」 phrase of its own and a person named nearer to the
+        # word than this name is, and the archive states the written word for that person too, the word
+        # belongs to that person and stays (「尼各老…手里攥着父亲洪地保写来的信」 inside 洪彝's
+        # section, where the only earlier 「的」 belongs to 「婴儿的」). A sentence that does own a 「的」
+        # phrase with a person at its head has named its possessor (「他是耀国·缯松的第三子，妹妹是
+        # 桑莎」), so the section subject answers there and this guard stays out of it.
+        _pre = out[max(0, at - 24):at]
+        for _sep in _CLAUSE_BREAK:
+            _k = _pre.rfind(_sep)
+            if _k >= 0:
+                _pre = _pre[_k + 1:]
+        _k = _pre.rfind("的")
+        near = None
+        if _k < 0 or not any(_pre[:_k].strip("，。；、：　 「」『』——-·").endswith(nm)
+                             for nm in names_map):
+            near = _nearest_name_before(out, at, names_ordered, cids)
+        if near and sorted(near) != sorted(int(p) for p in poss):
+            hit = False
+            for p in near:
+                for cc in cids:
+                    for w in run_words:
+                        try:
+                            if F.kin_word(cache, p, cc, chars=chars, rev=rev_idx) == w:
+                                hit = True
+                                break
+                        except Exception:                    # noqa: BLE001
+                            pass
+            if hit:
+                continue
         if len(run_words) >= 2:
             repl = list(chains[0]) if len(chains) == 1 else []
             if not repl:

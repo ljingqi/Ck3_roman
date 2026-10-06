@@ -23,8 +23,8 @@
   [D] 成稿回放：对 output/<家族>/*.md 逐节重跑 `_fix_kin_roles`，改写点即残留问题候选。
   [E] 兼链宽度：合成族谱问「儿子兼继子兼弟弟兼舅舅」能不能算出来（引用
       tools/tests/v108_probe_chain_width.py）。
-  [F] 已知改错复现：把成稿原文里被 `_fix_kin_roles` 改错的三处直接跑一遍
-      （tools/tests/v108_probe_d_repro.py；归因见 tools/tests/v108_repro_attrib.py）。
+  [F] 已知改错复现：把成稿原文里被 `_fix_kin_roles` 改错的五处直接跑一遍
+      （tools/tests/v108_probe_d_repro.py）。
 
 只读：不重熔存档、不写 output/、不动缓存。结果落 logs/v108_kin_sweep.txt (+ .json)。
 
@@ -240,14 +240,31 @@ def kin_family(key):
     return ""
 
 
+def seniority_flips(key, key2):
+    """同一词族的两个词是否互逆自洽：一方 younger、另一方 older（或双方都没有长幼词）。
+
+    v108 起双胞胎按 cid 定长幼，两边必然一长一幼，所以「同族同龄」才是缺陷、一长一幼是正解。"""
+    def s(k):
+        if k.endswith("_older"):
+            return 1
+        if k.endswith("_younger"):
+            return -1
+        return 0
+    return s(key) + s(key2) == 0
+
+
 def marital_word(chars, x, y):
-    """x 的族谱把 y 记成配偶时 x 该用的婚姻词（男宠/妾/夫/妻）；否则 ''。"""
-    fam = (chars.get(str(x)) or {}).get("family") or {}
-    female = bool((chars.get(str(x)) or {}).get("female"))
-    if y in (fam.get("primary_spouse") or []) or y in (fam.get("spouse") or []):
-        return "丈夫" if female else "妻子"
-    if y in (fam.get("concubine") or []):
-        return "男宠" if female else "妾"
+    """x 的族谱把 y 记成配偶时 x 该用的婚姻词（男宠/妾/夫/妻）；否则 ''。
+
+    与生产 `_spouse_kind_of` 同口径：两侧记录任一写下这段婚姻即算（v108 起生产就是这个并集，
+    A10 否则会把「只有对方记录写了婚姻」误判成链首词无出处）。"""
+    rx = chars.get(str(x)) or {}
+    kind = F.marriage_slot_of(rx.get("family") or {}, y) \
+        or F.marriage_slot_of((chars.get(str(y)) or {}).get("family") or {}, x)
+    if kind == "spouse":
+        return "丈夫" if rx.get("female") else "妻子"
+    if kind == "concubine":
+        return "男宠" if rx.get("female") else "妾"
     return ""
 
 
@@ -266,12 +283,15 @@ def part_a(camp, fi, cache, fam, say, progress=False):
     for x in fam:
         vocab_extra |= set(fi._court_positions_of(x) or ())
     vocab = kin_vocab() | vocab_extra
+    fath, moth = fi._parent_maps()
+    n_sib = n_sib_nopar = 0
     for nx, x in enumerate(sorted(fam), 1):
         if progress and nx % 200 == 0:
             print("      …A 段 %d/%d（%d 条边）" % (nx, len(fam), n_edge), flush=True)
         fam_x = (chars.get(str(x)) or {}).get("family") or {}
-        # A11 同名亲属：同一个名字在**一个人的亲属里**对应两个以上 id 时，span 归谁由
-        # by_cid 的迭代顺序决定（配偶行优先），两个人都成立的句子必有一个被改错。
+        # A11 同名亲属：同一个名字在**一个人的亲属里**对应两个以上 id。v108 起后处理按 cid
+        # 判同一人（姓名→全部 cid，只有全体同词才改写），所以这是「本语料有多少处歧义」的
+        # 统计，不是缺陷；该规则的实际效果由 B/C 段断言。
         byname = collections.defaultdict(set)
         for fld in PASS_DOMAIN:
             for y in (fam_x.get(fld) or []):
@@ -285,15 +305,15 @@ def part_a(camp, fi, cache, fam, say, progress=False):
                 byname[name_of(chars, y)].add(y)
         for nm, cids in sorted(byname.items()):
             if len(cids) > 1 and nm != self_nm:
-                issue("A11同名亲属",
-                      "%s(%s) 的亲属里有 %d 个叫「%s」：%s —— span 归谁由迭代顺序决定"
+                issue("A11同名亲属(信息)",
+                      "%s(%s) 的亲属里有 %d 个叫「%s」：%s —— 按 cid 判为不同人，只有全体同词才改写"
                       % (name_of(chars, x), x, len(cids), nm, sorted(cids)),
                       {"campaign": pid, "x": x, "name": nm, "cids": sorted(cids)})
                 break
         for fld in ("father", "mother"):
             if len(fam_x.get(fld) or []) > 1:
                 issue("A8多重父母",
-                      "%s(%s) 的 %s 记了 %s 个：%s（_parent_maps 只留第一个）"
+                      "%s(%s) 的 %s 记了 %s 个：%s（v108 起两条父系边都保留，不再丢线）"
                       % (name_of(chars, x), x, fld, len(fam_x[fld]), fam_x[fld]),
                       {"campaign": pid, "x": x})
         for fld in KIN_FIELDS:
@@ -305,6 +325,15 @@ def part_a(camp, fi, cache, fam, say, progress=False):
                           % (name_of(chars, x), x, fld, y), {"campaign": pid, "x": x, "y": y})
                     continue
                 n_edge += 1
+                # A12（信息）兄弟边却没有共同记录的父母：这种「弟弟」只写在 siblings 字段里，而
+                # `_ancestor_routes` 只走父母边，它永远无法成为链里的额外血缘词 —— 复合身份
+                # 能不能算出来，这条统计是关键边界。
+                if fld == "siblings":
+                    n_sib += 1
+                    pa = set(fath.get(x, ())) | set(moth.get(x, ()))
+                    pb = set(fath.get(y, ())) | set(moth.get(y, ()))
+                    if not (pa & pb):
+                        n_sib_nopar += 1
                 key = F.kin_key(cache, x, y)
                 word = F.kin_text(key)
                 fi_x = pivot(fi, cache, x, memo)[0]
@@ -327,7 +356,8 @@ def part_a(camp, fi, cache, fam, say, progress=False):
                 # A3 互逆
                 key2 = F.kin_key(cache, y, x)
                 if key and key2 and (key, key2) not in RECIP and (key2, key) not in RECIP \
-                        and kin_family(key) and kin_family(key) == kin_family(key2):
+                        and kin_family(key) and kin_family(key) == kin_family(key2) \
+                        and not seniority_flips(key, key2):
                     issue("A3互逆", "%s→%s 得 %s，反向得 %s（同词族却不同代）"
                           % (name_of(chars, x), name_of(chars, y), word, F.kin_text(key2)),
                           {"campaign": pid, "x": x, "y": y})
@@ -345,16 +375,24 @@ def part_a(camp, fi, cache, fam, say, progress=False):
                         issue("A4链条", "%s→%s 链内重复 %s"
                               % (name_of(chars, x), name_of(chars, y), chain),
                               {"campaign": pid, "x": x, "y": y})
-                    bad = [c for c in chain if c not in vocab]
+                    # 官职词的变体随枢轴的宫廷政体变化（见 A5），链是按 fi_x 枢轴算的，
+                    # 所以该枢轴下的官职词也要算作已知词
+                    bad = [c for c in chain
+                           if c not in vocab and c not in set(fi_x._court_positions_of(y) or ())]
                     if bad:
                         issue("A4链条", "%s→%s 链里有未知词 %s（链 %s）"
                               % (name_of(chars, x), name_of(chars, y), bad, chain),
                               {"campaign": pid, "x": x, "y": y})
-                # A5 枢轴纯度
+                # A5 枢轴纯度（官职词除外：官职称谓的变体取决于**雇主**即本战役传主的政体/等级/
+                # 文化，cache["court_positions"] 记的也只是传主宫廷的差遣，换枢轴会连带换掉这一
+                # 个词形；生产只为每个战役建一个 Facts，不会中途改 player_id，故这一项单列）
                 chain_pid = fi.kin_chain_words_for(y, x)
-                if chain != chain_pid:
+                off = set(fi._court_positions_of(y) or ()) | set(fi_x._court_positions_of(y) or ())
+                kin_c = [t for t in chain if t not in off]
+                kin_p = [t for t in chain_pid if t not in off]
+                if kin_c != kin_p:
                     issue("A5枢轴不纯", "%s→%s：传主枢轴 %s / 领属者枢轴 %s"
-                          % (name_of(chars, x), name_of(chars, y), chain_pid, chain),
+                          % (name_of(chars, x), name_of(chars, y), kin_p, kin_c),
                           {"campaign": pid, "x": x, "y": y})
                 # A6 姻亲词
                 if fld in SPOUSE_NOW + CONC_FIELDS and key in ("wife", "husband", "spouse"):
@@ -376,15 +414,50 @@ def part_a(camp, fi, cache, fam, say, progress=False):
                           % (name_of(chars, x), name_of(chars, y), head, w_pass, w_facts),
                           {"campaign": pid, "x": x, "y": y})
     say("A 计算器：家族 %d 人 / 家族边 %d 条" % (len(fam), n_edge))
+    if n_sib:
+        say("A12（信息）siblings 边 %d 条，其中 %d 条双方没有共同记录的父母 —— 这些「兄弟」只在"
+            "siblings 字段里，`_ancestor_routes` 走不到，进不了兼链" % (n_sib, n_sib_nopar))
 
 
 # --------------------------------------------------------------------------- B/C
 
+def unresolvable_same_name(cache_x, chars, fchars, x, yname, xname, names_map):
+    """同名亲属导致「无法判定该改哪一个」时返回说明，否则 ''。
+
+    用户裁决 2026-10-06：同名亲属用 cid 判断是否同一人。姓名指多个 cid 时它们是不同的人，
+    后处理只在全体同词时改写，因此这类探针**不该**被改（改哪一个都有一半机会改错）。"""
+    xc = [int(v) for v in (names_map.get(xname) or ())]
+    if len(xc) > 1:
+        return "领属者「%s」同名 %d 人 %s" % (xname, len(xc), sorted(xc))
+    fam = (chars.get(str(x)) or {}).get("family") or {}
+    ids = {int(x)}
+    for fld in PASS_DOMAIN:
+        for v in (fam.get(fld) or []):
+            if isinstance(v, int):
+                ids.add(v)
+    hit = []
+    for c in sorted(ids):
+        rec = chars.get(str(c)) or {}
+        names = {rec.get("name_full"), rec.get("name_zh"),
+                 (fchars.get(str(c)) or {}).get("name")}
+        if yname in names:
+            hit.append(c)
+    if len(hit) < 2:
+        return ""
+    ws = {F.kin_word(cache_x, x, c) for c in hit}
+    ws.discard("")
+    if len(ws) < 2:
+        return ""
+    return "亲属名「%s」同名 %d 人 %s，对领属者要的词不一致 %s" % (yname, len(hit), hit, sorted(ws))
+
+
 def check_owner(chars, fi, cache, x, ys, fchars, memo, prod):
-    """x 当传主（cache.player_id=x）时逐条断言；返回 (检查数, 失败列表, 无法纠正的相对人数)。
+    """x 当传主（cache.player_id=x）时逐条断言；返回 (检查数, 失败列表, 无法纠正的相对人数,
+    同名不可判数)。
 
     「错词必纠」只对**后处理看得见**的相对人（by_cid 的取词范围）成立；范围外的相对人
-    后处理根本不会改写，单列成「覆盖缺口」而不是失败。"""
+    后处理根本不会改写，单列成「覆盖缺口」而不是失败。同名歧义按 cid 判为不同人而原样保留的，
+    单列成「同名不可判」也不是失败。"""
     fi_x, cache_x = pivot(fi, cache, x, memo)
     facts_x = {"_facts": fi_x, "characters": fchars}
     xname = name_of(chars, x)
@@ -394,9 +467,9 @@ def check_owner(chars, fi, cache, x, ys, fchars, memo, prod):
         for y in (fam_x.get(fld) or []):
             if isinstance(y, int):
                 dom.add(y)
-    n, bad, gap = 0, [], 0
+    n, bad, gap, unres = 0, [], 0, 0
     if not xname:
-        return 0, [], 0
+        return 0, [], 0, 0
     names_map, subjects = bio._possessor_words(cache_x, facts_x, x, [x])
     names_ordered = sorted(names_map.items(), key=lambda kv: -len(kv[0]))
     for y in sorted(ys):
@@ -451,8 +524,12 @@ def check_owner(chars, fi, cache, x, ys, fchars, memo, prod):
             out = bio._fix_kin_roles(line, facts_x, cache_x, subject_ids=[x])
             ok = (out == line) if want is None else (out == want)
             if not ok:
+                why = unresolvable_same_name(cache_x, chars, fchars, x, yname, xname, names_map)
+                if why:
+                    unres += 1
+                    continue
                 bad.append((tag, x, y, line, out, want or line, prod, cause(word, line)))
-    return n, bad, gap
+    return n, bad, gap, unres
 
 
 def part_bc(camp, fi, cache, facts, fam, say, do_c=True, sample=3):
@@ -467,9 +544,10 @@ def part_bc(camp, fi, cache, facts, fam, say, do_c=True, sample=3):
         for y in (fam_p.get(fld) or []):
             if isinstance(y, int):
                 dom.add(y)
-    n, bad, gap = check_owner(chars, fi, cache, pid, dom, fchars, memo, True)
+    n, bad, gap, unres = check_owner(chars, fi, cache, pid, dom, fchars, memo, True)
     say("B 后处理(生产口径 传主=%s)：%d 条断言 / 失败 %d ／ 范围外亲属 %d 人（后处理不覆盖）"
-        % (name_of(chars, pid), n, len(bad), gap))
+        " ／ 同名不可判 %d 条（按 cid 判为不同人，原样保留）"
+        % (name_of(chars, pid), n, len(bad), gap, unres))
     for b in bad[:sample]:
         issue("B后处理", "%s（%s）：%s\n        期望 %s\n        实得 %s"
               % (b[0], b[7], b[3], b[5], b[4]),
@@ -481,7 +559,7 @@ def part_bc(camp, fi, cache, facts, fam, say, do_c=True, sample=3):
               {"campaign": pid, "x": b[1], "y": b[2], "tag": b[0], "cause": b[7]},
               sample=0)
     if do_c:
-        n2, bad2, owners, gap2 = 0, [], 0, 0
+        n2, bad2, owners, gap2, unres2 = 0, [], 0, 0, 0
         cap = camp.get("max_c") or 0
         work = [x for x in sorted(fam) if x != pid]
         if cap and len(work) > cap:                    # 家族过大时按 id 抽前 cap 个（省时，注明）
@@ -497,14 +575,15 @@ def part_bc(camp, fi, cache, facts, fam, say, do_c=True, sample=3):
             if not ys:
                 continue
             owners += 1
-            a, b, g = check_owner(chars, fi, cache, x, ys, fchars, memo, False)
+            a, b, g, u = check_owner(chars, fi, cache, x, ys, fchars, memo, False)
             n2 += a
             bad2 += b
             gap2 += g
+            unres2 += u
             if owners % 50 == 0:
                 print("      …C 段 %d 个传主（%d 条断言）" % (owners, n2), flush=True)
         say("C 枢轴回放（%d 个家族角色当传主）：%d 条断言 / 失败 %d ／ 范围外亲属 %d 人"
-            % (owners, n2, len(bad2), gap2))
+            " ／ 同名不可判 %d 条" % (owners, n2, len(bad2), gap2, unres2))
         for b in bad2[:sample]:
             issue("C枢轴回放", "%s（%s）：%s（传主=%s → 相对人=%s）\n        期望 %s\n        实得 %s"
                   % (b[0], b[7], b[3], name_of(chars, b[1]), name_of(chars, b[2]), b[5], b[4]),
@@ -570,6 +649,26 @@ def diff_contexts(a, b, n=2, width=46):
     return out
 
 
+def pair_sentences(a, b, limit=3, width=170):
+    """同一段落到新段落的成对句子（只列真正改动过的），D 段的第一手证据。
+
+    亲缘词只换词、不动句读，所以按句末标点切开后同一序号就是同一句；万一序号对不上
+    （理论上不该发生）就返回空，宁可不给证据也不给错位证据。"""
+    sa = re.split(r"(?<=[。！？\n])", a)
+    sb = re.split(r"(?<=[。！？\n])", b)
+    if len(sa) != len(sb):
+        return []
+    out = []
+    for x, y in zip(sa, sb):
+        if x == y:
+            continue
+        out.append("        - %s" % x.strip()[:width])
+        out.append("        + %s" % y.strip()[:width])
+        if len(out) >= limit * 2:
+            break
+    return out
+
+
 def part_d(camp, fi, cache, facts, art_map, say, sample=4):
     """按生产口径逐节重跑 `_fix_kin_roles`。
 
@@ -628,6 +727,8 @@ def part_d(camp, fi, cache, facts, art_map, say, sample=4):
                   sample=2 if mode == "exact" else 1)
             for ctx in diff_contexts(body, out, 2):
                 w("        %s" % ctx)
+            for line in pair_sentences(body, out, 2):
+                w(line)
     say("D 成稿回放：%d 个 md ／ 世代精确稿 %d 节改写 %d ／ 其余稿 %d 节改写 %d（低置信）"
         % (files, n_sec["exact"], hits["exact"], n_sec["loose"], hits["loose"]))
     return hits
@@ -733,20 +834,28 @@ def main():
             r = CW.chain_of(kind)
             w("  %-38s 首词 %-6s 血缘词 %-22s 链 %s"
               % (label, r["word"], "、".join(r["blood"]), "兼".join(r["chain"]) or "（空）"))
-            issue("E兼链", "%s → 链 %s（首词 %s）" % (label, r["chain"], r["word"]), {}, sample=0)
-        w("  ⇒ 结论：血缘词上限 _KIN_CHAIN_BLOOD_MAX=%d；「儿子」与「继子」互斥（facts.py:1183-1186）；"
+            issue("E兼链(信息)", "%s → 链 %s（首词 %s）" % (label, r["chain"], r["word"]), {}, sample=0)
+        w("  ⇒ 结论：血缘词上限 _KIN_CHAIN_BLOOD_MAX=%d；「儿子」与「继子」互斥（facts.py:1225-1228）；"
           % CW.chain_of("all")["max"])
-        w("     三重身份实测只出 %s —— 弟弟/舅舅两条线因 `_parent_maps` 只留第一个父/母而丢失"
-          % CW.chain_of("all")["chain"])
-        w("     （facts.py:4718-4736 用 setdefault）；单独一条舅舅边还会在链里多出「族伯叔」"
-          "（facts.py:836-842）。")
+        w("     三重身份（⑤）实测只出 %s："
+          % "兼".join(CW.chain_of("all")["chain"]))
+        w("      - 「弟弟」「舅舅」两条线在合成族谱里只写在 siblings 字段（探针 add(S,'siblings',C) 等），")
+        w("        而 `_ancestor_routes`（facts.py:4814-4845）只沿 father/mother 边展开，"
+          "siblings 字段不进路线表；")
+        w("        真实缓存里这种「无共同记录父母」的兄弟边见 A 段 A12 统计。")
+        w("      - 唯一进链的额外词「族伯叔」来自 C 之父 G 同时是 S 的外祖父这条路线"
+          "（_kin_key_of_route facts.py:879-884，")
+        w("        gap>0 时不看父系/母系，一律给族伯叔/族姑）：④ 单独一条舅舅边也会多出这个词。")
+        w("      - v108 已修 `_parent_maps` 的 setdefault（facts.py:4799-4809 现保留全部父/母），"
+          "三重身份不再丢线，但仍受上述两条所限。")
     except Exception as e:                                # noqa: BLE001
         w("  （E 段跳过：%s）" % e)
     w()
 
     # ---- F 已知改错复现
     w("-" * 92)
-    w("[F] 已知改错复现：v107 反身代词回指把**成稿原文**改错（见 v108_probe_d_repro.py）")
+    w("[F] 已知改错复现：成稿原文里被 `_fix_kin_roles` 改错的五处（反身代词回指／引语窗口／"
+      "同位语／领属者）直接跑一遍（tools/tests/v108_probe_d_repro.py）。")
     w("-" * 92)
     try:
         import v108_probe_d_repro as RP
@@ -758,9 +867,10 @@ def main():
             if not ok:
                 w("      in : %s" % src)
                 w("      out: %s" % got)
-            issue("F改错复现", "%s：%s ⇒ %s" % (label, src, got), {"subjects": subs}, sample=0)
-        w("  ⇒ 被改错 %d / %d 例；根因：`_reflexive_antecedent` 在小句无人名时退回上一句的"
-          "第一个名字（多为宾语），且窗口不认句号/引号。" % (nbad, len(RP.CASES)))
+                issue("F改错复现", "%s：%s ⇒ %s" % (label, src, got), {"subjects": subs}, sample=0)
+        w("  ⇒ 被改错 %d / %d 例（只统计真被改错的）；v108 起窗口不跨句末/右引号、"
+          "无名句回退只在上一句以人名开头时采信、词与人名之间夹着别人时不成定语、"
+          "无主「的」短语时最近的人名也能为该词作证。" % (nbad, len(RP.CASES)))
     except Exception as e:                                # noqa: BLE001
         w("  （F 段跳过：%s）" % e)
     w()
