@@ -2201,7 +2201,34 @@ def _kin_chain_for(fi, cid, subj):
 
 # A kin word with no explicit possessor belongs to the sentence's own subject; these nouns name that
 # subject indirectly (「孩子的妹妹」) and resolve to the section subject rather than to the protagonist.
-_POSSESSOR_GENERIC = ("孩子", "此人", "本人", "该人", "当事人", "对方", "自己", "他", "她", "其")
+_POSSESSOR_SUBJECT_NOUN = ("孩子", "此人", "本人", "该人", "当事人", "对方")
+# A reflexive refers to the subject of *its own sentence*, which is not always the section subject:
+# in 布里基纳's section the clause 「耀国本人就娶了自己的母亲桑莎」 calls 桑莎 the protagonist's
+# wife, so 自己 resolves to the first name of that clause (see `_reflexive_antecedent`).
+_POSSESSOR_REFLEXIVE = ("自己", "他", "她", "其")
+
+
+def _reflexive_antecedent(out, end, names_ordered):
+    """Person a 「自己/他/她/其」 before `end` refers to: the first name of the clause it sits in.
+
+    The subject of a Chinese clause tends to be its first named person, and that is the person a
+    reflexive binds to. '' (None) when the clause names nobody → the caller falls back to the section
+    subject, which is how 「一个六岁的孩童，与自己的母亲结为好友」 keeps the child's own mother."""
+    start = 0
+    for sep in ("。", "；", "\n", "！", "？"):
+        k = out.rfind(sep, 0, end)
+        if k >= start:
+            start = k + 1
+    seg = out[start:end]
+    best = None
+    for nm, cid in names_ordered:
+        k = seg.find(nm)
+        if k < 0:
+            continue
+        # leftmost wins (the subject comes first); at one position the longer name wins
+        if best is None or k < best[0] or (k == best[0] and len(nm) > best[1]):
+            best = (k, len(nm), cid)
+    return best[2] if best else None
 
 
 def _possessor_words(cache, facts, pid, subject_ids):
@@ -2262,7 +2289,10 @@ def _possessor_at(out, end, names_ordered, generic):
         if head.endswith(nm):
             return cid
     tail = head.strip("，。；、：　 「」『』——-·")[-3:]
-    for g in _POSSESSOR_GENERIC:
+    for g in _POSSESSOR_REFLEXIVE:
+        if tail.endswith(g):
+            return _reflexive_antecedent(out, max(0, end - 24) + j, names_ordered) or generic
+    for g in _POSSESSOR_SUBJECT_NOUN:
         if tail.endswith(g):
             return generic
     return None

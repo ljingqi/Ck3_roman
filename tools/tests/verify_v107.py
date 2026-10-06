@@ -146,6 +146,16 @@ def group_a():
     # ⑧ fail open: an unresolvable possessor leaves the word alone
     op = "某人的妹妹是桑莎·洪堡。"
     check("[A] 领属者解析不出→不改（fail open）", run(op) == op, run(op))
+    # ⑨ a reflexive binds to its own clause's first name, not to the section subject:
+    #    in 布里基纳's section this clause is about 耀国, so 母亲/姑母 are wrong and 妹妹 is right
+    _chain3 = {(SANG, PID): ["妻子", "妹妹"], (SANG, BRI): ["母亲"]}
+    fi.kin_chain_words_for = lambda cid, subj: list(_chain3.get((int(cid), int(subj)), []))
+    refl = "耀国本人就娶了自己的母亲桑莎·洪堡。"
+    check("[A] 反身代词「自己的母亲桑莎」在孩子段纠为妹妹",
+          run(refl, [BRI]) == "耀国本人就娶了自己的妹妹桑莎·洪堡。", run(refl, [BRI]))
+    #    …while a clause that names nobody keeps the section subject (the child's own mother)
+    keep = "一个六岁的孩童，与自己的母亲桑莎·洪堡结为好友。"
+    check("[A] 无名句的反身代词仍按段主语（母亲保留）", run(keep, [BRI]) == keep, run(keep, [BRI]))
     # ⑨ idempotent + no crash on empty input
     check("[A] 幂等", run(out, [BRI]) == out, run(out, [BRI]))
     check("[A] 空文本/空 facts 不炸",
