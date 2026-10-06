@@ -2133,6 +2133,22 @@ def _strip_markdown_tables(text):
     return "\n".join(out)
 
 
+def _kin_rev_of(fi, chars=None):
+    """The reverse sibling/child index of the bound `Facts`, or None for a stub/absent instance.
+
+    Handing the index to `F.kin_word` is what keeps these passes affordable: without it every truth
+    lookup rebuilds the whole reverse index over the character table (measured 0.20-1.34 s per call
+    on the 233 MB 洪氏2 cache, v108). The index is only reused when it describes the very table the
+    lookup will read, so a caller with a different character view falls back to rebuilding it."""
+    try:
+        cache = getattr(fi, "cache", None)
+        if chars is not None and isinstance(cache, dict) and cache.get("characters") is not chars:
+            return None
+        return fi._kin_rev_index()
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def _fix_person_names(text, facts, cache):
     """Restore the full name behind a "surname + kin word" string that names no known person
     (F.kin_word confirms one same-surname match); repairs what `_fix_kin_roles` cannot."""
@@ -2140,6 +2156,7 @@ def _fix_person_names(text, facts, cache):
         return text
     chars = (facts or {}).get("characters") or {}
     pid = cache.get("player_id") or (facts or {}).get("player_id")
+    rev = _kin_rev_of((facts or {}).get("_facts"), cache.get("characters"))
     by_name, by_sur = {}, {}
     for cid_s, rec in chars.items():
         nm = (rec or {}).get("name") or ""
@@ -2168,7 +2185,7 @@ def _fix_person_names(text, facts, cache):
             hit = ""
             for nm in sorted(cands):
                 try:
-                    if F.kin_word(cache, pid, cands[nm]) == w:
+                    if F.kin_word(cache, pid, cands[nm], rev=rev) == w:
                         hit = nm
                         break
                 except Exception:
@@ -2420,7 +2437,7 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
         if not names:
             continue
         try:
-            true_word = F.kin_word(cache, pid, cid, chars=chars)
+            true_word = F.kin_word(cache, pid, cid, chars=chars, rev=rev_idx)
         except Exception:                                    # noqa: BLE001
             true_word = ""
         if not true_word:
@@ -2441,6 +2458,7 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
     _words_desc = sorted(all_words, key=len, reverse=True)
     names_map, section_subjects = _possessor_words(cache, facts, pid, subject_ids)
     names_ordered = sorted(names_map.items(), key=lambda kv: -len(kv[0]))
+    rev_idx = _kin_rev_of(fi, chars)
     for st, cid, true_word, row_words in sorted(accepted, key=lambda t: -t[0]):
         win = out[max(0, st - 12):st]
         best_w, best_end = "", -1
@@ -2469,7 +2487,7 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
             if int(p) == int(pid):
                 acc |= set(row_words or ())
             try:
-                w = F.kin_word(cache, p, cid, chars=chars)
+                w = F.kin_word(cache, p, cid, chars=chars, rev=rev_idx)
             except Exception:                                # noqa: BLE001
                 w = ""
             if w and w not in words:

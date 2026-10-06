@@ -680,7 +680,15 @@ def _married(fam_a, a_id, b_id, chars):
 def kin_rev_index(chars):
     """Reverse-edge index {sib: {cid: [others]}, kid: {cid: [others]}} over the character table.
 
-    Both directions are unioned (built once per build); child lookup ignores `real_father`."""
+    Both directions are unioned (built once per build); `real_father` counts as a father edge in
+    both directions, so a child recorded only under `real_father` is still that father's child
+    (before v108 the reverse lookup ignored it and the pair read as 父亲 one way and as nothing the
+    other, see logs/v108_kin_sweep.txt A3).
+
+    Deliberately **not** memoized here: this module-level entry can be handed a table that a caller
+    mutates in place (tools/tests/verify_fast.py:1822 rewrites one family record between two calls),
+    and an id-keyed cache would answer from the stale index. The hot callers instead pass `rev`
+    explicitly from `Facts._kin_rev_index`, memoized once per built instance (v108)."""
     sib, kid = {}, {}
     for k, rec in (chars or {}).items():
         if not str(k).isdigit() or not isinstance(rec, dict):
@@ -696,8 +704,8 @@ def kin_rev_index(chars):
         for x in (fam.get("child") or []):
             if isinstance(x, int):
                 kid.setdefault(cid, []).append(x)   # cid has x among his children
-        for key in ("father", "mother"):
-            for x in (fam.get(key) or []):
+        for parent_key in ("father", "mother", "real_father"):
+            for x in (fam.get(parent_key) or []):
                 if isinstance(x, int):
                     kid.setdefault(x, []).append(cid)   # cid is a child of x
     return {"sib": sib, "kid": kid}
@@ -4622,7 +4630,8 @@ class Facts:
         (`kin_word_short`). Former spouses do not count, so "spouse" means the current one. ''
         when the relation cannot be determined.
         """
-        key = kin_key(self.cache, a, b, spouse_back=self._spouse_back_index())
+        key = kin_key(self.cache, a, b, spouse_back=self._spouse_back_index(),
+                      rev=self._kin_rev_index())
         if not key:
             return ""
         return f"其{kin_word_short(key)}"
