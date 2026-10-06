@@ -867,6 +867,16 @@ def _deep_kin_key(s, c, fath, moth, anc_memo, c_female, older):
     return "clan_descendant"
 
 
+def _kin_word_coarse(term):
+    """Whether a kinship term is the vocabulary's clan fallback tier (族X / 同族X) rather than a
+    line-specific one (父亲/姑母/姨母/堂姐/三从表兄…).
+
+    `blood_kin_words_for` admits a longer route only for the latter (v110): every route to an
+    ancestor that is not the shortest one can only restate the shortest route's relation in this
+    coarse tier, which adds words without adding information."""
+    return term.startswith("族") or term.startswith("同族")
+
+
 def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older):
     """KIN_WORDS key for one blood route: the shared ancestor A is `up_s` generations above the
     subject and `up_c` above the relative, `ms`/`mc` say the subject's/relative's hops up to A are
@@ -5007,14 +5017,27 @@ class Facts:
 
     @staticmethod
     def _ancestor_routes(x, fath, moth, banned, maxd=_DEEP_MAXD):
-        """{ancestor: (depth, all_male)} along the routes from `x` that avoid `banned`.
+        """{ancestor: {(depth, all_male), ...}} over every route from `x` that avoids `banned`.
 
-        Depth 0 is x itself; the first (shortest) route to an ancestor wins, and `all_male` is True
-        only while every hop was a father edge. `blood_kin_words_for` bans the other person, so only
-        routes that do not pass through him survive: a plain daughter reaches her grandfather only
-        through her father, and banning him leaves nothing, while a cousin reached through an uncle
-        keeps her route. Each hop expands to every parent the map holds (v108)."""
-        out = {x: (0, True)}
+        Depth 0 is x itself. Every distinct route *shape* is kept, not only the shortest one (v110):
+        a person can reach one ancestor by two lines -- A is both her father (one hop) and her
+        maternal grandfather (two hops) -- and the two lines are two different relations to whoever
+        she is compared with. Keeping only the shortest made the second line invisible, which is why
+        a pair that is simultaneously mother and cousin read 「母亲兼姑母」 and never the 堂/表 term
+        (user 2026-10-06). Whether a route is a *second* line has no bearing here: a whole-line route
+        is dropped by `blood_kin_words_for` through the `banned` person, not by this walk.
+
+        The walk is keyed on the state `(node, depth, all_male)`, so it is bounded by that state
+        space (nodes × depth × 2) and cannot diverge; a character who somehow ends up among his own
+        ancestors adds signatures at ever greater depth until `maxd`, and those sort last, so they
+        never take a term slot from a real one. The key is exactly the projection the kinship term
+        depends on, so state deduplication loses nothing the term could have used. `blood_kin_words_for`
+        bans the other person, so only routes that do not pass through him survive: a plain daughter
+        reaches her grandfather only through her father, and banning him leaves nothing, while a
+        cousin reached through an uncle keeps her route. Each hop expands to every parent the map
+        holds (v108)."""
+        out = {x: {(0, True)}}
+        seen = {(x, 0, True)}
         frontier = [(x, 0, True)]
         while frontier:
             nxt = []
@@ -5023,10 +5046,15 @@ class Facts:
                     continue
                 for parents, is_father in ((fath.get(node), True), (moth.get(node), False)):
                     for parent in (parents or ()):
-                        if parent in banned or parent in out:
+                        if parent in banned:
                             continue
-                        out[parent] = (d + 1, male and is_father)
-                        nxt.append((parent, d + 1, male and is_father))
+                        sig = (d + 1, male and is_father)
+                        state = (parent,) + sig
+                        if state in seen:
+                            continue
+                        seen.add(state)
+                        out.setdefault(parent, set()).add(sig)
+                        nxt.append(state)
             frontier = nxt
         return out
 
@@ -5037,7 +5065,25 @@ class Facts:
         wife who is the subject's daughter by one route and his cousin by another -- gets a term per
         route, so a chain can read 「妻子兼女儿兼堂姐兼表妹」 (user 2026-10-05). A route passing
         through the other person is the same relation seen from further along the line (a daughter
-        is also her grandfather's granddaughter), so it is dropped."""
+        is also her grandfather's granddaughter), so it is dropped.
+
+        Since v110 each side contributes every route *shape* (ancestor, hops, all-father-edges), not
+        only its shortest route to that ancestor, and the shapes are ordered by the total number of
+        generations between the two (the genealogical (degree, removal) order), so the closest lines
+        fill the budget. That is what surfaces the 堂/表 cousin term of a pair whose closer line to
+        the same ancestor is a different relation: 洪卡特琳 versus 洪大力 reads
+        「母亲兼姑母兼表姐」 -- the 表姐 line runs through her mother, so 16945142 is her maternal
+        grandfather while being 大力's paternal grandfather.
+
+        A route is admitted when it is a **shortest** route to its ancestor (the pre-v110 rule, so no
+        term the old method produced is lost) or when the term it names is specific (`_kin_word_coarse`
+        false). A longer route can only restate the shortest one with a clan fallback term -- a pair
+        that is 孙子 by its shortest route would add 族孙 and 族侄 from the longer ones -- so admitting
+        it buys no information and only lengthens the chain; a longer route that names 表姐 or 姨母,
+        by contrast, names a kind of kinship the shortest route does not (measured on the 洪氏2
+        family: this rule keeps every 堂/表 correction the unrestricted walk makes while adding
+        specific terms only, and halves the number of pairs whose chain changes;
+        logs/v110_rule_study.txt)."""
         if cid is None or subject is None:
             return []
         limit = self._KIN_CHAIN_BLOOD_MAX if limit is None else limit
@@ -5057,17 +5103,28 @@ class Facts:
         fath, moth = self._parent_maps()
         routes = self._ancestor_routes(s, fath, moth, {c})
         croutes = self._ancestor_routes(c, fath, moth, {s})
-        sigs = []
-        for anc, (ds, ms) in routes.items():
-            hc = croutes.get(anc)
-            if hc is None or (ds == 0 and hc[0] == 0):
-                continue
-            sigs.append((ds + hc[0], ds, hc[0], ms, hc[1]))
-        sigs.sort()
         chars = self.cache.get("characters") or {}
         cfemale = self._is_female(c)
-        for _tot, ds, dc, ms, mc in sigs:
-            older = _older_rec(chars.get(str(c)) or {}, chars.get(str(s)) or {}, c, s)
+        older = _older_rec(chars.get(str(c)) or {}, chars.get(str(s)) or {}, c, s)
+        sigs = set()
+        for anc, sroutes in routes.items():
+            c_routes = croutes.get(anc)
+            if not c_routes:
+                continue
+            ds_min = min(d for d, _m in sroutes)
+            dc_min = min(d for d, _m in c_routes)
+            smin = {(d, m) for d, m in sroutes if d == ds_min}
+            for ds, ms in sroutes:
+                for dc, mc in c_routes:
+                    if ds == 0 and dc == 0:
+                        continue
+                    if (ds, ms) in smin and dc == dc_min:
+                        sigs.add((ds + dc, ds, dc, ms, mc))
+                        continue
+                    term = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older))
+                    if term and not _kin_word_coarse(term):
+                        sigs.add((ds + dc, ds, dc, ms, mc))
+        for _tot, ds, dc, ms, mc in sorted(sigs):
             w = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older))
             if w and w not in seen:
                 seen.add(w)
@@ -16561,6 +16618,14 @@ class Facts:
                     want = pt.get("title")
                 elif d:
                     break
+            if want is None:
+                # The date precedes every recorded tier, so the earliest known capital is the
+                # closest evidence there is. Falling through instead read the **last** tier's
+                # capital (`realm_capital`), i.e. a capital the man did not have yet (v110, B1).
+                for pt in ch:
+                    if pt.get("title") is not None:
+                        want = pt.get("title")
+                        break
         if want is None:
             rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
             want = (rec.get("landed") or {}).get("realm_capital")
@@ -16694,12 +16759,92 @@ class Facts:
             return False
         return self._TT_RANK.get(key[:2], 0) < top_rank
 
+    def _seat_province_at(self, cid, date=None):
+        """Province of the seat `cid` held on `date`, baronies and house estates included (v110).
+
+        `victim_place`'s last resort, `last_location`, is an annual snapshot: its date can sit
+        months before the death (蔡偕: 356 days, logs/v109_victim_place_report.md §1.3), so a man who
+        moved between that save and his death is reported where he no longer was. The holding he
+        still sat on that day is evidence about the man himself rather than about an old save, so it
+        is preferred once the snapshot is stale (see `_location_fresh`).
+
+        `_primary_landed_at` cannot serve here: it drops baronies and the `_nf_` estates on purpose,
+        because a landless clan must not enter the primary-title slot. The question here is only
+        where the man sat, so a barony is a place, and an estate resolves through its `capital` --
+        the field holds its enclosing **county title id** (`landed_titles[x_nf_1810].capital ==
+        14628 == c_lingzhou`; verified, logs/v110 probe), which the province map answers by key.
+        None when nothing resolves."""
+        anchor = date or self.as_of
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return None
+        if not anchor:
+            return None
+        ak = cl.date_key(str(anchor))
+        best = None                     # ((rank, gain_key, tid), province)
+        for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
+            rec = self._lt.get(str(tid)) or {}
+            key = rec.get("key") or ""
+            if not key:
+                continue
+            prov = self._prov_inv().get(key)
+            rank = self._TT_RANK.get(key[:2], 0)
+            cap = rec.get("capital")
+            estate = self._is_estate_title(tid)
+            if not isinstance(prov, int) or estate:
+                # An estate sits at the county it names, and so does any title the province map does
+                # not know by its own key; a barony the map knows stays its own place.
+                ckey = ((self._lt.get(str(cap)) or {}).get("key") or "") if isinstance(cap, int) else ""
+                cprov = self._prov_inv().get(ckey)
+                if isinstance(cprov, int):
+                    if estate:
+                        # A county surrounds its baronies, so an estate is the wider seat of the two
+                        # and takes the county's tier for the tie-break, not the barony's.
+                        rank = max(rank, self._TT_RANK.get(ckey[:2], rank))
+                    prov = cprov
+            if not isinstance(prov, int):
+                continue
+            for iv in (ivs or ()):
+                if not self._iv_covers(iv, ak):
+                    continue
+                cur = (rank, cl.date_key(str(iv[0])), tid)
+                if best is None or cur[:2] > best[0][:2]:
+                    best = (cur, prov)
+        return best[1] if best else None
+
+    # How far the cached last known location may sit from the death and still count as evidence
+    # (v110). Saves are yearly, so a mid-year death is naturally months away from its last
+    # sighting; beyond this window the death-day seat is the better guess, and `victim_place`
+    # asks for it first.
+    _LOCATION_FRESH_DAYS = 60
+
+    def _location_fresh(self, rec, d):
+        """Whether the record's `last_location` is close enough to the death to be evidence.
+
+        True when either date is missing (nothing better to judge with, and the caller then keeps
+        the current behaviour). Exact calendar days, not `date_gap_days`' 30-day approximation, so
+        the 60-day window means what it says at its own boundary."""
+        ll = (rec or {}).get("last_location") or {}
+        try:
+            a = datetime.date(*[int(x) for x in str(ll.get("date")).split(".")[:3]]).toordinal()
+            b = datetime.date(*[int(x) for x in str((d or {}).get("date")).split(".")[:3]]).toordinal()
+        except Exception:
+            return True
+        return b - a <= self._LOCATION_FRESH_DAYS
+
     def victim_place(self, cid):
         """Where the victim was: the nearest known barony name around his death.
 
         Lookup: ① still alive in the era's melt → `alive_data.location`; ② the cached death record's
-        `location_province` (copied from `last_location` when the death was written); ③ the cached
-        `last_location`. '' when nothing resolves, and the caller drops the place note.
+        `location_province` (copied from `last_location` when the death was written) while that
+        snapshot is fresh; ③ the seat he held on the day he died (`_seat_province_at`, v110), and
+        only in place of a snapshot too old to speak for him; ④ the cached `last_location`. '' when
+        nothing resolves, and the caller drops the place note.
+
+        The seat replaces a stale snapshot; it never *invents* a place for someone the save recorded
+        nowhere (that would add a death place to 7 273 more of 洪氏2's dead on a guess about where a
+        man with no recorded whereabouts sat -- measured, logs/v110_death_place_*.json).
 
         Anyone executed by the subject counts as being at the subject's capital of that time, since the
         execution happened there while the save records assorted execution sites; the capital place comes
@@ -16711,8 +16856,21 @@ class Facts:
             if nm:
                 return nm
         loc = self.character_location_province(cid)
-        if loc is None:
-            loc = d.get("location_province")
+        # `death.location_province` is the copy cache_lib latched from `last_location` when the death
+        # was first seen, so the record's own `last_location` is the same evidence whenever the copy
+        # is missing; both carry that snapshot's date.
+        recorded = d.get("location_province")
+        if not isinstance(recorded, int):
+            recorded = (rec.get("last_location") or {}).get("province")
+        fresh = self._location_fresh(rec, d)
+        if loc is None and fresh:
+            loc = recorded
+        if loc is None and not fresh and isinstance(recorded, int):
+            seat = self._seat_province_at(cid, d.get("date"))
+            if seat is not None:
+                nm = self._place_of_province(seat)
+                if nm:
+                    return nm
         if loc is None:
             # Cross-campaign cache fallback: another cache from the same campaign may be the only one
             # recording this person's final whereabouts. Priority: a `location_province` copied at death
