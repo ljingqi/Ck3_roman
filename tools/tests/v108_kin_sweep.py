@@ -117,6 +117,10 @@ ISSUES = []
 COUNTS = collections.Counter()
 SHOWN = collections.Counter()          # 本战役已打印的样例行数
 SAMPLES = {}
+# C 段：只有关系词（仇敌/朋友/封臣…）而没有亲缘词的对。生产后处理**按设计**原样保留这种对
+# （`_fix_kin_roles` 只在亲缘/婚姻词表内找错词，也只用 `F.kin_word` 认证的词替换，见
+# biography.py「if len(words) != 1: continue」）。它们不是失败，单独计数并在摘要里报出。
+REL_ONLY = []
 
 # 允许出现在链里的非亲缘词：关系词 + 官职词（后者运行时从 _court_positions_of 收集）
 RELATION_WORDS = set(F.RELATION_WORDS.values())
@@ -457,7 +461,11 @@ def check_owner(chars, fi, cache, x, ys, fchars, memo, prod):
 
     「错词必纠」只对**后处理看得见**的相对人（by_cid 的取词范围）成立；范围外的相对人
     后处理根本不会改写，单列成「覆盖缺口」而不是失败。同名歧义按 cid 判为不同人而原样保留的，
-    单列成「同名不可判」也不是失败。"""
+    单列成「同名不可判」也不是失败。
+
+    「错词必纠」期望的替换词取自 `F.kin_word(cache, 领属者, 相对人)`——生产后处理唯一会用的替换来源；
+    若这一对只有关系词（仇敌/朋友/封臣…，v110 补记：campaign 44503 的崔穆/李法台是 former_spouses
+    且互为仇敌），后处理按设计原样保留，改记为不计失败的回归项（见模块级 REL_ONLY）。"""
     fi_x, cache_x = pivot(fi, cache, x, memo)
     facts_x = {"_facts": fi_x, "characters": fchars}
     xname = name_of(chars, x)
@@ -498,10 +506,20 @@ def check_owner(chars, fi, cache, x, ys, fchars, memo, prod):
             if y not in dom:
                 gap += 1
             else:
+                # 「错词必纠」期望的替换词只能取自后处理真正会用的来源：`F.kin_word(cache, 领属者, 相对人)`
+                # （`_fix_kin_roles` 的替换目标；它只在亲缘/婚姻词表里找错词，也只用 kin_word 认证的词替换）。
+                # `chain` 里还可能有纯关系词（仇敌/朋友/封臣…）：它们只是「可接受文本」——由逐字保留探针
+                # 保证不被破坏——不是替换目标。
+                cert = [t for t in (F.kin_word(cache, x, y), fi_x.kin_word_for(y, x)) if t]
                 wrong = next((t for t in DISTRACTORS if t not in acc), "")
-                if wrong:
+                if wrong and cert:
                     probes.append(("错词必纠", "%s的%s%s。" % (xname, wrong, yname),
-                                   "%s的%s%s。" % (xname, words[0], yname), wrong))
+                                   "%s的%s%s。" % (xname, cert[0], yname), wrong))
+                elif wrong:
+                    # 只有关系词的对（例如 former_spouses 且互为仇敌：崔穆/李法台，campaign 44503）：
+                    # 断言改为「原样保留」，把后处理的契约钉成回归项，而不是当成失败。
+                    REL_ONLY.append((x, y, wrong, words[0]))
+                    probes.append(("关系词对不改写", "%s的%s%s。" % (xname, wrong, yname), None, wrong))
         def cause(word, s):
             """这次失败是「领属者被解析成了别人」还是「后处理压根没管」——同名亲属是主因。"""
             iy = s.find(yname)
@@ -560,6 +578,7 @@ def part_bc(camp, fi, cache, facts, fam, say, do_c=True, sample=3):
               sample=0)
     if do_c:
         n2, bad2, owners, gap2, unres2 = 0, [], 0, 0, 0
+        rel0 = len(REL_ONLY)
         cap = camp.get("max_c") or 0
         work = [x for x in sorted(fam) if x != pid]
         if cap and len(work) > cap:                    # 家族过大时按 id 抽前 cap 个（省时，注明）
@@ -583,7 +602,8 @@ def part_bc(camp, fi, cache, facts, fam, say, do_c=True, sample=3):
             if owners % 50 == 0:
                 print("      …C 段 %d 个传主（%d 条断言）" % (owners, n2), flush=True)
         say("C 枢轴回放（%d 个家族角色当传主）：%d 条断言 / 失败 %d ／ 范围外亲属 %d 人"
-            " ／ 同名不可判 %d 条" % (owners, n2, len(bad2), gap2, unres2))
+            " ／ 同名不可判 %d 条 ／ 只有关系词的对 %d 对（按契约原样保留）"
+            % (owners, n2, len(bad2), gap2, unres2, len(REL_ONLY) - rel0))
         for b in bad2[:sample]:
             issue("C枢轴回放", "%s（%s）：%s（传主=%s → 相对人=%s）\n        期望 %s\n        实得 %s"
                   % (b[0], b[7], b[3], name_of(chars, b[1]), name_of(chars, b[2]), b[5], b[4]),

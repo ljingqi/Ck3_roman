@@ -17,6 +17,15 @@ after_step1 and after_step2 is that the step2 sweep run skipped the C part (`--n
 
 Usage:
     & tools\\py.ps1 tools\\tests\\v110_probe_c_anomaly.py
+
+Resolution (2026-10-07): the pair are **former spouses who are now 仇敌** (崔穆 and 李法台 are in each
+other's `ever_spouses`/`former_spouses`, and the only chain word is the relation 仇敌 -- no blood
+route, no `kin_word` in either direction). `_fix_kin_roles` replaces a wrong kin word only with a word
+`F.kin_word` certifies, and it refuses to guess (`if len(words) != 1: continue`), so it leaves this
+line alone by design. The C probe was demanding a *relation* word as the replacement target -- a
+behaviour the production function documents as out of scope -- so the probe now asserts the contract
+instead: relation-only pairs must stay untouched (`v108_kin_sweep.check_owner`, tag 「关系词对不改写」,
+counted in the module-level REL_ONLY and reported in the C summary). Nothing in `facts.py` changed.
 """
 import copy
 import json
