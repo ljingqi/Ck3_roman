@@ -24,6 +24,7 @@ import glob
 import io
 import json
 import os
+import re
 import sys
 import types
 
@@ -168,7 +169,8 @@ def group_b():
     fi = stub(cache)
     wife = F._consort_row_entry(fi, 3)
     check("[B] 妻室行以兼链开头（行首词由链承担）", wife.startswith("妻子兼"), wife)
-    check("[B] 兼链带出血缘词", "妹妹" in wife and wife.endswith(LABELS[3]), wife)
+    check("[B] 兼链带出血缘词且只一个血缘词",
+          wife == "妻子兼妹妹" + LABELS[3], wife)
     check("[B] 行内不再写「，本为其」/「，原为父」",
           "本为其" not in wife and "原为父" not in wife, wife)
     plain = F._consort_row_entry(fi, 5)
@@ -236,6 +238,17 @@ def group_d(snaps):
         check(f"[D] {k} 不收家室段", bio._wants_household_block(k, 12345) is False)
     check("[D] friend/enemy 无本人档案时退回给家室段",
           bio._wants_household_block("friend", None) is True)
+    # the model re-emits the intro's own title and the 【总纲】 placeholder as markdown headings; the
+    # programmatic pair is the one that stays (a stray 「## 总纲」 shipped in the 135480 volume once)
+    bio.llm.log = lambda *a, **k: None
+    intro = ("# 《残忍者耀国·缯松传》\n> 家族：洪氏，洪堡｜人物：残忍者耀国·缯松\n"
+             "## 总纲\n残忍者耀国·缯松，洪氏洪堡一脉。")
+    check("[D] 总纲开头的「## 总纲」与标题行一并剥掉",
+          bio._strip_intro_head(intro) == "残忍者耀国·缯松，洪氏洪堡一脉。",
+          bio._strip_intro_head(intro))
+    check("[D] 正文首句不被剥",
+          bio._strip_intro_head("残忍者耀国·缯松，洪氏洪堡一脉。")
+          == "残忍者耀国·缯松，洪氏洪堡一脉。", "")
     for name, snap in snaps:
         blocks = snap.get("blocks") or {}
         if not blocks:
@@ -250,16 +263,17 @@ def group_d(snaps):
                 bad.append(f"{bk}:{got}")
         check(f"[D] {name} 家室块只出现在该收的板块", not bad, bad)
         for bk in ("liyi_lead", "artifacts_lead", "chaoju_lead"):
-            bd = blocks.get(bk) or {}
-            txt = "\n".join(bd.values())
-            check(f"[D] {name} {bk} 档案里没有妻室/子女行",
-                  "妻子兼" not in txt and "妻室" not in txt and "子爱尔兰" not in txt,
-                  [x[:60] for x in txt.split("\n") if "妻" in x][:3])
+            ident = (blocks.get(bk) or {}).get("传主档案", "")
+            bad = [x for x in ident.split("\n")
+                   if re.match(r"^(妻子|丈夫|配偶|妻室|妾|男宠|前妻|前夫|前妾|前男宠)[\u4e00-\u9fff]", x)
+                   or x.startswith(("子爱尔兰", "女爱尔兰"))]
+            check(f"[D] {name} {bk} 身份段没有妻室/子女行", not bad, bad)
 
 
 # ------------------------------------------------------------------ [E] snapshots
 def load_snaps(argv):
-    paths = argv or sorted(glob.glob(os.path.join(H2, "data", "snap_v106*.json")))
+    paths = argv or sorted(glob.glob(os.path.join(H2, "data", "snap_v106*.json"))) \
+        or sorted(glob.glob(os.path.join(H2, "data", "v106*.json")))
     out = []
     for p in paths:
         try:

@@ -2463,8 +2463,9 @@ _INTRO_HEAD_RES = (
                r"(?:人物|生卒|生平)[：:][^\n]{0,80}$"),
     # (3) short byline starting the line with the house or person field
     re.compile(r"^[>\-*+]{0,2}\s*\**(?:家族|人物)[：:][^\n]{0,120}$"),
-    # (4) prompt placeholder echoed verbatim as a bare label line
-    re.compile(r"^[>\-*+]{0,2}\s*\**(?:总纲正文|总纲|正文|传记正文)\s*[：:…]*$"),
+    # (4) prompt placeholder echoed verbatim as a bare label line; the model re-emits 【总纲】 as a
+    # markdown heading often enough that the optional '#' prefix belongs here too (「## 总纲」)
+    re.compile(r"^[>\-*+\s]*#{0,6}[>\-*+\s]*(?:总纲正文|总纲|正文|传记正文)\s*[：:…]*$"),
 )
 
 
