@@ -643,14 +643,22 @@ def _female_rec(rec):
 
 
 def _older_rec(ra, rb):
-    """Whether ra is older than rb by birth year; None when either birth year is missing."""
+    """Whether ra is older than rb by birth date; None when either is missing **or they share one**.
+
+    Twins carry the same `birth` and neither is the elder (v108): the old strict `<` made both
+    sides fall into the younger slot, so two siblings born on the same day each read as the other's
+    弟弟/妹妹 (洪氏2: 塞巴斯蒂安/乔丹 both 1052.8.21, 泳清/桂 both 974.3.22). None makes the
+    callers state the game word 兄弟/姊妹, which is what CK3 itself does with no seniority."""
     ba, bb = (ra or {}).get("birth"), (rb or {}).get("birth")
     if not ba or not bb:
         return None
     try:
-        return cl.date_key(ba) < cl.date_key(bb)
+        ka, kb = cl.date_key(ba), cl.date_key(bb)
     except Exception:
         return None
+    if ka == kb:
+        return None
+    return ka < kb
 
 
 def spouses_now_family(fam, chars=None, spouse_back=None):
@@ -663,6 +671,22 @@ def spouses_now_family(fam, chars=None, spouse_back=None):
             if isinstance(x, int):
                 out.add(x)
     return out
+
+
+def marriage_slot_of(fam, other):
+    """Which marriage slot of one family record lists `other`: 'spouse', 'concubine' or ''.
+
+    The kind matters to the caller because the first word of a composed chain is 妻子/丈夫 for a
+    formal marriage and 妾/男宠 for a concubine, and either side's record may be the one that
+    states it (`_married` unions the same two directions). Former spouses never count."""
+    if other is None or not isinstance(fam, dict):
+        return ""
+    for k in ("primary_spouse", "spouse"):
+        if other in (fam.get(k) or []):
+            return "spouse"
+    if other in (fam.get("concubine") or []):
+        return "concubine"
+    return ""
 
 
 def _married(fam_a, a_id, b_id, chars):
@@ -4667,29 +4691,48 @@ class Facts:
     # 三个」); the primary kin term, the single scripted relation and the offices are extra.
     _KIN_CHAIN_BLOOD_MAX = 3
 
-    def _spouse_kind_of(self, cid):
-        """The marriage word of `cid` to the subject: 妻子/丈夫 (妾/男宠 for a concubine); '' when
-        they are not married now.
+    def _spouse_kind_of(self, cid, subject=None):
+        """The marriage word of `cid` to `subject` (protagonist when omitted): 妻子/丈夫 (妾/男宠
+        for a concubine); '' when they are not married now.
 
         The kin vocabulary's own words (`KIN_WORDS`, the same outlet `kin_text` uses), because a
         composed chain is a kin attributive (「妻子兼女儿」). Read from the subject's own family
         record with the spouse latch merged, the same source `consort_of_line` uses. Split out
         because the composed kin chain states the marriage before the blood routes, while the
-        cascade ranks a blood tie above it."""
-        pid = self.cache.get("player_id")
-        if pid is None or cid is None or int(cid) == int(pid):
+        cascade ranks a blood tie above it.
+
+        The reference person is the `subject` argument, not the ambient protagonist (v108): the
+        chain is asked for as seen from whoever the sentence is about, and reading the player's row
+        instead made the same pair carry different chains under the two pivots (697 pair-cases in
+        洪氏2, logs/v108_kin_sweep.txt A5). The spouse latch is the protagonist's own lifetime
+        record, so it is merged only when the subject *is* the protagonist; the other side's record
+        is consulted otherwise, the same two-way union `_married` makes."""
+        pid = self.cache.get("player_id") if subject is None else subject
+        if pid is None or cid is None:
             return ""
-        pfam_raw = ((self.cache.get("characters") or {}).get(str(pid)) or {}).get("family") or {}
-        # `merge_spouse_latch` mutates in place, so a copy must be passed (see consort_of_line).
-        pfam = dict(pfam_raw)
-        for _k in ("primary_spouse", "spouse", "concubine"):
-            if _k in pfam:
-                pfam[_k] = list(pfam[_k] or [])
-        pfam = self.merge_spouse_latch(pfam, self.as_of)
+        try:
+            pid, cid = int(pid), int(cid)
+        except (TypeError, ValueError):
+            return ""
+        if cid == pid:
+            return ""
+        chars = self.cache.get("characters") or {}
+        pfam = (chars.get(str(pid)) or {}).get("family") or {}
+        player = self.cache.get("player_id")
+        if player is not None and pid == int(player):
+            # `merge_spouse_latch` mutates in place, so a copy must be passed (see consort_of_line).
+            pfam = dict(pfam)
+            for _k in ("primary_spouse", "spouse", "concubine"):
+                if _k in pfam:
+                    pfam[_k] = list(pfam[_k] or [])
+            pfam = self.merge_spouse_latch(pfam, self.as_of)
+        kind = marriage_slot_of(pfam, cid)
+        if not kind:
+            kind = marriage_slot_of((chars.get(str(cid)) or {}).get("family") or {}, pid)
         female = self._is_female(pid)
-        if cid in (pfam.get("primary_spouse") or []) or cid in (pfam.get("spouse") or []):
+        if kind == "spouse":
             return kin_text("husband" if female else "wife")
-        if cid in (pfam.get("concubine") or []):
+        if kind == "concubine":
             return "男宠" if female else "妾"
         return ""
 
@@ -4728,7 +4771,13 @@ class Facts:
         """(father_of, mother_of) maps over the cache's kinship graph, built once per run.
 
         `blood_kin_words_for` walks them to find the routes that do *not* run through the other
-        person, which needs the two edges apart: `family_data.father` and `mother` are separate."""
+        person, which needs the two edges apart: `family_data.father` and `mother` are separate.
+
+        Each entry is the **full list** of recorded parents (v108). The earlier `setdefault` kept
+        only the first father/mother, so a child whose record lists two of them lost the second
+        line outright and every route through it (7 children in 洪氏2, logs/v108_kin_sweep.txt A8;
+        「儿子兼继子兼弟弟兼舅舅」 is uncomputable partly because of it). `real_father` joins the
+        father routes, the same union `kin_key` uses."""
         if getattr(self, "_pmaps", None) is None:
             fath, moth = {}, {}
             for cid, rec in (self.cache.get("characters") or {}).items():
@@ -4737,12 +4786,17 @@ class Facts:
                 except (TypeError, ValueError):
                     continue
                 fam = (rec or {}).get("family") or {}
-                for src, dst in ((fam.get("father"), fath), (fam.get("mother"), moth)):
+                for src, dst in ((fam.get("father"), fath),
+                                 (fam.get("real_father"), fath),
+                                 (fam.get("mother"), moth)):
                     for p in (src or []):
                         try:
-                            dst.setdefault(k, int(p))
+                            p = int(p)
                         except (TypeError, ValueError):
-                            pass
+                            continue
+                        slot = dst.setdefault(k, [])
+                        if p not in slot:
+                            slot.append(p)
             self._pmaps = (fath, moth)
         return self._pmaps
 
@@ -4754,7 +4808,7 @@ class Facts:
         only while every hop was a father edge. `blood_kin_words_for` bans the other person, so only
         routes that do not pass through him survive: a plain daughter reaches her grandfather only
         through her father, and banning him leaves nothing, while a cousin reached through an uncle
-        keeps her route."""
+        keeps her route. Each hop expands to every parent the map holds (v108)."""
         out = {x: (0, True)}
         frontier = [(x, 0, True)]
         while frontier:
@@ -4762,11 +4816,12 @@ class Facts:
             for node, d, male in frontier:
                 if d >= maxd:
                     continue
-                for parent, is_father in ((fath.get(node), True), (moth.get(node), False)):
-                    if parent is None or parent in banned or parent in out:
-                        continue
-                    out[parent] = (d + 1, male and is_father)
-                    nxt.append((parent, d + 1, male and is_father))
+                for parents, is_father in ((fath.get(node), True), (moth.get(node), False)):
+                    for parent in (parents or ()):
+                        if parent in banned or parent in out:
+                            continue
+                        out[parent] = (d + 1, male and is_father)
+                        nxt.append((parent, d + 1, male and is_father))
             frontier = nxt
         return out
 
@@ -4831,7 +4886,7 @@ class Facts:
                       spouse_back=self._spouse_back_index(),
                       rev=self._kin_rev_index())
         parts = []
-        spouse = self._spouse_kind_of(cid)
+        spouse = self._spouse_kind_of(cid, subject)
         blood_cap = self._KIN_CHAIN_BLOOD_MAX
         if spouse:
             # Marriage first: the cascade ranks a blood tie above a marriage, so a wife who is also

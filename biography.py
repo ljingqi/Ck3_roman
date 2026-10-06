@@ -2393,6 +2393,9 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
     cover_only = []
     chars = cache.get("characters") or {}
     fchars = (facts or {}).get("characters") or {}
+    # the reverse index is built once per bound Facts instance and handed to every truth lookup
+    # below; without it each lookup re-walks the whole character table (see `_kin_rev_of`)
+    rev_idx = _kin_rev_of(fi, chars)
     _self_rec = chars.get(str(pid)) or {}
     for nm in dict.fromkeys([_self_rec.get("name_full"), _self_rec.get("name_zh"),
                              (fchars.get(str(pid)) or {}).get("name")]):
@@ -2458,7 +2461,6 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
     _words_desc = sorted(all_words, key=len, reverse=True)
     names_map, section_subjects = _possessor_words(cache, facts, pid, subject_ids)
     names_ordered = sorted(names_map.items(), key=lambda kv: -len(kv[0]))
-    rev_idx = _kin_rev_of(fi, chars)
     for st, cid, true_word, row_words in sorted(accepted, key=lambda t: -t[0]):
         win = out[max(0, st - 12):st]
         best_w, best_end = "", -1
