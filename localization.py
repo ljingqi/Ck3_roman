@@ -548,7 +548,15 @@ def _province_map_path(cfg):
 
 def _parse_landed_titles(path, out):
     """Parse the `province = N` fields of one landed_titles.txt into
-    {province_id: {"barony": b_ key, "county": c_ key}} (the enclosing barony and nearest county)."""
+    {province_id: {"barony": b_ key, "county": c_ key}} (the enclosing barony and nearest county).
+
+    The key pattern accepts **both cases** (v110). All Under Heaven titles are written
+    `b_Liao_Yizhou3 = {` / `c_LIAO_jinzhou = {`, and a key the pattern misses is not pushed on the
+    stack while its closing `}` still pops it -- from there every following province is attributed
+    one level off (`11765/11773` were read as 玉河井 instead of 辽州/宜州, and `11728/11759` were
+    lost altogether; logs/v109_victim_place_report.md §4). The pattern only ever *adds* keys, so a
+    line that used to push still pushes; verified over game/common/landed_titles/*.txt that no
+    matched line has a net-negative brace count, i.e. the push/pop balance cannot regress."""
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as fp:
             txt = fp.read()
@@ -556,7 +564,7 @@ def _parse_landed_titles(path, out):
         return
     stack = []
     for ln in txt.splitlines():
-        m = re.match(r"^\s*([a-z0-9_]+)\s*=\s*\{", ln)
+        m = re.match(r"^\s*([A-Za-z0-9_]+)\s*=\s*\{", ln)
         if m:
             key = m.group(1)
             lvl = 0
@@ -610,10 +618,12 @@ def build_province_map(cfg):
 
 
 def save_province_map(cfg, mapping, path=None):
+    """schema 3 = the key pattern is case-insensitive (v110); schema 2 files were built with the
+    lowercase-only pattern and hold the mis-attributed / missing AUH provinces."""
     path = path or _province_map_path(cfg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fp:
-        json.dump({"schema": 2, "entries": len(mapping), "map": mapping},
+        json.dump({"schema": 3, "entries": len(mapping), "map": mapping},
                   fp, ensure_ascii=False)
     return path
 
@@ -642,7 +652,7 @@ def _parse_landed_titles_short(path, out):
         return
     stack = []
     for ln in txt.splitlines():
-        m = re.match(r"^\s*([a-z0-9_]+)\s*=\s*\{", ln)
+        m = re.match(r"^\s*([A-Za-z0-9_]+)\s*=\s*\{", ln)
         if m:
             stack.append(m.group(1))
             continue
@@ -907,7 +917,7 @@ def load_province_map(cfg, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") in (1, 2):
+            if data.get("schema") in (1, 2, 3):
                 m = {int(k): v for k, v in (data.get("map") or {}).items()}
                 if data.get("schema") == 1:
                     # legacy value (bare county key) -> compatibility wrapper; the
