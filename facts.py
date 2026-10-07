@@ -25760,7 +25760,8 @@ def _genealogy_rows(f, cid, date):
                 n += f.marriage_lineality_note(cid, x, before=date)
             bits.append(n)
         if bits:
-            lines.append(f"　{word}：{'、'.join(bits)}")
+            # a list item, like every other fact row in the appendix (v115)
+            lines.append(f"- {word}：{'、'.join(bits)}")
     return lines
 
 
@@ -25801,9 +25802,13 @@ def _genealogy_parts(f):
     the chain is walked from its first member, each step adds `Facts.generation_delta` to the
     running number, and a step whose relation cannot be resolved counts as one generation down. The
     subject's own block is returned separately because the timeline's name filter must keep reading
-    only the household of the article's own protagonist. Lines render as a printed genealogy: a
-    凡例 header, a 世系图 chain, then one block per generation whose rows are parents, spouses,
-    children and siblings."""
+    only the household of the article's own protagonist.
+
+    Every line carries its own Markdown (user 2026-10-08): the 凡例, the 世系图 chain, a 世次 heading
+    and a protagonist's head are prose paragraphs, while the kin rows are list items. A generation
+    prints its 世次 once and the protagonists of that generation read under it, so the appendix no
+    longer repeats the 世次 on every head and `biography` emits the lines verbatim instead of
+    prefixing each one with a bullet."""
     cache = f.cache
     pid = cache.get("player_id")
     if pid is None:
@@ -25819,18 +25824,25 @@ def _genealogy_parts(f):
     gens = _genealogy_gens(f, members)
     names = {i: (f.name_or(members[i]["cid"]) or "")
              for i in range(len(members))}
-    lines = [_GENEALOGY_FANLI, "世系图："]
+    # the chain lists a protagonist who took a regnal name (a pope) under his birth name, the regnal
+    # name in parentheses (user 2026-10-08); the surname rides along inside the birth name
+    chain_names = {}
+    for i in range(len(members)):
+        birth = f.regnal_birth_name(members[i]["cid"])
+        chain_names[i] = (f"{birth}（{names[i]}）" if birth and birth != names[i] else names[i])
+    lines = [_GENEALOGY_FANLI, "", "世系图：", ""]
     # the chain reads as one continuous line, five generations to a row (「五世一图」, a paper-width
     # convention rather than a limit on the depth a genealogy may reach)
     row = []
     for i in range(len(members)):
-        row.append(f"{_gen_word(gens[i])} {names[i]}")
+        row.append(f"{_gen_word(gens[i])} {chain_names[i]}")
         if len(row) == 5:
-            lines.append("　" + " ─ ".join(row))
+            lines.extend(["　" + " ─ ".join(row), ""])
             row = []
     if row:
-        lines.append("　" + " ─ ".join(row))
+        lines.extend(["　" + " ─ ".join(row), ""])
     subject = []
+    shown = None
     for i in range(len(members)):
         cid = members[i]["cid"]
         last = (i == len(members) - 1)
@@ -25839,16 +25851,26 @@ def _genealogy_parts(f):
         date = f.as_of if last else (_gen_end_date(f, cid) or f.as_of)
         rec = (cache.get("characters") or {}).get(str(cid)) or {}
         start = members[i].get("date") or ""
+        # a 「五世一图」 break: the printed genealogy starts a new sheet every fifth generation
+        if i and gens[i] > 5 >= gens[i - 1]:
+            lines.extend([f"〈以上五世为一图，下接第{_kin_rank_zh(gens[i])}世〉", ""])
+        # one 世次 heading per generation: the protagonists of that generation read under it
+        if gens[i] != shown:
+            lines.extend([f"**{_gen_word(gens[i])}**", ""])
+            shown = gens[i]
         # the head carries the full style of that generation's own day (title, or 前+title when the
-        # office is gone by then), the same helper every other mention uses (v114 user 2026-10-08)
+        # office is gone by then), the same helper every other mention uses (v114 user 2026-10-08).
+        # A protagonist who took a regnal name notes his birth name once, and the label is bold so
+        # that a generation holding several protagonists still reads as separate blocks
         label = f.person_label(cid, date, "full") or names[i]
-        head = label
+        head = f.label_with_birth_name(cid, label, date)
+        head = f"**{label}**" + head[len(label):] if head.startswith(label) else f"**{head}**"
         if i:
             key = kin_key(cache, members[i - 1]["cid"], cid,
                           spouse_back=f._spouse_back_index(), rev=f._kin_rev_index())
             rel = kin_word_short(key) if key else ""
-            head = f"{label}，{names[i - 1]}之{rel}" if rel else label
-        line = f"**{_gen_word(gens[i])}**　{head}"
+            head = f"{head}，{names[i - 1]}之{rel}" if rel else head
+        line = head
         birth = rec.get("birth") or ""
         if birth:
             line += f"，{f.date(birth)}生"
@@ -25865,14 +25887,12 @@ def _genealogy_parts(f):
         canon = f.saint_since(cid)
         if canon:
             line += f"，{canon}封圣"
-        lines.append(line)
-        # a 「五世一图」 break: the printed genealogy starts a new sheet every fifth generation
-        if i and gens[i] > 5 >= gens[i - 1]:
-            lines.insert(len(lines) - 1, f"〈以上五世为一图，下接第{_kin_rank_zh(gens[i])}世〉")
+        lines.extend([line, ""])
         rows = _genealogy_rows(f, cid, date)
         lines.extend(rows)
+        lines.append("")
         if last:
-            subject = [line] + rows
+            subject = [f"**{_gen_word(gens[i])}**", line] + rows
     return lines, subject
 
 

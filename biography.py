@@ -3105,11 +3105,14 @@ def _appendix_text(facts):
     if gen:
         # v113 (user 2026-10-07): the printed 世系 stays where it was; the drawn 家谱 lives behind the
         # reading page's 家谱 button, built by `htmlview` from `facts["genealogy_tree"]`.
+        # v115 (user 2026-10-08): the 世系 lines carry their own Markdown — the 凡例, the 世系图 chain,
+        # a 世次 heading and a protagonist's head are paragraphs, only the kin rows are list items —
+        # so they are emitted verbatim instead of every one of them turning into a bullet.
         lines.append("### 世系")
-        lines.extend("- " + g for g in gen)
+        lines.extend(gen)
         for ln in ((facts.get("protagonist") or {}).get("house_history") or []):
             if ln:
-                lines.append("- " + ln)
+                lines.append(ln)
     names = set()
     p = facts["protagonist"] or {}
     pname = p.get("name") or ""
@@ -3121,8 +3124,11 @@ def _appendix_text(facts):
     # ancestors' households, which would flood the timeline with their people.
     gen_subj = facts.get("genealogy_subject")
     if not gen_subj:
-        # older snapshots carry only the subject's block plus their header lines
-        gen_subj = [ln for ln in gen if not ln.startswith(("凡例：", "世系图：", "〈"))]
+        # older snapshots carry only the subject's block plus their header lines; the chain rows are
+        # the only ones joining names with ─, so both layouts keep them out of the name filter
+        gen_subj = [ln for ln in gen
+                    if ln.strip() and not ln.startswith(("凡例：", "世系图：", "〈"))
+                    and " ─ " not in ln]
     for ln in gen_subj:
         if "：" in ln:
             for nm in ln.split("：", 1)[1].replace("、", " ").split():
