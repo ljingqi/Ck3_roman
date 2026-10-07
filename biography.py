@@ -1686,6 +1686,9 @@ def _article_facts(facts, cache, key, section=None):
                     blocks["结仇缘由"] = "；".join(all_r)
     elif key == "jiashi":
         sk = _sec_key(section)
+        # the clan's canonized ancestors, with the year the campaign dates them (v114): canonization
+        # is a family matter, so every section of the household article may name them
+        _set_block(blocks, "封圣", "\n".join(facts.get("saints") or []))
         fam_lines = []
         # household article filters kin by as_of (the rule of _asof_ids), so children born after the decade end stay out
         fam_ids = _family_ids(cache)
@@ -1865,6 +1868,9 @@ def _article_facts(facts, cache, key, section=None):
         # rite chronicle: lead = rite profile, chronicles = tenets / holy orders / rite history,
         # tail = the church's councils and papal bulls; a block without material is skipped whole,
         # and a dry chronicle leaves the lead alone.
+        # the clan's own canonized members, with the year the campaign dates them (v114): the rite
+        # article is where a canonization belongs, so every section may name them
+        _set_block(blocks, "封圣", "\n".join(facts.get("saints") or []))
         prof = list(facts.get("rite_profile") or [])
         hist = list(facts.get("rite_history") or [])
         pt = list(facts.get("personal_tenets") or [])

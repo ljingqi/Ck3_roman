@@ -7873,6 +7873,11 @@ class Facts:
                 # title — person_label's rebel branch renders it.
                 if fkey in self._FACTION_LEADER_FLAVORS:
                     return ""
+                # A cardinal's flavor word is the bare 「枢机」: the see lives in the title, which
+                # the death-day lookup no longer returns (v114).
+                if fkey in self._CARDINAL_FLAVOR_KEYS:
+                    seat = self.cardinal_seat(cid, anchor)
+                    return f"{seat}{v}" if seat else v
                 return v
         tier, tid = self._primary_title_at(cid, as_of=anchor)
         if tid is None or tier is None:
@@ -7919,7 +7924,8 @@ class Facts:
         # back to a display name. Cardinal titles (d_cd_*) are landless titular (see
         # `07_pam_ecclesiastical_titles.txt`), and the office word is already "枢机".
         if word and self._is_cardinal_title(tid):
-            return word
+            seat = self.cardinal_seat(cid, anchor)
+            return f"{seat}{word}" if seat else word
         if name and word:
             return f"{name}{word}"
         return name or ""
@@ -7935,6 +7941,38 @@ class Facts:
         if not isinstance(t, dict):
             return False
         return t.get("clerical_elector") not in (None, "")
+
+    # office flavors whose word names no place: the see must come from the title (v114), see
+    # `cardinal_seat`; keys are from common/flavorization/20_pam_flavorization.txt
+    _CARDINAL_FLAVOR_KEYS = ("cardinal_male", "cardinal_female")
+
+    def cardinal_seat(self, cid, date=None):
+        """Name of the see behind a cardinal title, '' when the character is no cardinal.
+
+        Cardinal titles (`d_cd_*`) are landless and destroyed on succession, so the death-day
+        `_primary_title_at` no longer returns them and the office word alone reads 「枢机」 with no
+        see. `_hold_intervals` still knows the title and its dates, so the see is the title's own
+        display name in the middle of the holding it had (v114 user 2026-10-08)."""
+        if cid is None:
+            return ""
+        anchor = self._anchor_date(cid, date)
+        try:
+            ao = cl.date_key(anchor) if anchor else None
+        except Exception:                                        # noqa: BLE001
+            ao = None
+        for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
+            if not self._is_cardinal_title(tid):
+                continue
+            for gain, loss, _ltp in ivs:
+                if ao is not None and gain and cl.date_key(gain) > ao:
+                    continue
+                if ao is not None and loss and cl.date_key(loss) < ao:
+                    continue
+                mid = self._span_mid(gain, loss) or gain or anchor
+                nm = self._name_at_date(tid, mid) or self.title_base_name(tid) or ""
+                if nm and not nm.startswith(("d_", "c_", "b_", "e_", "k_", "x_")):
+                    return nm
+        return ""
 
     # Ministry offices (e_minister_*) → localization keys (six boards + censorate +
     # privy council)
@@ -8462,6 +8500,68 @@ class Facts:
             return int(cid) in [int(x) for x in reg if isinstance(x, int)]
         except Exception:                                        # noqa: BLE001
             return False
+
+    def saint_since(self, cid, as_of=None):
+        """Year the character was canonized, as 「970年」 (or 「970年至971年间」), else ''.
+
+        Canonization leaves no date in the save: `pam_canonize_saint_effect` adds the `saint` trait
+        plus the faith's saint-register entry, and the saint events (`pam_saint_events.0001-0007`)
+        only add opinions; the saint-relic artifacts carry no creation date either. The dated
+        evidence is the trait diff of another cache of the SAME campaign: an interval with
+        `first=False` is the first observation that found the trait, and that cache's `sources`
+        gives the observation before it, so the canonization happened between those two save dates
+        (saves are dated 1 January, so a one-year step names the year exactly). A cache whose only
+        record is `first=True` says nothing, and an undated saint returns ''.
+
+        An earlier volume must not know of a later canonization, so the year is written only while
+        this piece is written after it — the same cutoff rule as `_saint_prefix`."""
+        seen = as_of or self.as_of or self.cache.get("last_date")
+        ck = cl.date_key(seen) if seen else None
+        best = None
+        srcs = [self.cache] + list((self.campaign or {}).values())
+        for src in srcs:
+            if not isinstance(src, dict):
+                continue
+            rec = ((src.get("characters") or {}).get(str(cid))) or {}
+            hist = (rec.get("trait_history") or {}).get("saint")
+            if not isinstance(hist, list):
+                continue
+            for iv in hist:
+                if not isinstance(iv, dict) or iv.get("first"):
+                    continue
+                frm = iv.get("from") or ""
+                if not isinstance(frm, str) or not frm:
+                    continue
+                dk = cl.date_key(frm)
+                if best is not None and dk >= best[0]:
+                    continue
+                prev, pk = "", None
+                for s in (src.get("sources") or []):
+                    if not isinstance(s, str) or not s:
+                        continue
+                    sk = cl.date_key(s)
+                    if sk < dk and (pk is None or sk > pk):
+                        prev, pk = s, sk
+                best = (dk, frm, prev)
+        if best is None:
+            return ""
+        dk, frm, prev = best
+        if ck is not None and dk > ck:
+            return ""
+        try:
+            year = int(str(frm).split(".")[0])
+        except ValueError:
+            return ""
+        if prev:
+            try:
+                py = int(prev.split(".")[0])
+            except ValueError:
+                py = year
+            if py == year - 1:
+                return f"{py}年"
+            if py < year - 1:
+                return f"{py}年至{year}年间"
+        return f"{year}年"
 
     def person_label(self, cid, date=None, style="full"):
         """Single entry point for person labels. `style`:
@@ -10458,9 +10558,10 @@ class Facts:
 
         The latch belongs to the cached protagonist alone (`spouse_latch_rows` filters on
         `rec["player"] == player_id`), so `owner` states whose relatives set is being merged: any
-        other person's record is returned untouched. Without that gate the protagonist's own wives
-        were merged into every record handed in, which put e.g. the subject's wife beside an
-        earlier generation's daughter (v114)."""
+        other person's record is returned untouched, and `owner=None` keeps the merge ungated (the
+        historical probes under tools/tests call it that way to reproduce the pre-v114 behaviour).
+        Without that gate the protagonist's own wives were merged into every record handed in,
+        which put e.g. the subject's wife beside an earlier generation's daughter (v114)."""
         if owner is not None and owner != self.cache.get("player_id"):
             return fam
         rows = self.spouse_latch_rows(as_of)
@@ -25738,12 +25839,15 @@ def _genealogy_parts(f):
         date = f.as_of if last else (_gen_end_date(f, cid) or f.as_of)
         rec = (cache.get("characters") or {}).get(str(cid)) or {}
         start = members[i].get("date") or ""
-        head = names[i]
+        # the head carries the full style of that generation's own day (title, or 前+title when the
+        # office is gone by then), the same helper every other mention uses (v114 user 2026-10-08)
+        label = f.person_label(cid, date, "full") or names[i]
+        head = label
         if i:
             key = kin_key(cache, members[i - 1]["cid"], cid,
                           spouse_back=f._spouse_back_index(), rev=f._kin_rev_index())
             rel = kin_word_short(key) if key else ""
-            head = f"{names[i]}，{names[i - 1]}之{rel}" if rel else names[i]
+            head = f"{label}，{names[i - 1]}之{rel}" if rel else label
         line = f"**{_gen_word(gens[i])}**　{head}"
         birth = rec.get("birth") or ""
         if birth:
@@ -25757,6 +25861,10 @@ def _genealogy_parts(f):
             line += f"，{f.date(end)}卒"
         elif last:
             line += "，今在世"
+        # canonization is posthumous, so only a volume written after it names the year (v114)
+        canon = f.saint_since(cid)
+        if canon:
+            line += f"，{canon}封圣"
         lines.append(line)
         # a 「五世一图」 break: the printed genealogy starts a new sheet every fifth generation
         if i and gens[i] > 5 >= gens[i - 1]:
@@ -25905,15 +26013,24 @@ def genealogy_tree(f):
         blood.add(c)
         frontier.extend(x for x in kids_of.get(c) or [] if x not in blood)
     # a tree edge follows the blood parent when there is one, so an in-law parent never takes a
-    # child out of the clan's line
+    # child out of the clan's line. With both parents in the clan the succession decides: the played
+    # 传主 first, then the mother — so a line that runs through the clan's daughters stays drawn
+    # instead of being pushed aside by the father's (v114 user 2026-10-08).
+    chain_ids = {m["cid"] for m in members}
     parent_of = {}
     for x in node_set:
         if x == members[0]["cid"]:
             continue
         ps = [p for p in parents.get(x) or [] if p in node_set and p != x]
-        chosen = next((p for p in ps if p in blood), None)
-        if chosen is None and ps:
-            chosen = ps[0]
+        clansmen = [p for p in ps if p in blood]
+        chosen = clansmen[0] if len(clansmen) == 1 else None
+        if chosen is None:
+            pool = clansmen or ps
+            chosen = next((p for p in pool if p in chain_ids), None)
+            if chosen is None:
+                chosen = next((p for p in pool if f._is_female(p)), None)
+            if chosen is None and pool:
+                chosen = pool[0]
         if chosen is not None:
             parent_of[x] = chosen
     # in-laws hang beside the clansman they married (a 「配」 bead, not a tree node)
@@ -25934,6 +26051,80 @@ def genealogy_tree(f):
                 spouse_of[x] = hit
                 spouse_word[x] = word
                 break
+
+    # the reverse direction: a concubine's own file carries no husband line (the game keeps that
+    # pointer on the other party's record), so a bead still without a sponsor is looked up in the
+    # clansmen's own spouse lists. The rank word follows the BEAD's own sex, as in the loop above.
+    unmatched = [x for x in node_set if x not in blood and x not in spouse_of]
+    if unmatched:
+        rank = {"primary_spouse": 0, "spouse": 1, "concubine": 2,
+                "former_concubines": 3, "former_spouses": 4}
+        index = {}
+        for y in sorted(node_set):
+            if y not in blood:
+                continue
+            fam_y = (chars.get(str(y)) or {}).get("family") or {}
+            for key in ("primary_spouse", "spouse", "concubine",
+                        "former_concubines", "former_spouses"):
+                for z in (fam_y.get(key) or []):
+                    if not isinstance(z, int):
+                        continue
+                    cur = index.get(z)
+                    if cur is None or rank[key] < rank[cur[1]]:
+                        index[z] = (y, key)
+        for x in unmatched:
+            hit = index.get(x)
+            if hit is None:
+                continue
+            fem = bool(f._is_female(x))
+            spouse_of[x] = hit[0]
+            spouse_word[x] = {"primary_spouse": "配",
+                              "spouse": "侧室" if fem else "侧夫",
+                              "concubine": "妾" if fem else "男宠",
+                              "former_concubines": "前妾" if fem else "前男宠",
+                              "former_spouses": "前妻" if fem else "前夫"}[hit[1]]
+        # a last resort for beads whose only surviving record is the children (the save can drop a
+        # marriage line from both sides): the other parent of a clansman child. The rank is not
+        # recorded anywhere at that point, so the neutral 「配」 word is used.
+        for x in sorted(unmatched):
+            if x in spouse_of:
+                continue
+            kids = [y for y in (((chars.get(str(x)) or {}).get("family") or {}).get("child") or [])
+                    if isinstance(y, int) and y in node_set and y in blood]
+            for c in sorted(kids):
+                cfam = (chars.get(str(c)) or {}).get("family") or {}
+                other = next((p for p in (list(cfam.get("father") or [])
+                                          + list(cfam.get("mother") or []))
+                              if isinstance(p, int) and p != x and p in node_set and p in blood),
+                             None)
+                if other is not None:
+                    spouse_of[x] = other
+                    spouse_word[x] = "配"
+                    break
+
+    # the other direction: a marriage the game records as matrilineal (入赘) marries an outsider
+    # INTO the clan, so his wife is the one who carries the clan's line. He is drawn as a 「赘夫」
+    # bead beside her, unless the tree already holds him as a clansman's spouse (v114 user
+    # 2026-10-08). Descendants keep hanging under her, which is what makes the transmission line
+    # run through the clan's daughters.
+    for x in list(node_set):
+        if x not in blood or spouse_of.get(x):
+            continue
+        if f._is_female(x) is not True:
+            continue
+        fam = (chars.get(str(x)) or {}).get("family") or {}
+        for y in (list(fam.get("primary_spouse") or []) + list(fam.get("spouse") or [])):
+            if not isinstance(y, int) or y == x or y in node_set:
+                continue
+            if f.is_matrilineal(x, y, before=f.as_of) is not True:
+                continue
+            node_set.add(y)
+            from_k[y] = from_k.get(x, 1)
+            kind_of[y] = "赘夫"
+            gen[y] = gen.get(x, 1)
+            spouse_of[y] = x
+            spouse_word[y] = "赘夫"
+            break
 
     for x in list(kids_of):
         # one child hangs under its chosen parent only, and in blood order
@@ -25959,7 +26150,6 @@ def genealogy_tree(f):
     # a father and his own son. The vote above reads the game's own reckoning, which can leave a
     # late-recorded son level with his father (5 such pairs in 洪氏2). Only off-chain generations are
     # lifted: the chain's own 世次 is what the printed rows show and never moves (v113 user 2026-10-07).
-    chain_ids = {m["cid"] for m in members}
     for _sweep in range(len(order)):
         lifted = False
         for x in order:
@@ -26032,6 +26222,29 @@ def genealogy_tree(f):
         "pairs": pairs,
         "unreachable": unreachable,
     }
+
+
+def _saint_lines(f, tree):
+    """Canonized members of the 家谱 with the year the campaign's caches date them (v114).
+
+    One line per saint, `圣法名（三世）970年封圣`, ordered by generation; a saint whose
+    canonization no cache dates keeps the bare line, so nothing is invented. The appendix's 世系
+    heads carry the same clause for the played generations, and this list is what the prompt-side
+    【封圣】 block reads (《礼仪志》/《家世》)."""
+    rows = []
+    for n in (tree or {}).get("nodes") or []:
+        x = n.get("id")
+        if not isinstance(x, int):
+            continue
+        if not (f._has_trait_at(x, "saint", f.as_of) or f._in_saint_register(x)):
+            continue
+        date = n.get("death") or n.get("end") or f.as_of
+        label = f.person_label(x, date, "brief") or n.get("name") or str(x)
+        year = f.saint_since(x)
+        rows.append(((n.get("gen") or 0), label, f"{label}（{_gen_word(n.get('gen') or 0)}）"
+                     + (f"{year}封圣" if year else "封圣")))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return [r[2] for r in rows]
 
 
 def _genealogy(f):
@@ -26396,6 +26609,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     # the church's own record (v101): computed once here because `rite_tenet_changes` is suppressed
     # for a subject this block covers (see its key below)
     _church = f.church_chronicle_lines(_pid0, as_of)
+    # the 家谱 tree is built once: the appendix caption, the reading page's embedded data and the
+    # saints list below all read the same object
+    _tree = genealogy_tree(f)
     facts = {
         # dynasty name (the surname under eastern name order) plus house/branch for flavour
         "house": _dynasty_display(_pdn or cache.get("dynasty_name"),
@@ -26457,7 +26673,10 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "genealogy": _genealogy(f),
         # the same scope as the printed 世系, shaped for the HTML 家谱 page (v113): Su-Xun style
         # hanging beads, red along the transmission between consecutive protagonists
-        "genealogy_tree": genealogy_tree(f),
+        "genealogy_tree": _tree,
+        # canonized members of the 家谱 with the year the campaign's caches date them (v114): the
+        # appendix heads carry the same clause, and 《礼仪志》/《家世》 read this list
+        "saints": _saint_lines(f, _tree),
         # the subject's own generation of the genealogy: the timeline's name filter reads this, so a
         # multi-generation appendix cannot pull the ancestors' households into the timeline
         "genealogy_subject": genealogy_subject_lines(f),
