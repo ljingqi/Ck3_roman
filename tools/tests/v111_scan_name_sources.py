@@ -18,6 +18,7 @@ C. `specific_map_name` / `specific_title_name` / `name` 三者关系计数。
 import collections
 import json
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,9 +32,16 @@ def main():
         print(__doc__)
         return 2
     data = os.path.join(ROOT, "output", sys.argv[1], "data")
-    melts = sorted((x for x in os.listdir(data) if x.startswith("melt_")), key=lambda s: s)
-    path = os.path.join(data, melts[-1])
-    print("熔件 %s" % melts[-1], flush=True)
+    years = []
+    for x in os.listdir(data):
+        m = re.match(r"melt_(\d+)_\d+_\d+\.json(\.xz)?$", x)
+        if m:
+            years.append((int(m.group(1)), x))
+    if not years:
+        print("找不到熔件")
+        return 2
+    path = os.path.join(data, max(years)[1])
+    print("熔件 %s" % os.path.basename(path), flush=True)
     melt = cl.load_melt(path)
     table = L.table()
 
@@ -97,6 +105,36 @@ def main():
         n_custom, n_diff, n_hist))
     print("   其中「动态名 = 同一头衔名下 *_collective_noun 的本地化文本」的 %d 个"
           "（specific_map_name 也等于该文本的：%s）" % (n_people, dict(people_tools)))
+
+    # ---------- B2 ----------
+    # 改动 ① 的影响面：动态名（specific_title_name 或 name 史末条）恰是族名的头衔
+    n_spec_ppl = n_last_ppl = n_last_ppl_diff = 0
+    for tid, t in lt.items():
+        if not isinstance(t, dict):
+            continue
+        tnd = t.get("title_name_data") or {}
+        nm = (tnd.get("name") or "").strip()
+        sp = (tnd.get("specific_title_name") or "").strip()
+        hist = [h for h in (tnd.get("title_history_names") or []) if isinstance(h, dict)]
+        ppl = set()
+        for h in hist:
+            key = str(h.get("name") or "")
+            if key.endswith("_collective_noun"):
+                v = (L.loc(table, key) or "").strip()
+                if v:
+                    ppl.update({v, v[:-1] if v.endswith("人") else v + "人"})
+        if sp and sp in ppl:
+            n_spec_ppl += 1
+        if hist:
+            last = max(hist, key=lambda h: str(h.get("date") or ""))
+            lk = str(last.get("name") or "")
+            if lk.endswith("_collective_noun"):
+                n_last_ppl += 1
+                if nm and (L.loc(table, lk) or "").strip() != nm:
+                    n_last_ppl_diff += 1
+    print("#### B2 改动①影响面：specific_title_name 是族名的 %d 个；"
+          "名史末条是族名的 %d 个（其中与静态 name 不同、真正改字面的 %d 个）"
+          % (n_spec_ppl, n_last_ppl, n_last_ppl_diff))
 
     # ---------- C ----------
     c = collections.Counter()
