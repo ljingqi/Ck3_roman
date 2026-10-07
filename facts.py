@@ -25846,7 +25846,9 @@ def genealogy_tree(f):
         if cid not in node_set:
             node_set.add(cid)
             from_k[cid] = i + 1
-            kind_of[cid] = "传主"
+        # a 传主 who first appears in an earlier generation's rows (as that one's son) is still a
+        # 传主, never the kinship word that put him on the tree first
+        kind_of[cid] = "传主"
         subject[cid] = i + 1
         for _word, _kind, ids in scopes[i]:
             for x in ids:
@@ -25941,21 +25943,24 @@ def genealogy_tree(f):
     for x in sorted(node_set):
         _walk(x)
 
-    # the succession between consecutive protagonists: red along the tree path between them
-    red, dashed = [], []
+    # the succession between consecutive protagonists: red along the tree path between them.
+    # Each edge carries the index of the pair it belongs to (0-based), so a piece can draw the
+    # transmission as far as its own protagonist (v113).
+    red, dashed, seen_red = [], [], set()
     pairs, unreachable = [], []
     for i in range(len(members) - 1):
         a, b = members[i]["cid"], members[i + 1]["cid"]
         path = _tree_path(parent_of, a, b)
         if len(path) < 2:
             unreachable.append([a, b])
-            dashed.append([a, b])
+            dashed.append([a, b, i])
             continue
         pairs.append(path)
         for u, v in zip(path, path[1:]):
-            e = [u, v] if parent_of.get(v) == u else ([v, u] if parent_of.get(u) == v else None)
-            if e is not None and e not in red:
-                red.append(e)
+            e = (u, v) if parent_of.get(v) == u else ((v, u) if parent_of.get(u) == v else None)
+            if e is not None and e not in seen_red:
+                seen_red.add(e)
+                red.append([e[0], e[1], i])
 
     nodes = []
     for x in order:

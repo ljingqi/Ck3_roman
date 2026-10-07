@@ -254,6 +254,32 @@ ul,ol{margin:0 0 14px;padding-left:2em;line-height:2}
 li{margin-bottom:4px}
 blockquote{margin:0 0 14px;padding:10px 18px;border-left:4px solid var(--gold);background:#f3ecd8;color:var(--ink-soft)}
 code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,monospace;font-size:.9em}
+/* v113: 家谱 (Su-Xun style hanging beads). Generations are columns, oldest on the right, so the
+   clan reads right to left the way a printed 垂珠体 page does; the succession is drawn in red. */
+#tree-btn{font:inherit;padding:5px 14px;border:1px solid #8f7d55;background:#3a3121;color:var(--bar-ink);border-radius:5px;cursor:pointer}
+#tree-btn.active{background:var(--gold);border-color:var(--gold);color:#211a0c;font-weight:700}
+#tree-btn[disabled]{opacity:.45;cursor:default}
+.tree-host{font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif;background:#fdfaf0;border:1px solid var(--paper-edge);border-radius:3px;margin:14px 0 18px}
+.tree-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:8px 12px;border-bottom:1px solid #e4d9bd;background:#f6efdd;font-size:13px;color:var(--ink-soft)}
+.tree-bar button{font:inherit;font-size:13px;padding:3px 10px;border:1px solid #c0ae86;background:#fffdf6;border-radius:4px;cursor:pointer}
+.tree-bar .key{display:inline-flex;align-items:center;gap:5px}
+.tree-bar .key i{display:inline-block;width:22px;height:0;border-top:2px solid #4a4238}
+.tree-bar .key.red i{border-top-color:#b3352a}
+.tree-scroll{overflow:auto;max-height:82vh;padding:6px}
+.tree-scroll svg{display:block}
+.bead rect{fill:#fffdf6;stroke:#8d7f61;stroke-width:1}
+.bead.subj rect{fill:#fdf3e2;stroke:#b3352a;stroke-width:1.6}
+.bead.kin rect{fill:#f7f4ea}
+.bead text{font-size:13px;fill:var(--ink);dominant-baseline:middle;text-anchor:middle;cursor:default}
+.bead text.yr{font-size:9.5px;fill:#8a7a55}
+.bead text.tog{font-size:10px;fill:#6f6247;text-anchor:middle}
+.bead{cursor:pointer}
+.bead:hover rect{stroke:var(--gold)}
+.edge{fill:none;stroke:#4a4238;stroke-width:1.2}
+.edge.red{stroke:#b3352a;stroke-width:2}
+.edge.dashed{stroke:#b3352a;stroke-width:1.6;stroke-dasharray:5 4}
+.spouse-link{fill:none;stroke:#a08a5e;stroke-width:1;stroke-dasharray:2 3}
+.gen-head{font-size:13px;fill:#8a7a55;text-anchor:middle}
 @media (max-width:640px){.paper{padding:22px 18px 26px}h1.masthead{font-size:24px}}
 </style>
 </head>
@@ -264,6 +290,7 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
     <div id="tabs"></div>
   </div>
   <div id="char-box">
+    <button id="tree-btn" title="全族家谱">家谱</button>
     <label for="char-sel">角色</label>
     <select id="char-sel"></select>
   </div>
@@ -277,13 +304,17 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
 </div>
 <script>
 const DATA = __DATA__;
+const CHARS = DATA.chars || [];
+const TREE = DATA.tree || null;
+const MARKS = DATA.marks || {};
 let ci = 0, ai = 0;
 function show(nci, nai){
   ci = nci; ai = nai;
-  const ch = DATA[ci];
+  const ch = CHARS[ci];
   const stage = document.getElementById('stage');
   const meta = document.getElementById('meta-line');
   const tocEl = document.getElementById('toc');
+  document.getElementById('tree-btn').classList.remove('active');
   if(!ch){ stage.innerHTML = '<div class="empty">（无传记）</div>'; meta.textContent = ''; tocEl.innerHTML = '<div class="empty">（无章节）</div>'; return; }
   const tabs = document.getElementById('tabs');
   tabs.innerHTML = '';
@@ -297,6 +328,7 @@ function show(nci, nai){
   const a = ch.items[ai];
   stage.innerHTML = a ? '<div class="paper">' + a.html + '</div>' : '<div class="empty">（无传记）</div>';
   meta.textContent = a ? ch.name + ' ｜ ' + (a.meta || '') : ch.name;
+  drawHosts(stage);
   // v14: 左侧章节栏 — 由 markdown 标题生成, 点击滚动到对应锚点
   tocEl.innerHTML = '';
   const toc = (a && a.toc) || [];
@@ -316,13 +348,265 @@ function show(nci, nai){
     tocEl.appendChild(link);
   });
 }
+
+/* ---- v113 家谱: 苏洵式 (垂珠体) — 世代为列、由右向左, 父子折线黑, 传主传承红 ---- */
+const COL_W = 176, ROW_H = 50, BEAD_W = 134, BEAD_H = 34, PAD_X = 46, PAD_Y = 42;
+const GEN_NUM = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
+                 '十一', '十二', '十三', '十四', '十五', '十六'];
+const SUBJ_NUM = ['', '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
+                  '⑪', '⑫', '⑬', '⑭', '⑮'];
+
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function yearOf(d){ return d ? String(d).split('.')[0] : ''; }
+function lifeSpan(n){
+  const b = yearOf(n.birth), d = yearOf(n.death || n.end);
+  if(b && d && d !== b) return b + '–' + d;
+  if(b) return b + '生';
+  if(d) return d + '卒';
+  return '';
+}
+/* SVG text ignores the bead box, so a long foreign name is squeezed into it (full-width glyphs
+   take one em, the rest about 0.55) */
+function fitText(s, maxPx, size){
+  let w = 0;
+  for(const ch of String(s || '')) w += (/[\u2e80-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch) ? 1 : 0.55) * size;
+  return w <= maxPx ? '' : ' textLength="' + Math.round(maxPx) + '" lengthAdjust="spacingAndGlyphs"';
+}
+
+/* Nodes in scope for a piece whose played chain is `k` long, plus the tree's own child lists.
+   An in-law hangs beside the clansman he married (「配」 bead) and never carries the tree edge. */
+function scopeOf(k){
+  const keep = (TREE.nodes || []).filter(n => (n.from_k || 1) <= k);
+  const byId = {};
+  keep.forEach(n => { byId[n.id] = n; });
+  // 「传主」 is a role of this piece: a successor already on the tree as his father's son is not
+  // one until the piece that follows him (v113)
+  const isSubj = n => !!(n.subj && n.subj <= k);
+  const kids = {}, spouses = {}, child = {};
+  keep.forEach(n => {
+    const sp = (n.spouse_of != null && byId[n.spouse_of]) ? n.spouse_of : null;
+    if(sp != null){ (spouses[sp] = spouses[sp] || []).push(n.id); }
+    else if(n.parent != null && byId[n.parent]){ (kids[n.parent] = kids[n.parent] || []).push(n.id); child[n.id] = 1; }
+  });
+  const roots = keep.filter(n => !child[n.id]).map(n => n.id);
+  const red = {}, redNodes = {};
+  (TREE.red_edges || []).forEach(e => { if(e[2] <= k - 2){ red[e[0] + '>' + e[1]] = 1; redNodes[e[0]] = 1; redNodes[e[1]] = 1; } });
+  (TREE.red_dashed || []).forEach(e => { if(e[2] <= k - 2){ redNodes[e[0]] = 1; redNodes[e[1]] = 1; } });
+  return {nodes: keep, byId: byId, kids: kids, spouses: spouses, roots: roots, red: red,
+          redNodes: redNodes, isSubj: isSubj};
+}
+
+/* Bead order: from the clan's first member, each person, then the 配 beads beside him, then his
+   children (`collapsed` hides a branch without dropping the person himself; the branch that a
+   collapsed bead hides is marked seen so the safety sweep cannot pull it back in). */
+function beadOrder(sc, collapsed){
+  const order = [], seen = {};
+  const skip = id => {
+    if(seen[id]) return;
+    seen[id] = 1;
+    (sc.spouses[id] || []).forEach(skip);
+    (sc.kids[id] || []).forEach(skip);
+  };
+  const walk = id => {
+    if(seen[id]) return;
+    seen[id] = 1; order.push(id);
+    (sc.spouses[id] || []).forEach(s => { if(!seen[s]){ seen[s] = 1; order.push(s); } });
+    if(collapsed[id]){ (sc.kids[id] || []).forEach(skip); return; }
+    (sc.kids[id] || []).forEach(walk);
+  };
+  sc.roots.forEach(walk);
+  // a node no walk reached (a broken parent link, never a collapsed branch) still gets a bead
+  sc.nodes.forEach(n => { if(!seen[n.id]){ seen[n.id] = 1; order.push(n.id); } });
+  return order;
+}
+
+function renderTree(host, k){
+  if(!TREE || !k){ host.innerHTML = '<div class="tree-bar">（尚无家谱数据）</div>'; return; }
+  const sc = scopeOf(k);
+  const collapsed = host._collapsed || (host._collapsed = {});
+  if(!host._inited){
+    host._inited = 1;
+    // 默认只全开传主与其传承路径上的先人, 其余收拢 (user 2026-10-06)
+    sc.nodes.forEach(n => { if(!sc.isSubj(n) && !sc.redNodes[n.id]) collapsed[n.id] = 1; });
+  }
+  const z = host._zoom || 1;
+  const order = beadOrder(sc, collapsed);
+  const cols = {}, genList = [];
+  let maxGen = 1;
+  order.forEach(id => {
+    const g = sc.byId[id].gen || 1;
+    maxGen = Math.max(maxGen, g);
+    if(!cols[g]){ cols[g] = []; genList.push(g); }
+    cols[g].push(id);
+  });
+  genList.sort((a, b) => a - b);
+  const pos = {};
+  const place = () => { genList.forEach(g => cols[g].forEach((id, i) => { pos[id] = i; })); };
+  place();
+  // barycentre sweeps: each column sits next to the column it descends from, so the lines stay short
+  const anchor = (id, up) => {
+    const n = sc.byId[id];
+    if(!up) return (sc.kids[id] || []).filter(x => pos[x] != null);
+    const p = (n.spouse_of != null ? n.spouse_of : n.parent);
+    return (p != null && pos[p] != null) ? [p] : [];
+  };
+  for(let pass = 0; pass < 3; pass++){
+    for(let i = 1; i < genList.length; i++){
+      const g = genList[i];
+      const keys = cols[g].map((id, j) => {
+        const a = anchor(id, true);
+        return [id, j, a.length ? a.reduce((s, x) => s + pos[x], 0) / a.length : null];
+      });
+      keys.sort((a, b) => {
+        if(a[2] == null && b[2] == null) return a[1] - b[1];
+        if(a[2] == null) return 1;
+        if(b[2] == null) return -1;
+        return a[2] - b[2];
+      });
+      cols[g] = keys.map(x => x[0]); place();
+    }
+    for(let i = genList.length - 2; i >= 0; i--){
+      const g = genList[i];
+      const keys = cols[g].map((id, j) => {
+        const a = anchor(id, false);
+        return [id, j, a.length ? a.reduce((s, x) => s + pos[x], 0) / a.length : null];
+      });
+      keys.sort((a, b) => {
+        if(a[2] == null && b[2] == null) return a[1] - b[1];
+        if(a[2] == null) return 1;
+        if(b[2] == null) return -1;
+        return a[2] - b[2];
+      });
+      cols[g] = keys.map(x => x[0]); place();
+    }
+  }
+  const rows = Math.max.apply(null, genList.map(g => cols[g].length));
+  const W = PAD_X * 2 + maxGen * COL_W, H = PAD_Y + rows * ROW_H + 12;
+  const colX = g => PAD_X + (maxGen - g) * COL_W + (COL_W - BEAD_W) / 2;
+  const y = id => PAD_Y + pos[id] * ROW_H;
+  const parts = [];
+  genList.forEach(g => {
+    parts.push('<text class="gen-head" x="' + (colX(g) + BEAD_W / 2) + '" y="16">'
+               + (GEN_NUM[g] || g) + '世</text>');
+  });
+  Object.keys(sc.spouses).forEach(pid => {
+    sc.spouses[pid].forEach(sid => {
+      const x = colX(sc.byId[pid].gen) - 8;
+      parts.push('<path class="spouse-link" d="M' + x + ',' + (y(pid) + BEAD_H / 2)
+                 + ' V' + (y(sid) + BEAD_H / 2) + '"/>');
+    });
+  });
+  order.forEach(id => {
+    const n = sc.byId[id], p = n.parent;
+    if(p == null || !sc.byId[p] || pos[p] == null) return;
+    const cls = sc.red[p + '>' + id] ? 'edge red' : 'edge';
+    const px = colX(sc.byId[p].gen), py = y(p) + BEAD_H / 2;
+    const cx = colX(n.gen), cy = y(id) + BEAD_H / 2;
+    const ex = (cx + BEAD_W) + Math.max(12, (px - cx - BEAD_W) / 2);
+    parts.push('<path class="' + cls + '" d="M' + px + ',' + py + ' H' + ex + ' V' + cy
+               + ' H' + (cx + BEAD_W) + '"/>');
+  });
+  (TREE.red_dashed || []).forEach(e => {
+    if(e[2] > k - 2 || pos[e[0]] == null || pos[e[1]] == null) return;
+    parts.push('<path class="edge dashed" d="M' + colX(sc.byId[e[0]].gen) + ',' + (y(e[0]) + BEAD_H / 2)
+               + ' H' + colX(sc.byId[e[1]].gen) + '"/>');
+  });
+  order.forEach(id => {
+    const n = sc.byId[id], x = colX(n.gen), yy = y(id);
+    const isSpouse = n.spouse_of != null;
+    const subj = sc.isSubj(n) ? n.subj : 0;
+    const cls = subj ? 'bead subj' : (isSpouse ? 'bead kin' : 'bead');
+    const note = isSpouse ? (n.spouse_word || '配') : (subj ? '' : (n.note || ''));
+    const tog = (sc.kids[id] || []).length ? (collapsed[id] ? '▶' : '▼') : '';
+    const nm = (subj ? SUBJ_NUM[subj] + ' ' : '') + (n.name || '');
+    const sub = [lifeSpan(n), note].filter(Boolean).join(' · ');
+    parts.push('<g class="' + cls + '" data-id="' + id + '"><title>' + esc(n.label || n.name) + '</title>'
+      + '<rect x="' + x + '" y="' + yy + '" width="' + BEAD_W + '" height="' + BEAD_H + '" rx="4"/>'
+      + '<text x="' + (x + BEAD_W / 2) + '" y="' + (yy + 13) + '"'
+      + fitText(nm, BEAD_W - 12, 13) + '>' + esc(nm) + '</text>'
+      + '<text class="yr" x="' + (x + BEAD_W / 2) + '" y="' + (yy + 26) + '"'
+      + fitText(sub, BEAD_W - 22, 10) + '>' + esc(sub) + '</text>'
+      + (tog ? '<text class="tog" x="' + (x + BEAD_W - 9) + '" y="' + (yy + BEAD_H / 2) + '">' + tog + '</text>' : '')
+      + '</g>');
+  });
+  const chain = (TREE.chain || []).slice(0, k);
+  const bar = '<div class="tree-bar">'
+    + '<span class="key red"><i></i>传主传承</span><span class="key"><i></i>父子相承</span>'
+    + '<span>本图 ' + sc.nodes.length + ' 人 · 传主 ' + chain.length + ' 位</span>'
+    + '<button data-z="out">缩小</button><button data-z="in">放大</button>'
+    + '<button data-z="fit">原大</button><button data-z="open">全开</button>'
+    + '<button data-z="chain">只留传主</button>'
+    + '</div>';
+  host.innerHTML = bar + '<div class="tree-scroll" style="max-height:82vh">'
+    + '<svg xmlns="http://www.w3.org/2000/svg" width="' + Math.round(W * z) + '" height="'
+    + Math.round(H * z) + '" viewBox="0 0 ' + W + ' ' + H + '">' + parts.join('') + '</svg></div>';
+  host.querySelectorAll('.bead').forEach(el => {
+    el.onclick = () => {
+      const id = el.getAttribute('data-id');
+      if(!(sc.kids[id] || []).length) return;
+      collapsed[id] = collapsed[id] ? 0 : 1;
+      renderTree(host, k);
+    };
+  });
+  host.querySelectorAll('.tree-bar button').forEach(b => {
+    b.onclick = () => {
+      const a = b.getAttribute('data-z');
+      if(a === 'in') host._zoom = Math.min(2, z + 0.15);
+      else if(a === 'out') host._zoom = Math.max(0.45, z - 0.15);
+      else if(a === 'fit') host._zoom = 1;
+      else if(a === 'open'){ sc.nodes.forEach(n => { collapsed[n.id] = 0; }); }
+      else if(a === 'chain'){ sc.nodes.forEach(n => { collapsed[n.id] = (!sc.isSubj(n) && !sc.redNodes[n.id]) ? 1 : 0; }); }
+      renderTree(host, k);
+    };
+  });
+}
+
+function drawHosts(root){
+  (root || document).querySelectorAll('.tree-host').forEach(h => {
+    renderTree(h, parseInt(h.getAttribute('data-k'), 10) || 0);
+  });
+}
+
+function showTree(){
+  if(!TREE) return;
+  const k = (TREE.chain || []).length;
+  const stage = document.getElementById('stage');
+  const tocEl = document.getElementById('toc');
+  stage.innerHTML = '<div class="paper"><h2>家谱</h2>'
+    + '<div class="tree-host" data-k="' + k + '"></div></div>';
+  document.getElementById('meta-line').textContent = '全族家谱 ｜ 苏洵式垂珠体';
+  document.getElementById('tabs').innerHTML = '';
+  document.getElementById('tree-btn').classList.add('active');
+  drawHosts(stage);
+  tocEl.innerHTML = '<div class="toc-root">家谱</div>';
+  if(TREE.fanli){
+    const d = document.createElement('div');
+    d.style.cssText = 'color:#cbbf9f;line-height:1.7;padding:2px 6px';
+    d.textContent = TREE.fanli;
+    tocEl.appendChild(d);
+  }
+  (TREE.chain || []).forEach(c => {
+    const a = document.createElement('a');
+    a.textContent = SUBJ_NUM[c.i] + ' ' + c.name;
+    a.className = c.i === k ? 'lv2 hl' : 'lv2';
+    tocEl.appendChild(a);
+  });
+}
+
 const sel = document.getElementById('char-sel');
-DATA.forEach((ch, i) => {
+CHARS.forEach((ch, i) => {
   const o = document.createElement('option');
   o.value = i; o.textContent = ch.name;
   sel.appendChild(o);
 });
 sel.onchange = () => show(parseInt(sel.value, 10), 0);
+const treeBtn = document.getElementById('tree-btn');
+if(!TREE || !(TREE.chain || []).length){
+  treeBtn.disabled = true;
+  treeBtn.title = '本族尚无终传（家谱按传主链生成）';
+} else {
+  treeBtn.onclick = showTree;
+}
 show(0, 0);
 </script>
 </body>
@@ -510,6 +794,63 @@ def _entry_sort_key(fn, h, pkey):
             fn)
 
 
+def _load_tree(base):
+    """Family tree sidecar for the reading page: data/genealogy*.json, the one reaching furthest.
+
+    `biography` writes this beside the articles (it owns the facts); every 终传 rebuild overwrites
+    it only with a tree at least as long, so the file always holds the family's full line."""
+    best = None
+    ddir = os.path.join(base, "data")
+    if not os.path.isdir(ddir):
+        return None
+    for fn in sorted(os.listdir(ddir)):
+        if not (fn.startswith("genealogy") and fn.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(ddir, fn), encoding="utf-8") as f:
+                t = json.load(f)
+        except Exception:
+            continue
+        if not (t.get("nodes") and t.get("chain")):
+            continue
+        if best is None or len(t.get("chain") or []) > len(best.get("chain") or []):
+            best = t
+    return best
+
+
+def _inject_tree_host(html_str, k):
+    """Insert the 家谱 figure host right after the appendix's 家谱 heading and its list.
+
+    The figure is drawn by the page's own script from the sidecar data, so the Markdown stays a
+    plain-text 谱例 and the reading page carries the Su-Xun style tree (v113 user request)."""
+    if k is None:
+        return html_str
+    host = f'<div class="tree-host" data-k="{k}"></div>'
+    m = re.search(r'<h3[^>]*>家谱</h3>', html_str)
+    if not m:
+        return html_str
+    end = m.end()
+    # walk past the caption list if one follows: the figure belongs under the 谱例, not between
+    # the heading and it (nested lists make a plain non-greedy match unsafe)
+    rest = html_str[end:]
+    lst = re.match(r"\s*<ul>", rest)
+    if lst:
+        depth, i = 0, lst.start()
+        while i < len(rest):
+            if rest.startswith("<ul>", i):
+                depth += 1
+                i += 4
+            elif rest.startswith("</ul>", i):
+                depth -= 1
+                i += 5
+                if depth <= 0:
+                    break
+            else:
+                i += 1
+        end += i
+    return html_str[:end] + host + html_str[end:]
+
+
 def rebuild_folder(output_dir, folder):
     """Build/update index.html for one family folder; returns None when there is no md.
     Entries are grouped per character: character menu top right, that character's pieces
@@ -517,6 +858,9 @@ def rebuild_folder(output_dir, folder):
     base = os.path.join(output_dir, folder)
     if not os.path.isdir(base):
         return None
+    tree = _load_tree(base)
+    pieces = (tree or {}).get("pieces") or {}
+    marks = {int(pid): int(k) for pid, k in pieces.items()} if pieces else {}
     entries = []
     for fn in sorted(os.listdir(base)):
         if not fn.lower().endswith(".md"):
@@ -532,6 +876,11 @@ def rebuild_folder(output_dir, folder):
         h = _parse_header(text)
         label, meta = _article_label(fn, text, folder, h)
         html_str, toc = md_to_html(text)
+        try:
+            k = marks.get(int(h.get("person_id") or 0))
+        except (TypeError, ValueError):
+            k = None
+        html_str = _inject_tree_host(html_str, k)
         pkey, disp = _person_identity(fn, folder, text, h)
         entries.append({
             "person": disp,
@@ -575,10 +924,11 @@ def rebuild_folder(output_dir, folder):
     for g in groups:
         g.pop("person_key", None)
     title = f"{folder} · 家传阅读页"
+    payload = {"chars": groups, "tree": tree, "marks": marks}
     out = (TEMPLATE
            .replace("__TITLE__", html.escape(title))
            .replace("__FOLDER__", html.escape(folder))
-           .replace("__DATA__", json.dumps(groups, ensure_ascii=False)))
+           .replace("__DATA__", json.dumps(payload, ensure_ascii=False)))
     path = os.path.join(base, "index.html")
     # Unique temp name: the main thread and a biography thread may rebuild the same page at
     # once, and a shared .tmp would truncate each other
