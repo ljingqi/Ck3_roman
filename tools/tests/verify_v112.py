@@ -133,6 +133,38 @@ def group_synthetic():
     check("V112-1b death_disappearance 成句为「消失得无影无踪」",
           got == "消失得无影无踪", got)
 
+    # ---- 年表句：消失无踪不写「死于」，径作「{date}在{place}消失得无影无踪」 ----
+    class _StubGone:
+        as_of = "1123.1.1"
+        cache = {"player_id": 1,
+                 "characters": {"9": {"death": {"date": "1123.8.1",
+                                                "reason": "death_disappearance",
+                                                "killer": 1}}}}
+
+        def date(self, d):
+            return "1123年8月1日"
+
+        def event_name(self, cid, date=None):
+            return "户部尚书石从古"
+
+        def killer_hidden(self, cid, killer):
+            return self._hidden
+
+        def victim_place(self, cid):
+            return "襄阳"
+
+        def death_clause(self, cid, date=None, imprison=False, insider=False):
+            return "消失得无影无踪"
+
+    _StubGone._hidden = True
+    line = F._death_sentence_body(_StubGone(), 9)
+    check("V112-1b 年表句（暗杀口径）径作「{日期}在{地}消失得无影无踪」",
+          line == "户部尚书石从古1123年8月1日在襄阳消失得无影无踪。", line)
+    _StubGone._hidden = False
+    line2 = F._death_sentence_body(_StubGone(), 9)
+    check("V112-1b 年表句（公开口径）不含「死于」",
+          line2 == "户部尚书石从古1123年8月1日消失得无影无踪。", line2)
+
 
 def group_snapshot(snap):
     facts = snap.get("facts") or {}

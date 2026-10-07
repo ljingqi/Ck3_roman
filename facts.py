@@ -18505,16 +18505,27 @@ def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False, insider=
                   and f.killer_hidden(cid, killer))
     # Use the generic "someone" placeholder when the agent's name is missing
     clause = _death_clause_of(f, cid, killer_pronoun=killer_pronoun, insider=insider)
+    # A disappearance has no death scene and no verb 「死」: the game's own wording is
+    # 「消失得无影无踪」, so the sentence states the day and the place directly (user 2026-10-08:
+    # 「1123年在襄阳消失得无影无踪」).
+    gone = str(d.get("reason") or "") == "death_disappearance"
     if hidden:
         vp = f.victim_place(cid)
-        s = (f"{name}于{f.date(d.get('date'))}死于{vp}" if vp
-             else f"{name}死于{f.date(d.get('date'))}") + f"，{clause}"
+        if gone:
+            s = (f"{name}{f.date(d.get('date'))}在{vp}" if vp
+                 else f"{name}{f.date(d.get('date'))}") + clause
+        else:
+            s = (f"{name}于{f.date(d.get('date'))}死于{vp}" if vp
+                 else f"{name}死于{f.date(d.get('date'))}") + f"，{clause}"
         if annotated:
             note = _victim_marks(f, cid)
             if note:
                 s += note
         return s + "。"
-    s = f"{name}死于{f.date(d.get('date'))}，{clause}。"
+    if gone:
+        s = f"{name}{f.date(d.get('date'))}{clause}。"
+    else:
+        s = f"{name}死于{f.date(d.get('date'))}，{clause}。"
     if pid is not None and killer == pid:
         # Birth year / culture / faith note (same form as the murder sentence)
         if annotated:
@@ -18522,7 +18533,7 @@ def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False, insider=
             if note:
                 s = s.rstrip("。") + note + "。"
         vp = f.victim_place(cid)
-        if vp:
+        if vp and not gone:
             # No parentheses: the place becomes a clause of the same sentence
             s = s.rstrip("。") + f"，死于{vp}。"
     return s
@@ -25166,6 +25177,9 @@ def _killed_by_player(f):
                 if kk is not None:
                     klabel = f.event_name(kk, date=f.as_of)
                     if klabel and klabel in clause:
+                        # same 的 absorption as `_death_clause_of`: the possessive slot's 的 is
+                        # part of the row text
+                        clause = clause.replace(klabel + "的", "其")
                         clause = clause.replace(klabel, "其")
                 _melt_death_clause = clause
                 ds = f"{f.name_or(cid)}死于{f.date(mdd.get('date'))}，{clause}。"
