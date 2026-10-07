@@ -700,8 +700,8 @@ def _household_rows(facts, p, cid, with_real_parentage, spouse_lbl, former_lbl,
     _fe = _pairs_or_text(p, "father_entries", "father")
     if p.get("father") and _fe:
         _fl = p["father"]
-        # the succession line above already gives the father's full appellation (「其父、前代传主
-        # 爱尔兰至高王…」), so the 「父」 row carries only his name then
+        # the succession line above already gives the father's full appellation (「其父爱尔兰
+        # 至高王…」), so the 「父」 row carries only his name then
         if cid is None and p.get("father_name") \
                 and any(p["father_name"] in ln for ln in (p.get("succession") or [])):
             _fl = p["father_name"]
@@ -1215,14 +1215,20 @@ def _victim_death_when(e):
     return out + cause if cause else out
 
 
-def _victim_merged_line(k, facts, disp):
+def _victim_merged_line(k, facts, disp, plain=None):
     """`死者：{主角}的{身份}{死者}，{死日}在{地点}{死法}，享年{N}岁。`
     One merged sentence (user 2026-10-06): the identity word, the place and the age ride along the
     death date instead of filling separate lines. A piece the save does not record is omitted
-    whole, and a victim with no death date keeps the fact layer's own sentence."""
+    whole, and a victim with no death date keeps the fact layer's own sentence.
+
+    The identity word and the kin-tagged label draw on the same relation source, so carrying both
+    repeats it (「…的同族兄弟兼仇敌同族兄弟兼仇敌户部尚书石从古」, user 2026-10-08): with an
+    identity the plain label `plain` follows it, and the kin-tagged `disp` stands in only when no
+    identity was resolved."""
     pname = ((facts or {}).get("protagonist") or {}).get("name") or ""
     ident = (k.get("identity") or "").strip()
-    subject = f"{pname}的{ident}{disp}" if (pname and ident) else disp
+    who = (plain or disp) if ident else disp
+    subject = f"{pname}的{ident}{who}" if (pname and ident) else who
     body = _victim_death_when(k)
     if not body:
         bd = k.get("birth") or ""
@@ -1240,8 +1246,8 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
     grp = list(k.get("group") or [])
     nm = k["name"]
     off = k.get("office") or ""
-    disp = k.get("label") or (f"{off}{nm}" if off else nm)
-    disp = _kin_tag(facts, scope, k.get("id"), disp)
+    plain = k.get("label") or (f"{off}{nm}" if off else nm)
+    disp = _kin_tag(facts, scope, k.get("id"), plain)
     if grp:
         disps = [disp] + [g.get("label") or g.get("name") or "" for g in grp]
         disps = [d for d in disps if d]
@@ -1252,7 +1258,7 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
         lines.append(f"死者：{'、'.join(disps)}，{tail}" if tail
                      else f"死者：{'、'.join(disps)}")
     else:
-        lines.append(_victim_merged_line(k, facts, disp))
+        lines.append(_victim_merged_line(k, facts, disp, plain))
     # a kin group's members may die in different places: a member whose barony differs from the
     # leader's keeps his own row, so the merged sentence above never claims his place
     for e in (grp if grp else []):
@@ -1278,8 +1284,8 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
                 continue
         return out
 
-    # kin-line wording: the spouse slot follows the deceased's sex, father/mother carry a birth year and a
-    # 子/女 slot
+    # kin-line wording: the spouse slot follows the deceased's sex; father/mother and children
+    # carry their own slot word (see below)
     _fi = facts.get("_facts")
 
     def _gword(subject, other, kind):
@@ -1288,23 +1294,6 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
         return {"spouse": "妻", "former": "前妻",
                 "concubine": "妾", "f_concubine": "前妾"}.get(kind, "")
 
-    def _byear(cid):
-        """Birth year as int, or None — cache first, melt as fallback."""
-        rec = (cache.get("characters") or {}).get(str(cid)) or {}
-        b = rec.get("birth")
-        if not b and _fi is not None:
-            b = (getattr(_fi, "_chars", {}) or {}).get(str(cid), {}).get("birth")
-        try:
-            return int(str(b).split(".")[0])
-        except (TypeError, ValueError):
-            return None
-
-    def _with_year(cid, name):
-        """Father/mother with birth year, written as prose — a `(born 787)` gloss would
-        trip verify_fast's noun-plus-parenthetical appositive ban. No year → name alone."""
-        y = _byear(cid)
-        return f"{name}，{y}年生" if y else name
-
     bits = []
     seen_bits = set()
     if grp:
@@ -1312,7 +1301,9 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
             sets = [s for s in (_fids(e, key) for e in [k] + grp) if s]
             common = set.intersection(*sets) if sets else set()
             for x in sorted(common):
-                bits.append(f"{label}{_with_year(x, _kin_or(facts, cache, x))}")
+                # parents are listed by name alone: their birth years said nothing about the
+                # victim's own lifespan and padded the row (user 2026-10-08)
+                bits.append(f"{label}{_kin_or(facts, cache, x)}")
         for e in [k] + grp:
             _seen_sp = set()      # one relationship word per spouse (see single-subject branch)
             for key, kind in (("primary_spouse", "spouse"), ("spouse", "spouse"),
@@ -1339,7 +1330,7 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
                     x = int(x)
                 except (TypeError, ValueError):
                     continue
-                bits.append(f"{label}{_with_year(x, _kin_or(facts, cache, x))}")
+                bits.append(f"{label}{_kin_or(facts, cache, x)}")
         _seen_sp = set()
         # one relationship word per person: `family_data.former_spouses` also lists current spouses, so
         # dedupe by id (the two built strings differ); pick order is the loop order, primary spouse first.
@@ -1369,10 +1360,15 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
                 kids = set(F._asof_ids(_fi, sorted(kids)))
             except Exception:
                 pass
+        # the 子/女 word opens a same-sex run and the rest of the run is listed by name alone
+        # (user 2026-10-08): 「子朱俭、朱师尹、女朱琼」 keeps the sexes apart without repeating the
+        # slot word before every child
+        prev_female = None
         for x in sorted(kids):
             kf = ((cache.get("characters") or {}).get(str(x)) or {}).get("female")
-            lbl = "女" if kf else "子"
+            lbl = "" if kf == prev_female else ("女" if kf else "子")
             b = f"{lbl}{_kin_or(facts, cache, x)}"
+            prev_female = kf
             if b not in seen_bits:
                 seen_bits.add(b)
                 bits.append(b)
@@ -3110,8 +3106,15 @@ def _appendix_text(facts):
     pname = p.get("name") or ""
     if pname:
         names.add(pname)
-    # names from genealogy lines: everything after the colon (wife/concubine/children/parents/siblings)
-    for ln in gen:
+    # names from the subject's OWN generation of the genealogy: everything after the colon
+    # (wife/concubine/children/parents/siblings). The appendix now carries every played
+    # generation, so the filter reads `genealogy_subject` (the subject's own block) and never the
+    # ancestors' households, which would flood the timeline with their people.
+    gen_subj = facts.get("genealogy_subject")
+    if not gen_subj:
+        # older snapshots carry only the subject's block plus their header lines
+        gen_subj = [ln for ln in gen if not ln.startswith(("凡例：", "世系图：", "〈"))]
+    for ln in gen_subj:
         if "：" in ln:
             for nm in ln.split("：", 1)[1].replace("、", " ").split():
                 if nm:

@@ -5162,6 +5162,76 @@ class Facts:
             frontier = nxt
         return out
 
+    def _parent_edges(self):
+        """{cid: {parent ids}} over the cache's kinship graph, both directions united.
+
+        The child's own record carries `family.father`/`real_father`/`mother`, and a parent's
+        `family.child` states the same edge from the other side; non-player records often hold only
+        one of the two, so the union is what a generational walk needs. Built once per run."""
+        if getattr(self, "_pedges", None) is None:
+            par = {}
+            for cid, rec in (self.cache.get("characters") or {}).items():
+                if not str(cid).isdigit() or not isinstance(rec, dict):
+                    continue
+                c = int(cid)
+                fam = rec.get("family") or {}
+                for key in ("father", "mother", "real_father"):
+                    for x in (fam.get(key) or []):
+                        if isinstance(x, int):
+                            par.setdefault(c, set()).add(x)
+                for x in (fam.get("child") or []):
+                    if isinstance(x, int):
+                        par.setdefault(x, set()).add(c)
+            self._pedges = par
+        return self._pedges
+
+    def _up_routes(self, cid, maxd=_DEEP_MAXD):
+        """{ancestor: fewest generations up} from one character, over `_parent_edges`."""
+        par = self._parent_edges()
+        try:
+            x = int(cid)
+        except (TypeError, ValueError):
+            return {}
+        out = {x: 0}
+        frontier = [x]
+        for d in range(maxd):
+            nxt = []
+            for node in frontier:
+                for p in (par.get(node) or ()):
+                    if p in out:
+                        continue
+                    out[p] = d + 1
+                    nxt.append(p)
+            frontier = nxt
+        return out
+
+    def generation_delta(self, a, b):
+        """Generations between two characters: +1 when `b` is one generation below `a`, 0 for
+        siblings and same-generation cousins, -1 for an uncle; None without a common ancestor.
+
+        The nearest common ancestor (smallest total distance) fixes the gap as the difference of the
+        two distances to it. The walk deliberately does not ban the other person, unlike
+        `_ancestor_routes`: the direct father/son edge is exactly what the gap is read from, and
+        banning it turned fathers into grand-nephews (logs/v112_probe_generations.txt)."""
+        if a is None or b is None:
+            return None
+        try:
+            if int(a) == int(b):
+                return 0
+        except (TypeError, ValueError):
+            return None
+        ra = self._up_routes(a)
+        rb = self._up_routes(b)
+        best = None
+        for anc, da in ra.items():
+            if anc not in rb:
+                continue
+            db = rb[anc]
+            cand = (da + db, db - da)
+            if best is None or cand < best:
+                best = cand
+        return None if best is None else best[1]
+
     def blood_kin_words_for(self, cid, subject, limit=None):
         """Blood terms of `cid` relative to `subject`, one per independent route (at most `limit`).
 
@@ -5795,17 +5865,24 @@ class Facts:
             if isinstance(pv, dict):
                 death = ((pv.get("player_death") or {}).get("date")) or ""
                 re_end = pv.get("reign_end") or {}
-            # no parentheticals: the relation and the predecessor title are comma-joined
-            lead = f"{kin}、" if kin else ""
+            # no parentheticals: the relation meets the predecessor's own appellation directly
+            # (「其父伯爵时尚王子洪易卜拉欣」); the old 「、前代传主」 label is dropped (user 2026-10-08)
+            lead = kin
             # a predecessor whose reign ended without death (abdication) must not be called dead
             re_date = re_end.get("date") or ""
+            # the subject himself closes the sentence by name, the way the chain reads in the rest
+            # of the article (「洪七公从此作为命运的主角」)
+            subj = self.event_name(pid, date=start) or self.name_or(pid) or "本传主"
 
-            def _death_fate(when):
+            def _death_fate(when, same_day=False):
                 """Death phrase for the predecessor, including the specific cause when known.
 
                 The cause is in the data (`death_clause` reads that subject's cache `death`), so a
                 specific cause is written out; when it is missing or only the generic word, the
                 chronicle-style "died on <date>" form is kept rather than inventing detail.
+                `same_day=True` is the branch where the accession date and the death date are the
+                same day: the sentence has already named that day, so repeating it as 「于当日」
+                only pads the line and the cause is stated on its own (user 2026-10-08).
                 """
                 why = ""
                 try:
@@ -5813,28 +5890,27 @@ class Facts:
                 except Exception:                                 # noqa: BLE001
                     why = ""
                 if why and why != "去世":
-                    return f"于{when}{why}"
-                return f"崩于{when}"
+                    return why if same_day else f"于{when}{why}"
+                return "去世" if same_day else f"崩于{when}"
 
             if re_date and start and cl.date_key(re_date) == cl.date_key(start):
                 fate = "于是日让位"
             elif re_date:
                 fate = f"让位于{self.date(re_date)}"
             elif death and start and cl.date_key(death) == cl.date_key(start):
-                fate = _death_fate("当日")
+                fate = _death_fate("当日", same_day=True)
             elif death:
                 fate = _death_fate(self.date(death))
             else:
                 fate = ""
             if nm and start:
                 if fate:
-                    out.append(f"承继：{self.date(start)}，{lead}前代传主{nm}{fate}，"
-                               f"传主之位自此归本传主。")
+                    out.append(f"承继：{self.date(start)}，{lead}{nm}{fate}，"
+                               f"{subj}从此作为命运的主角。")
                 else:
-                    out.append(f"承继：{self.date(start)}，本传主继{lead}"
-                               f"前代传主{nm}之位。")
+                    out.append(f"承继：{self.date(start)}，{subj}继{lead}{nm}之位。")
             elif nm:
-                out.append(f"承继：本传主继{lead}前代传主{nm}之位。")
+                out.append(f"承继：{subj}继{lead}{nm}之位。")
         if idx + 1 < len(chain):
             nxt = chain[idx + 1]
             ncid = int(nxt["cid"])
@@ -14426,7 +14502,12 @@ class Facts:
             if _dyn:
                 return f"染{_dyn}而亡"
         out = ""
-        if killer is None:
+        if reason == "death_disappearance":
+            # Disappearance means the body was never found, so the sentence states the outcome
+            # alone and names no agent even in the insider reading (user 2026-10-08); the
+            # assassination method pool is bypassed for this cause.
+            out = "消失得无影无踪"
+        elif killer is None:
             out = _death_clause(self.table, reason, None, lambda k: "",
                                 public=_public)
         else:
@@ -15017,13 +15098,9 @@ class Facts:
         return out
 
     # ---- language flavour (mother tongue / additional languages / mutual understanding) ----
-    def _culture_language_id(self, cid, date=None):
-        """Language id of the character's culture (language_japonic…); derived from the culture
-        template when the culture is missing."""
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        # the culture id follows the history at `date`, so the mother tongue of an early chapter
-        # matches its ethnicity
-        cul = self._culture_id_at(cid, date)
+    def _language_of_culture(self, cid, cul):
+        """Language id of one culture id (language_japonic…); derived from the culture template when
+        the culture itself is missing from the melt."""
         if cul is None:
             cul = (self._chars.get(str(cid)) or {}).get("culture")
         if cul is not None:
@@ -15039,13 +15116,44 @@ class Facts:
                 return str(lg)
         return ""
 
+    def _culture_language_id(self, cid, date=None):
+        """Language id of the character's culture at `date`; derived from the culture template when
+        the culture is missing."""
+        # the culture id follows the history at `date`, so the ethnicity of an early chapter
+        # matches its own day
+        return self._language_of_culture(cid, self._culture_id_at(cid, date))
+
+    def _birth_culture_id(self, cid):
+        """Culture id the character was born into: the earliest point of his culture history.
+
+        A conversion is recorded as a later history point, so the earliest point is the culture he
+        held before it; None when the history holds no culture (older caches, and every cache except
+        the character's own — a descendant's cache records no culture history for his ancestors)."""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        best, best_key = None, None
+        for h in (rec.get("culture_history") or []):
+            if not isinstance(h, dict) or h.get("culture") is None:
+                continue
+            k = cl.date_key(h.get("from")) if h.get("from") else None
+            if best is None or (k is not None and (best_key is None or k < best_key)):
+                best, best_key = h["culture"], k
+        return best
+
     def mother_language(self, cid, date=None):
         """Chinese name of the mother tongue: culture → language → localization; '' when unknown.
 
-        CK3's language list always contains the native tongue and the rest are learned (Royal Court
-        language system). When the culture is untraceable and the character knows exactly one
-        language, that one is his mother tongue."""
-        lg = self._culture_language_id(cid, date)
+        The mother tongue is fixed for life (user 2026-10-08): it follows the culture the character
+        was BORN into (`_birth_culture_id`), not the culture of the chapter's own day, so a
+        conversion never rewrites it. The language of the new culture is already in his language
+        list, where `language_sentence` lists it as one of the additional ones. Only a character
+        without a culture history falls back to the culture at `date`. When the culture is
+        untraceable and the character knows exactly one language, that one is his mother tongue."""
+        lg = ""
+        birth = self._birth_culture_id(cid)
+        if birth is not None:
+            lg = self._language_of_culture(cid, birth)
+        if not lg:
+            lg = self._culture_language_id(cid, date)
         if lg:
             v = L.loc(self.table, f"{lg}_name") or L.loc(self.table, lg) or ""
             if v:
@@ -15059,8 +15167,9 @@ class Facts:
         """Language fact sentence, e.g. 「母语日琉语，兼通乌古尔语。」 or 「通日琉语、乌古尔语。」 when the
         mother tongue cannot be determined; '' when no language is recorded.
 
-        The mother tongue follows `date`, so an early chapter does not use the mother tongue of a
-        later ethnicity."""
+        The mother tongue is the one of the birth culture and stays the same in every chapter
+        (user 2026-10-08); `date` only feeds the fallback for a character whose culture history is
+        empty, where the culture of that day is the only evidence there is."""
         langs = self.languages(cid)
         if not langs:
             return ""
@@ -15552,6 +15661,71 @@ class Facts:
             return z
         return f"{z}（{'、'.join(bits)}）"
 
+    def _birth_of(self, cid):
+        """Birth date of any character: the cache's value, else the melt's (cache and melt agree,
+        but a sibling kept only as an id exists in the melt alone)."""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        b = rec.get("birth")
+        if not b:
+            b = (self._chars.get(str(cid)) or {}).get("birth")
+        return b or ""
+
+    def twin_partners(self, cid):
+        """The character's twins: other children born on the very same day to the same parent.
+
+        The save holds no twin pointer — `trait_twin` says a twin exists, and `twin` appears in the
+        save only as the trait's own history interval — so the pair is derived from the family
+        graph: the sibling edges, the parents' child lists, and the reverse child index (a parent's
+        record often lists the children while the child's own record lists neither parent). Birth
+        dates fall back to the melt for a sibling the cache keeps only as an id. [] when nothing
+        resolves, which leaves the bare trait name in place (user 2026-10-08)."""
+        try:
+            c = int(cid)
+        except (TypeError, ValueError):
+            return []
+        birth = self._birth_of(c)
+        if not birth:
+            return []
+        rec = (self.cache.get("characters") or {}).get(str(c)) or {}
+        fam = rec.get("family") or {}
+        chars = self.cache.get("characters") or {}
+        parents = []
+        for key in ("father", "real_father", "mother"):
+            for x in (fam.get(key) or []):
+                if isinstance(x, int) and x not in parents:
+                    parents.append(x)
+        cands = set()
+        for x in (fam.get("siblings") or []):
+            if isinstance(x, int) and x != c:
+                cands.add(x)
+        rev_kid = (self._kin_rev_index().get("kid") or {})
+        for p in parents:
+            pfam = ((chars.get(str(p)) or {}).get("family") or {})
+            for x in list(pfam.get("child") or []) + list(rev_kid.get(p) or []):
+                if isinstance(x, int) and x != c:
+                    cands.add(x)
+        out = []
+        for x in sorted(cands):
+            if self._birth_of(x) == birth:
+                out.append(x)
+        return out
+
+    def _twin_label(self, cid, z):
+        """「双胞胎」 names its other half: 「与洪腓力帕为双胞胎」.
+
+        The trait alone says only that the character is a twin, so the bare word leaves the reader
+        without the other half (user 2026-10-08). The phrase is a verb clause like its neighbours in
+        the 「为人」 list (「受祝圣之血」) and carries no parenthesis, so the fact surface stays free of
+        parenthetical apposition. Without a resolvable partner the bare name is kept."""
+        names = []
+        for x in self.twin_partners(cid):
+            nm = self.name_or(x)
+            if nm and nm not in names:
+                names.append(nm)
+        if not names:
+            return z
+        return f"与{'、'.join(names)}为双胞胎"
+
     def trait_pairs(self, cid):
         """[(trait key, Chinese name)] for currently held traits (as_of truncation as in `traits`).
 
@@ -15567,6 +15741,8 @@ class Facts:
                 continue
             key = self._tl[t]
             z = _trait_name(self.table, key, xp=(xpmap.get(key) or {}))
+            if z and key == "twin":
+                z = self._twin_label(cid, z)
             if z:
                 out.append((key, z))
         return out
@@ -15592,6 +15768,8 @@ class Facts:
                 if to and cl.date_key(to) <= ao:
                     continue
                 z = _trait_name(self.table, key, xp=(xpmap.get(key) or {}))
+                if z and key == "twin":
+                    z = self._twin_label(cid, z)
                 if z and key not in seen:
                     seen.add(key)
                     out.append((key, z))
@@ -18294,6 +18472,10 @@ def _death_clause_of(f, cid, killer_pronoun=False, insider=False):
     if killer_pronoun and d.get("killer") is not None:
         klabel = f.event_name(d.get("killer"), date=f.as_of)
         if klabel and klabel in clause:
+            # Several loc rows put the name in the possessive slot ("在X的命令下消失得无影无踪"),
+            # where the 的 is part of the row text, so shortening the bare name to 「其」 would leave
+            # 「其的」: absorb that 的 into the pronoun first (user 2026-10-08).
+            clause = clause.replace(klabel + "的", "其")
             clause = clause.replace(klabel, "其")
     return clause or ""
 
@@ -21341,13 +21523,14 @@ def _merge_affair_pairs(events, f=None):
     return out
 
 
-def _asof_ids(f, ids):
-    """Filter a family member id list by `as_of` (members born after it are not listed, a
-    decade biography not showing the unborn); the list is returned unchanged when `as_of` is
-    empty."""
-    if not f.as_of or not ids:
+def _asof_ids(f, ids, date=None):
+    """Filter a family member id list by a cutoff day (members born after it are not listed, a
+    decade biography not showing the unborn); the list is returned unchanged when the cutoff is
+    empty. `date` defaults to as_of; the genealogy passes each generation's own end day."""
+    cut = date if date else f.as_of
+    if not cut or not ids:
         return ids or []
-    ao = cl.date_key(f.as_of)
+    ao = cl.date_key(cut)
     out = []
     for x in ids:
         if not isinstance(x, int):
@@ -21357,7 +21540,7 @@ def _asof_ids(f, ids):
         if b and cl.date_key(b) > ao:
             continue
         out.append(x)
-    return out
+    return out or []
 
 
 def _mark_lone_name(nm):
@@ -25339,25 +25522,37 @@ def _court_luminaries(f):
     return names
 
 
-def _genealogy(f):
-    """Genealogy lines for the appendix: the player plus parents, spouses, concubines, children
-    and siblings. The spouse label follows the player's sex, and `spouse` has `primary_spouse`
-    subtracted, since CK3 lists the same wife in both fields."""
+def _gen_word(n):
+    """Genealogy generation ordinal: 1 -> 一世, 12 -> 十二世.
+
+    The classical genealogical ordinal counts generations of the clan, so the form is 「N世」 and
+    never 「第N代」 (see logs/v112_谱牒体例调研.md)."""
+    return _kin_rank_zh(n) + "世"
+
+
+# The genealogy opens with its own editorial rule (凡例), the way a printed 族谱 states the layout
+# it follows. Written from the data model: the generations are the played characters, numbered by
+# real blood generations, so a generation the player never held has no one to record and a
+# same-generation pair is written side by side.
+_GENEALOGY_FANLI = ("凡例：本谱世系以世为经、以人为纬，断自始祖为一世，序以血亲之次；"
+                    "一世一人，同世者并列，中间无传主之世则阙之。")
+
+
+def _genealogy_rows(f, cid, date):
+    """Parent/spouse/child/sibling rows of one person, read on `date`.
+
+    The spouse label follows the person's sex, and `spouse` has `primary_spouse` subtracted, since
+    CK3 lists the same wife in both fields. Each person appears on one row only: the save also lists
+    current spouses under `former_spouses`."""
     cache = f.cache
-    pid = cache.get("player_id")
-    if pid is None:
-        return []
-    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    rec = (cache.get("characters") or {}).get(str(cid)) or {}
     fam = rec.get("family") or {}
-    # the marriage latch is merged into the genealogy, from the same source as
-    # `_protagonist_facts`
-    fam = f.merge_spouse_latch(fam, f.as_of)
-    fem = f._is_female(pid)
+    # the marriage latch is merged into the genealogy, from the same source as `_protagonist_facts`
+    fam = f.merge_spouse_latch(fam, date)
+    fem = f._is_female(cid)
     lines = []
-    pname = f.name_or(pid)
-    lines.append(f"一世 {pname}，{f.date(rec.get('birth'))}生")
-    spouses = [x for x in (fam.get("primary_spouse") or [])]
-    side = [x for x in (fam.get("spouse") or []) if x not in set(spouses)]
+    spouses = [x for x in _asof_ids(f, fam.get("primary_spouse") or [], date)]
+    side = [x for x in _asof_ids(f, fam.get("spouse") or [], date) if x not in set(spouses)]
     rows = [("father", "父"), ("mother", "母")]
     if fem:
         rows += [("primary_spouse_key", "正夫"), ("side_spouse_key", "侧夫")]
@@ -25367,8 +25562,6 @@ def _genealogy(f):
              ("former_concubines", "前妾" if not fem else "前男宠"),
              ("children_by_sex", ""), ("siblings", "兄弟姊妹"),
              ("former_spouses", "前夫" if fem else "前妻")]
-    # each person appears on one line only: the save also lists current spouses in
-    # former_spouses (same source as `_protagonist_facts`)
     _used_mar = set(spouses) | set(side)
     for key, label in rows:
         if key == "primary_spouse_key":
@@ -25380,7 +25573,7 @@ def _genealogy(f):
             # daughters' names under the sons' heading
             for _lab, _grp in (("儿子", False), ("女儿", True)):
                 bits = []
-                for x in (fam.get("child") or []):
+                for x in _asof_ids(f, fam.get("child") or [], date):
                     if bool(f._is_female(x)) is not _grp:
                         continue
                     n = f.kin_label(x)
@@ -25390,10 +25583,10 @@ def _genealogy(f):
                     lines.append(f"　{_lab}：{'、'.join(bits)}")
             continue
         elif key in ("concubine", "former_concubines", "former_spouses"):
-            ids = [x for x in (fam.get(key) or []) if x not in _used_mar]
+            ids = [x for x in _asof_ids(f, fam.get(key) or [], date) if x not in _used_mar]
             _used_mar.update(ids)
         else:
-            ids = fam.get(key) or []
+            ids = _asof_ids(f, fam.get(key) or [], date)
         if not ids:
             continue
         bits = []
@@ -25404,11 +25597,126 @@ def _genealogy(f):
             # spouse rows also note a matrilineal marriage (uxorilocal) and which parent the
             # children belong to
             if key in ("primary_spouse_key", "side_spouse_key"):
-                n += f.marriage_lineality_note(pid, x, before=f.as_of)
+                n += f.marriage_lineality_note(cid, x, before=date)
             bits.append(n)
         if bits:
             lines.append(f"　{label}：{'、'.join(bits)}")
     return lines
+
+
+def _gen_end_date(f, cid):
+    """The day that generation's household is read on: his death, else the day his reign ended.
+
+    A generation before the subject is not written with the subject's own household: his family is
+    the one he left behind, so the rows stop at that day (user 2026-10-08)."""
+    rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
+    d = (rec.get("death") or {}).get("date") or ""
+    if d:
+        return d
+    pv = f.campaign.get(int(cid)) if str(cid).isdigit() else None
+    if isinstance(pv, dict):
+        for key in ("reign_end", "player_death"):
+            v = pv.get(key)
+            if isinstance(v, dict) and v.get("date"):
+                return v["date"]
+    return ""
+
+
+def _genealogy_parts(f):
+    """([appendix lines], [the current subject's own generation lines]).
+
+    Each played character is one generation, numbered by real blood generations (user 2026-10-08):
+    the chain is walked from its first member, each step adds `Facts.generation_delta` to the
+    running number, and a step whose relation cannot be resolved counts as one generation down. The
+    subject's own block is returned separately because the timeline's name filter must keep reading
+    only the household of the article's own protagonist. Lines render as a printed genealogy: a
+    凡例 header, a 世系图 chain, then one block per generation whose rows are parents, spouses,
+    children and siblings."""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return [], []
+    chain = [e for e in (cache.get("played_legacy") or [])
+             if isinstance(e, dict) and isinstance(e.get("cid"), int)]
+    idx = next((i for i, e in enumerate(chain) if e["cid"] == int(pid)), None)
+    if idx is None:
+        chain = [{"cid": int(pid)}]
+        idx = 0
+    members = chain[:idx + 1]
+    # real blood generations: 1 for the first member of the chain, then one step per generation
+    gens = [1]
+    for i in range(1, len(members)):
+        d = f.generation_delta(members[i - 1]["cid"], members[i]["cid"])
+        gens.append(max(1, gens[-1] + (d if d is not None else 1)))
+    names = {i: (f.name_or(members[i]["cid"]) or "")
+             for i in range(len(members))}
+    lines = [_GENEALOGY_FANLI, "世系图："]
+    # the chain reads as one continuous line, five generations to a row (「五世一图」, a paper-width
+    # convention rather than a limit on the depth a genealogy may reach)
+    row = []
+    for i in range(len(members)):
+        row.append(f"{_gen_word(gens[i])} {names[i]}")
+        if len(row) == 5:
+            lines.append("　" + " ─ ".join(row))
+            row = []
+    if row:
+        lines.append("　" + " ─ ".join(row))
+    subject = []
+    for i in range(len(members)):
+        cid = members[i]["cid"]
+        last = (i == len(members) - 1)
+        # the subject's own household is the article's own day; an earlier generation is read on the
+        # day that generation ended
+        date = f.as_of if last else (_gen_end_date(f, cid) or f.as_of)
+        rec = (cache.get("characters") or {}).get(str(cid)) or {}
+        start = members[i].get("date") or ""
+        head = names[i]
+        if i:
+            key = kin_key(cache, members[i - 1]["cid"], cid,
+                          spouse_back=f._spouse_back_index(), rev=f._kin_rev_index())
+            rel = kin_word_short(key) if key else ""
+            head = f"{names[i]}，{names[i - 1]}之{rel}" if rel else names[i]
+        line = f"**{_gen_word(gens[i])}**　{head}"
+        birth = rec.get("birth") or ""
+        if birth:
+            line += f"，{f.date(birth)}生"
+        if start:
+            # the chain's first member inherited from nobody: he opens the line of play
+            line += (f"，{f.date(start)}起为传主" if i == 0
+                     else f"，{f.date(start)}继为传主")
+        end = _gen_end_date(f, cid)
+        if end:
+            line += f"，{f.date(end)}卒"
+        elif last:
+            line += "，今在世"
+        lines.append(line)
+        # a 「五世一图」 break: the printed genealogy starts a new sheet every fifth generation
+        if i and gens[i] > 5 >= gens[i - 1]:
+            lines.insert(len(lines) - 1, f"〈以上五世为一图，下接第{_kin_rank_zh(gens[i])}世〉")
+        rows = _genealogy_rows(f, cid, date)
+        lines.extend(rows)
+        if last:
+            subject = [line] + rows
+    return lines, subject
+
+
+def _genealogy(f):
+    """Genealogy lines for the appendix (see `_genealogy_parts`); built once per facts build.
+
+    The old singular 「一世 <player>」 block becomes one block per played generation, so the
+    appendix shows where the article's protagonist stands in the line of play."""
+    parts = getattr(f, "_genealogy_parts_cache", None)
+    if parts is None:
+        parts = _genealogy_parts(f)
+        f._genealogy_parts_cache = parts
+    return parts[0]
+
+
+def genealogy_subject_lines(f):
+    """Lines of the subject's own generation in the genealogy (the timeline's name filter)."""
+    _genealogy(f)
+    parts = getattr(f, "_genealogy_parts_cache", None) or ([], [])
+    return parts[1]
 
 
 def _secrets_facts(f):
@@ -25813,6 +26121,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "nomad_stations": _nomad_stations(f),
         "luminaries": _court_luminaries(f),
         "genealogy": _genealogy(f),
+        # the subject's own generation of the genealogy: the timeline's name filter reads this, so a
+        # multi-generation appendix cannot pull the ancestors' households into the timeline
+        "genealogy_subject": genealogy_subject_lines(f),
         # court/camp offices plus the house motto
         "court_positions": cpl,
         "court_position_changes": cpch,

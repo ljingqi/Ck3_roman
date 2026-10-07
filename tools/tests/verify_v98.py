@@ -237,8 +237,12 @@ def test_snapshots(snaps):
                   pe[1:2])
             check("直辖按当日（京兆、阿尔巴诺）",
                   proto.get("domain") == "京兆、阿尔巴诺", proto.get("domain"))
-            check("族谱按当日名", "洪思忠" in str((fac.get("genealogy") or [""])[0]),
-                  (fac.get("genealogy") or [""])[0])
+            # v112: 附录「世系」改成逐代铺开（凡例 + 世系图 + 每代一块），本代那一块另存
+            # `genealogy_subject`；v112 之前的快照只有单代块，回退看首行。
+            _gen = fac.get("genealogy") or [""]
+            _gsub = fac.get("genealogy_subject") or _gen[:1]
+            check("族谱按当日名", any("洪思忠" in str(ln) for ln in _gsub),
+                  str(_gsub[:1]))
         else:
             print("  按当日：975.9.24 已受任教宗")
             check("档案名 = 欢乐者尼各老", ch.get("name") == "欢乐者尼各老", ch.get("name"))
