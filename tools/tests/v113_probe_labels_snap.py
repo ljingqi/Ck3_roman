@@ -25,7 +25,7 @@ def dump(name):
     for w in ("唐公主", "天公主", "邓公主", "大邓皇女", "大唐皇女", "唐王子", "邓王子", "唐皇帝"):
         if counts.get(w):
             print(f"    {w}: {counts[w]}")
-    for who in ("李星雁", "洪天姣"):
+    for who in ("李星雁", "洪天姣", "李漼"):
         for m in re.finditer(r"[\u4e00-\u9fff·，、：]{0,6}" + who, blob):
             print(f"    {who}: {m.group(0)}")
 

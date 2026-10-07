@@ -50,6 +50,7 @@ class _Stub(object):
         self.hold = {}               # cid -> {tid: [(gain, loss, type)]}
         self.primary = (None, None)  # _primary_title_at result
         self.former = None           # _former_high_title result
+        self.gov = ""                # _title_government result
 
     # ---- the five facts `_style_parent_title` / `_prince_style_from_title` read off a save ----
     def _primary_title_at(self, cid, as_of=None):
@@ -76,7 +77,7 @@ class _Stub(object):
 
     def _title_government(self, tid, date=None):
         self.seen.append(("gov", date))
-        return ""
+        return self.gov
 
     def _name_source_key(self, tid, date=None):
         self.seen.append(("src", date))
@@ -117,15 +118,30 @@ def _stub():
 
 
 def t_label_era():
-    print("[1] 父已失位的称号时代（李星雁 → 唐公主）")
+    print("[1] 父已失位的称号时代（李星雁 → 唐公主，洪天姣 → 天公主）")
     st = _stub()
     got = F.Facts._style_parent_title(st, 14008, "1152.11.13")
     check(got == ("hegemon", 14022, "879.1.2"), "父之头衔回传持有末日", got)
     style = F.Facts._prince_style_from_title(st, got[0], got[1], "1152.11.13", 16797282,
                                              14008, realm_date=got[2])
     check(style == "唐公主", "1152 年补写的唐室公主用唐号", style)
-    dates = {d for _m, d in st.seen}
-    check(dates == {"879.1.2"}, "取名/政体/来源键/独立性/词表一律按持有末日", sorted(dates))
+    # only the era name (name + `dynn_` source key) reads the tenure; the word still reads the
+    # article date, so a ruling parent's rendering is untouched
+    dates = {}
+    for kind, d in st.seen:
+        dates.setdefault(kind, set()).add(d)
+    check(dates.get("name") == {"879.1.2"}, "朝名按持有末日", {k: sorted(v) for k, v in dates.items()})
+    check(dates.get("gov") == {"1152.11.13"} and dates.get("word") == {"1152.11.13"}
+          and dates.get("indep") == {"1152.11.13"},
+          "政体/独立性/称谓词仍按成稿当日", {k: sorted(v) for k, v in dates.items()})
+    # the '大' form follows the dynasty of that same era: its source key is read at the tenure end
+    st6 = _stub()
+    st6.gov = "celestial_government"
+    _t, _tid, rd6 = F.Facts._style_parent_title(st6, 14008, "1152.11.13")
+    s6 = F.Facts._prince_style_from_title(st6, "hegemon", 14022, "1152.11.13", 16797282, 14008,
+                                          realm_date=rd6)
+    src = {d for k, d in st6.seen if k == "src"}
+    check(s6 == "大唐公主" and src == {"879.1.2"}, "『大』式按持有末日的朝名来源键", (s6, sorted(src)))
 
     # the same person through the whole 家谱: every article after the Tang writes 唐公主
     for date in ("904.11.30", "1009.6.26", "1126.7.30", "1152.11.13"):
@@ -134,6 +150,15 @@ def t_label_era():
         s = F.Facts._prince_style_from_title(st2, "hegemon", 14022, date, 16797282, 14008,
                                             realm_date=rd)
         check(s == "唐公主", f"{date} 篇作唐公主", s)
+
+    # 洪天姣: her father 洪秀全 held h_china until 904.11.30, when it was already renamed 天
+    st5 = _stub()
+    st5.hold[38957] = {14022: [("897.6.5", "904.11.30", "destroyed")]}
+    _t, _tid, rd5 = F.Facts._style_parent_title(st5, 38957, "1126.7.30")
+    check(rd5 == "904.11.30", "洪秀全之头衔回传持有末日", rd5)
+    s5 = F.Facts._prince_style_from_title(st5, "hegemon", 14022, "1126.7.30", 44503, 38957,
+                                          realm_date=rd5)
+    check(s5 == "天公主", "洪天姣作天公主（当日已称天）", s5)
 
     # a parent still on the throne keeps today's realm (no behaviour change for the living)
     st3 = _stub()

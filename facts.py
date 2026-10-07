@@ -10079,18 +10079,20 @@ class Facts:
         short titles (`definite_form = yes`) and names already carrying a state word stay as they
         are. Japan's top titles (天皇座/日本帝国) are excluded — `_tenno_prince_word` owns them.
 
-        `realm_date` overrides `date` for everything read off the TITLE (name, government, name
-        source, independence, flavorization gate): a parent who no longer holds the title styles
-        his children with the realm of his own tenure, so the era naming never drifts (see
-        `_style_parent_title`). `date` still governs the child's own nickname."""
+        `realm_date` overrides `date` for the two reads that make up the ERA NAME: the title's own
+        name and the name source key that decides the '大' form. A parent who no longer holds the
+        title therefore styles his children with the dynasty of his own tenure (唐/天/…) instead of
+        the one current when the article is written (邓). Everything else — government,
+        independence, the prince word, the child's nickname — stays on `date`, so only the era name
+        moves and a ruling parent renders exactly as before (see `_style_parent_title`)."""
         if ((self._lt.get(str(ptid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
             return ""
         rd = realm_date or date
-        pgov = self._title_government(ptid, rd)
+        pgov = self._title_government(ptid, date)
         pbase = self._name_at_date(ptid, rd or self.as_of) or self.title_base_name(ptid)
         if not pbase:
             return ""
-        independent = self._is_independent(owner, rd)
+        independent = self._is_independent(owner, date)
         if independent is None:
             independent = True
         rn = self.realm_name(ptid)
@@ -10106,7 +10108,7 @@ class Facts:
             # no tier word is appended (国/路/皇朝/王国/帝国); a short title uses its own name
             prefix = pbase
         word = self._prince_word(ptier, pgov, independent, self._is_female(child),
-                                 child=child, ptid=ptid, date=rd, owner=owner)
+                                 child=child, ptid=ptid, date=date, owner=owner)
 
         # the game gives no word here (gate missed) → drop the whole style, so it never
         # degrades into a bare prefix
