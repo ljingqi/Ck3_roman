@@ -46,23 +46,36 @@ def metrics(k):
 
 
 def main():
-    case, K = metrics(9)
+    case = metrics(int(sys.argv[1]) if len(sys.argv) > 1 else 9)[0]
     w, h = case["view"]
     img = Image.new("RGB", (int(w), int(h)), "#fdfaf0")
     d = ImageDraw.Draw(img)
+    # the generation bands the page draws, then the lines, then the beads
     for pa in case["paths"]:
-        mm = re.fullmatch(r"M([-\d.]+),([-\d.]+) H([-\d.]+) V([-\d.]+) H([-\d.]+)", pa["d"])
         col = {"edge": "#4a4238", "edge red": "#b3352a", "edge dashed": "#b3352a"}.get(pa["cls"])
-        if not mm or not col:
+        if not col:
             continue
-        x0, y0, ex, cy, x1 = (float(g) for g in mm.groups())
-        wide = 2 if pa["cls"] != "edge" else 1
-        d.line([(x0, y0), (ex, y0), (ex, cy), (x1, cy)], fill=col, width=wide)
+        for pat in (r"M([-\d.]+),([-\d.]+) V([-\d.]+) H([-\d.]+) V([-\d.]+)",
+                    r"M([-\d.]+),([-\d.]+) H([-\d.]+) V([-\d.]+) H([-\d.]+)"):
+            mm = re.fullmatch(pat, pa["d"])
+            if not mm:
+                continue
+            a = [float(g) for g in mm.groups()]
+            wide = 2 if pa["cls"] != "edge" else 1
+            if pat.startswith(r"M([-\d.]+),([-\d.]+) V"):
+                x0, y0, by, x1, y1 = a
+                d.line([(x0, y0), (x0, by), (x1, by), (x1, y1)], fill=col, width=wide)
+            else:
+                x0, y0, ex, y1, x1 = a
+                d.line([(x0, y0), (ex, y0), (ex, y1), (x1, y1)], fill=col, width=wide)
+            break
     for pa in case["paths"]:
-        m2 = re.fullmatch(r"M([-\d.]+),([-\d.]+) V([-\d.]+)", pa["d"])
-        if m2 and pa["cls"] == "spouse-link":
-            x, y0, y1 = (float(g) for g in m2.groups())
-            d.line([(x, y0), (x, y1)], fill="#a08a5e", width=1)
+        if pa["cls"] != "spouse-link":
+            continue
+        mm = re.fullmatch(r"M([-\d.]+),([-\d.]+) H([-\d.]+)", pa["d"])
+        if mm:
+            x0, yy, x1 = (float(g) for g in mm.groups())
+            d.line([(x0, yy), (x1, yy)], fill="#a08a5e", width=1)
     fn, fy, ft = font(13), font(10), font(11)
     for b in case["beads"]:
         x, y, bw, bh = b["x"], b["y"], b["w"], b["h"]
@@ -77,14 +90,14 @@ def main():
             d.text((x + bw / 2, y + 26), b["texts"][1], font=ft, fill="#8a7a55", anchor="mm")
         if b["tog"]:
             d.text((x + bw - 12, y + bh / 2), b["tog"], font=ft, fill="#6f6247", anchor="mm")
-    for g in range(1, 20):
-        pass
     out = os.path.join(ROOT, "logs", "v113_tree_k9.png")
     img.save(out)
     print(f"{out}  {int(w)}×{int(h)}  珠粒 {case['bead_count']}  折线 {len(case['paths'])}")
-    # a crop of the top-left area at full size, easier to read
+    # crops at full size, easier to read: the top-left corner and the whole upper half
     img.crop((0, 0, min(int(w), 900), min(int(h), 700))).save(
         os.path.join(ROOT, "logs", "v113_tree_k9_crop.png"))
+    img.crop((0, 0, min(int(w), 1400), min(int(h), 520))).save(
+        os.path.join(ROOT, "logs", "v113_tree_k9_top.png"))
 
 
 if __name__ == "__main__":

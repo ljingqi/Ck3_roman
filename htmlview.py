@@ -254,8 +254,8 @@ ul,ol{margin:0 0 14px;padding-left:2em;line-height:2}
 li{margin-bottom:4px}
 blockquote{margin:0 0 14px;padding:10px 18px;border-left:4px solid var(--gold);background:#f3ecd8;color:var(--ink-soft)}
 code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,monospace;font-size:.9em}
-/* v113: 家谱 (Su-Xun style hanging beads). Generations are columns, oldest on the right, so the
-   clan reads right to left the way a printed 垂珠体 page does; the succession is drawn in red. */
+/* v113: 家谱 (宝塔式世系图). One row per generation with the ancestor on top, so the clan reads
+   downwards like a pagoda (宝塔式); the succession is drawn in red. */
 #tree-btn{font:inherit;padding:5px 14px;border:1px solid #8f7d55;background:#3a3121;color:var(--bar-ink);border-radius:5px;cursor:pointer}
 #tree-btn.active{background:var(--gold);border-color:var(--gold);color:#211a0c;font-weight:700}
 #tree-btn[disabled]{opacity:.45;cursor:default}
@@ -267,6 +267,7 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
 .tree-bar .key.red i{border-top-color:#b3352a}
 .tree-scroll{overflow:auto;max-height:82vh;padding:6px}
 .tree-scroll svg{display:block}
+.row-band{fill:#f9f4e6}
 .bead rect{fill:#fffdf6;stroke:#8d7f61;stroke-width:1}
 .bead.subj rect{fill:#fdf3e2;stroke:#b3352a;stroke-width:1.6}
 .bead.kin rect{fill:#f7f4ea}
@@ -279,7 +280,7 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
 .edge.red{stroke:#b3352a;stroke-width:2}
 .edge.dashed{stroke:#b3352a;stroke-width:1.6;stroke-dasharray:5 4}
 .spouse-link{fill:none;stroke:#a08a5e;stroke-width:1;stroke-dasharray:2 3}
-.gen-head{font-size:13px;fill:#8a7a55;text-anchor:middle}
+.gen-head{font-size:13px;fill:#8a7a55;text-anchor:start}
 @media (max-width:640px){.paper{padding:22px 18px 26px}h1.masthead{font-size:24px}}
 </style>
 </head>
@@ -306,7 +307,6 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
 const DATA = __DATA__;
 const CHARS = DATA.chars || [];
 const TREE = DATA.tree || null;
-const MARKS = DATA.marks || {};
 let ci = 0, ai = 0;
 function show(nci, nai){
   ci = nci; ai = nai;
@@ -328,7 +328,6 @@ function show(nci, nai){
   const a = ch.items[ai];
   stage.innerHTML = a ? '<div class="paper">' + a.html + '</div>' : '<div class="empty">（无传记）</div>';
   meta.textContent = a ? ch.name + ' ｜ ' + (a.meta || '') : ch.name;
-  drawHosts(stage);
   // v14: 左侧章节栏 — 由 markdown 标题生成, 点击滚动到对应锚点
   tocEl.innerHTML = '';
   const toc = (a && a.toc) || [];
@@ -349,8 +348,8 @@ function show(nci, nai){
   });
 }
 
-/* ---- v113 家谱: 苏洵式 (垂珠体) — 世代为列、由右向左, 父子折线黑, 传主传承红 ---- */
-const COL_W = 176, ROW_H = 50, BEAD_W = 134, BEAD_H = 34, PAD_X = 46, PAD_Y = 42;
+/* ---- v113 家谱: 宝塔式 — 世代为行、始祖在上, 父子折线黑, 传主传承红 ---- */
+const GAP_X = 18, ROW_H = 118, BEAD_W = 134, BEAD_H = 34, PAD_X = 40, PAD_Y = 34, GUT = 60;
 const GEN_NUM = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
                  '十一', '十二', '十三', '十四', '十五', '十六'];
 const SUBJ_NUM = ['', '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
@@ -397,8 +396,11 @@ function scopeOf(k){
 }
 
 /* Bead order: from the clan's first member, each person, then the 配 beads beside him, then his
-   children (`collapsed` hides a branch without dropping the person himself; the branch that a
-   collapsed bead hides is marked seen so the safety sweep cannot pull it back in). */
+   children. A 宝塔式 page reads downwards and left to right, and this order is exactly the row
+   order: a father stands before his own children and after his elders, so his 配 beads land next to
+   him and his children stay together under him. (`collapsed` hides a branch without dropping the
+   person himself; the branch that a collapsed bead hides is marked seen so the safety sweep cannot
+   pull it back in.) */
 function beadOrder(sc, collapsed){
   const order = [], seen = {};
   const skip = id => {
@@ -431,88 +433,122 @@ function renderTree(host, k){
   }
   const z = host._zoom || 1;
   const order = beadOrder(sc, collapsed);
-  const cols = {}, genList = [];
-  let maxGen = 1;
+  // 宝塔式: one row per generation, 始祖 at the top and each generation below its father's
+  const row = {}, genList = {}, rowOf = {};
   order.forEach(id => {
     const g = sc.byId[id].gen || 1;
-    maxGen = Math.max(maxGen, g);
-    if(!cols[g]){ cols[g] = []; genList.push(g); }
-    cols[g].push(id);
+    if(!genList[g]){ genList[g] = []; }
+    genList[g].push(id);
   });
-  genList.sort((a, b) => a - b);
-  const pos = {};
-  const place = () => { genList.forEach(g => cols[g].forEach((id, i) => { pos[id] = i; })); };
-  place();
-  // barycentre sweeps: each column sits next to the column it descends from, so the lines stay short
-  const anchor = (id, up) => {
-    const n = sc.byId[id];
-    if(!up) return (sc.kids[id] || []).filter(x => pos[x] != null);
-    const p = (n.spouse_of != null ? n.spouse_of : n.parent);
-    return (p != null && pos[p] != null) ? [p] : [];
+  Object.keys(genList).map(Number).sort((a, b) => a - b).forEach((g, i) => {
+    row[g] = genList[g];
+    rowOf[g] = i;
+  });
+  const gens = Object.keys(row).map(Number).sort((a, b) => a - b);
+  const xOf = {};
+  // 宝塔式 placement: walk each line down, give the leaves the row's next free slot, then put the
+  // father over the middle of his children — so a subtree owns a contiguous stretch and the rows
+  // stay as narrow as their longest row. Two re-centre + repack rounds settle the overlaps.
+  const slot = {};
+  const placeNode = id => {
+    if(xOf[id] != null) return;
+    const g = sc.byId[id].gen || 1;
+    const kids = (sc.kids[id] || []).filter(k => sc.byId[k] != null);
+    kids.forEach(placeNode);
+    if(kids.length){
+      const a = kids.map(k => xOf[k]);
+      xOf[id] = a.reduce((s, x) => s + x, 0) / a.length;
+    } else {
+      xOf[id] = slot[g] || 0;
+      slot[g] = xOf[id] + BEAD_W + GAP_X;
+    }
+    // 配 beads sit beside their husband/wife and take their own room in the row
+    (sc.spouses[id] || []).forEach((s, j) => {
+      if(xOf[s] != null) return;
+      xOf[s] = xOf[id] + (j + 1) * (BEAD_W + GAP_X);
+      slot[g] = Math.max(slot[g] || 0, xOf[s] + BEAD_W + GAP_X);
+    });
   };
-  for(let pass = 0; pass < 3; pass++){
-    for(let i = 1; i < genList.length; i++){
-      const g = genList[i];
-      const keys = cols[g].map((id, j) => {
-        const a = anchor(id, true);
-        return [id, j, a.length ? a.reduce((s, x) => s + pos[x], 0) / a.length : null];
-      });
-      keys.sort((a, b) => {
-        if(a[2] == null && b[2] == null) return a[1] - b[1];
-        if(a[2] == null) return 1;
-        if(b[2] == null) return -1;
-        return a[2] - b[2];
-      });
-      cols[g] = keys.map(x => x[0]); place();
+  sc.roots.forEach(placeNode);
+  order.forEach(id => { if(xOf[id] == null){ xOf[id] = slot[sc.byId[id].gen || 1] || 0;
+                                             slot[sc.byId[id].gen || 1] = xOf[id] + BEAD_W + GAP_X; } });
+  const repack = g => {
+    const ids = row[g];
+    for(let i = 1; i < ids.length; i++){
+      const need = xOf[ids[i - 1]] + BEAD_W + GAP_X;
+      if(xOf[ids[i]] < need) xOf[ids[i]] = need;
     }
-    for(let i = genList.length - 2; i >= 0; i--){
-      const g = genList[i];
-      const keys = cols[g].map((id, j) => {
-        const a = anchor(id, false);
-        return [id, j, a.length ? a.reduce((s, x) => s + pos[x], 0) / a.length : null];
-      });
-      keys.sort((a, b) => {
-        if(a[2] == null && b[2] == null) return a[1] - b[1];
-        if(a[2] == null) return 1;
-        if(b[2] == null) return -1;
-        return a[2] - b[2];
-      });
-      cols[g] = keys.map(x => x[0]); place();
+    for(let i = ids.length - 2; i >= 0; i--){
+      const need = xOf[ids[i + 1]] - BEAD_W - GAP_X;
+      if(xOf[ids[i]] > need) xOf[ids[i]] = need;
     }
+  };
+  for(let pass = 0; pass < 2; pass++){
+    gens.forEach(g => {
+      row[g].forEach(id => {
+        const kids = (sc.kids[id] || []).filter(k => xOf[k] != null);
+        if(kids.length){
+          xOf[id] = kids.reduce((s, k) => s + xOf[k], 0) / kids.length;
+        }
+      });
+      repack(g);
+    });
   }
-  const rows = Math.max.apply(null, genList.map(g => cols[g].length));
-  const W = PAD_X * 2 + maxGen * COL_W, H = PAD_Y + rows * ROW_H + 12;
-  const colX = g => PAD_X + (maxGen - g) * COL_W + (COL_W - BEAD_W) / 2;
-  const y = id => PAD_Y + pos[id] * ROW_H;
+  gens.forEach(repack);
+  let minX = Infinity, maxX = -Infinity;
+  Object.keys(xOf).forEach(id => { minX = Math.min(minX, xOf[id]); maxX = Math.max(maxX, xOf[id]); });
+  if(!isFinite(minX)){ minX = 0; maxX = 0; }
+  Object.keys(xOf).forEach(id => { xOf[id] = Math.round(xOf[id] - minX + GUT + PAD_X); });
+  const bx = id => xOf[id];
+  const y = id => PAD_Y + rowOf[sc.byId[id].gen || 1] * ROW_H;
+  const W = Math.round(maxX - minX) + BEAD_W + PAD_X * 2 + GUT;
+  const H = PAD_Y * 2 + gens.length * ROW_H;
   const parts = [];
-  genList.forEach(g => {
-    parts.push('<text class="gen-head" x="' + (colX(g) + BEAD_W / 2) + '" y="16">'
-               + (GEN_NUM[g] || g) + '世</text>');
+  gens.forEach(g => {
+    const yy = PAD_Y + rowOf[g] * ROW_H;
+    parts.push('<rect class="row-band" x="0" y="' + (yy - 9) + '" width="' + W + '" height="'
+               + (BEAD_H + 18) + '"/>');
+    parts.push('<text class="gen-head" x="12" y="' + (yy + 22) + '">' + (GEN_NUM[g] || g)
+               + '世</text>');
+    parts.push('<text class="gen-head" x="' + (W - 12) + '" y="' + (yy + 22)
+               + '" text-anchor="end">' + (GEN_NUM[g] || g) + '世</text>');
   });
+  // 配 beads hang beside their husband/wife behind a dashed couple link
   Object.keys(sc.spouses).forEach(pid => {
     sc.spouses[pid].forEach(sid => {
-      const x = colX(sc.byId[pid].gen) - 8;
-      parts.push('<path class="spouse-link" d="M' + x + ',' + (y(pid) + BEAD_H / 2)
-                 + ' V' + (y(sid) + BEAD_H / 2) + '"/>');
+      if(xOf[pid] == null || xOf[sid] == null) return;
+      const a = xOf[pid] + BEAD_W / 2, b = xOf[sid] + BEAD_W / 2;
+      const x1 = a < b ? xOf[pid] + BEAD_W : xOf[pid], x2 = a < b ? xOf[sid] : xOf[sid] + BEAD_W;
+      parts.push('<path class="spouse-link" d="M' + x1 + ',' + (y(pid) + BEAD_H / 2)
+                 + ' H' + x2 + '"/>');
     });
   });
+  // 宝塔式 descent: down out of the father, across the gap, then down onto the child. A child that
+  // the data still puts on its father's own row (a lifted gen should prevent it) is linked under
+  // that row instead, so the line never runs backwards through the beads
   order.forEach(id => {
     const n = sc.byId[id], p = n.parent;
-    if(p == null || !sc.byId[p] || pos[p] == null) return;
+    if(p == null || !sc.byId[p] || xOf[p] == null) return;
     const cls = sc.red[p + '>' + id] ? 'edge red' : 'edge';
-    const px = colX(sc.byId[p].gen), py = y(p) + BEAD_H / 2;
-    const cx = colX(n.gen), cy = y(id) + BEAD_H / 2;
-    const ex = (cx + BEAD_W) + Math.max(12, (px - cx - BEAD_W) / 2);
-    parts.push('<path class="' + cls + '" d="M' + px + ',' + py + ' H' + ex + ' V' + cy
-               + ' H' + (cx + BEAD_W) + '"/>');
+    const pxc = xOf[p] + BEAD_W / 2, py = y(p) + BEAD_H;
+    const cxc = xOf[id] + BEAD_W / 2;
+    if(rowOf[n.gen || 1] > rowOf[sc.byId[p].gen || 1]){
+      const cy = y(id), by = py + Math.max(16, (cy - py) / 2 - BEAD_H / 2);
+      parts.push('<path class="' + cls + '" d="M' + pxc + ',' + py + ' V' + by + ' H' + cxc
+                 + ' V' + cy + '"/>');
+    } else {
+      const by = py + 16;
+      parts.push('<path class="' + cls + '" d="M' + pxc + ',' + py + ' V' + by + ' H' + cxc
+                 + ' V' + (y(id) + BEAD_H) + '"/>');
+    }
   });
   (TREE.red_dashed || []).forEach(e => {
-    if(e[2] > k - 2 || pos[e[0]] == null || pos[e[1]] == null) return;
-    parts.push('<path class="edge dashed" d="M' + colX(sc.byId[e[0]].gen) + ',' + (y(e[0]) + BEAD_H / 2)
-               + ' H' + colX(sc.byId[e[1]].gen) + '"/>');
+    if(e[2] > k - 2 || xOf[e[0]] == null || xOf[e[1]] == null) return;
+    parts.push('<path class="edge dashed" d="M' + (xOf[e[0]] + BEAD_W / 2) + ','
+               + (y(e[0]) + BEAD_H / 2) + ' H' + (xOf[e[1]] + BEAD_W / 2) + '"/>');
   });
   order.forEach(id => {
-    const n = sc.byId[id], x = colX(n.gen), yy = y(id);
+    const n = sc.byId[id], x = bx(id), yy = y(id);
     const isSpouse = n.spouse_of != null;
     const subj = sc.isSubj(n) ? n.subj : 0;
     const cls = subj ? 'bead subj' : (isSpouse ? 'bead kin' : 'bead');
@@ -561,12 +597,6 @@ function renderTree(host, k){
   });
 }
 
-function drawHosts(root){
-  (root || document).querySelectorAll('.tree-host').forEach(h => {
-    renderTree(h, parseInt(h.getAttribute('data-k'), 10) || 0);
-  });
-}
-
 function showTree(){
   if(!TREE) return;
   const k = (TREE.chain || []).length;
@@ -574,10 +604,10 @@ function showTree(){
   const tocEl = document.getElementById('toc');
   stage.innerHTML = '<div class="paper"><h2>家谱</h2>'
     + '<div class="tree-host" data-k="' + k + '"></div></div>';
-  document.getElementById('meta-line').textContent = '全族家谱 ｜ 苏洵式垂珠体';
+  document.getElementById('meta-line').textContent = '全族家谱 ｜ 宝塔式世系图';
   document.getElementById('tabs').innerHTML = '';
   document.getElementById('tree-btn').classList.add('active');
-  drawHosts(stage);
+  renderTree(stage.querySelector('.tree-host'), k);
   tocEl.innerHTML = '<div class="toc-root">家谱</div>';
   if(TREE.fanli){
     const d = document.createElement('div');
@@ -818,39 +848,6 @@ def _load_tree(base):
     return best
 
 
-def _inject_tree_host(html_str, k):
-    """Insert the 家谱 figure host right after the appendix's 家谱 heading and its list.
-
-    The figure is drawn by the page's own script from the sidecar data, so the Markdown stays a
-    plain-text 谱例 and the reading page carries the Su-Xun style tree (v113 user request)."""
-    if k is None:
-        return html_str
-    host = f'<div class="tree-host" data-k="{k}"></div>'
-    m = re.search(r'<h3[^>]*>家谱</h3>', html_str)
-    if not m:
-        return html_str
-    end = m.end()
-    # walk past the caption list if one follows: the figure belongs under the 谱例, not between
-    # the heading and it (nested lists make a plain non-greedy match unsafe)
-    rest = html_str[end:]
-    lst = re.match(r"\s*<ul>", rest)
-    if lst:
-        depth, i = 0, lst.start()
-        while i < len(rest):
-            if rest.startswith("<ul>", i):
-                depth += 1
-                i += 4
-            elif rest.startswith("</ul>", i):
-                depth -= 1
-                i += 5
-                if depth <= 0:
-                    break
-            else:
-                i += 1
-        end += i
-    return html_str[:end] + host + html_str[end:]
-
-
 def rebuild_folder(output_dir, folder):
     """Build/update index.html for one family folder; returns None when there is no md.
     Entries are grouped per character: character menu top right, that character's pieces
@@ -859,8 +856,6 @@ def rebuild_folder(output_dir, folder):
     if not os.path.isdir(base):
         return None
     tree = _load_tree(base)
-    pieces = (tree or {}).get("pieces") or {}
-    marks = {int(pid): int(k) for pid, k in pieces.items()} if pieces else {}
     entries = []
     for fn in sorted(os.listdir(base)):
         if not fn.lower().endswith(".md"):
@@ -876,11 +871,6 @@ def rebuild_folder(output_dir, folder):
         h = _parse_header(text)
         label, meta = _article_label(fn, text, folder, h)
         html_str, toc = md_to_html(text)
-        try:
-            k = marks.get(int(h.get("person_id") or 0))
-        except (TypeError, ValueError):
-            k = None
-        html_str = _inject_tree_host(html_str, k)
         pkey, disp = _person_identity(fn, folder, text, h)
         entries.append({
             "person": disp,
@@ -924,7 +914,7 @@ def rebuild_folder(output_dir, folder):
     for g in groups:
         g.pop("person_key", None)
     title = f"{folder} · 家传阅读页"
-    payload = {"chars": groups, "tree": tree, "marks": marks}
+    payload = {"chars": groups, "tree": tree}
     # `<\/` is the same JSON string as `</`: escaping it keeps a name from closing the inline
     # <script> early (and from opening an HTML comment)
     data = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")

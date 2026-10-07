@@ -25945,6 +25945,22 @@ def genealogy_tree(f):
     for x in sorted(node_set):
         _walk(x)
 
+    # 宝塔式 rows: a child drawn under a parent always sits one generation lower, so no row ever holds
+    # a father and his own son. The vote above reads the game's own reckoning, which can leave a
+    # late-recorded son level with his father (5 such pairs in 洪氏2). Only off-chain generations are
+    # lifted: the chain's own 世次 is what the printed rows show and never moves (v113 user 2026-10-07).
+    chain_ids = {m["cid"] for m in members}
+    for _sweep in range(len(order)):
+        lifted = False
+        for x in order:
+            p = parent_of.get(x)
+            if (p is not None and p in gen and x in gen and x not in chain_ids
+                    and not spouse_of.get(x) and gen[x] <= gen[p]):
+                gen[x] = gen[p] + 1
+                lifted = True
+        if not lifted:
+            break
+
     # the succession between consecutive protagonists: red along the tree path between them.
     # Each edge carries the index of the pair it belongs to (0-based), so a piece can draw the
     # transmission as far as its own protagonist (v113).

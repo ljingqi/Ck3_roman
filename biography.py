@@ -3097,14 +3097,10 @@ def _appendix_text(facts):
     lines = []
     gen = facts.get("genealogy") or []
     if gen:
-        # v113 (user 2026-10-06): the printed 世系 gave way to the 家谱 page. The appendix keeps the
-        # 谱例 and the house history, while the chain figure and the per-generation blocks are drawn
-        # as a Su-Xun style tree (垂珠体) by `htmlview` from `facts["genealogy_tree"]`.
-        lines.append("### 家谱")
-        lines.append("- " + gen[0])
-        tree = facts.get("genealogy_tree") or {}
-        if tree.get("summary"):
-            lines.append("- " + tree["summary"])
+        # v113 (user 2026-10-07): the printed 世系 stays where it was; the drawn 家谱 lives behind the
+        # reading page's 家谱 button, built by `htmlview` from `facts["genealogy_tree"]`.
+        lines.append("### 世系")
+        lines.extend("- " + g for g in gen)
         for ln in ((facts.get("protagonist") or {}).get("house_history") or []):
             if ln:
                 lines.append("- " + ln)

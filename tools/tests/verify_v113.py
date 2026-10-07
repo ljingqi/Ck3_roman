@@ -321,11 +321,12 @@ def t_layout_js(html_path=None):
     """Run the page's own tree script headlessly and assert the geometry it produces.
 
     The layout lives in JavaScript, so this is the only check that sees the real thing: beads per
-    generation column (right to left), no overlap inside a column, every edge meeting the right
-    bead corners, the red line covering the succession pairs, and the default collapse state."""
+    generation row (始祖 on top, 宝塔式), no overlap inside a row, every edge leaving the father's
+    bottom and landing on the child's top, the red line covering the succession pairs, and the
+    default collapse state."""
     import subprocess
     p = html_path or os.path.join(ROOT, "output", "洪氏2", "index.html")
-    print(f"[5] 垂珠体几何（node 无头核对）{p}")
+    print(f"[5] 宝塔式几何（node 无头核对）{p}")
     if not os.path.exists(p):
         check(False, "阅读页存在", p)
         return
@@ -379,49 +380,65 @@ def t_layout_js(html_path=None):
                 continue
             stack.extend(kids.get(x) or [])
         check(set(beads) == want, f"[k={k}] 默认折叠后可见者吻合", f"{len(beads)} vs {len(want)}")
-        # columns: older generations sit further right, one column per generation
-        xs = {}
+        # rows: one row per generation, 始祖 on top and each generation below its father's
+        ys = {}
         for b in case["beads"]:
             g = nodes[b["id"]]["gen"]
-            xs.setdefault(g, set()).add(b["x"])
-        check(all(len(v) == 1 for v in xs.values()), f"[k={k}] 同世同列", xs)
-        gl = sorted(xs)
-        colx = {g: sorted(v)[0] for g, v in xs.items()}
-        check(all(colx[gl[i]] > colx[gl[i + 1]] for i in range(len(gl) - 1)),
-              f"[k={k}] 由右向左", [(g, colx[g]) for g in gl])
-        # every column is stable and no two beads in it touch
+            ys.setdefault(g, set()).add(b["y"])
+        check(all(len(v) == 1 for v in ys.values()), f"[k={k}] 同世同行", ys)
+        gl = sorted(ys)
+        rowy = {g: sorted(v)[0] for g, v in ys.items()}
+        check(all(rowy[gl[i]] < rowy[gl[i + 1]] for i in range(len(gl) - 1)),
+              f"[k={k}] 由上而下（始祖在上）", [(g, rowy[g]) for g in gl])
+        # every row is stable and no two beads in it touch
         for g in gl:
-            ys = sorted(b["y"] for b in case["beads"] if nodes[b["id"]]["gen"] == g)
-            gaps = [ys[i + 1] - ys[i] for i in range(len(ys) - 1)]
-            check(all(x >= 34 for x in gaps), f"[k={k}] {g}世 列内不重叠", gaps[:6])
-        # edges: every visible parent-child pair has exactly one edge meeting both beads' corners
+            xs = sorted(b["x"] for b in case["beads"] if nodes[b["id"]]["gen"] == g)
+            gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+            check(all(x >= 134 + 18 - 1 for x in gaps), f"[k={k}] {g}世 行内不重叠", gaps[:6])
+        # a father always stands on a higher row than his drawn son
+        bad_row = [(nodes[b["id"]]["name"], nodes[p]["gen"], nodes[b["id"]]["gen"])
+                   for b in case["beads"] for p in [nodes[b["id"]]["parent"]]
+                   if p in beads and nodes[p]["gen"] >= nodes[b["id"]]["gen"]]
+        check(not bad_row, f"[k={k}] 父子不同行", bad_row[:4])
+        # edges: out of the father's bottom, across the gap, onto the child's top
         edges = []
         for pa in case["paths"]:
             if pa["cls"] not in ("edge", "edge red"):
                 continue
-            mm = re.fullmatch(r"M([-\d.]+),([-\d.]+) H([-\d.]+) V([-\d.]+) H([-\d.]+)", pa["d"])
+            mm = re.fullmatch(r"M([-\d.]+),([-\d.]+) V([-\d.]+) H([-\d.]+) V([-\d.]+)", pa["d"])
             if mm:
                 edges.append((float(mm.group(1)), float(mm.group(2)), float(mm.group(3)),
                               float(mm.group(4)), float(mm.group(5)), pa["cls"]))
         check(len(edges) == sum(1 for b in case["beads"] if nodes[b["id"]]["parent"] in beads),
               f"[k={k}] 父子折线数", len(edges))
         parents = {(a, b) for a, b, i in tree["red_edges"] if i <= k - 2}
-        red, bad_end, bad_start, bad_colour = 0, [], [], []
-        for x0, y0, x1, y1, x2, cls in edges:
+        red, bad_end, bad_start, bad_bus, bad_colour = 0, [], [], [], []
+        shared_row = 0
+        for x0, y0, by, x1, y1, cls in edges:
             child = next((b for b in case["beads"]
-                          if b["x"] + b["w"] == x2 and b["y"] + b["h"] / 2 == y1), None)
+                          if b["x"] + b["w"] / 2 == x1 and b["y"] == y1), None)
+            under = False
+            if child is None:   # the under-row form: the child's bottom edge instead of its top
+                child = next((b for b in case["beads"]
+                              if b["x"] + b["w"] / 2 == x1 and b["y"] + b["h"] == y1), None)
+                under = child is not None
+                shared_row += 1 if under else 0
             if child is None:
-                bad_end.append((x2, y1))
+                bad_end.append((x1, y1))
                 continue
             pa = nodes[child["id"]]["parent"]
             top = beads.get(pa)
-            if top is None or top["x"] != x0 or top["y"] + top["h"] / 2 != y0:
+            if top is None or top["x"] + top["w"] / 2 != x0 or top["y"] + top["h"] != y0:
                 bad_start.append((x0, y0, pa))
+            elif not y0 < by < (y1 + (34 if under else 0)):
+                bad_bus.append((y0, by, y1))
             if (cls == "edge red") != ((pa, child["id"]) in parents):
                 bad_colour.append((pa, child["id"], cls))
             red += 1 if cls == "edge red" else 0
-        check(not bad_end, f"[k={k}] 折线终点落在子女珠右缘", bad_end[:4])
-        check(not bad_start, f"[k={k}] 折线起点落在父珠左缘", bad_start[:4])
+        check(not bad_end, f"[k={k}] 折线终点落在子女珠上缘", bad_end[:4])
+        check(not bad_start, f"[k={k}] 折线起点落在父珠下缘", bad_start[:4])
+        check(not bad_bus, f"[k={k}] 折线在父子行之间转折", bad_bus[:4])
+        check(shared_row == 0, f"[k={k}] 无父子同行之折线", shared_row)
         check(not bad_colour, f"[k={k}] 红黑归属（红线只走传主传承）", bad_colour[:4])
         check(red == sum(1 for a, b in parents if a in beads and b in beads),
               f"[k={k}] 红线段数与传主传承吻合", red)
@@ -471,7 +488,7 @@ def t_html(path=None):
         return
     html = io.open(p, encoding="utf-8").read()
     check('id="tree-btn"' in html, "工具栏有家谱入口")
-    check("function renderTree" in html, "内联垂珠体渲染器")
+    check("function renderTree" in html, "内联宝塔式渲染器")
     check("red_edges" in html, "红线数据随页下发")
     # the whole page dies if the payload closes the inline <script> early
     mm = re.search(r"const DATA = (\{.*?\});\nconst CHARS", html, re.S)
@@ -488,13 +505,16 @@ def t_html(path=None):
             check(False, "页面数据段可解析", e)
     tree = load_tree()
     if tree:
-        # the payload is JSON-embedded in the page, so its quotes arrive escaped
-        hosts = re.findall(r'data-k=\\*"(\d+)\\*"', html)
-        hosts = [h for h in hosts if h.isdigit()]
-        want = {str(k) for k in tree["pieces"].values() if k >= 1}
-        check(bool(hosts), "终传附录已装家谱容器", f"{len(hosts)} 处")
-        check(set(hosts) <= want, "容器篇次都在传主链内", sorted(set(hosts) - want))
-        check("### 世系" not in html and ">世系<" not in html, "旧「世系」小节已让位")
+        # the figure lives behind the toolbar button only (user 2026-10-07): the article appendices
+        # keep the printed 世系 they always had, and no per-article host is injected
+        check(len(re.findall(r'class="tree-host"', html)) == 1,
+              "家谱只在阅读页的「家谱」按钮处", len(re.findall(r'class="tree-host"', html)))
+        check("宝塔式" in html, "页面自称宝塔式")
+        base = os.path.join(ROOT, "output", "洪氏2")
+        mds = [f for f in sorted(os.listdir(base)) if f.endswith(".md") and "终传" in f]
+        no_tree = [f for f in mds
+                   if "### 世系" not in io.open(os.path.join(base, f), encoding="utf-8").read()]
+        check(mds and not no_tree, "终传附录的「### 世系」已复原", no_tree[:3])
 
 
 def main():
