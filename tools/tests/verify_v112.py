@@ -112,6 +112,17 @@ def group_synthetic():
     clause = F._death_clause_of(_Stub(), 5, killer_pronoun=True)
     check("V112-1b 占有格缩为「其」不留「其的」", clause == "在其命令下消失得无影无踪", clause)
 
+    # ---- 关系缘由串（loc 模板）里的同一个「其的」 ----
+    class _Stub2:
+        def _is_female(self, cid):
+            return False
+
+    raw = ("[TARGET_CHARACTER.GetShortUIName|U]坚称[TARGET_CHARACTER.GetSheHe]开启"
+           "[TARGET_CHARACTER.GetHerHis]的传奇全是为了打动和荣耀[CHARACTER.GetShortUIName]。")
+    got = F._sub_relation_loc(_Stub2(), raw, 1, 2, names=("甲", "乙", "丙"))
+    check("V112-1b loc 模板不留「其的」（soulmate_legend_motivation_corresponding）",
+          "其的" not in got and "乙坚称他开启其传奇" in got, got)
+
     # ---- facts.death_clause：消失无踪类死法本身的无施事成句 ----
     f = F.Facts.__new__(F.Facts)
     f.cache = {"characters": {"5": {"death": {"reason": "death_disappearance",

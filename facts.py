@@ -24356,6 +24356,10 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
         return ""
     # Named tags still unrecognized (Select_CString(...) and the stripped custom locs) are cleared
     s = re.sub(r"\[[^\]]*\]", "", s)
+    # The game's Chinese templates write the possessive as `[X.GetHerHis]的` (e.g.
+    # `soulmate_legend_motivation_corresponding`: 「…开启[TARGET_CHARACTER.GetHerHis]的传奇…」),
+    # while our accessor already yields the possessive 「其」 — 「其的传奇」 is a duplicated particle.
+    s = s.replace("其的", "其")
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
