@@ -10016,8 +10016,8 @@ class Facts:
                      child=None, ptid=None, date=None, owner=None):
         """Prince word by the parent's title tier × government × independent/vassal × sex.
 
-        Celestial: empire → 皇子/皇女, independent kingdom → 王子/郡主, vassal kingdom → 公子/公女;
-        feudal: 王子/公主.
+        Celestial: hegemon or independent empire → 皇子/皇女, vassal empire → 公子/公女,
+        independent kingdom → 王子/郡主, vassal kingdom → 公子/公女; feudal: 王子/公主.
 
         A combination missing from the game's `special = ruler_child` table (`_prince_word_exists`)
         grants no title in the game either, so '' is returned; with `child`/`ptid` omitted the
@@ -10027,8 +10027,14 @@ class Facts:
             return ""
         gov = government or ""
         if gov in self._CELESTIAL_LIKE_GOVS:
-            if ptier in ("hegemon", "empire"):
+            if ptier == "hegemon" or (ptier == "empire" and independent):
                 key = "princess_female_celestial_chinese" if female else "prince_male_celestial_chinese"
+            elif ptier == "empire":
+                # A vassal empire (行台) is an appointment, not the throne: the game's
+                # `prince/princess_empire_celestial_chinese` are the vassal words 公子/公女,
+                # while 皇子/皇女 belongs to the independent emperor alone.
+                key = ("princess_empire_celestial_chinese" if female
+                       else "prince_empire_celestial_chinese")
             elif independent:
                 key = ("princess_kingdom_celestial_chinese_independent" if female
                        else "prince_kingdom_celestial_chinese_independent")
@@ -10170,9 +10176,70 @@ class Facts:
             return l or g
         return ""
 
+    def _death_liege(self, cid):
+        """Liege recorded in the death record; the character's own id means he died independent.
+
+        The cache keeps what the save wrote for the death moment (`death.liege`), with the melt's
+        `dead_data` as a second reading. Current characters have no death record, so None."""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        lig = self._death_int((rec.get("death") or {}).get("liege"))
+        if lig is None:
+            dd = (self._chars.get(str(cid)) or {}).get("dead_data") or {}
+            lig = self._death_int(dd.get("liege"))
+        return lig
+
+    def _parent_child_government(self, owner, ptid, date, title_gov=None):
+        """Government behind a parent's children's style, in the office word's own source.
+
+        `_title_government` reads the holder through the title, so a holder whose government
+        history begins long after his tenure leaves it empty: 洪仁德 held 山南 as 观察使 and died in
+        973, while the caches begin in 1127, and his children were then styled with a feudal word
+        (山南王子) although his own office word was an administrative one (山南观察使, baked as
+        `dead_data.flavor` = `king_celestial_male_chinese_civilian_governor`). The character side
+        (`_gov_for_word`) reads the same holder and does know that baked government, so it is
+        consulted when the title side is silent — and accepted only for the celestial chain, the
+        one institution this project treats as unchanged across the period (`_CELESTIAL_CHAIN_GOVS`,
+        see `_character_government_or_earliest`), so a government observed in a later era never
+        pulls an earlier feudal parent into an administrative word.
+        """
+        if title_gov is None:
+            title_gov = self._title_government(ptid, date)
+        if title_gov:
+            return title_gov
+        if owner is None:
+            return ""
+        anchor = self._anchor_date(owner, date) or date
+        alt = self._gov_for_word(owner, ptid, anchor)
+        return alt if alt in self._CELESTIAL_CHAIN_GOVS else ""
+
+    def _parent_child_independent(self, owner, date):
+        """Independence of a parent as the game's `ruler_child` entries read it.
+
+        Two gaps in the per-save vassal history made a life-long vassal read as independent, and
+        both are closed by the save's own statement about the day he died: a history starting
+        after his tenure, where `_is_independent` answers None, and the entry the last save writes
+        after a death (`liege = None`), which `_anchor_date` no longer reaches because the queried
+        day folds to the day before death. 洪因, 宰相 and once 淮南观察使, died in 1147 while his
+        1129 contract still shows a liege, yet his children were written 淮南王子/淮南郡主
+        (user 2026-10-08). Without a death record the vassal history keeps deciding.
+        """
+        if owner is None:
+            return True
+        anchor = self._anchor_date(owner, date)
+        v = self._is_independent(owner, anchor)
+        hist = self._vassal_history(owner)
+        first = (hist[0].get("date") if hist else "") or ""
+        covered = bool(first) and (not anchor or cl.date_key(first) <= cl.date_key(anchor))
+        if v is None or not covered:
+            lig = self._death_liege(owner)
+            if lig is not None:
+                return lig == int(owner)
+        return True if v is None else bool(v)
+
     def _prince_style_from_title(self, ptier, ptid, date, child, owner, realm_date=None):
         """(tier, title) + holder → prefix + prince word; '' when there is no base name.
-        Government comes from the title, independence from the holder.
+        Government comes from the title (widened by the office word's own source when the title
+        side is silent), independence from the holder as of his own lifetime.
 
         The prefix is the title's own name, never a tier word. Two exceptions: a dynasty-named
         empire (`dynn_title_*` history name, e.g. 汉/晋/隋/唐/宋) is prefixed '大', while
@@ -10189,12 +10256,14 @@ class Facts:
             return ""
         rd = realm_date or date
         pgov = self._title_government(ptid, date)
+        # The ERA NAME keeps the title-side read above (it also decides the '大' dynasty form);
+        # the child's own word follows the widened read, so an administrative parent never has
+        # children styled as a reigning house's sons (see `_parent_child_government`).
+        wgov = self._parent_child_government(owner, ptid, date, pgov)
         pbase = self._name_at_date(ptid, rd or self.as_of) or self.title_base_name(ptid)
         if not pbase:
             return ""
-        independent = self._is_independent(owner, date)
-        if independent is None:
-            independent = True
+        independent = self._parent_child_independent(owner, date)
         rn = self.realm_name(ptid)
         if rn:
             prefix = rn
@@ -10207,7 +10276,7 @@ class Facts:
         else:
             # no tier word is appended (国/路/皇朝/王国/帝国); a short title uses its own name
             prefix = pbase
-        word = self._prince_word(ptier, pgov, independent, self._is_female(child),
+        word = self._prince_word(ptier, wgov, independent, self._is_female(child),
                                  child=child, ptid=ptid, date=date, owner=owner)
 
         # the game gives no word here (gate missed) → drop the whole style, so it never
