@@ -2074,6 +2074,8 @@ class Facts:
         self._regnal_cache = {}  # regnal number (cid, tid, date) -> ordinal
         self._mem_date_cache = {}  # title memory fact date (tid, cid, d, reason, type)
         self._dyn_hist_cache = {}  # per-save dynamic name evolution (this cache + campaign peers)
+        self._people_name_cache = {}   # tid -> people names (`<culture>_collective_noun` values)
+        self._people_keep_cache = {}   # (tid, date) -> whether that people name is displayed then
         self._label_cache = {}   # person label (cid, date, style) -> text
         # Label registry filled while building event sentences (see log_names/index_names).
         # The stack is per-thread: biography.py's ThreadPool runs blocks concurrently and
@@ -3252,6 +3254,85 @@ class Facts:
                 return True
         return False
 
+    def _people_names(self, tid):
+        """People names this title's own name history carries (`<culture>_collective_noun` values).
+
+        `title_name_data` mixes real renames with the map-name artifacts the engine records for
+        nomadic realms: a `<culture>_collective_noun` key (e.g. shiwei_collective_noun) names a
+        PEOPLE — 室韦人, or 室韦 once the 人 suffix is dropped — not a place. While the title's
+        holder is nomadic that people name is the realm's display name (`_keeps_people_name`), but
+        under a settled holder the engine displays `title_name_data.name` instead: the save
+        envelopes say 辽西 for d_liaoxi in 1145-1149 while `specific_title_name` still reads 室韦
+        (and across 500 melted saves of five playthroughs no displayed name was ever a people
+        name). This is the artifact class `_name_at_date` distrusts for `cn_*` keys.
+        """
+        hit = self._people_name_cache.get(tid)
+        if hit is not None:
+            return hit
+        out = set()
+        tnd = (self._lt.get(str(tid)) or {}).get("title_name_data") or {}
+        for h in (tnd.get("title_history_names") or []):
+            key = str((h or {}).get("name") or "")
+            if key.endswith("_collective_noun"):
+                v = (L.loc(self.table, key) or "").strip()
+                if not v:
+                    continue
+                out.add(v)
+                # the save's dynamic name may drop or keep the 人 suffix (室韦人 / 室韦)
+                out.add(v[:-1] if v.endswith("人") else v + "人")
+        self._people_name_cache[tid] = out
+        return out
+
+    def _keeps_people_name(self, tid, date=None):
+        """Whether this title's tribal realm name is the display name on `date`.
+
+        True only while the title's holder that day is nomadic, tribal or herder — the governments
+        whose realms the game names after their people. A settled holder gets the static
+        `title_name_data.name` (the save envelopes' rule, see `_people_names`).
+        """
+        d = date or self.as_of
+        ck = (tid, d)
+        hit = self._people_keep_cache.get(ck)
+        if hit is not None:
+            return hit
+        self._people_keep_cache[ck] = False   # provisional: government lookup must not recurse
+        ok = False
+        try:
+            hid = self.holder_at(tid, d) if d else self.holder_at(tid)
+        except Exception:
+            hid = None
+        if hid is not None:
+            gov = self._character_government(hid, d) if d else ""
+            if not gov:
+                try:
+                    gov = self._gov_for_word(hid, tid, d)
+                except Exception:
+                    gov = ""
+            ok = gov in self._NOMAD_LIKE_GOVS
+        self._people_keep_cache[ck] = ok
+        return ok
+
+    def _is_tribe_name(self, tid, name):
+        """Whether a dynamic name is a tribal realm name (`<people/dynasty><place>部` or a people).
+
+        The engine builds these for nomad-held titles out of a culture's collective noun; they are
+        not the settled realm's display name (see `_people_names`). House and dynasty realm names
+        (马扎尔 for k_croatia, 新帕特拉斯 for c_byzantion), cultural names (亚琛 for c_aachen) and
+        camp names never end in 部 and never equal a bare collective noun of their own name history,
+        so they stay untouched.
+        """
+        if not name:
+            return False
+        if name.endswith("部"):
+            return True
+        return name in self._people_names(tid)
+
+    def _people_name_usable(self, tid, name, date=None):
+        """Whether a dynamic name survives: a tribal realm name only under a nomadic holder."""
+        if not self._is_tribe_name(tid, name):
+            return True
+        return self._keeps_people_name(tid, date)
+
     def _specific_name(self, tid):
         """The game-computed dynamic title name (a nomadic or house-named realm name), else ''.
 
@@ -3266,7 +3347,10 @@ class Facts:
         tnd = t.get("title_name_data") or {}
         if (tnd.get("custom") or "").strip():
             return ""
-        return (tnd.get("specific_title_name") or "").strip()
+        sp = (tnd.get("specific_title_name") or "").strip()
+        if sp and not self._people_name_usable(tid, sp):
+            return ""
+        return sp
 
     def _name_at_date(self, tid, date):
         """Name of the title on a given date, without the tier word.
@@ -3285,6 +3369,10 @@ class Facts:
         specific = "" if ((tnd.get("custom") or "").strip()
                           or self._has_reign_history(tid)) \
             else (self._dyn_reign_name(tid, date) or self._specific_name(tid))
+        # A tribal realm name stands only while the holder that day is nomadic; the final save's
+        # `specific_title_name` it may fall back to must not answer for an earlier settled day.
+        if specific and not self._people_name_usable(tid, specific, date):
+            specific = ""
         if specific:
             return specific
         base = (tnd.get("custom") or "").strip() or (tnd.get("name") or "").strip()
@@ -3331,6 +3419,9 @@ class Facts:
         Each cache covers only its own subject's saves, so this cache alone would name events after its
         range with the earliest name and give one event different names in different biographies. This
         cache's values win; another playthrough's caches are skipped and the result is memoized.
+
+        Points whose name is a people name (see `_people_names`) are kept only for the dates whose
+        holder was nomadic; under a settled holder the static place name stands.
         """
         if self._has_reign_history(tid):
             return []
@@ -3353,7 +3444,8 @@ class Facts:
                 if isinstance(h, dict) and h.get("from"):
                     merged[str(h["from"])] = (h.get("name") or "").strip()
         out = [{"from": d, "name": n}
-               for d, n in sorted(merged.items(), key=lambda kv: cl.date_key(kv[0]))]
+               for d, n in sorted(merged.items(), key=lambda kv: cl.date_key(kv[0]))
+               if self._people_name_usable(tid, n, d)]
         self._dyn_hist_cache[tid] = out
         return out
 
@@ -3560,6 +3652,11 @@ class Facts:
     def _history_name_at(self, tid, date):
         """Key or literal name in title_history_names in effect at date, else None.
 
+        A `<culture>_collective_noun` entry (and any other tribal realm name, see `_is_tribe_name`)
+        names the realm's people, not the title, so under a settled holder it leaves the title
+        without a rename history and the static `name` stands — the same treatment the `cn_*`
+        cultural-name artifacts get in `_name_at_date`. A nomadic holder that day keeps it.
+
         For h_china the one-day realm name of the mandate-of-heaven proclamation is replaced the
         next day, so the name chosen the next day is used.
         """
@@ -3584,6 +3681,13 @@ class Facts:
                     best = nxt.get("name")
             except Exception:
                 pass
+        if best is not None:
+            try:
+                bv = L.loc(self.table, str(best)) or ""
+            except Exception:
+                bv = ""
+            if bv and not self._people_name_usable(tid, bv, date):
+                return None
         return best
 
     def _name_source_key(self, tid, date):
@@ -7379,6 +7483,23 @@ class Facts:
     # place name resolves the whole word is dropped rather than emitted bare.
     _TIER_FLAVOR_PREFIXES = ("hegemon_", "emperor_", "king_", "duke_", "count_",
                              "baron_", "prince_", "princess_")
+    # The same tier words without the underscore: a key of exactly this shape is the game's
+    # unconditional fallback entry, which names a rank but no government.
+    _TIER_FLAVOR_WORDS = ("hegemon", "emperor", "king", "duke", "count",
+                          "baron", "prince", "princess")
+
+    def _generic_tier_flavor(self, fkey):
+        """Whether a save-baked flavor key is a bare generic tier word (`count`, `duke`).
+
+        Such a key carries no government segment, so its word is a bare rank noun: the same
+        `count` baked at death gives 伯爵 where the anchor day's government says 刺史. Skipping it
+        lets that government resolve the word through the title instead, exactly as `_office_word`
+        treats a generic flavorization hit. Tier-prefixed keys (`duke_female`,
+        `count_tribal_male`) keep the place-name rule below.
+        """
+        if str(fkey) not in self._TIER_FLAVOR_WORDS:
+            return False
+        return FZ.is_unconditional(str(fkey))
 
     def _has_current_landed_title(self, cid, anchor):
         """True when the character still holds a real landed title of county rank or above at the anchor
@@ -7661,6 +7782,7 @@ class Facts:
         # the person really holds e_japan/高御座 that day — `_dead_flavor_consistent` merely
         # compares the government prefix.
         if fkey and fkey not in self._JAPAN_OFFICE_FROM_FLAVOR \
+                and not self._generic_tier_flavor(fkey) \
                 and self._dead_flavor_consistent(fkey, cid, anchor):
             v = L.loc(self.table, fkey)
             if v and not v.startswith("$") and not v.startswith("["):
