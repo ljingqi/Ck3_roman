@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """CK3 biography generator: five Record-style articles per player character (life, friend,
 enemy, household, politics); prompts carry only the clean Chinese facts facts.py renders."""
+import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -3091,13 +3092,19 @@ def _assemble(facts, intro, leads, sections, articles):
 
 
 def _appendix_text(facts):
-    """Terminal-article appendix (genealogy + timeline) rendered from facts, no LLM call:
+    """Terminal-article appendix (family tree + timeline) rendered from facts, no LLM call:
     list items with year/month/day folding, protagonist/family events only, deduped by (date, event key)."""
     lines = []
     gen = facts.get("genealogy") or []
     if gen:
-        lines.append("### 世系")
-        lines.extend("- " + g for g in gen)
+        # v113 (user 2026-10-06): the printed 世系 gave way to the 家谱 page. The appendix keeps the
+        # 谱例 and the house history, while the chain figure and the per-generation blocks are drawn
+        # as a Su-Xun style tree (垂珠体) by `htmlview` from `facts["genealogy_tree"]`.
+        lines.append("### 家谱")
+        lines.append("- " + gen[0])
+        tree = facts.get("genealogy_tree") or {}
+        if tree.get("summary"):
+            lines.append("- " + tree["summary"])
         for ln in ((facts.get("protagonist") or {}).get("house_history") or []):
             if ln:
                 lines.append("- " + ln)
@@ -4134,4 +4141,31 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
         with open(out_path, "w", encoding="utf-8") as fp:
             fp.write(header + md.rstrip() + "\n")
         llm.log(f"传记已生成: {out_path}")
+        _write_genealogy_tree(facts, out_path)
     return md, facts, articles
+
+
+def _write_genealogy_tree(facts, out_path):
+    """Sidecar family tree for the reading page: output/<家族>/data/genealogy.json.
+
+    `htmlview` has no facts access, so the tree data (Su-Xun style beads, the transmission edges)
+    ships beside the article. A rebuild of an earlier 终传 must not cut the tree back, so the file
+    is only replaced by a tree that reaches at least as far (v113)."""
+    tree = facts.get("genealogy_tree") or {}
+    if not tree.get("nodes"):
+        return
+    path = os.path.join(os.path.dirname(out_path), "data", "genealogy.json")
+    try:
+        if os.path.exists(path):
+            old = json.load(open(path, encoding="utf-8"))
+            if len(old.get("chain") or []) > len(tree.get("chain") or []):
+                return
+    except Exception:
+        pass
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(tree, fp, ensure_ascii=False)
+        llm.log(f"家谱数据已生成: {path}")
+    except Exception as e:
+        llm.log(f"家谱数据写入失败: {e}")

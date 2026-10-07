@@ -10039,34 +10039,58 @@ class Facts:
     _EMPEROR_TIERS = ("hegemon", "empire")
 
     def _style_parent_title(self, parent, date):
-        """(tier, tid) of the parent's title used to style the children: the currently held title
-        first, else the parent's highest ever held title, so a dead or deposed parent still styles."""
+        """(tier, tid, realm_date) of the parent's title used to style the children: the currently
+        held title first, else the parent's highest ever held title, so a dead or deposed parent
+        still styles.
+
+        `realm_date` is the day whose realm the style must name: the description date while the
+        parent still holds the title, else the last day of that tenure. A Chinese empire is renamed
+        by each dynasty that takes it (唐 618-897 → 天 897-1075 → 邓 after 1075), so reading a
+        long-lost title at the article's own date stamps "邓公主" onto a princess born in 874
+        (user 2026-10-06)."""
         t, tid = self._primary_title_at(parent, as_of=date)
         if t is not None and self._is_landed_title(tid):
-            return t, tid
+            return t, tid, date
         ftid = self._former_high_title(parent, date)
         if ftid is None:
-            return None, None
+            return None, None, None
         key = (self._lt.get(str(ftid)) or {}).get("key") or ""
         rank = self._TT_RANK.get(key[:2], 0)
         tier = self._RANK_TIER.get(rank) if rank >= 1 else None
-        return (tier, ftid) if tier else (None, None)
+        if not tier:
+            return None, None, None
+        return tier, ftid, (self._tenure_end(parent, ftid, date) or date)
 
-    def _prince_style_from_title(self, ptier, ptid, date, child, owner):
+    def _tenure_end(self, cid, tid, date=None):
+        """Last day the character held the title (the interval's loss, else its gain, else '').
+
+        The side of a tenure whose realm name the caller wants, never the queried date: a tenure
+        whose end is the title's destruction still names the state the holder actually ruled."""
+        for (g, l, _lt) in (self._hold_intervals(cid, date).get(tid) or []):
+            return l or g
+        return ""
+
+    def _prince_style_from_title(self, ptier, ptid, date, child, owner, realm_date=None):
         """(tier, title) + holder → prefix + prince word; '' when there is no base name.
         Government comes from the title, independence from the holder.
 
         The prefix is the title's own name, never a tier word. Two exceptions: a dynasty-named
         empire (`dynn_title_*` history name, e.g. 汉/晋/隋/唐/宋) is prefixed '大', while
         short titles (`definite_form = yes`) and names already carrying a state word stay as they
-        are. Japan's top titles (天皇座/日本帝国) are excluded — `_tenno_prince_word` owns them."""
+        are. Japan's top titles (天皇座/日本帝国) are excluded — `_tenno_prince_word` owns them.
+
+        `realm_date` overrides `date` for everything read off the TITLE (name, government, name
+        source, independence, flavorization gate): a parent who no longer holds the title styles
+        his children with the realm of his own tenure, so the era naming never drifts (see
+        `_style_parent_title`). `date` still governs the child's own nickname."""
         if ((self._lt.get(str(ptid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
             return ""
-        pgov = self._title_government(ptid, date)
-        pbase = self._name_at_date(ptid, date or self.as_of) or self.title_base_name(ptid)
+        rd = realm_date or date
+        pgov = self._title_government(ptid, rd)
+        pbase = self._name_at_date(ptid, rd or self.as_of) or self.title_base_name(ptid)
         if not pbase:
             return ""
-        independent = self._is_independent(owner, date)
+        independent = self._is_independent(owner, rd)
         if independent is None:
             independent = True
         rn = self.realm_name(ptid)
@@ -10075,14 +10099,15 @@ class Facts:
         elif ptier == "hegemon" and pgov in self._CELESTIAL_LIKE_GOVS \
                 and not self._is_short_title(ptid) \
                 and not _STATE_SUFFIX_RE.search(pbase) \
-                and self._name_source_key(ptid, date).startswith("dynn_"):
+                and self._name_source_key(ptid, rd).startswith("dynn_"):
             # Chinese dynasty: the state name follows the dynasty (唐/宋/秦…) → 大唐 / 大宋
             prefix = pbase if pbase.startswith("大") else f"大{pbase}"
         else:
             # no tier word is appended (国/路/皇朝/王国/帝国); a short title uses its own name
             prefix = pbase
         word = self._prince_word(ptier, pgov, independent, self._is_female(child),
-                                 child=child, ptid=ptid, date=date, owner=owner)
+                                 child=child, ptid=ptid, date=rd, owner=owner)
+
         # the game gives no word here (gate missed) → drop the whole style, so it never
         # degrades into a bare prefix
         if not word:
@@ -10096,18 +10121,18 @@ class Facts:
     def _parent_prince_style(self, cid, date):
         """Child style when a parent rules kingdom tier or above (highest-ranking parent wins).
         Japan's top titles are skipped here, so the other parent can still style the child."""
-        best = None  # (rank, ptier, ptid, parent_cid)
+        best = None  # (rank, ptier, ptid, parent_cid, realm_date)
         for pid2 in self._parents_of_cid(cid):
-            t, tid = self._style_parent_title(int(pid2), date)
+            t, tid, rd = self._style_parent_title(int(pid2), date)
             if ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
                 continue
             rank = {"hegemon": 6, "empire": 5, "kingdom": 4}.get(t, 0)
             if rank > 0 and (best is None or rank > best[0]):
-                best = (rank, t, tid, int(pid2))
+                best = (rank, t, tid, int(pid2), rd)
         if best is None:
             return ""
-        _rank, ptier, ptid, pparent = best
-        return self._prince_style_from_title(ptier, ptid, date, cid, pparent)
+        _rank, ptier, ptid, pparent, rd = best
+        return self._prince_style_from_title(ptier, ptid, date, cid, pparent, realm_date=rd)
 
     def _emperor_sibling_style(self, cid, date):
         """Prince/princess style when a sibling is the reigning emperor and the father was also
@@ -10119,7 +10144,7 @@ class Facts:
             return ""
         father_ok = False
         for f2 in fathers:
-            t, _tid = self._style_parent_title(f2, date)
+            t, _tid, _rd = self._style_parent_title(f2, date)
             if t in self._EMPEROR_TIERS:
                 father_ok = True
                 break
@@ -25559,55 +25584,57 @@ _GENEALOGY_FANLI = ("凡例：本谱世系以世为经、以人为纬，断自�
                     "一世一人，同世者并列，中间无传主之世则阙之。")
 
 
+def _genealogy_groups(f, cid, date):
+    """Kinship groups behind one person's genealogy rows: [(word, kind, [cid, ...]), ...].
+
+    One source of truth for the printed rows (`_genealogy_rows`) and for the HTML 家谱 tree
+    (`genealogy_tree`), so the tree can never show kinship the text does not. The spouse label
+    follows the person's sex, and `spouse` has `primary_spouse` subtracted, since CK3 lists the same
+    wife in both fields; each person appears on one row only, since the save also lists current
+    spouses under `former_spouses` (v113)."""
+    cache = f.cache
+    rec = (cache.get("characters") or {}).get(str(cid)) or {}
+    # the marriage latch is merged into the genealogy, from the same source as `_protagonist_facts`
+    fam = f.merge_spouse_latch(rec.get("family") or {}, date)
+    fem = f._is_female(cid)
+    spouses = [x for x in _asof_ids(f, fam.get("primary_spouse") or [], date)]
+    side = [x for x in _asof_ids(f, fam.get("spouse") or [], date) if x not in set(spouses)]
+    used = set(spouses) | set(side)
+
+    def _fresh(key):
+        out = []
+        for x in _asof_ids(f, fam.get(key) or [], date):
+            if x in used:
+                continue
+            used.add(x)
+            out.append(x)
+        return out
+
+    conc = _fresh("concubine")
+    fconc = _fresh("former_concubines")
+    kids = list(_asof_ids(f, fam.get("child") or [], date))
+    groups = [
+        ("父", "father", list(_asof_ids(f, fam.get("father") or [], date))),
+        ("母", "mother", list(_asof_ids(f, fam.get("mother") or [], date))),
+        ("正夫" if fem else "正妻", "spouse", spouses),
+        ("侧夫" if fem else "侧室", "side_spouse", side),
+        ("男宠" if fem else "妾", "concubine", conc),
+        ("前男宠" if fem else "前妾", "former_concubine", fconc),
+        ("儿子", "son", [x for x in kids if not bool(f._is_female(x))]),
+        ("女儿", "daughter", [x for x in kids if bool(f._is_female(x))]),
+        ("兄弟姊妹", "sibling", list(_asof_ids(f, fam.get("siblings") or [], date))),
+        ("前夫" if fem else "前妻", "former_spouse",
+         [x for x in _asof_ids(f, fam.get("former_spouses") or [], date) if x not in used]),
+    ]
+    return [(w, k, [x for x in ids if isinstance(x, int)]) for (w, k, ids) in groups]
+
+
 def _genealogy_rows(f, cid, date):
     """Parent/spouse/child/sibling rows of one person, read on `date`.
 
-    The spouse label follows the person's sex, and `spouse` has `primary_spouse` subtracted, since
-    CK3 lists the same wife in both fields. Each person appears on one row only: the save also lists
-    current spouses under `former_spouses`."""
-    cache = f.cache
-    rec = (cache.get("characters") or {}).get(str(cid)) or {}
-    fam = rec.get("family") or {}
-    # the marriage latch is merged into the genealogy, from the same source as `_protagonist_facts`
-    fam = f.merge_spouse_latch(fam, date)
-    fem = f._is_female(cid)
+    Rendered from `_genealogy_groups`, the same groups the HTML tree draws."""
     lines = []
-    spouses = [x for x in _asof_ids(f, fam.get("primary_spouse") or [], date)]
-    side = [x for x in _asof_ids(f, fam.get("spouse") or [], date) if x not in set(spouses)]
-    rows = [("father", "父"), ("mother", "母")]
-    if fem:
-        rows += [("primary_spouse_key", "正夫"), ("side_spouse_key", "侧夫")]
-    else:
-        rows += [("primary_spouse_key", "正妻"), ("side_spouse_key", "侧室")]
-    rows += [("concubine", "妾" if not fem else "男宠"),
-             ("former_concubines", "前妾" if not fem else "前男宠"),
-             ("children_by_sex", ""), ("siblings", "兄弟姊妹"),
-             ("former_spouses", "前夫" if fem else "前妻")]
-    _used_mar = set(spouses) | set(side)
-    for key, label in rows:
-        if key == "primary_spouse_key":
-            ids = spouses
-        elif key == "side_spouse_key":
-            ids = side
-        elif key == "children_by_sex":
-            # two rows, one per sex (user 2026-10-06): the single 「子女：A、B…」 row left the
-            # daughters' names under the sons' heading
-            for _lab, _grp in (("儿子", False), ("女儿", True)):
-                bits = []
-                for x in _asof_ids(f, fam.get("child") or [], date):
-                    if bool(f._is_female(x)) is not _grp:
-                        continue
-                    n = f.kin_label(x)
-                    if n:
-                        bits.append(n)
-                if bits:
-                    lines.append(f"　{_lab}：{'、'.join(bits)}")
-            continue
-        elif key in ("concubine", "former_concubines", "former_spouses"):
-            ids = [x for x in _asof_ids(f, fam.get(key) or [], date) if x not in _used_mar]
-            _used_mar.update(ids)
-        else:
-            ids = _asof_ids(f, fam.get(key) or [], date)
+    for word, kind, ids in _genealogy_groups(f, cid, date):
         if not ids:
             continue
         bits = []
@@ -25617,11 +25644,11 @@ def _genealogy_rows(f, cid, date):
                 continue
             # spouse rows also note a matrilineal marriage (uxorilocal) and which parent the
             # children belong to
-            if key in ("primary_spouse_key", "side_spouse_key"):
+            if kind in ("spouse", "side_spouse"):
                 n += f.marriage_lineality_note(cid, x, before=date)
             bits.append(n)
         if bits:
-            lines.append(f"　{label}：{'、'.join(bits)}")
+            lines.append(f"　{word}：{'、'.join(bits)}")
     return lines
 
 
@@ -25641,6 +25668,18 @@ def _gen_end_date(f, cid):
             if isinstance(v, dict) and v.get("date"):
                 return v["date"]
     return ""
+
+
+def _genealogy_gens(f, members):
+    """Real blood generations of the played chain: 1 for its first member, then one step each.
+
+    A step whose relation cannot be resolved counts as one generation down, so a broken link never
+    collapses two generations into one. Shared by the printed rows and the HTML tree (v113)."""
+    gens = [1]
+    for i in range(1, len(members)):
+        d = f.generation_delta(members[i - 1]["cid"], members[i]["cid"])
+        gens.append(max(1, gens[-1] + (d if d is not None else 1)))
+    return gens
 
 
 def _genealogy_parts(f):
@@ -25665,10 +25704,7 @@ def _genealogy_parts(f):
         idx = 0
     members = chain[:idx + 1]
     # real blood generations: 1 for the first member of the chain, then one step per generation
-    gens = [1]
-    for i in range(1, len(members)):
-        d = f.generation_delta(members[i - 1]["cid"], members[i]["cid"])
-        gens.append(max(1, gens[-1] + (d if d is not None else 1)))
+    gens = _genealogy_gens(f, members)
     names = {i: (f.name_or(members[i]["cid"]) or "")
              for i in range(len(members))}
     lines = [_GENEALOGY_FANLI, "世系图："]
@@ -25719,6 +25755,250 @@ def _genealogy_parts(f):
         if last:
             subject = [line] + rows
     return lines, subject
+
+
+def _tree_child_order(f, kids):
+    """Children of one node in blood order: birth date first (before the first save sorts last),
+    then cid, so two runs of the same save lay the tree out identically."""
+    chars = f.cache.get("characters") or {}
+
+    def key(x):
+        b = ((chars.get(str(x)) or {}).get("birth") or "")
+        return (cl.date_key(b) if b else 10 ** 9, x)
+
+    return sorted(kids, key=key)
+
+
+def _tree_path(parent_of, a, b):
+    """Tree path a → … → b over the parent map (up to the common ancestor, then down again).
+
+    Returns the cids including both ends, or [] when the two are not connected inside the node set
+    (the caller reports that case instead of drawing a wrong line)."""
+    def _up(c):
+        out, seen = [c], {c}
+        while parent_of.get(c) is not None and parent_of[c] not in seen:
+            c = parent_of[c]
+            seen.add(c)
+            out.append(c)
+        return out
+
+    ua, ub = _up(a), _up(b)
+    idxb = {c: i for i, c in enumerate(ub)}
+    for i, c in enumerate(ua):
+        if c in idxb:
+            return ua[:i + 1] + ub[:idxb[c]][::-1]
+    return []
+
+
+def _tree_count_zh(n):
+    """Count for the 家谱 caption: 9 → 九, 112 → 一百一十二.
+
+    The lineage counters (`_count_zh`/`_kin_rank_zh`) stop at 99, while a clan tree passes a
+    hundred people."""
+    digits = "零一二三四五六七八九"
+    if n < 100:
+        return _count_zh(n)
+    if n < 1000:
+        h, r = divmod(n, 100)
+        out = "一百" if h == 1 else digits[h] + "百"
+        if r == 0:
+            return out
+        if r < 10:
+            return out + "零" + digits[r]
+        if r < 20:
+            return out + "一十" + (digits[r - 10] if r > 10 else "")
+        t, u = divmod(r, 10)
+        return out + digits[t] + "十" + (digits[u] if u else "")
+    return str(n)
+
+
+def genealogy_tree(f):
+    """Su-Xun style (垂珠体) tree of the clan, for the HTML reading page (v113 user request).
+
+    Scope is the printed 世系's scope: the played chain plus, for every played character, the
+    parents, spouses, children and siblings recorded on that generation's own day. `from_k` is the
+    first article (1-based chain index) whose scope holds that person, so each 终传 can draw the tree
+    as it stood for its own protagonist, and `pieces` maps a player id to its chain index.
+    `red_edges` are the tree edges the succession between consecutive protagonists runs along: the
+    传主 line reads red, ordinary descent black (user 2026-10-06)."""
+    cache = f.cache
+    pid = cache.get("player_id")
+    if pid is None:
+        return {}
+    chain = [e for e in (cache.get("played_legacy") or [])
+             if isinstance(e, dict) and isinstance(e.get("cid"), int)]
+    idx = next((i for i, e in enumerate(chain) if e["cid"] == int(pid)), None)
+    if idx is None:
+        chain = [{"cid": int(pid)}]
+        idx = 0
+    members = chain[:idx + 1]
+    gens = _genealogy_gens(f, members)
+    # the subject's own household is the article's own day; an earlier generation is read on the day
+    # that generation ended (same rule as the printed rows)
+    dates = [f.as_of if i == len(members) - 1
+             else (_gen_end_date(f, members[i]["cid"]) or f.as_of)
+             for i in range(len(members))]
+    scopes = [_genealogy_groups(f, members[i]["cid"], dates[i]) for i in range(len(members))]
+
+    node_set, from_k, kind_of, subject = set(), {}, {}, {}
+    for i, m in enumerate(members):
+        cid = m["cid"]
+        if cid not in node_set:
+            node_set.add(cid)
+            from_k[cid] = i + 1
+            kind_of[cid] = "传主"
+        subject[cid] = i + 1
+        for _word, _kind, ids in scopes[i]:
+            for x in ids:
+                if x not in node_set:
+                    node_set.add(x)
+                    from_k[x] = i + 1
+                    kind_of[x] = _word
+
+    # generations: the chain anchors, then every recorded kinsman one step off the anchor that
+    # listed him (fathers up, sons down, spouses and siblings level); most votes wins, ties to the
+    # earlier generation, so the tree's 世次 can never contradict the printed 世次
+    gen = {m["cid"]: gens[i] for i, m in enumerate(members)}
+    votes = {}
+    for i, m in enumerate(members):
+        for _word, kind, ids in scopes[i]:
+            step = {"father": -1, "mother": -1, "son": 1, "daughter": 1}.get(kind, 0)
+            for x in ids:
+                v = votes.setdefault(x, {})
+                v[gens[i] + step] = v.get(gens[i] + step, 0) + 1
+    for x, v in votes.items():
+        if x not in gen:
+            gen[x] = max(1, max(v.items(), key=lambda kv: (kv[1], -kv[0]))[0])
+
+    chars = cache.get("characters") or {}
+
+    def _parents(x):
+        fam = (chars.get(str(x)) or {}).get("family") or {}
+        return ([y for y in (fam.get("father") or []) if isinstance(y, int)]
+                + [y for y in (fam.get("mother") or []) if isinstance(y, int)])
+
+    parents = {x: _parents(x) for x in node_set}
+    kids_of = {x: [] for x in node_set}
+    for x, ps in parents.items():
+        for p in ps:
+            if p in node_set:
+                kids_of[p].append(x)
+    # the clan's own line: everyone descended from the chain's first member inside the node set
+    blood, frontier = set(), [members[0]["cid"]]
+    while frontier:
+        c = frontier.pop()
+        if c in blood:
+            continue
+        blood.add(c)
+        frontier.extend(x for x in kids_of.get(c) or [] if x not in blood)
+    # a tree edge follows the blood parent when there is one, so an in-law parent never takes a
+    # child out of the clan's line
+    parent_of = {}
+    for x in node_set:
+        if x == members[0]["cid"]:
+            continue
+        ps = [p for p in parents.get(x) or [] if p in node_set and p != x]
+        chosen = next((p for p in ps if p in blood), None)
+        if chosen is None and ps:
+            chosen = ps[0]
+        if chosen is not None:
+            parent_of[x] = chosen
+    # in-laws hang beside the clansman they married (a 「配」 bead, not a tree node)
+    spouse_of, spouse_word = {}, {}
+    for x in node_set:
+        if x in blood or x in spouse_of:
+            continue
+        fem = bool(f._is_female(x))
+        fam = f.merge_spouse_latch((chars.get(str(x)) or {}).get("family") or {}, f.as_of)
+        for key, word in (("primary_spouse", "配"), ("spouse", "侧室" if fem else "侧夫"),
+                          ("concubine", "妾" if fem else "男宠"),
+                          ("former_concubines", "前妾" if fem else "前男宠"),
+                          ("former_spouses", "前妻" if fem else "前夫")):
+            hit = next((y for y in (fam.get(key) or [])
+                        if isinstance(y, int) and y in node_set and y in blood), None)
+            if hit is not None:
+                spouse_of[x] = hit
+                spouse_word[x] = word
+                break
+
+    for x in list(kids_of):
+        # one child hangs under its chosen parent only, and in blood order
+        kids_of[x] = _tree_child_order(
+            f, [c for c in kids_of[x] if parent_of.get(c) == x]) if x in blood else []
+    # drawing order: the founder first, then each generation in its parents' order, so a Su-Xun
+    # column keeps fathers and sons aligned
+    order, seen = [], set()
+
+    def _walk(c):
+        if c in seen:
+            return
+        seen.add(c)
+        order.append(c)
+        for k in kids_of.get(c) or []:
+            _walk(k)
+
+    _walk(members[0]["cid"])
+    for x in sorted(node_set):
+        _walk(x)
+
+    # the succession between consecutive protagonists: red along the tree path between them
+    red, dashed = [], []
+    pairs, unreachable = [], []
+    for i in range(len(members) - 1):
+        a, b = members[i]["cid"], members[i + 1]["cid"]
+        path = _tree_path(parent_of, a, b)
+        if len(path) < 2:
+            unreachable.append([a, b])
+            dashed.append([a, b])
+            continue
+        pairs.append(path)
+        for u, v in zip(path, path[1:]):
+            e = [u, v] if parent_of.get(v) == u else ([v, u] if parent_of.get(u) == v else None)
+            if e is not None and e not in red:
+                red.append(e)
+
+    nodes = []
+    for x in order:
+        rec = chars.get(str(x)) or {}
+        nodes.append({
+            "id": x,
+            "name": f.name_or(x) or "",
+            "label": f.kin_label(x) or f.name_or(x) or str(x),
+            "sex": 1 if f._is_female(x) else 0,
+            "gen": gen.get(x, 1),
+            "subj": subject.get(x, 0),
+            "from_k": from_k.get(x, 1),
+            # why this person is on the tree (「传主」/儿子/正妻/父…) — the bead's subscript
+            "note": kind_of.get(x, ""),
+            "parent": parent_of.get(x),
+            "spouse_of": spouse_of.get(x),
+            "spouse_word": spouse_word.get(x, ""),
+            "kids": kids_of.get(x) or [],
+            "birth": rec.get("birth") or "",
+            "death": (rec.get("death") or {}).get("date") or "",
+            "end": _gen_end_date(f, x),
+        })
+    span = _gen_word(1) if gens[-1] <= 1 else f"{_gen_word(1)}至{_gen_word(gens[-1])}"
+    return {
+        "schema": 1,
+        "player_id": int(pid),
+        "as_of": f.as_of or "",
+        "fanli": _GENEALOGY_FANLI,
+        # printed caption of the 家谱 section: the appendix states what the reading page draws
+        "summary": (f"本谱{span}，凡{_tree_count_zh(len(members))}位传主、"
+                    f"{_tree_count_zh(len(nodes))}人；家谱图见阅读页。"),
+        "chain": [{"i": i + 1, "id": m["cid"], "gen": gens[i],
+                   "name": f.name_or(m["cid"]) or "",
+                   "label": f.kin_label(m["cid"]) or f.name_or(m["cid"]) or "",
+                   "date": m.get("date") or ""}
+                  for i, m in enumerate(members)],
+        "pieces": {int(m["cid"]): i + 1 for i, m in enumerate(members)},
+        "nodes": nodes,
+        "red_edges": red,
+        "red_dashed": dashed,
+        "pairs": pairs,
+        "unreachable": unreachable,
+    }
 
 
 def _genealogy(f):
@@ -26142,6 +26422,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "nomad_stations": _nomad_stations(f),
         "luminaries": _court_luminaries(f),
         "genealogy": _genealogy(f),
+        # the same scope as the printed 世系, shaped for the HTML 家谱 page (v113): Su-Xun style
+        # hanging beads, red along the transmission between consecutive protagonists
+        "genealogy_tree": genealogy_tree(f),
         # the subject's own generation of the genealogy: the timeline's name filter reads this, so a
         # multi-generation appendix cannot pull the ancestors' households into the timeline
         "genealogy_subject": genealogy_subject_lines(f),
