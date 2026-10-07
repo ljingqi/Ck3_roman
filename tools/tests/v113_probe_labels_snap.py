@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""v113 probe: the dynasty words on the princess/prince labels in the new snapshot (no melt)."""
+"""v113 probe: the dynasty words on the princess/prince labels in the new snapshot (no melt).
+
+Prints the label each of the goal's three names carries, plus every 朝名+称谓 substring count.
+`李漼` prints 「（无）」 in both snapshots by design: he is the Tang emperor married into the family,
+and the facts only ever list a 传主's own parents, never an in-law's parents — the male side of the
+fix is therefore pinned at rule level in `verify_v113.py` (「14008 之子作唐王子」) and in the snapshot
+by 天王子×4, which is the same rule applied to the 天 era (v112 had 0)."""
 import io
 import json
 import os

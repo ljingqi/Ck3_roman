@@ -51,6 +51,8 @@ class _Stub(object):
         self.primary = (None, None)  # _primary_title_at result
         self.former = None           # _former_high_title result
         self.gov = ""                # _title_government result
+        self.female = True           # _is_female result
+        self.word = "公主"           # _prince_word result
 
     # ---- the five facts `_style_parent_title` / `_prince_style_from_title` read off a save ----
     def _primary_title_at(self, cid, as_of=None):
@@ -94,14 +96,14 @@ class _Stub(object):
         return ""
 
     def _is_female(self, cid):
-        return True
+        return self.female
 
     def name_with_regnal(self, cid, date=None):
         return ""
 
     def _prince_word(self, ptier, pgov, independent, female, **kw):
         self.seen.append(("word", kw.get("date")))
-        return "公主"
+        return self.word
 
 
 def _stub():
@@ -142,6 +144,17 @@ def t_label_era():
                                           realm_date=rd6)
     src = {d for k, d in st6.seen if k == "src"}
     check(s6 == "大唐公主" and src == {"879.1.2"}, "『大』式按持有末日的朝名来源键", (s6, sorted(src)))
+
+    # a son reads the same era with the male word (洪秀全's sons carry 天王子 in the facts)
+    for cid, date, want in ((38957, "1126.7.30", "天王子"), (14008, "1152.11.13", "唐王子")):
+        stm = _stub()
+        stm.female, stm.word = False, "王子"
+        if cid == 38957:
+            stm.hold[cid] = {14022: [("897.6.5", "904.11.30", "destroyed")]}
+        _t, _tid, rdm = F.Facts._style_parent_title(stm, cid, date)
+        sm = F.Facts._prince_style_from_title(stm, "hegemon", 14022, date, 44503, cid,
+                                              realm_date=rdm)
+        check(sm == want, f"{cid} 之子作{want}", sm)
 
     # the same person through the whole 家谱: every article after the Tang writes 唐公主
     for date in ("904.11.30", "1009.6.26", "1126.7.30", "1152.11.13"):
