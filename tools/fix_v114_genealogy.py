@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
-"""v114 一次性文本手术：把成稿附录 `### 世系` 的**头行**换成带称谓与封圣年的新行。
+"""v114 一次性文本手术：把成稿附录 `### 世系` 的程序产物重同步到当前代码的输出。
 
-正文一字不动（用户定规：绝不用模型重生成既有正文），只改程序产物——附录世系是
-`facts._genealogy_parts` 的输出，头行按当前代码应为 `person_label(cid, date, "full")`
-＋（已封圣者）「，〈年〉年封圣」。九篇终传的这九行在这批稿子里逐字相同（探针
-`tools/tests/v114_probe_shixi*.py` 已核），所以按世次一一对应替换即可，行数或行序不符
-则整体放弃。
+正文一字不动（用户定规：绝不用模型重生成既有正文），只改程序产物——附录世系整块都是
+`facts._genealogy_parts` 的输出：头行是 `person_label(cid, date, "full")` ＋（已封圣者）
+「，〈年〉年封圣」，亲属行里的称谓（例：枢机带驻地「圣依搦斯枢机洪宓」）也来自同一处。
+本工具拿快照 `snap_v114_207044_final.json` 的 `facts["genealogy"]` 作准，逐块比对，
+**只替换真的不一样的行**（`difflib` 对齐；出现行数增减则整篇跳过并报数），
+逐篇保留只在那一篇成立的行（「家格：」那一行随篇而变，快照里没有）。
 
 用法：
-    python tools/tests/../fix_v114_genealogy.py --dry
-    python tools/tests/../fix_v114_genealogy.py --apply
-    python tools/tests/../fix_v114_genealogy.py --restore
-    python tools/tests/../fix_v114_genealogy.py --tree        # 由快照写 data/genealogy.json
+    python -X utf8 tools/fix_v114_genealogy.py --dry
+    python -X utf8 tools/fix_v114_genealogy.py --apply
+    python -X utf8 tools/fix_v114_genealogy.py --restore
+    python -X utf8 tools/fix_v114_genealogy.py --tree        # 由快照写 data/genealogy.json
 
 --tree 只写阅读页用的家谱数据（`biography._write_genealogy_tree` 的同一份内容），
 不碰任何 .md。
 """
+import difflib
 import io
 import json
 import os
@@ -30,6 +32,7 @@ BASE = os.path.join(ROOT, "output", "洪氏2")
 SNAP = os.path.join(BASE, "data", "snap_v114_207044_final.json")
 BACKUP = os.path.join(ROOT, "logs", "v114_shixi_backup.json")
 HEAD_RE = re.compile(r"^- \*\*[一二三四五六七八九十]+世\*\*　")
+PER_FILE_RE = re.compile(r"家格：")
 
 
 def snap_facts():
@@ -37,13 +40,9 @@ def snap_facts():
         return json.load(fp)["facts"]
 
 
-def new_heads(facts):
-    """The new head lines, in generation order, straight from the snapshot's own 世系."""
-    out = []
-    for ln in facts.get("genealogy") or []:
-        if ln.startswith("**"):
-            out.append("- " + ln)
-    return out
+def printed_block(facts):
+    """The snapshot's own 世系 lines, prefixed like the article prints them."""
+    return ["- " + ln for ln in (facts.get("genealogy") or [])]
 
 
 def block_span(lines):
@@ -61,21 +60,12 @@ def block_span(lines):
     return i + 1, j
 
 
-def head_index(lines, start, end):
-    return [k for k in range(start, end) if HEAD_RE.match(lines[k])]
-
-
 def targets():
-    out = []
-    for fn in sorted(os.listdir(BASE)):
-        if not fn.endswith(".md"):
-            continue
-        out.append(fn)
-    return out
+    return [fn for fn in sorted(os.listdir(BASE)) if fn.endswith(".md")]
 
 
 def read_lines(path):
-    """(lines, line ending) — the ending is preserved so the diff stays on the head lines."""
+    """(lines, line ending) — the ending is preserved so the diff stays on the changed lines."""
     with io.open(path, encoding="utf-8", newline="") as fp:
         raw = fp.read()
     eol = "\r\n" if "\r\n" in raw else "\n"
@@ -87,56 +77,115 @@ def write_lines(path, lines, eol):
         fp.write(eol.join(lines) + eol)
 
 
+def load_backup():
+    if os.path.exists(BACKUP):
+        try:
+            return json.load(io.open(BACKUP, encoding="utf-8"))
+        except Exception:                                         # noqa: BLE001
+            return {}
+    return {}
+
+
+def save_backup(data):
+    os.makedirs(os.path.dirname(BACKUP), exist_ok=True)
+    with io.open(BACKUP, "w", encoding="utf-8") as fp:
+        json.dump(data, fp, ensure_ascii=False, indent=1)
+
+
+def resync(old, new):
+    """(new block, [(index, before, after)]) reusing per-file lines of `old`; (None, []) on drift.
+
+    Only wording is exchanged. A structural change — a line count that cannot be explained by the
+    per-file lines (`家格：`) or by blank lines — means the article's block and the snapshot's block
+    have drifted apart, and reporting that is better than guessing."""
+    out, edits = [], []
+    sm = difflib.SequenceMatcher(a=old, b=new, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        olds, news = old[i1:i2], new[j1:j2]
+        if tag == "equal":
+            out.extend(olds)
+            continue
+        if tag == "delete":
+            if all(PER_FILE_RE.search(ln) or not ln.strip() for ln in olds):
+                out.extend(olds)
+                continue
+            return None, []
+        if tag == "insert":
+            out.extend(news)
+            continue
+        # replace: per-file lines keep their own text, everything else takes the snapshot's wording
+        rest = [ln for ln in olds if not PER_FILE_RE.search(ln)]
+        if len(rest) != len(news):
+            return None, []
+        merged, k = [], 0
+        for ln in olds:
+            if PER_FILE_RE.search(ln):
+                merged.append(ln)
+            else:
+                merged.append(news[k])
+                k += 1
+        if merged != olds:
+            edits.append((i1, olds, merged))
+        out.extend(merged)
+    return out, edits
+
+
 def do_apply(dry=False):
-    facts = snap_facts()
-    heads = new_heads(facts)
-    if len(heads) < 2:
-        print("快照里没有世系头行，放弃")
+    new = printed_block(snap_facts())
+    if len(new) < 2:
+        print("快照里没有世系行，放弃")
         return 1
-    backup, changed = {}, 0
+    backup = load_backup()
+    blocks = backup.setdefault("block", {}) if not dry else {}
+    changed, skipped = 0, []
     for fn in targets():
         path = os.path.join(BASE, fn)
         lines, eol = read_lines(path)
         span = block_span(lines)
         if span is None:
             continue
-        idx = head_index(lines, *span)
-        if len(idx) != len(heads):
-            print(f"  跳过 {fn}: 头行 {len(idx)} ≠ 新头行 {len(heads)}")
+        s, e = span
+        old = lines[s:e]
+        out, edits = resync(old, new)
+        if out is None:
+            skipped.append(fn)
+            print(f"  跳过 {fn}: 世系块与快照行数不符（{len(old)} vs {len(new)}）")
             continue
-        old = [lines[k] for k in idx]
-        if old == heads:
+        if out == old:
             continue
-        backup[fn] = old
-        print(f"  {fn}: {len(idx)} 行")
-        for n, k in enumerate(idx):
-            if old[n] == heads[n]:
-                continue
-            print(f"    - {lines[k][:110]}")
-            print(f"    + {heads[n][:110]}")
-            lines[k] = heads[n]
         changed += 1
-        if not dry:
-            write_lines(path, lines, eol)
-    if not dry and backup:
-        os.makedirs(os.path.dirname(BACKUP), exist_ok=True)
-        old = {}
-        if os.path.exists(BACKUP):
-            old = json.load(io.open(BACKUP, encoding="utf-8"))
-        old.update(backup)
-        with io.open(BACKUP, "w", encoding="utf-8") as fp:
-            json.dump(old, fp, ensure_ascii=False, indent=1)
+        print(f"  {fn}: {sum(1 for _i, a, b in edits for x, y in zip(a, b) if x != y)} 行")
+        for _i, a, b in edits:
+            for n in range(max(len(a), len(b))):
+                x = a[n] if n < len(a) else ""
+                y = b[n] if n < len(b) else ""
+                if x == y:
+                    continue
+                print(f"    - {x[:110]}")
+                print(f"    + {y[:110]}")
+        if dry:
+            continue
+        blocks[fn] = old
+        lines[s:e] = out
+        write_lines(path, lines, eol)
+    if not dry and blocks:
+        save_backup(backup)
     print(f"{'将' if dry else '已'}改 {changed} 篇"
-          + ("" if dry else f"；旧头行已存 {BACKUP}"))
+          + (f"，跳过 {len(skipped)} 篇" if skipped else "")
+          + ("" if dry else f"；旧世系块已存 {BACKUP}"))
     return 0
 
 
 def do_restore():
-    if not os.path.exists(BACKUP):
+    backup = load_backup()
+    blocks = backup.get("block") or {}
+    heads = backup.get("head") or ({} if not blocks else {})
+    if not blocks and not heads and isinstance(backup, dict):
+        heads = {k: v for k, v in backup.items() if isinstance(v, list)}   # legacy flat form
+    if not blocks and not heads:
         print(f"没有备份: {BACKUP}")
         return 1
-    old = json.load(io.open(BACKUP, encoding="utf-8"))
-    for fn, heads in old.items():
+    for fn in sorted(set(blocks) | set(heads)):
         path = os.path.join(BASE, fn)
         if not os.path.exists(path):
             continue
@@ -144,12 +193,19 @@ def do_restore():
         span = block_span(lines)
         if span is None:
             continue
-        idx = head_index(lines, *span)
-        if len(idx) != len(heads):
-            print(f"  跳过 {fn}: 头行 {len(idx)} ≠ 备份 {len(heads)}")
-            continue
-        for k, h in zip(idx, heads):
-            lines[k] = h
+        s, e = span
+        if fn in blocks:
+            if len(blocks[fn]) != e - s:
+                print(f"  跳过 {fn}: 现块 {e - s} 行 ≠ 备份 {len(blocks[fn])} 行")
+                continue
+            lines[s:e] = blocks[fn]
+        if fn in heads:
+            idx = [k for k in range(s, e) if HEAD_RE.match(lines[k])]
+            if len(idx) != len(heads[fn]):
+                print(f"  跳过 {fn}: 头行 {len(idx)} ≠ 备份 {len(heads[fn])}")
+                continue
+            for k, h in zip(idx, heads[fn]):
+                lines[k] = h
         write_lines(path, lines, eol)
         print(f"  已还原 {fn}")
     return 0

@@ -286,6 +286,35 @@ def t_melt():
         check(title.startswith(seat), f"{cid} 称谓以驻地开头", title)
 
 
+def t_md_rows():
+    """⑤ 的成稿面：附录世系里的枢机行必须带驻地（程序产物，九篇同文）。"""
+    print("[8] 成稿附录的枢机行（① 之外的程序产物同步）")
+    base = os.path.join(ROOT, "output", "洪氏2")
+    # the pre-v114 row wording (a bare 「枢机洪宓」 also sits inside 「圣依搦斯枢机洪宓」, so the
+    # assertion looks for the old row as a whole, not for the bare word)
+    old_rows = ("- 　儿子：波尔多总主教区总主教洪彝、枢机洪宓、枢机老者洪约书亚、枢机洪雅各布",
+                "- 　兄弟姊妹：洪静、洪清微、托莱多总主教区总主教洪绮、洪翊、枢机洪元忠、洪惟良")
+    seats = ("圣依搦斯枢机洪宓", "圣斯德望枢机老者洪约书亚", "圣戴多禄枢机洪雅各布",
+             "卢奇娜的圣老楞佐枢机洪元忠")
+    n, bad = 0, []
+    for fn in sorted(os.listdir(base)):
+        if not fn.endswith(".md") or fn.startswith("_"):
+            continue
+        p = os.path.join(base, fn)
+        txt = io.open(p, encoding="utf-8").read()
+        if "### 世系" not in txt:
+            continue
+        n += 1
+        seg = txt.split("### 世系", 1)[1]
+        for row in old_rows:
+            if row in seg:
+                bad.append(fn)
+    check(n >= 9, "九篇终传都带世系", n)
+    check(not bad, "附录枢机行已换成带驻地的新行", bad[:4])
+    txt = io.open(os.path.join(base, "洪七公(1109)_终传_1152_11_13.md"), encoding="utf-8").read()
+    check(all(s in txt for s in seats), "四位枢机都写驻地", [s for s in seats if s not in txt])
+
+
 def main():
     if not os.path.exists(SNAP):
         print(f"缺少快照: {SNAP}\n先跑: python tools/tests/snap.py 洪氏2 207044 final "
@@ -297,6 +326,7 @@ def main():
     t_saint_since()
     t_tree(snap)
     t_cardinal_logic()
+    t_md_rows()
     if "--page" in sys.argv:
         t_page()
     if "--melt" in sys.argv:
