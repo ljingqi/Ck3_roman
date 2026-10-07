@@ -107,8 +107,9 @@ def layer_a():
 
     st = Stub(chars={"2": char(2, father=1)}, vassal={},
               melt_chars={"1": {"dead_data": {"date": "973.3.28", "liege": 9}}})
-    check(st._death_liege(1) is None and st._death_liege(2) is None,
-          "无卒于缓存的卒档 liege 取不到（此桩里为 None）")
+    check(st._death_liege(1) == 9 and st._death_liege(2) is None,
+          "卒档 liege：有卒于缓存者读出（9）、无卒档者取不到",
+          "%r / %r" % (st._death_liege(1), st._death_liege(2)))
     # 卒档 liege：他人 = 封臣；本人 = 独立
     check(Stub(chars={"1": char(1, death={"date": "973.3.28", "liege": 9})})
           ._parent_child_independent(1, None) is False, "卒档 liege=他人 → 封臣")
@@ -171,12 +172,15 @@ def layer_b():
         diff = [i for i, (x, y) in enumerate(zip(old, new)) if x != y]
         check(len(old) == len(new), "世系行数不变（版式未动）", "%d→%d" % (len(old), len(new)))
         check(0 < len(diff) <= 20, "改动只落在称号词上（行数有限）", "%d 行" % len(diff))
-        # 除词表可替换的六个词外，行内其余字符必须逐字相同
-        pairs = [("王子", "公子"), ("郡主", "公女"), ("公主", "皇女"), ("天公主", "天皇女")]
+        # 行内其余字符必须逐字相同：用手术备份的映射把旧行变换过去，应当等于新行
+        mp = {}
+        if os.path.exists(BACKUP):
+            mp = json.load(io.open(BACKUP, encoding="utf-8")).get("map") or {}
+        check(bool(mp), "手术备份里有映射表（改动可解释）", "%d 串" % len(mp))
         bad = []
         for i in diff:
             a, b = old[i], new[i]
-            for x, y in pairs:
+            for x, y in mp.items():
                 a = a.replace(x, y)
             if a != b:
                 bad.append((old[i], new[i]))

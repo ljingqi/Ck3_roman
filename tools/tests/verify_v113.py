@@ -89,6 +89,15 @@ class _Stub(object):
         self.seen.append(("indep", date))
         return True
 
+    # v116 起 `_prince_style_from_title` 走这两个助手取政体/独立性；本档断言记的是 v113 的
+    # 冻结口径，所以这里按 v116 之前的读法实现（政体取自头衔、独立性 None 记作独立）
+    def _parent_child_government(self, owner, ptid, date, title_gov=None):
+        return self._title_government(ptid, date) if title_gov is None else title_gov
+
+    def _parent_child_independent(self, owner, date):
+        v = self._is_independent(owner, date)
+        return True if v is None else v
+
     def _is_short_title(self, tid):
         return False
 

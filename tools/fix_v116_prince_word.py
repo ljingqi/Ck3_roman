@@ -272,7 +272,26 @@ def per_file_map(rows):
     return out, conflict
 
 
-def apply_map(fmaps, dry=True):
+def family_map(fmaps):
+    """把所有「逐篇复算通过」的串合成一张全族表：同一旧串在各篇必须给同一新串。
+
+    逐篇表会漏掉那些「本篇里没有一处能反查到人名」的命中（正文里同样的称号串却没人名），
+    所以落盘用全族表：某串只要在**任一篇**被自校验通过，就对该族所有篇生效。新旧不一致的
+    键（理论上同一前缀同词不该有两种新词）剔除并列出来人工裁决。"""
+    out, conflict = {}, {}
+    for _fn, fm in sorted(fmaps.items()):
+        for k, v in fm.items():
+            if k in out and out[k] != v:
+                conflict.setdefault(k, {})[_fn] = v
+                continue
+            out[k] = v
+    for k in conflict:
+        out.pop(k, None)
+    return out, conflict
+
+
+def apply_map(mp, dry=True):
+    """把全族表逐串落到 `output/洪氏2` 的每篇成稿；旧串→新串与处数记进备份。"""
     backup = {}
     files = {}
     if not dry and os.path.exists(BACKUP):
@@ -280,10 +299,9 @@ def apply_map(fmaps, dry=True):
             backup = json.load(io.open(BACKUP, encoding="utf-8"))
         except Exception:                                          # noqa: BLE001
             backup = {}
-        files = backup.setdefault("files", {})
+    files = backup.setdefault("files", {})
     total = 0
     for fn in md_files():
-        mp = fmaps.get(fn) or {}
         if not mp:
             continue
         path = os.path.join(BASE, fn)
@@ -293,11 +311,10 @@ def apply_map(fmaps, dry=True):
         text = raw.replace("\r\n", "\n")
         hits = []
         for old, new in sorted(mp.items()):
-            a, b = old, new
-            n = text.count(a)
+            n = text.count(old)
             if n:
-                text = text.replace(a, b)
-                hits.append([a, b, n])
+                text = text.replace(old, new)
+                hits.append([old, new, n])
         if not hits:
             continue
         total += sum(h[2] for h in hits)
@@ -307,12 +324,11 @@ def apply_map(fmaps, dry=True):
         files[fn] = hits
         with io.open(path, "w", encoding="utf-8", newline="") as fp:
             fp.write(text.replace("\n", eol))
-    if not dry and files:
-        backup["map"] = {k: v for fm in fmaps.values() for k, v in fm.items()}
+    if not dry:
+        backup["map"] = mp
         with io.open(BACKUP, "w", encoding="utf-8") as fp:
             json.dump(backup, fp, ensure_ascii=False, indent=1)
-    union = {k: v for fm in fmaps.values() for k, v in fm.items()}
-    return total, union
+    return total
 
 
 def patch_sidecar(mp, dry=True):
@@ -338,27 +354,38 @@ def patch_sidecar(mp, dry=True):
 
 
 def do_restore():
+    """回退：优先按逐篇明细回退；明细缺失时按备份里的全族表反着替换一遍。
+
+    全族表的新串与旧串互不相交（没有「某串既是旧串又是新串」），所以反着替换一遍即可还原，
+    偶有「本来就是新串」的写法被反成旧串，重跑 --apply 会再换回来。"""
     if not os.path.exists(BACKUP):
         print("没有备份：%s" % BACKUP)
         return 1
     backup = json.load(io.open(BACKUP, encoding="utf-8"))
-    n = 0
     side = backup.get("sidecar")
     if side:
         path = os.path.join(BASE, "data", "genealogy.json")
         with io.open(path, "w", encoding="utf-8", newline="") as fp:
             fp.write(side)
         print("  已还原 data/genealogy.json")
-    for fn, hits in (backup.get("files") or {}).items():
+    files = backup.get("files") or {}
+    rmap = {v: k for k, v in (backup.get("map") or {}).items()}
+    n = 0
+    for fn in md_files():
         path = os.path.join(BASE, fn)
-        if not os.path.exists(path):
-            continue
         with io.open(path, encoding="utf-8", newline="") as fp:
             raw = fp.read()
         eol = "\r\n" if "\r\n" in raw else "\n"
         text = raw.replace("\r\n", "\n")
-        for a, b, _k in hits:
-            text = text.replace(b, a)
+        before = text
+        if files.get(fn):
+            for a, b, _k in files[fn]:
+                text = text.replace(b, a)
+        elif rmap:
+            for new, old in sorted(rmap.items()):
+                text = text.replace(new, old)
+        if text == before:
+            continue
         with io.open(path, "w", encoding="utf-8", newline="") as fp:
             fp.write(text.replace("\n", eol))
         n += 1
@@ -393,9 +420,10 @@ def main():
         if old != new:
             print("  %-10s %-2s → %-2s  %d 处" % (pre, old, new, n))
     fmaps, conflict = per_file_map(rows)
-    print("\n== 逐篇替换明细%s" % ("（dry，不落盘）" if dry else ""))
-    total, union = apply_map(fmaps, dry=dry)
-    side_n, side_raw = patch_sidecar(union, dry=dry)
+    fmap, xconf = family_map(fmaps)
+    print("\n== 全族替换表 %d 串；逐篇（dry，不落盘）" % len(fmap))
+    total = apply_map(fmap, dry=dry)
+    side_n, side_raw = patch_sidecar(fmap, dry=dry)
     if not dry and (total or side_n):
         bk = {}
         if os.path.exists(BACKUP):
@@ -403,11 +431,15 @@ def main():
                 bk = json.load(io.open(BACKUP, encoding="utf-8"))
             except Exception:                                      # noqa: BLE001
                 bk = {}
-        bk["map"] = union
+        bk["map"] = fmap
         if side_raw is not None:
             bk["sidecar"] = side_raw
         with io.open(BACKUP, "w", encoding="utf-8") as fp:
             json.dump(bk, fp, ensure_ascii=False, indent=1)
+    if xconf:
+        print("\n!! 跨篇冲突（剔除，人工裁决）:")
+        for k, d in sorted(xconf.items()):
+            print("   %s: %s" % (k, d))
     if conflict:
         print("\n!! 同篇内冲突（未替换该键，人工裁决）:")
         for fn, d in sorted(conflict.items()):
