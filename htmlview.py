@@ -584,6 +584,14 @@ function renderTree(host, k){
       renderTree(host, k);
     };
   });
+  // 宝塔式 reads down from the 始祖, so the first view is centred on him instead of on the left edge
+  const scroller = host.querySelectorAll('.tree-scroll')[0];
+  if(scroller && !host._scrolled){
+    host._scrolled = 1;
+    const first = (TREE.chain || [])[0];
+    const p0 = (first && xOf[first.id] != null) ? xOf[first.id] : 0;
+    scroller.scrollLeft = Math.max(0, (p0 + BEAD_W / 2) * z - (scroller.clientWidth || 900) / 2);
+  }
   host.querySelectorAll('.tree-bar button').forEach(b => {
     b.onclick = () => {
       const a = b.getAttribute('data-z');
