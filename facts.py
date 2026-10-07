@@ -18523,7 +18523,10 @@ def _death_sentence_body(f, cid, killer_pronoun=False, annotated=False, insider=
                 s += note
         return s + "。"
     if gone:
-        s = f"{name}{f.date(d.get('date'))}{clause}。"
+        # the whereabouts still anchor the sentence: 「1123年在襄阳消失得无影无踪」
+        vp = f.victim_place(cid)
+        s = (f"{name}{f.date(d.get('date'))}在{vp}{clause}。" if vp
+             else f"{name}{f.date(d.get('date'))}{clause}。")
     else:
         s = f"{name}死于{f.date(d.get('date'))}，{clause}。"
     if pid is not None and killer == pid:

@@ -162,8 +162,8 @@ def group_synthetic():
           line == "户部尚书石从古1123年8月1日在襄阳消失得无影无踪。", line)
     _StubGone._hidden = False
     line2 = F._death_sentence_body(_StubGone(), 9)
-    check("V112-1b 年表句（公开口径）不含「死于」",
-          line2 == "户部尚书石从古1123年8月1日消失得无影无踪。", line2)
+    check("V112-1b 年表句（公开口径）同样在{地}消失得无影无踪且不含「死于」",
+          line2 == "户部尚书石从古1123年8月1日在襄阳消失得无影无踪。", line2)
 
 
 def group_snapshot(snap):
@@ -223,7 +223,7 @@ def group_snapshot(snap):
         return zh.index(s)
 
     vals = [_num(x) for x in nums if x]
-    check("V112-6d 世次不减且非负", all(b >= a for a, b in zip(vals, vals[1:])), vals)
+    check("V112-6i 世次不减且非负", all(b >= a for a, b in zip(vals, vals[1:])), vals)
     check("V112-6e 每代行含生年与承接日",
           all(("生" in ln and "为传主" in ln) for ln in heads), heads[:1])
     check("V112-6f 每代行写明与上一代的关系",
@@ -250,6 +250,41 @@ def group_language():
     check("V112-4b 改文化后的语言在「兼通」里", "戈伊德尔语" in line, line)
 
 
+def group_appendix():
+    """V112-6d：大事年表的名字过滤器只吃本传主那一代（合成两代 facts）。"""
+    print("\n[V112-6d] 附录年表过滤器")
+    facts = {
+        "protagonist": {"name": "乙公", "house_history": []},
+        "genealogy": [
+            "凡例：本谱世系以世为经、以人为纬。",
+            "世系图：",
+            "　一世 甲公 ─ 二世 乙公",
+            "**一世**　甲公，1年生，2年起为传主，3年卒",
+            "　父：老王",
+            "　正妻：王婆",
+            "**二世**　乙公，甲公之子，4年生，5年继为传主，6年卒",
+            "　父：甲公",
+            "　正妻：李女",
+        ],
+        "genealogy_subject": ["**二世**　乙公，甲公之子，4年生，5年继为传主，6年卒",
+                              "　父：甲公", "　正妻：李女"],
+        "timeline": [
+            {"date": "2.1.1", "text": "2年，老王受任县令。"},
+            {"date": "2.2.2", "text": "2年2月2日，王婆受任郡主。"},
+            {"date": "4.3.3", "text": "4年3月3日，甲公受任刺史。"},
+            {"date": "5.4.4", "text": "5年4月4日，李女受任郡君。"},
+        ],
+    }
+    txt = bio._appendix_text(facts)
+    # 世系节本身当然写着先祖的父/妻 —— 过滤器只管大事年表那一段
+    tail = txt.split("### 大事年表", 1)[-1]
+    check("V112-6d 先祖一代的名字不进年表", "老王" not in tail and "王婆" not in tail,
+          [ln for ln in tail.splitlines() if "老王" in ln or "王婆" in ln][:2])
+    check("V112-6d 本代亲属的名字仍在年表",
+          "甲公受任刺史" in txt and "李女受任郡君" in txt,
+          [ln for ln in txt.splitlines() if "受任" in ln][:4])
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
     if not os.path.isfile(path):
@@ -260,6 +295,7 @@ def main():
     print("快照 %s" % os.path.relpath(path, ROOT))
     group_synthetic()
     group_snapshot(snap)
+    group_appendix()
     group_language()
     print("\n结果: %s" % ("全部通过" if not FAILS else "存在 FAIL — " + "、".join(FAILS)))
     return 1 if FAILS else 0
