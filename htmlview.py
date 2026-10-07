@@ -603,7 +603,7 @@ sel.onchange = () => show(parseInt(sel.value, 10), 0);
 const treeBtn = document.getElementById('tree-btn');
 if(!TREE || !(TREE.chain || []).length){
   treeBtn.disabled = true;
-  treeBtn.title = '本族尚无终传（家谱按传主链生成）';
+  treeBtn.title = '本族尚无家谱数据（终传出稿后自动带上）';
 } else {
   treeBtn.onclick = showTree;
 }
@@ -925,10 +925,13 @@ def rebuild_folder(output_dir, folder):
         g.pop("person_key", None)
     title = f"{folder} · 家传阅读页"
     payload = {"chars": groups, "tree": tree, "marks": marks}
+    # `<\/` is the same JSON string as `</`: escaping it keeps a name from closing the inline
+    # <script> early (and from opening an HTML comment)
+    data = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
     out = (TEMPLATE
            .replace("__TITLE__", html.escape(title))
            .replace("__FOLDER__", html.escape(folder))
-           .replace("__DATA__", json.dumps(payload, ensure_ascii=False)))
+           .replace("__DATA__", data))
     path = os.path.join(base, "index.html")
     # Unique temp name: the main thread and a biography thread may rebuild the same page at
     # once, and a shared .tmp would truncate each other

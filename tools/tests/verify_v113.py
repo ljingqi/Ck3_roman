@@ -435,6 +435,19 @@ def t_html(path=None):
     check('id="tree-btn"' in html, "工具栏有家谱入口")
     check("function renderTree" in html, "内联垂珠体渲染器")
     check("red_edges" in html, "红线数据随页下发")
+    # the whole page dies if the payload closes the inline <script> early
+    mm = re.search(r"const DATA = (\{.*?\});\nconst CHARS", html, re.S)
+    if not mm:
+        check(False, "页面数据段完整", "找不到 const DATA")
+    else:
+        check("</" not in mm.group(1) and "<!--" not in mm.group(1),
+              "内联数据段不含早闭标签", "")
+        try:
+            payload = json.loads(mm.group(1))
+            check(isinstance(payload.get("chars"), list) and len(payload["chars"]) >= 1,
+                  "页面数据段可解析", f"{len(payload.get('chars') or [])} 位角色")
+        except Exception as e:
+            check(False, "页面数据段可解析", e)
     tree = load_tree()
     if tree:
         # the payload is JSON-embedded in the page, so its quotes arrive escaped
