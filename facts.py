@@ -4917,7 +4917,7 @@ class Facts:
             for _k in ("primary_spouse", "spouse", "concubine"):
                 if _k in pfam:
                     pfam[_k] = list(pfam[_k] or [])
-            pfam = self.merge_spouse_latch(pfam, self.as_of)
+            pfam = self.merge_spouse_latch(pfam, self.as_of, owner=int(player))
         kind = marriage_slot_of(pfam, cid)
         if not kind:
             kind = marriage_slot_of((chars.get(str(cid)) or {}).get("family") or {}, pid)
@@ -5649,7 +5649,7 @@ class Facts:
                    "former_spouses", "former_concubines"):
             if _k in pfam:
                 pfam[_k] = list(pfam[_k] or [])
-        pfam = self.merge_spouse_latch(pfam, self.as_of)
+        pfam = self.merge_spouse_latch(pfam, self.as_of, owner=int(pid))
         kind = ""
         if cid in (pfam.get("primary_spouse") or []):
             kind = "妻"
@@ -10449,12 +10449,20 @@ class Facts:
         out.sort(key=lambda r: (cl.date_key(r["first_seen"] or ""), r["other"]))
         return out
 
-    def merge_spouse_latch(self, fam, as_of=None):
+    def merge_spouse_latch(self, fam, as_of=None, owner=None):
         """Merge the spouse latches into the relatives set in place and return `fam`.
 
         Ranks map onto the five keys `primary_spouse` / `spouse` / `concubine` / `former_spouses`
         / `former_concubines`, isomorphic to the game's `family_data`, so downstream needs no
-        second vocabulary. Add-only: values present in this save win, the latch fills gaps."""
+        second vocabulary. Add-only: values present in this save win, the latch fills gaps.
+
+        The latch belongs to the cached protagonist alone (`spouse_latch_rows` filters on
+        `rec["player"] == player_id`), so `owner` states whose relatives set is being merged: any
+        other person's record is returned untouched. Without that gate the protagonist's own wives
+        were merged into every record handed in, which put e.g. the subject's wife beside an
+        earlier generation's daughter (v114)."""
+        if owner is not None and owner != self.cache.get("player_id"):
+            return fam
         rows = self.spouse_latch_rows(as_of)
         if not rows:
             return fam
@@ -22047,7 +22055,7 @@ def _protagonist(f):
     # Merge in the spouse latch first: the protagonist's own family_data is cleared in the death
     # snapshot while spouses' and concubines' reverse pointers stay in every snapshot; without it the
     # facts would go blank and the model would invent spouses.
-    fam = f.merge_spouse_latch(fam, f.as_of)
+    fam = f.merge_spouse_latch(fam, f.as_of, owner=pid)
     rec["family"] = fam
     # The father's own family record is still read (the birth-rank row counts the father's children),
     # but the wife rows no longer cross-annotate against his marriage history: each row states the
@@ -25596,8 +25604,9 @@ def _genealogy_groups(f, cid, date):
     spouses under `former_spouses` (v113)."""
     cache = f.cache
     rec = (cache.get("characters") or {}).get(str(cid)) or {}
-    # the marriage latch is merged into the genealogy, from the same source as `_protagonist_facts`
-    fam = f.merge_spouse_latch(rec.get("family") or {}, date)
+    # the marriage latch is merged into the genealogy, from the same source as `_protagonist_facts`,
+    # but only for the person it belongs to: every other generation reads its own save record
+    fam = f.merge_spouse_latch(rec.get("family") or {}, date, owner=cid)
     fem = f._is_female(cid)
     spouses = [x for x in _asof_ids(f, fam.get("primary_spouse") or [], date)]
     side = [x for x in _asof_ids(f, fam.get("spouse") or [], date) if x not in set(spouses)]
@@ -25913,7 +25922,8 @@ def genealogy_tree(f):
         if x in blood or x in spouse_of:
             continue
         fem = bool(f._is_female(x))
-        fam = f.merge_spouse_latch((chars.get(str(x)) or {}).get("family") or {}, f.as_of)
+        fam = f.merge_spouse_latch((chars.get(str(x)) or {}).get("family") or {}, f.as_of,
+                                  owner=x)
         for key, word in (("primary_spouse", "配"), ("spouse", "侧室" if fem else "侧夫"),
                           ("concubine", "妾" if fem else "男宠"),
                           ("former_concubines", "前妾" if fem else "前男宠"),
@@ -26535,7 +26545,7 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         rec = (cache.get("characters") or {}).get(str(pid)) or {}
         # merge the marriage latch into the spouse set first, from the same source as
         # `_protagonist_facts`
-        fam = f.merge_spouse_latch(rec.get("family") or {}, f.as_of)
+        fam = f.merge_spouse_latch(rec.get("family") or {}, f.as_of, owner=pid)
         rec["family"] = fam
         spouse_ids = list(dict.fromkeys(
             (fam.get("primary_spouse") or []) + (fam.get("spouse") or [])
@@ -26658,7 +26668,7 @@ def household_groups(f, facts):
     if pid is None:
         return []
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
-    fam = f.merge_spouse_latch(rec.get("family") or {}, f.as_of)
+    fam = f.merge_spouse_latch(rec.get("family") or {}, f.as_of, owner=pid)
     chars = cache.get("characters") or {}
 
     def _ids(key):
