@@ -6,10 +6,14 @@ every suffix (plain/.gz/.xz), for a missing key, for an array-valued top-level k
 a truncated melt and for corrupt JSON -- and its per-melt offset table must be reused on
 the second call and invalidated when the melt's size or mtime changes.
 
-The reference implementation is the pre-rewrite `cache_lib.py` from git HEAD, kept in
-logs/_v117_old_cache_lib.py (the probe regenerates it from git when it is missing). The
-real melt is read section-by-section only: no melt is ever loaded whole, re-melted or
-written, and nothing is written outside logs/.
+The reference implementation is the pre-rewrite `cache_lib.py`, kept as a snapshot in
+logs/_v117_old_cache_lib.py (sha1 ba5592c0..., = git HEAD at the time of the rewrite; the
+probe regenerates it from `git show HEAD:cache_lib.py` when it is missing and refuses to
+run if what it finds is not the byte-level walker). Once the rewrite is committed, HEAD
+no longer holds the old implementation, so the saved snapshot -- not HEAD -- is the
+reference; the probe reports the mismatch instead of failing on it. The real melt is
+read section-by-section only: no melt is ever loaded whole, re-melted or written, and
+nothing is written outside logs/.
 
 Usage:
     & tools\\py.ps1 tools\\tests\\v117_check_melt_section.py
@@ -75,20 +79,44 @@ def same(old_obj, new_obj):
     return old_obj == new_obj
 
 
+def _git_old_source():
+    """Bytes of the last committed cache_lib.py that still holds the byte-level walker.
+
+    After 丙-6 the old implementation lives only in history, so the probe walks back from
+    HEAD until the blob carries the `buf += chunk` marker of the walker."""
+    try:
+        revs = subprocess.run(["git", "rev-list", "-n", "40", "HEAD"], cwd=ROOT,
+                              capture_output=True, check=True).stdout.decode().split()
+    except Exception:
+        return None
+    for rev in revs:
+        got = subprocess.run(["git", "show", f"{rev}:cache_lib.py"], cwd=ROOT,
+                             capture_output=True)
+        if got.returncode == 0 and b"buf += chunk" in got.stdout:
+            return got.stdout
+    return None
+
+
 def load_old_module():
-    """Import the pre-rewrite cache_lib from logs/, regenerating it from git HEAD."""
+    """Import the pre-rewrite cache_lib from logs/, regenerating it from git history."""
     if not os.path.isfile(OLD_PATH):
-        w(f"[setup] 旧实现缺失，从 git HEAD 生成 {os.path.relpath(OLD_PATH, ROOT)}")
-        got = subprocess.run(["git", "show", "HEAD:cache_lib.py"], cwd=ROOT,
-                             capture_output=True, check=True)
+        w(f"[setup] 旧实现缺失，从 git 历史生成 {os.path.relpath(OLD_PATH, ROOT)}")
+        src = _git_old_source()
+        if src is None:
+            w("[setup] 严重错误：git 历史里找不到带 buf += chunk 的 cache_lib.py")
+            sys.exit(2)
         with open(OLD_PATH, "wb") as fp:
-            fp.write(got.stdout)
+            fp.write(src)
     with open(OLD_PATH, "rb") as fp:
         src = fp.read()
     if b"buf += chunk" not in src or b"def load_melt_section" not in src:
-        w("[setup] 严重错误：logs/_v117_old_cache_lib.py 不是重写前的旧实现"
-          "（缺少 buf += chunk 标记）——请用 git show 重新导出后重跑")
-        sys.exit(2)
+        w("[setup] 旧实现快照不是重写前版本（缺少 buf += chunk 标记），改用 git 历史：")
+        src = _git_old_source()
+        if src is None:
+            w("[setup] 严重错误：git 历史里找不到旧实现，无法对拍")
+            sys.exit(2)
+        with open(OLD_PATH, "wb") as fp:
+            fp.write(src)
     spec = importlib.util.spec_from_file_location("v117_old_cache_lib", OLD_PATH)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["v117_old_cache_lib"] = mod
@@ -398,9 +426,13 @@ def main():
     try:
         head = subprocess.run(["git", "show", "HEAD:cache_lib.py"], cwd=ROOT,
                               capture_output=True, check=True).stdout
-        same_head = hashlib.sha1(head).hexdigest() == old_sha
-        w(f"[setup] 与 git HEAD:cache_lib.py 一致 {same_head}"
-          f"{'' if same_head else '  (注意：工作树已改动，旧实现应为改动前版本)'}")
+        head_sha = hashlib.sha1(head).hexdigest()
+        if head_sha == old_sha:
+            w("[setup] 与 git HEAD:cache_lib.py 一致 True（HEAD 仍是重写前版本）")
+        else:
+            w(f"[setup] 与 git HEAD:cache_lib.py 不一致（HEAD 现在是 {head_sha[:12]}）："
+              f"logs/ 里的旧实现是重写前快照，丙-6 落地后 HEAD 已改，属预期；"
+              f"对拍基准仍是该快照")
     except Exception as exc:                       # noqa: BLE001 - provenance is best effort
         w(f"[setup] 未能核对 git HEAD: {type(exc).__name__}: {exc}")
 
