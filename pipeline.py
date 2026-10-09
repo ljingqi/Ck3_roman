@@ -3028,6 +3028,9 @@ def step_epilogue(cfg, folder=None, force=False):
     facts = F.build_facts(cache, melt, bio._names_path(cfg, cache), cfg=cfg,
                           campaign=_campaign_caches(cfg, cache))
     f = facts["_facts"]
+    # the reading page's 家谱 is a program artifact of the same facts: write it here so the family
+    # chart ends up as of the archive's last save, without a separate run (v119)
+    bio._write_genealogy_tree(facts, out_path)
     rep = E.roster(f)
     print(f"同宗在世 {rep['alive']} 人，有地者 {len(rep['rows'])} 人", flush=True)
     rule_block = style.rule_block(facts.get("bio_style") or style.DEFAULT_STYLE)

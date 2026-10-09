@@ -773,9 +773,11 @@ function renderTree(host, k){
       + '</g>');
   });
   const chain = (TREE.chain || []).slice(0, k);
+  // a family whose tree data predates the 分家 fields keeps the plain bar (nothing to tick)
+  const houseMenu = (TREE.houses || []).length ? houseMenuHtml(hs, host._menu) : '';
   const bar = '<div class="tree-bar">'
     + '<span class="key red"><i></i>传主传承</span><span class="key"><i></i>父子相承</span>'
-    + houseMenuHtml(hs, host._menu)
+    + houseMenu
     + '<span>本图 ' + order.length + ' / ' + sc.nodes.length + ' 人 · 传主 ' + chain.length + ' 位'
     + ' · 字号 ' + FS + 'px</span>'
     + '<button data-z="out">缩小</button><button data-z="in">放大</button>'
