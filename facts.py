@@ -11690,16 +11690,15 @@ class Facts:
         if pid is None:
             return []
         prec = (cache.get("characters") or {}).get(str(pid)) or {}
+        # The pool is the protagonist's own HOUSE (家族), never his whole dynasty (宗族): houses of
+        # one dynasty are separate families, so a feud between two of its branches is a feud with an
+        # outsider. Two defects follow from widening this to the dynasty: other branches' feuds are
+        # read as his own, and his own branch feuds disappear behind the `other` filter below
+        # (`h not in my_houses` is empty when both sides are dynasty houses).
         my_houses = set()
         h0 = prec.get("dynasty_house")
         if isinstance(h0, int):
             my_houses.add(h0)
-        did = cache.get("dynasty_id")
-        dh = (self.melt.get("dynasties") or {}).get("dynasty_house") or {}
-        if did is not None:
-            for hid, e in dh.items():
-                if isinstance(e, dict) and e.get("dynasty") == did:
-                    my_houses.add(int(hid))
         if not my_houses:
             return []
         db = (self.melt.get("house_relations") or {}).get("database") or {}
