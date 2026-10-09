@@ -10675,19 +10675,22 @@ class Facts:
         ddate = str(ex.get("date") or "")
         span = _prison_span(entry_date, ddate) if ddate else ""
         same = bool(span) and span == W["prison_same_day"]
+        # Every tail clause names the prisoner, so a subject-less passive can never be read as the
+        # jailer's own fate (see the wording note in style.FACT_WORDING)
+        vn = self._feud_role_title(victim, entry_date) if isinstance(victim, int) else ""
         if kind == "held":
-            tail = W["prison_still_held"].format(bound=self._prison_bound())
+            tail = W["prison_still_held"].format(bound=self._prison_bound(), victim=vn)
             tail += self.prison_handover_clause(victim, date=entry_date)
             return (tail, "held", "")
         if kind == "enslaved":
-            return (W["prison_enslaved"], "enslaved", span)
+            return (W["prison_enslaved"].format(victim=vn), "enslaved", span)
         if kind == "escape":
             if same:
-                t = W["prison_escape_same_day"]
+                t = W["prison_escape_same_day"].format(victim=vn)
             elif span:
-                t = W["prison_escaped"].format(span=span)
+                t = W["prison_escaped"].format(span=span, victim=vn)
             else:
-                t = W["prison_escape_on"].format(date=self.date(ddate))
+                t = W["prison_escape_on"].format(date=self.date(ddate), victim=vn)
             return (t, "escape", span)
         if kind in ("executed", "died_in_prison", "devoured"):
             key = {"executed": "prison_died_executed",
@@ -10695,27 +10698,29 @@ class Facts:
                    "devoured": "prison_died_devoured"}[kind]
             sp = (W["prison_same_day"] if same
                   else (f"{span}后" if span else f"至{self.date(ddate)}"))
-            return (W[key].format(sp=sp), kind, span)
+            return (W[key].format(sp=sp, victim=vn), kind, span)
         # release family: released / converted / hook / claim / ransomed / recruit / vows /
         # punished — a purge day always reads 遭驱逐
         if purge:
-            return ("，遭驱逐", "banished", span)
+            return (f"，{vn}遭驱逐", "banished", span)
         mw = str(ex.get("manner") or "")
         if mw:
+            # the manner is the prisoner's (converted / renounced a claim / took vows), so it carries
+            # the prisoner's name like every other tail clause
             if same:
-                t = f"{W['prison_same_day']}{mw}"
+                t = f"{W['prison_same_day']}{vn}{mw}"
             elif span:
-                t = f"{span}后{mw}"
+                t = f"{span}后{vn}{mw}"
             elif ddate:
-                t = f"{self.date(ddate)}{mw}"
+                t = f"{self.date(ddate)}{vn}{mw}"
             else:
-                t = mw
+                t = f"{vn}{mw}"
             return (t if t.startswith("，") else "，" + t, kind, span)
         if same:
-            return (W["prison_released_same_day"], "released", span)
+            return (W["prison_released_same_day"].format(victim=vn), "released", span)
         if span:
-            return (W["prison_released"].format(span=span), "released", span)
-        return (W["prison_release_on"].format(date=self.date(ddate)), "released", span)
+            return (W["prison_released"].format(span=span, victim=vn), "released", span)
+        return (W["prison_release_on"].format(date=self.date(ddate), victim=vn), "released", span)
 
     def spouse_latch_rows(self, as_of=None):
         """Protagonist's spouse latch records → [{other, kind, first_seen}], sorted by sighting date.
@@ -20384,16 +20389,16 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     drop.add(pun[1])
                     body += W[pun[0]].format(
                         sp=W["prison_same_day"] if same else f"{span}后",
-                        jailer=jn)
+                        jailer=jn, victim=vn)
                     o_kind = "punished"
                 elif owned is not None and not out.get("escape"):
-                    body += W["prison_enslaved"]
+                    body += W["prison_enslaved"].format(victim=vn)
                     o_kind = "enslaved"
                 elif out.get("escape"):
                     # An escaped prisoner is not "released": the exit wording depends on the memory type
-                    body += W["prison_escape_same_day"] if same else (
-                        W["prison_escaped"].format(span=span) if span
-                        else W["prison_escape_on"].format(date=f.date(out["date"])))
+                    body += W["prison_escape_same_day"].format(victim=vn) if same else (
+                        W["prison_escaped"].format(span=span, victim=vn) if span
+                        else W["prison_escape_on"].format(date=f.date(out["date"]), victim=vn))
                     o_kind = "escape"
                 else:
                     # Release reason (conversion / handing over leverage / renouncing a claim /
@@ -20401,26 +20406,27 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     # folded multi-person cluster does not (see `_fold_prison_clusters`)
                     _mk, _mw = f.release_manner(victim, r["jailer"], out["date"])
                     if _mw:
+                        # the manner belongs to the prisoner, so it carries the prisoner's name too
                         if same:
-                            body += f"，{W['prison_same_day']}{_mw}"
+                            body += f"，{W['prison_same_day']}{vn}{_mw}"
                         elif span:
-                            body += f"，{span}后{_mw}"
+                            body += f"，{span}后{vn}{_mw}"
                         else:
-                            body += f"，{f.date(out['date'])}{_mw}"
+                            body += f"，{f.date(out['date'])}{vn}{_mw}"
                         o_kind = _mk
                     elif same:
-                        body += W["prison_released_same_day"]
+                        body += W["prison_released_same_day"].format(victim=vn)
                         o_kind = "released"
                     elif span:
-                        body += W["prison_released"].format(span=span)
+                        body += W["prison_released"].format(span=span, victim=vn)
                         o_kind = "released"
                     else:
                         body += W["prison_release_on"].format(
-                            date=f.date(out["date"]))
+                            date=f.date(out["date"]), victim=vn)
                         o_kind = "released"
             elif owned is not None:
                 # No release memory, but enslaved while held: that is the release reason
-                body += W["prison_enslaved"]
+                body += W["prison_enslaved"].format(victim=vn)
                 o_kind = "enslaved"
             else:
                 # The custody ends in **death**: with a death record (not earlier than the
@@ -20460,13 +20466,13 @@ def _pair_imprisonments(events, f, pid, pname=""):
                         key, o_kind = "prison_died_executed", "executed"
                     else:
                         key, o_kind = "prison_died_in_prison", "died_in_prison"
-                    body += W[key].format(sp=sp)
+                    body += W[key].format(sp=sp, victim=vn)
                 else:
                     # Record that the story stops here: with no release memory, no prison history
                     # and no death record, the program states what happened afterwards instead of
                     # leaving silence for the model to fill in. The bound is the article's cutoff
                     # (decade) or the last save, and a handover of the jailer is written too.
-                    body += W["prison_still_held"].format(bound=f._prison_bound())
+                    body += W["prison_still_held"].format(bound=f._prison_bound(), victim=vn)
                     body += f.prison_handover_clause(victim)
                     o_kind = "held"
             e = events[r["idx"]]

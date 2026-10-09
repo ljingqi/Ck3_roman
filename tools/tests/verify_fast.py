@@ -1045,6 +1045,7 @@ def group_v42(snap_path):
     tl_lines = tl_all.splitlines()
     merged = [ln for ln in tl_lines
               if ("遭阉割而获释" in ln or "遭剜目而获释" in ln
+                  or "被其阉割而获释" in ln or "被其剜目而获释" in ln
                   or ("在成年前被" in ln and "阉割" in ln))]
     check(f"[3] 窗口内阉/盲记忆 {n_pun} 条皆在囚禁行内结清",
           len(merged) == n_pun, f"记忆 {n_pun} 条, 合并行 {len(merged)} 条")

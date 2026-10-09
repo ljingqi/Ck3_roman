@@ -365,17 +365,22 @@ FACT_WORDING = {
     "prison_months": "{n}个月",
     "prison_years": "{y}年",
     "prison_years_months": "{y}年{m}个月",
-    "prison_released": "，{span}后获释",
-    "prison_release_on": "，{date}获释",
-    "prison_released_same_day": "，当日获释",
+    # Every tail clause below names its own subject. The head is "{jailer}囚禁{victim}", so a
+    # subject-less passive ("1个月后遭阉割而获释") attaches to the head's subject — the protagonist —
+    # and a reader can take the jailer for the sufferer (the 1232 洪希晏/朮赤 line was read that
+    # way). Jailer-side acts therefore read 「被其…」 (the `prison_died_devoured` pattern), the
+    # prisoner's own acts and states carry {victim}, and the release family names the prisoner too.
+    "prison_released": "，{span}后{victim}获释",
+    "prison_release_on": "，{date}{victim}获释",
+    "prison_released_same_day": "，当日{victim}获释",
     # No release recorded: {bound} comes from facts (the decade archive's cutoff
     # date, or the last archive for the final biography). The program states the
     # whole clause so the model has no blank to fill in.
-    "prison_still_held": "，至{bound}仍在押",
+    "prison_still_held": "，至{bound}{victim}仍在押",
     # Other branch of the release split: escape (escaped_from_prison_memory).
-    "prison_escaped": "，{span}后越狱逃脱",
-    "prison_escape_on": "，{date}越狱脱身",
-    "prison_escape_same_day": "，当日越狱脱身",
+    "prison_escaped": "，{span}后{victim}越狱逃脱",
+    "prison_escape_on": "，{date}{victim}越狱脱身",
+    "prison_escape_same_day": "，当日{victim}越狱脱身",
     "prison_jailed": "{jailer}囚禁{victim}",
     "prison_held": "{victim}被囚",
     # Only capture modes with hard evidence get their own wording: siege and battle
@@ -403,15 +408,15 @@ FACT_WORDING = {
     # Castration/blinding always falls on the release day (21 of 21 saves), so the
     # punishment becomes the release reason inside the imprisonment sentence instead
     # of a line of its own; {sp} is the elapsed span (same day, or the elapsed days).
-    "prison_punish_castrated": "，{sp}遭阉割而获释",
-    "prison_punish_blinded": "，{sp}遭剜目而获释",
+    "prison_punish_castrated": "，{sp}被其阉割而获释",
+    "prison_punish_blinded": "，{sp}被其剜目而获释",
     "prison_punish_beardless":
-        "，{sp}其在成年前被{jailer}阉割，终身无须，因而获释",
-    "prison_punish_generic": "，{sp}受刑而获释",
+        "，{sp}{victim}尚在成年前，被{jailer}阉割，终身无须，因而获释",
+    "prison_punish_generic": "，{sp}被其用刑而获释",
     # Prison terms closed by death: a death record with no release and no escape is
     # written as an execution or a death in prison.
-    "prison_died_executed": "，{sp}处决",
-    "prison_died_in_prison": "，{sp}死于狱中",
+    "prison_died_executed": "，{sp}被其处决",
+    "prison_died_in_prison": "，{sp}{victim}死于狱中",
     # Prison terms closed by being eaten: the cannibalism mod records eating as
     # `death_execution`, and the bone object it leaves (`devour_bone_visual`, see
     # `Facts._devour_bones`) is the only proof. The sentence's pronoun is the jailer it
@@ -471,7 +476,7 @@ FACT_WORDING = {
     # carries no date; the year is the first archive a per-archive diff sees it in (diff
     # and prison term may be one archive apart, hence no "same day"). {year} comes from
     # `Facts._year_only` and already contains the year word.
-    "prison_enslaved": "，没为奴隶",
+    "prison_enslaved": "，{victim}没为奴隶",
     "enslaved_line": "{slave}没为{actor}的奴隶。",
     "enslaved_line_on": "{date}，{slave}没为{actor}的奴隶。",
     "enslaved_line_since": "{slave}自{year}起没为{actor}的奴隶。",
