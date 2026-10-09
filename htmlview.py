@@ -256,8 +256,8 @@ blockquote{margin:0 0 14px;padding:10px 18px;border-left:4px solid var(--gold);b
 code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,monospace;font-size:.9em}
 /* v113: 家谱 (宝塔式世系图). One row per generation with the ancestor on top, so the clan reads
    downwards like a pagoda (宝塔式); the succession is drawn in red. */
-#tree-btn{font:inherit;padding:5px 14px;border:1px solid #8f7d55;background:#3a3121;color:var(--bar-ink);border-radius:5px;cursor:pointer}
-#tree-btn.active{background:var(--gold);border-color:var(--gold);color:#211a0c;font-weight:700}
+#tree-btn,#epi-btn{font:inherit;padding:5px 14px;border:1px solid #8f7d55;background:#3a3121;color:var(--bar-ink);border-radius:5px;cursor:pointer}
+#tree-btn.active,#epi-btn.active{background:var(--gold);border-color:var(--gold);color:#211a0c;font-weight:700}
 #tree-btn[disabled]{opacity:.45;cursor:default}
 .tree-host{font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif;background:#fdfaf0;border:1px solid var(--paper-edge);border-radius:3px;margin:14px 0 18px}
 .tree-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:8px 12px;border-bottom:1px solid #e4d9bd;background:#f6efdd;font-size:13px;color:var(--ink-soft)}
@@ -299,6 +299,7 @@ body.tree-mode .tree-scroll{max-height:calc(100vh - 200px)}
     <div id="tabs"></div>
   </div>
   <div id="char-box">
+    <button id="epi-btn" title="封档总评" style="display:none">封档总评</button>
     <button id="tree-btn" title="全族家谱">家谱</button>
     <label for="char-sel">角色</label>
     <select id="char-sel"></select>
@@ -315,7 +316,49 @@ body.tree-mode .tree-scroll{max-height:calc(100vh - 200px)}
 const DATA = __DATA__;
 const CHARS = DATA.chars || [];
 const TREE = DATA.tree || null;
+const EPI = DATA.epilogue || null;
 let ci = 0, ai = 0;
+/* Chapter list of the left column: same shape for an article and for the 封档总评. */
+function fillToc(tocEl, toc, rootText){
+  tocEl.innerHTML = '';
+  if(rootText){
+    const r = document.createElement('div');
+    r.className = 'toc-root';
+    r.textContent = rootText;
+    tocEl.appendChild(r);
+  }
+  if(!(toc || []).length){
+    if(!rootText) tocEl.innerHTML = '<div class="empty">（无章节）</div>';
+    return;
+  }
+  toc.forEach(t => {
+    const link = document.createElement('a');
+    link.href = '#' + t.id;
+    link.textContent = t.text;
+    link.className = 'lv' + Math.min(t.level, 3);
+    link.onclick = (ev) => {
+      ev.preventDefault();
+      const el = document.getElementById(t.id);
+      if(el){ el.scrollIntoView({behavior:'smooth', block:'start'}); }
+      tocEl.querySelectorAll('a').forEach(x => x.classList.remove('hl'));
+      link.classList.add('hl');
+    };
+    tocEl.appendChild(link);
+  });
+}
+function showEpilogue(){
+  if(!EPI) return;
+  document.body.classList.remove('tree-mode');
+  document.getElementById('tree-btn').classList.remove('active');
+  document.getElementById('epi-btn').classList.add('active');
+  const stage = document.getElementById('stage');
+  const tocEl = document.getElementById('toc');
+  document.getElementById('tabs').innerHTML = '';
+  stage.innerHTML = '<div class="paper">' + EPI.html + '</div>';
+  document.getElementById('meta-line').textContent = EPI.meta || '封档总评';
+  fillToc(tocEl, EPI.toc, '封档总评');
+  window.scrollTo({top:0, behavior:'smooth'});
+}
 function show(nci, nai){
   ci = nci; ai = nai;
   const ch = CHARS[ci];
@@ -323,6 +366,7 @@ function show(nci, nai){
   const meta = document.getElementById('meta-line');
   const tocEl = document.getElementById('toc');
   document.getElementById('tree-btn').classList.remove('active');
+  document.getElementById('epi-btn').classList.remove('active');
   // essay pages keep their 880px measure; only the family tree takes the whole screen
   document.body.classList.remove('tree-mode');
   if(!ch){ stage.innerHTML = '<div class="empty">（无传记）</div>'; meta.textContent = ''; tocEl.innerHTML = '<div class="empty">（无章节）</div>'; return; }
@@ -714,6 +758,12 @@ if(!TREE || !(TREE.chain || []).length){
 } else {
   treeBtn.onclick = showTree;
 }
+// 封档总评 exists only after `pipeline.py epilogue` has written it
+const epiBtn = document.getElementById('epi-btn');
+if(EPI){
+  epiBtn.style.display = '';
+  epiBtn.onclick = showEpilogue;
+}
 show(0, 0);
 </script>
 </body>
@@ -925,6 +975,33 @@ def _load_tree(base):
     return best
 
 
+# 封档总评 (campaign epilogue): a family-level article with its own toolbar button, so it stays out of
+# the per-character menu. Written by `pipeline.py epilogue`.
+_EPILOGUE_RE = re.compile(r"^(.+)_封档总评_(\d{4})_(\d{2})_(\d{2})\.md$")
+
+
+def _load_epilogue(base):
+    """Newest `<家族>_封档总评_<存档>.md` of a folder as a reading-page entry, or None when absent."""
+    best = None
+    for fn in os.listdir(base):
+        m = _EPILOGUE_RE.match(fn)
+        if not m:
+            continue
+        date = f"{m.group(2)}.{int(m.group(3))}.{int(m.group(4))}"
+        if best is None or date > best[0]:
+            best = (date, os.path.join(base, fn))
+    if best is None:
+        return None
+    try:
+        with open(best[1], encoding="utf-8") as fp:
+            text = fp.read()
+    except OSError:
+        return None
+    html_str, toc = md_to_html(text)
+    return {"html": html_str, "toc": toc, "file": os.path.basename(best[1]),
+            "meta": f"封档总评 ｜ 存档 {best[0]} ｜ {os.path.basename(base)}"}
+
+
 def rebuild_folder(output_dir, folder):
     """Build/update index.html for one family folder; returns None when there is no md.
     Entries are grouped per character: character menu top right, that character's pieces
@@ -933,6 +1010,7 @@ def rebuild_folder(output_dir, folder):
     if not os.path.isdir(base):
         return None
     tree = _load_tree(base)
+    epilogue = _load_epilogue(base)
     entries = []
     for fn in sorted(os.listdir(base)):
         if not fn.lower().endswith(".md"):
@@ -991,7 +1069,7 @@ def rebuild_folder(output_dir, folder):
     for g in groups:
         g.pop("person_key", None)
     title = f"{folder} · 家传阅读页"
-    payload = {"chars": groups, "tree": tree}
+    payload = {"chars": groups, "tree": tree, "epilogue": epilogue}
     # `<\/` is the same JSON string as `</`: escaping it keeps a name from closing the inline
     # <script> early (and from opening an HTML comment)
     data = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")

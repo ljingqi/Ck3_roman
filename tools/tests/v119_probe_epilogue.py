@@ -26,6 +26,8 @@ TITLE_RE = re.compile(r"^# 《(.+?)》$", re.M)
 INTRO_RE = re.compile(r"^> [^\n]*\n(.+?)\n---", re.M | re.S)
 TOTAL_RE = re.compile(r"\*\*总评：\*\*\s*(.+?)(?=\n\s*\n|\n---|\Z)", re.S)
 PIECE_RE = re.compile(r"^## \d+、《(.+?)》", re.M)
+# the first chapter of a 终传 (《本纪·…》): from its own `## 1、《…》` heading to the next `## `
+FIRST_RE = re.compile(r"^## 1、《(.+?)》\s*\n(.+?)(?=\n## |\Z)", re.M | re.S)
 
 
 def main():
@@ -39,6 +41,7 @@ def main():
         intro = INTRO_RE.search(text)
         pieces = PIECE_RE.findall(text)
         title = TITLE_RE.search(text)
+        first = FIRST_RE.search(text)
         rows.append({
             "file": name,
             "chars": len(text),
@@ -46,12 +49,16 @@ def main():
             "pieces": pieces,
             "intro": " ".join((intro.group(1) if intro else "").split()),
             "total": " ".join((total.group(1) if total else "").split()),
+            "first_title": first.group(1) if first else "",
+            "first": " ".join((first.group(2) if first else "").split()),
         })
         r = rows[-1]
         print(f"  {name:<44}{len(text):>7}字  篇={len(pieces):>2}"
-              f"  总纲={len(r['intro']):>4}字  总评={'有' if r['total'] else '无'}", flush=True)
+              f"  总纲={len(r['intro']):>4}字  首章={len(r['first']):>5}字"
+              f"(《{r['first_title']}》)  总评={'有' if r['total'] else '无'}", flush=True)
     joined = sum(len(r["intro"]) for r in rows)
-    print(f"\n总纲合计 {joined} 字；终传正文合计 {sum(r['chars'] for r in rows)} 字")
+    firsts = sum(len(r["first"]) for r in rows)
+    print(f"\n首章合计 {firsts} 字；总纲合计 {joined} 字；终传正文合计 {sum(r['chars'] for r in rows)} 字")
     if DUMP:
         for r in rows:
             print(f"\n--- {r['file']}\n{r['intro']}")
@@ -60,7 +67,8 @@ def main():
     txt = os.path.join(ROOT, "logs", f"v119_epilogue_{FOLDER}.txt")
     with open(txt, "w", encoding="utf-8") as fh:
         for r in rows:
-            fh.write(f"## {r['file']}\n篇目：{'、'.join(r['pieces'])}\n总纲：{r['intro']}\n\n")
+            fh.write(f"## {r['file']}\n篇目：{'、'.join(r['pieces'])}\n总纲：{r['intro']}\n\n"
+                     f"首章《{r['first_title']}》：{r['first']}\n\n")
     print("已写", txt)
 
 

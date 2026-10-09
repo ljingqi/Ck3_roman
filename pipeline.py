@@ -17,6 +17,8 @@ Usage:
   python pipeline.py index-melts        # pre-build the memory archive sidecar of every melt
   python pipeline.py compact [--gz]     # archive cold melts and sidecars (default xz, ~1.4GB)
   python pipeline.py migrate            # move legacy caches under output/<house>/data/, rebuild
+  python pipeline.py epilogue [家族]     # 封档总评: choose a campaign folder, then write its epilogue
+                                        #   (--folder 洪氏2 --force; the choice is a ↑/↓ menu)
 """
 import gzip
 import atexit
@@ -2880,6 +2882,166 @@ def step_build_tables(cfg, only=None):
     return rows
 
 
+# --- Campaign epilogue (封档总评) ------------------------------------------------
+
+def epilogue_candidates(cfg):
+    """Campaign folders holding 终传 files: [{folder, n, last_date, player_name, pid, path, epilogue}].
+
+    The newest save of the folder names the campaign: every cache in that folder belongs to one
+    playthrough, and its largest `last_date` is the save an epilogue describes. Cheap by design — the
+    cache index is a small sidecar, so drawing the menu loads neither a cache nor a melt."""
+    import epilogue as E
+    out = []
+    base = cfg.get("output_dir") or ""
+    if not os.path.isdir(base):
+        return out
+    for folder in sorted(os.listdir(base)):
+        d = os.path.join(base, folder)
+        if not os.path.isdir(d):
+            continue
+        n = sum(1 for fn in os.listdir(d) if fn.endswith(".md") and "_终传_" in fn)
+        if not n:
+            continue
+        metas = [(e.get("meta") or {})
+                 for e in (load_caches_index(os.path.join(d, "data")) or {}).values()]
+        metas = [m for m in metas if m.get("player_id") is not None]
+        newest = max(metas, key=lambda m: cl.date_key(str(m.get("last_date")))) if metas else {}
+        out.append({"folder": folder, "n": n, "last_date": newest.get("last_date") or "",
+                    "player_name": newest.get("player_name") or "—",
+                    "pid": newest.get("player_id"), "path": d,
+                    "epilogue": E.epilogue_file(d)[0]})
+    out.sort(key=lambda r: cl.date_key(r["last_date"]) if r["last_date"] else 0, reverse=True)
+    return out
+
+
+def epilogue_menu(cands):
+    """Arrow-key menu (↑/↓, Enter, Q); returns the chosen row, or None when cancelled.
+
+    `msvcrt` reads the console directly and echoes nothing, so the list is redrawn per key. Without a
+    console (a redirected run, a test) it falls back to a numbered prompt."""
+    if not cands:
+        print("output/ 下没有含终传的家族文件夹")
+        return None
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
+    if msvcrt is None or not sys.stdin.isatty():
+        for i, c in enumerate(cands, 1):
+            print(f"  {i}. {c['folder']}｜{c['n']} 篇终传｜最新存档 {c['last_date']}｜"
+                  f"传主 {c['player_name']}")
+        try:
+            pick = int(input("选择战役文件夹（序号，回车取消）: ").strip() or "0")
+        except (EOFError, ValueError):
+            return None
+        return cands[pick - 1] if 1 <= pick <= len(cands) else None
+    idx = 0
+    while True:
+        os.system("cls")
+        print("===== 封档总评：选择战役文件夹 =====")
+        print("  ↑/↓ 选择 · 回车开始撰写 · Q 退出\n")
+        for i, c in enumerate(cands):
+            mark = "▶" if i == idx else " "
+            state = "已封档" if c["epilogue"] else "待封档"
+            print(f" {mark} {c['folder']:<14}{c['n']:>3} 篇终传   "
+                  f"最新存档 {c['last_date']:<11}传主 {c['player_name']:<14}[{state}]")
+        key = msvcrt.getch()
+        if key in (b"\x00", b"\xe0"):
+            key = msvcrt.getch()
+            if key == b"H":
+                idx = (idx - 1) % len(cands)
+            elif key == b"P":
+                idx = (idx + 1) % len(cands)
+        elif key in (b"\r", b"\n"):
+            return cands[idx]
+        elif key in (b"q", b"Q", b"\x1b"):
+            return None
+        elif key == b"k":
+            idx = (idx - 1) % len(cands)
+        elif key == b"j":
+            idx = (idx + 1) % len(cands)
+        elif key.isdigit() and 1 <= int(key) <= len(cands):
+            idx = int(key) - 1
+
+
+def step_epilogue(cfg, folder=None, force=False):
+    """Write the campaign epilogue of one folder: part 1 over the 终传 first chapters, part 2 over the
+    same-dynasty rulers of the newest save. Returns the written path or None."""
+    import epilogue as E
+    import facts as F
+    import style
+    cands = epilogue_candidates(cfg)
+    row = None
+    if folder:
+        row = next((c for c in cands if c["folder"] == folder), None)
+        if row is None:
+            print(f"没有找到家族文件夹: {folder}")
+            print("可选: " + "、".join(c["folder"] for c in cands))
+            return None
+    else:
+        row = epilogue_menu(cands)
+        if row is None:
+            print("已取消")
+            return None
+    ch = E.chapters(row["path"])
+    if not ch["rows"]:
+        print(f"{row['folder']} 没有终传，无法撰写封档总评")
+        return None
+    path = find_cache_path(cfg, row["pid"], None)
+    if not path:
+        print(f"找不到最新缓存 (player {row['pid']})")
+        return None
+    cache = cl.load_cache(path)
+    melt = load_latest_melt(cfg, cache)
+    if melt is None:
+        print("无可用 melt")
+        return None
+    if tail_state_applies(cache):
+        # a death or abdication can fall after the last snapshot merge: backfill the records
+        _n_tail, _tail_melt = _backfill_tail_deaths(cfg, cache)
+        _merge_tail_title_flags(melt, _tail_melt)
+    out_name = E.output_name(row["folder"], cache.get("last_date"))
+    out_path = os.path.join(row["path"], out_name)
+    if os.path.exists(out_path) and not force:
+        print(f"已存在, 跳过 (加 --force 重新撰写): {out_path}")
+        return out_path
+    print(f"战役 {row['folder']}：{len(ch['rows'])} 篇终传, {ch['chars']} 字首章材料, "
+          f"最新存档 {cache.get('last_date')}", flush=True)
+    facts = F.build_facts(cache, melt, bio._names_path(cfg, cache), cfg=cfg,
+                          campaign=_campaign_caches(cfg, cache))
+    f = facts["_facts"]
+    rep = E.roster(f)
+    print(f"同宗在世 {rep['alive']} 人，有地者 {len(rep['rows'])} 人", flush=True)
+    rule_block = style.rule_block(facts.get("bio_style") or style.DEFAULT_STYLE)
+    cfg1 = dict(cfg)
+    cfg1["max_tokens"] = min(cfg.get("max_tokens", 12800), 6000)
+    print("撰写第一部分《历代总述》…", flush=True)
+    part1 = llm.call_deepseek(E.part1_messages(ch, rep, row["folder"], rule_block), cfg1).strip()
+    cfg2 = dict(cfg)
+    cfg2["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)
+    table = E.roster_text(rep) or E.roster_others_text(rep)
+    print("撰写第二部分《当世同宗诸统治者》…", flush=True)
+    part2 = llm.call_deepseek(
+        E.part2_messages(ch, rep, row["folder"], rule_block, roster_override=table), cfg2).strip()
+    part1 = llm.normalize_zh_punct(llm.clean_number_spaces(part1))
+    part2 = llm.normalize_zh_punct(llm.clean_number_spaces(part2))
+    md = E.assemble(row["folder"], ch, rep, part1, part2, row["pid"])
+    with open(out_path, "w", encoding="utf-8", newline="") as fp:
+        fp.write(md)
+    llm.log(f"封档总评已写出: {out_path} (第一部分 {len(part1)} 字, 第二部分 {len(part2)} 字, "
+            f"同宗有地者 {len(rep['rows'])} 人)")
+    print(f"第一部分 {len(part1)} 字, 第二部分 {len(part2)} 字")
+    try:
+        import htmlview
+        page = htmlview.rebuild_folder(cfg.get("output_dir", ""), row["folder"])
+        if page:
+            print("阅读页已更新:", page)
+    except Exception as e:
+        llm.log(f"更新阅读页失败: {e}")
+    print("已写出:", out_path)
+    return out_path
+
+
 def main():
     cfg = llm.load_config()
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
@@ -2927,6 +3089,15 @@ def main():
         step_compact(cfg, codec=codec, quiet_if_idle=False)
     elif cmd == "migrate":
         step_migrate(cfg)
+    elif cmd == "epilogue":
+        # 封档总评: pick a campaign folder (arrow keys) and write its closing assessment
+        folder = None
+        if len(sys.argv) > 2 and not sys.argv[2].startswith("-"):
+            folder = sys.argv[2]
+        elif "--folder" in sys.argv:
+            i = sys.argv.index("--folder")
+            folder = sys.argv[i + 1] if i + 1 < len(sys.argv) else None
+        step_epilogue(cfg, folder=folder, force="--force" in sys.argv)
     else:
         print(__doc__)
 
