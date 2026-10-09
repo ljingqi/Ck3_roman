@@ -37,6 +37,7 @@ def fake_cache(pid, marker, n_chars=40000):
         "player_id": pid,
         "playthrough_id": "pt-async",
         "player_name": f"玩家{pid}",
+        "output_folder": "洪氏2",
         "last_date": "1283.9.11",
         "sources": ["1283.9.11"],
         "marker": marker,
@@ -100,16 +101,33 @@ def main():
     w(f"[D] 写失败上报: {type(raised).__name__ if raised else '无异常'}")
     ok_d = raised is not None and not P._SAVE_THREADS
 
-    # [E] save_session_cache starts a background write too, and its own flush is a no-op afterwards
-    t = time.perf_counter()
-    p2 = P.save_session_cache(cfg, c2, continue_mode=True)
-    call_s = time.perf_counter() - t
+    # [E] save_session_cache starts a background write too, and merges the biography flags from the
+    # index instead of re-parsing the cache file (spying on cl.load_cache must show no call)
+    c2 = fake_cache(1, "v2")
+    c2["bio_decades"] = [1]
+    P.save_cache_async(path, c2)
+    P.flush_saves(path)
+    real_load = cl.load_cache
+    loads = []
+
+    def spy(p, fresh=False):
+        loads.append(p)
+        return real_load(p, fresh=fresh)
+
+    cl.load_cache = spy
+    try:
+        t = time.perf_counter()
+        p2 = P.save_session_cache(cfg, fake_cache(1, "v3"), continue_mode=True)
+        call_s = time.perf_counter() - t
+    finally:
+        cl.load_cache = real_load
     P.flush_saves(p2)
     got3 = json.load(open(p2, encoding="utf-8"))
     w(f"[E] save_session_cache 返回 {call_s:.3f} s (文件 {size_mb:.1f} MB), "
-      f"flush 后 marker={got3.get('marker')}, 路径={os.path.relpath(p2, TMP)}")
-    ok_e = call_s < 0.3 and got3.get("marker") == "v2" \
-        and os.path.basename(p2) == "player_1.json"
+      f"解析缓存 {len(loads)} 次, 合并到 bio_decades={got3.get('bio_decades')}, "
+      f"marker={got3.get('marker')}")
+    ok_e = call_s < 0.3 and not loads and got3.get("bio_decades") == [1] \
+        and got3.get("marker") == "v3" and os.path.basename(p2) == "player_1.json"
 
     # [F] two threads writing at once still produce one complete file
     errs = []

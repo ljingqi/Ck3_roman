@@ -669,13 +669,29 @@ def session_data_path(cfg, cache, folder=None):
                         f"player_{cache.get('player_id')}.json")
 
 
+def cache_meta_of(path):
+    """Metadata record of one cache file, read from the index when its size+mtime still match.
+
+    None means the caller has to parse the file itself (a missing or stale entry)."""
+    stamp = _cache_file_stamp(path)
+    if stamp is None:
+        return None
+    ent = load_caches_index(os.path.dirname(path)).get(os.path.basename(path))
+    if not isinstance(ent, dict) or ent.get("size") != stamp["size"] \
+            or ent.get("mtime") != stamp["mtime"]:
+        return None
+    return ent.get("meta") or None
+
+
 def save_session_cache(cfg, cache, continue_mode=False):
     """Write the cache into its session folder and persist the folder binding. bio_decades and
     bio_generated are merged from disk first, so flags set by the background biography thread
-    between this read and write are not lost and a decade cannot run twice.
+    between this read and write are not lost and a decade cannot run twice. Those flags come from the
+    metadata index, which the biography thread refreshes when it writes them, so merging no longer
+    re-parses the 267 MB file (v117 丙-3a).
 
-    The write itself runs in the background (see `save_cache_async`): it costs ~20 s for a 267 MB
-    cache and nothing reads the file until the next save is merged."""
+    The write itself runs in the background (see `save_cache_async`): it costs ~20 s and nothing reads
+    the file until the next save is merged."""
     folder = ensure_output_folder(cfg, cache, continue_mode)
     path = session_data_path(cfg, cache, folder)
     try:
@@ -683,7 +699,7 @@ def save_session_cache(cfg, cache, continue_mode=False):
     except Exception as e:
         llm.log(f"  [缓存] 上一次后台写盘失败: {e}")
     try:
-        disk = cl.load_cache(path)
+        disk = cache_meta_of(path) or cl.load_cache(path)
         bd = set(disk.get("bio_decades") or []) | set(cache.get("bio_decades") or [])
         cache["bio_decades"] = sorted(bd)
         if disk.get("bio_generated"):
