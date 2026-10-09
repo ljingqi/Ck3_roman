@@ -25550,6 +25550,12 @@ def _killed_by_player(f):
         # so biography._assassin_kill_lines and the opening roster no longer build it
         entry["label"] = (f.person_label(cid, date=_ddate, style="brief")
                           or entry["name"])
+        # A victim whose name cannot be resolved at all leaves the roster: 《刺客列传》 lists people,
+        # and a placeholder would be printed as if it were one (v118, user 2026-10-09). The death
+        # record of such a victim is created by `pipeline._backfill_tail_deaths` from the
+        # death-after save, which is what keeps a real victim in this list.
+        if not (entry["name"] or "").strip() or entry["name"] in f._PLACEHOLDER_NAMES:
+            continue
         for mem in prof.get("memories") or []:
             s = _mem_sentence(f, cid, mem)
             if not s:
@@ -26723,6 +26729,78 @@ def _dedupe_education_memories(cache):
     return dropped
 
 
+_CHAIN_FAMILY_KEYS = ("father", "real_father", "mother", "siblings", "child",
+                      "primary_spouse", "spouse", "former_spouses", "concubine",
+                      "former_concubines", "ever_spouses")
+_CHAIN_CLOSURE_DEPTH = 6
+_CHAIN_CLOSURE_CAP = 20000
+
+
+def _with_campaign_chain(cache, campaign):
+    """`cache` with the played chain's records restored from the campaign's other volumes.
+
+    The merge target set keeps the subject's own kin and house (cache_lib), and the game prunes a
+    character from the save generations after his death, so the last volume's cache carries neither
+    the first player of the campaign nor his near descendants. Their 生年, 亲属词 and 世次 then all
+    read empty in 《世系》, and every unresolvable step counts as one generation, which shifts each
+    later generation by one. The campaign's other per-player caches saw those people while they
+    still lived, so their records are overlaid back -- the played chain plus its family closure, each
+    as a shallow copy, so no other volume's cache is ever written through (v118, user 2026-10-09).
+    Returns the cache itself when the chain is already complete (or no campaign is at hand)."""
+    if not campaign:
+        return cache
+    chars = cache.get("characters") or {}
+    chain = [e.get("cid") for e in (cache.get("played_legacy") or [])
+             if isinstance(e, dict) and isinstance(e.get("cid"), int)]
+    if not chain or all(str(c) in chars for c in chain):
+        return cache
+    by_player = {}                      # the volume that played a person knows him best
+    pool = []
+    for other in campaign.values():
+        if not isinstance(other, dict) or not isinstance(other.get("characters"), dict):
+            continue
+        pool.append(other["characters"])
+        if isinstance(other.get("player_id"), int):
+            by_player[other["player_id"]] = other["characters"]
+
+    def _find(cid):
+        rec = chars.get(str(cid))
+        if isinstance(rec, dict):
+            return rec
+        for src in ([by_player[cid]] if cid in by_player else []) + pool:
+            rec = src.get(str(cid))
+            if isinstance(rec, dict):
+                return rec
+        return None
+
+    extra = {}
+    seen = set()
+    level = list(chain)
+    for _depth in range(_CHAIN_CLOSURE_DEPTH + 1):
+        if not level or len(extra) >= _CHAIN_CLOSURE_CAP:
+            break
+        nxt = []
+        for cid in level:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            rec = _find(cid)
+            if rec is None:
+                continue
+            if str(cid) not in chars:
+                extra[str(cid)] = dict(rec)
+            for key in _CHAIN_FAMILY_KEYS:
+                for x in (rec.get("family") or {}).get(key) or []:
+                    if isinstance(x, int) and x not in seen:
+                        nxt.append(x)
+        level = nxt
+    if not extra:
+        return cache
+    out = dict(cache)
+    out["characters"] = {**chars, **extra}
+    return out
+
+
 def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
                 nickname_override=None, cfg=None, campaign=None):
     """Render the clean fact set (`melt` is a loaded dict).
@@ -26738,6 +26816,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     if _edu_dup:
         llm.log(f"  [v95-4] 教育记忆隔日重复折掉 {_edu_dup} 条 "
                 f"(childhood_education_guardian / ward_education_completed)")
+    # the played chain's early generations come back from the campaign's other volumes, so 《世系》
+    # resolves their 生年, 亲属词 and 世次 (v118; see `_with_campaign_chain`)
+    cache = _with_campaign_chain(cache, campaign)
     f = Facts(cache, melt, names_path, as_of=as_of, decade=decade,
               nickname_override=nickname_override, cfg=cfg, campaign=campaign)
     period = ""

@@ -1036,8 +1036,9 @@ def _backfill_tail_deaths(cfg, cache):
     """Backfill the death records of characters who died in the final year, because they appear only in
     the save after their death once the subject dies after the last snapshot merge (January 1st). The
     earliest melt after cache["last_date"] supplies them for characters already on file with an empty
-    death and a matching name. Returns (number backfilled, that melt or None), the melt also serving
-    _merge_tail_title_flags."""
+    death and a matching name; a victim of the subject who was never merged at all (`player_death.kills`)
+    gets a record created for him (v118). Returns (number backfilled, that melt or None), the melt also
+    serving _merge_tail_title_flags."""
     p_tail = tail_melt_candidate(cfg, cache)
     if not p_tail:
         return 0, None
@@ -1082,13 +1083,61 @@ def _backfill_tail_deaths(cfg, cache):
         if (rec.get("last_location") or {}).get("province") is not None:
             rec["death"]["location_province"] = rec["last_location"]["province"]
         n += 1
-    if n:
+    # (v118) A victim of the subject may never have been merged at all: the merge target set keeps
+    # the subject's own kin and house (cache_lib), while a lowborn opponent killed in a duel has
+    # neither, so his id travels only on `player_death.kills`. Without a record the name, the birth
+    # and the death date of that victim all read empty, and 《刺客列传》 can only print a
+    # placeholder for him (user 2026-10-09). The death-after save supplies those fields, so the
+    # record is created here for the subject's own kills (the melt is already loaded).
+    kill_ids = {int(x) for x in ((cache.get("player_death") or {}).get("kills") or [])
+                if isinstance(x, int)}
+    created = 0
+    for cid2, c2 in dead:
+        if not isinstance(c2, dict) or not kill_ids:
+            continue
+        try:
+            cid_i = int(cid2)
+        except (TypeError, ValueError):
+            continue
+        if cid_i not in kill_ids or str(cid2) in chars:
+            continue
+        dd = c2.get("dead_data") or {}
+        ddate = dd.get("date")
+        if not ddate or cl.date_key(ddate) <= last:
+            continue
+        cn = cl.name_zh(c2)
+        if not cn:      # a nameless record states nothing and never reaches the prompt
+            continue
+        rec = cl.char_record(cache, cid_i)
+        rec["first_name"] = c2.get("first_name")
+        rec["name_zh"] = cn
+        rec["name_full"] = cl.display_name(cache, cid_i, melt=melt, chars=chars) or cn
+        rec["birth"] = c2.get("birth")
+        rec["female"] = bool(c2.get("female"))
+        rec["dynasty_house"] = c2.get("dynasty_house")
+        rec["culture"] = c2.get("culture")
+        rec["faith"] = c2.get("faith")
+        if rec["culture"]:
+            rec["culture_history"] = [{"from": ddate, "culture": rec["culture"]}]
+        if rec["faith"]:
+            rec["faith_history"] = [{"from": ddate, "faith": rec["faith"]}]
+        rec["death"] = {
+            "date": ddate,
+            "reason": dd.get("reason"),
+            "killer": dd.get("killer"),
+            "liege": dd.get("liege"),
+            "liege_title": dd.get("liege_title"),
+            "named_title": dd.get("named_title"),
+        }
+        created += 1
+    if n or created:
         path = find_cache_path(cfg, cache.get("player_id"),
                                cache.get("playthrough_id"))
         if path:
             save_cache_now(path, cache)
         llm.log(f"  [终传回填] 尾年死者死亡记录 {n} 条写入 "
-                f"{cache.get('output_folder') or cache.get('player_id')}")
+                f"{cache.get('output_folder') or cache.get('player_id')}"
+                + (f"（另补建刀下死者档案 {created} 条）" if created else ""))
     return n, melt
 
 
