@@ -19,6 +19,7 @@ import gc
 import gzip
 import json
 import lzma
+import mmap
 import os
 import re
 import threading
@@ -677,80 +678,231 @@ def melt_file_exists(path):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Melt section offset table (v117 丙-6)
+# ---------------------------------------------------------------------------
+# The earlier load_melt_section walked the candidate object byte by byte in Python and
+# grew its read buffer with `buf += chunk`, so a 100-470 MB melt paid a quadratic copy
+# plus one Python iteration per byte of the section (tools/tests/v117_perf.py measured
+# 51.7 s for the 14 MB house_relations of melt_1283_01_01). This rewrite keeps the
+# candidate rule exactly -- the first `"key":` in the file whose value opens with '{',
+# arrays and scalars of the same name skipped, string-aware brace matching -- but
+# resolves it with C-level primitives: bytes.find locates the candidate, one regex walk
+# bounds the value, and json.JSONDecoder().raw_decode parses that single slice. The
+# byte range of a key is memoised per melt file, so the second read of the same key
+# (and a repeated miss) never opens the file again.
+#
+# The table is process-local and carries no on-disk sidecar: output/<campaign>/data is
+# read-only for the pipeline, and re-locating one section is one C-level scan.
+# Invalidation: a table is stamped with the melt's (st_size, st_mtime_ns) at creation
+# and dropped as a whole when either changes, because a rewritten melt may move every
+# section and a stale range would silently decode the wrong bytes.
+_MELT_SECTION_RE = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"|[{}]')
+_MELT_SECTION_WS = b" \r\n\t"
+_MELT_SECTION_DECODER = json.JSONDecoder(object_pairs_hook=_merge_dup_pairs)
+_MELT_SECTION_INDEX = OrderedDict()   # path -> _MeltSectionIndex
+_MELT_SECTION_INDEX_MAX = 16          # melts remembered in one process
+_MELT_SECTION_LOOKUPS = 0             # files opened to locate a section (probe counter)
+_MELT_SECTION_LOCK = threading.Lock()
+_MELT_TEXT_MEMO = OrderedDict()       # path -> (size, mtime_ns, decompressed bytes)
+try:
+    _MELT_TEXT_MAX = max(0, int(os.environ.get("ROMAN_MELT_TEXT_MB", "128"))) << 20
+except ValueError:
+    _MELT_TEXT_MAX = 128 << 20
+
+
+class _MeltSectionIndex:
+    """Byte ranges of the sections located so far in one melt file.
+
+    `sections` maps the raw candidate pattern (b'"key":', so any key spelling is a
+    valid lookup) to its (start, end) range in the decompressed byte stream, or to
+    None when the file holds no object section of that name. A miss is cached too, so
+    repeated probes of a missing key cost nothing."""
+
+    __slots__ = ("size", "mtime_ns", "sections")
+
+    def __init__(self, size, mtime_ns):
+        self.size = size
+        self.mtime_ns = mtime_ns
+        self.sections = {}
+
+
+def melt_section_index_stats():
+    """Offset-table diagnostics (probes): files, sections, lookups, text_mb."""
+    with _MELT_SECTION_LOCK:
+        return {
+            "files": len(_MELT_SECTION_INDEX),
+            "sections": sum(len(e.sections) for e in _MELT_SECTION_INDEX.values()),
+            "lookups": _MELT_SECTION_LOOKUPS,
+            "text_mb": round(sum(len(v[2]) for v in _MELT_TEXT_MEMO.values()) / 1048576.0, 1),
+        }
+
+
+def melt_section_index_clear():
+    """Drop every offset table and memoised decompressed melt; returns the file count."""
+    with _MELT_SECTION_LOCK:
+        n = len(_MELT_SECTION_INDEX)
+        _MELT_SECTION_INDEX.clear()
+        _MELT_TEXT_MEMO.clear()
+        return n
+
+
+def _section_index(path):
+    """Offset table of `path`, rebuilt when the melt's size or mtime changed."""
+    p = str(path)
+    st = os.stat(p)
+    ent = _MELT_SECTION_INDEX.get(p)
+    if ent is not None:
+        if ent.size == st.st_size and ent.mtime_ns == st.st_mtime_ns:
+            _MELT_SECTION_INDEX.move_to_end(p)
+            return ent
+        del _MELT_SECTION_INDEX[p]
+    ent = _MeltSectionIndex(st.st_size, st.st_mtime_ns)
+    _MELT_SECTION_INDEX[p] = ent
+    while len(_MELT_SECTION_INDEX) > _MELT_SECTION_INDEX_MAX:
+        _MELT_SECTION_INDEX.popitem(last=False)
+    return ent
+
+
+def _section_text(path):
+    """Whole decompressed text of a .gz/.xz melt, memoised while it fits the budget.
+
+    ROMAN_MELT_TEXT_MB caps how many decompressed bytes stay resident (default 128 MB,
+    0 disables the memo); over budget the melt is simply decompressed again."""
+    p = str(path)
+    st = os.stat(p)
+    with _MELT_SECTION_LOCK:
+        ent = _MELT_TEXT_MEMO.get(p)
+        if ent is not None and ent[0] == st.st_size and ent[1] == st.st_mtime_ns:
+            _MELT_TEXT_MEMO.move_to_end(p)
+            return ent[2]
+    data = _read_melt_bytes(p)
+    if _MELT_TEXT_MAX >= len(data):
+        with _MELT_SECTION_LOCK:
+            _MELT_TEXT_MEMO[p] = (st.st_size, st.st_mtime_ns, data)
+            _MELT_TEXT_MEMO.move_to_end(p)
+            total = sum(len(v[2]) for v in _MELT_TEXT_MEMO.values())
+            while total > _MELT_TEXT_MAX and len(_MELT_TEXT_MEMO) > 1:
+                _drop, (_s, _m, buf) = _MELT_TEXT_MEMO.popitem(last=False)
+                total -= len(buf)
+    return data
+
+
+def _noop():
+    """Placeholder closer for views that need no release."""
+    return None
+
+
+def _section_view(path):
+    """(view, close) over the whole decompressed melt for one candidate search.
+
+    A plain melt is mmapped, so even 470 MB costs one page-cache pass and no copy;
+    a .gz/.xz melt is decompressed into memory (and memoised by _section_text)."""
+    low = str(path).lower()
+    if low.endswith(".xz") or low.endswith(".gz"):
+        return _section_text(path), _noop
+    fp = open(path, "rb")
+    try:
+        if os.fstat(fp.fileno()).st_size == 0:
+            fp.close()
+            return b"", _noop
+        mm = mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ)
+    except Exception:
+        fp.close()
+        raise
+
+    def _close():
+        mm.close()
+        fp.close()
+
+    return mm, _close
+
+
+def _locate_melt_section(data, pat):
+    """(start, end) of the first `pat` whose value is an object, else None.
+
+    `pat` is the raw b'"key":' pattern, so the search sees the same bytes in the same
+    order as the old byte walker. Candidates whose value opens with '[' or with a
+    scalar are skipped -- that is how the per-character "wars": [1,1,0,0] arrays stay
+    out of the way of the top-level wars section. The object is bounded by a
+    string-aware walk over '{' and '}', so braces inside strings cannot end it early,
+    and a candidate whose '}' never arrives (truncated melt) yields None exactly as
+    the old walker did."""
+    n = len(data)
+    pos = 0
+    while True:
+        i = data.find(pat, pos)
+        if i < 0:
+            return None
+        j = i + len(pat)
+        while j < n and data[j] in _MELT_SECTION_WS:
+            j += 1
+        if j >= n or data[j] != 0x7B:          # not '{'
+            pos = i + 1
+            continue
+        depth = 0
+        for m in _MELT_SECTION_RE.finditer(data, j):
+            s = m.start()
+            c = data[s]
+            if c == 0x7B:                      # '{'
+                depth += 1
+            elif c == 0x7D:                    # '}'
+                depth -= 1
+                if depth == 0:
+                    return (j, s + 1)
+        return None
+
+
+def _section_span(path, start, end):
+    """Bytes of the decompressed melt in [start, end)."""
+    low = str(path).lower()
+    if not (low.endswith(".xz") or low.endswith(".gz")):
+        with open(path, "rb") as fp:
+            fp.seek(start)
+            return fp.read(end - start)
+    return _section_text(path)[start:end]
+
+
+def _decode_section(raw):
+    """Parse one section slice exactly as json.loads parsed the same bytes before: same
+    encoding detection, same strict decode, same duplicate-key hook, but through
+    raw_decode. The slice is exactly one object, so the "extra data" check of
+    json.loads cannot fire."""
+    text = raw.decode(json.detect_encoding(raw))
+    return _MELT_SECTION_DECODER.raw_decode(text)[0]
+
+
 def load_melt_section(path, key):
-    """Return the top-level `key` object of a melt by streaming only that section.
+    """Return the top-level `key` object of a melt by reading only that section.
 
-    A full load_melt() costs 1-3 minutes on a 100-125 MB melt while the section starts a
-    few MB into the stream, so streaming is two orders of magnitude faster. The matched
-    bytes still go through json.loads with the same object_pairs_hook=_merge_dup_pairs as
-    load_melt, making the result key-for-key identical to load_melt(path)[key]; braces are
-    matched with JSON string and escape rules. A same-named key is not always a section --
-    character blocks also hold array fields such as "wars": [1,1,0,0] -- so candidates are
-    checked and non-object values skipped. Returns None when no object section is found."""
+    A full load_melt() costs 1-3 minutes on a 100-125 MB melt while the section starts
+    a few MB into the stream, so reading only the section is orders of magnitude
+    faster. The matched bytes go through json.JSONDecoder().raw_decode with the same
+    object_pairs_hook=_merge_dup_pairs as load_melt, making the result key-for-key
+    identical to load_melt(path)[key]; braces are matched with JSON string and escape
+    rules. A same-named key is not always a section -- character blocks also hold
+    array fields such as "wars": [1,1,0,0] -- so candidates are checked and non-object
+    values skipped. Returns None when no object section is found. The byte range found
+    here is memoised per melt file (size+mtime stamped), so repeated reads of one key
+    do not touch the file at all."""
+    global _MELT_SECTION_LOOKUPS
     pat = ('"%s":' % key).encode("utf-8")
-    buf = b""
-    eof = False
-    with _melt_binary(path) as fp:
-
-        def _fill():
-            nonlocal buf, eof
-            chunk = fp.read(1 << 20)
-            if not chunk:
-                eof = True
-                return False
-            buf += chunk
-            return True
-
-        pos = 0                       # search start in buf, past rejected candidates
-        while True:
-            i = buf.find(pat, pos)
-            if i < 0:
-                if _fill():
-                    continue
-                return None
-            j = i + len(pat)
-            # Skip whitespace to inspect the value's first character
-            while True:
-                k = j
-                while k < len(buf) and buf[k:k + 1] in (b" ", b"\r", b"\n", b"\t"):
-                    k += 1
-                if k < len(buf):
-                    break
-                if not _fill():
-                    return None
-            if buf[k:k + 1] != b"{":
-                pos = i + 1           # same name but an array/scalar: try the next candidate
-                continue
-            start, depth, i = k, 0, k
-            while True:
-                while i >= len(buf):
-                    if not _fill():
-                        return None
-                c = buf[i:i + 1]
-                if c == b'"':
-                    i += 1
-                    while True:
-                        while i >= len(buf):
-                            if not _fill():
-                                return None
-                        ch = buf[i:i + 1]
-                        if ch == b"\\":
-                            i += 2
-                            continue
-                        if ch == b'"':
-                            i += 1
-                            break
-                        i += 1
-                    continue
-                if c == b"{":
-                    depth += 1
-                elif c == b"}":
-                    depth -= 1
-                    if depth == 0:
-                        i += 1
-                        break
-                i += 1
-            return json.loads(buf[start:i], object_pairs_hook=_merge_dup_pairs)
+    with _MELT_SECTION_LOCK:
+        ent = _section_index(path)
+        cached = pat in ent.sections
+        rng = ent.sections.get(pat)
+    if not cached:
+        _MELT_SECTION_LOOKUPS += 1
+        data, close = _section_view(path)
+        try:
+            rng = _locate_melt_section(data, pat)
+        finally:
+            close()
+        with _MELT_SECTION_LOCK:
+            ent.sections[pat] = rng
+    if rng is None:
+        return None
+    return _decode_section(_section_span(path, rng[0], rng[1]))
 
 
 def load_melt_landed_titles(path):
