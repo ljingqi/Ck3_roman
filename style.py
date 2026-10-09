@@ -701,9 +701,9 @@ TITLE_GAIN_VERBS = {
     "revoked": "夺得",
     "usurped": "篡得",
     "conquest": "攻取",
-    "conquest_claim": "攻取",
-    "conquest_populist": "攻取",
-    "conquest_holy_war": "攻取",
+    "conquest_claim": "凭宣称夺取",
+    "conquest_populist": "借民粹叛乱夺取",
+    "conquest_holy_war": "圣战征服",
     "migration": "迁得",
     "swear_fealty": "归附得",
     "faction_demand": "迫得",
@@ -723,6 +723,20 @@ TITLE_GAIN_CREATED_VERBS = {
     "first": "创建",
     "restored": "重建",
     "founded": "开创",   # another house re-founding a hegemon (h_china claiming the mandate)
+}
+
+
+# Conquest reasons read as war deeds rather than as plain seizures, so they phrase the clause
+# 从{loser}处{verb} instead of the 自{loser}手中{verb} used by revoked/usurped/conquest. The wording
+# follows the game's own title history keys (`title_view_l_simp_chinese.yml:97-100`):
+# conquest_history "征服", conquest_holy_war_history "被圣战征服", conquest_claim_history
+# "被宣称者征服", conquest_populist "被民粹叛军征服". `rival` is the lead-in heading that clause:
+# only a holy war names the creed of the ruler it was fought against, because that creed is what
+# makes the war a holy war.
+TITLE_GAIN_CAUSE = {
+    "conquest_holy_war": ("圣战征服", "他的对手、"),
+    "conquest_claim": ("凭宣称夺取", ""),
+    "conquest_populist": ("借民粹叛乱夺取", ""),
 }
 
 

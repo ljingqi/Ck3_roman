@@ -4656,7 +4656,9 @@ class Facts:
 
         Same sources as the memory sentence (style.TITLE_GAIN_VERBS, the created/restored bucket
         of `title_had_other_holder`, and `grant_actor`'s grantor) but dated by the title history
-        event day rather than the memory day, so the date and verb of a stage line agree.
+        event day rather than the memory day, so the date and verb of a stage line agree. A reason
+        listed in style.TITLE_GAIN_CAUSE is read as a war deed (从{loser}处…), the others as a
+        transfer from a named holder (自{loser}手中…).
         """
         reason = self.gain_reason(cid, tid, date)
         if not reason:
@@ -4669,6 +4671,22 @@ class Facts:
         verb = _style.TITLE_GAIN_VERBS.get(reason) or ""
         if not verb:
             return ""
+        if reason in _style.TITLE_GAIN_CAUSE:
+            # War deeds: 从{loser}处{verb}, and for a holy war the loser is named with the creed he
+            # ruled by (「从…统治者…处圣战征服」), which is what the game's own title history says
+            # (`conquest_holy_war_history: "被圣战征服"`).
+            ph = self.prev_holder(tid, date, exclude=cid)
+            pn = self.person_label(ph, date=date, style="brief") \
+                if isinstance(ph, int) else ""
+            verb, rival = _style.TITLE_GAIN_CAUSE[reason]
+            if not pn:
+                return verb
+            if rival:
+                creed = self.faith(ph, date)
+                if creed:
+                    return f"从{rival}{creed}统治者{pn}处{verb}"
+                return f"从{rival}{pn}处{verb}"
+            return f"从{pn}处{verb}"
         if reason in _TITLE_TAKE_REASONS:
             ph = self.prev_holder(tid, date, exclude=cid)
             pn = self.person_label(ph, date=date, style="brief") \
@@ -18258,6 +18276,14 @@ def _mem_sentence_body(f, owner_id, mem):
                 break
         if mem.get("type") == "ascended_throne_memory":
             verb = TITLE_GAIN_VERBS.get(reason)
+            # A conquest reason reads as a war deed and names the ruler it was taken from
+            # (「从…处圣战征服」), so the memory sentence borrows the same clause builder the
+            # stage lines use instead of the bare verb.
+            if reason in _style.TITLE_GAIN_CAUSE and title_tid is not None \
+                    and owner_id is not None:
+                _cl = f._gain_clause(owner_id, title_tid, mem.get("creation_date"))
+                if _cl:
+                    return f"{owner}{_cl}{title}。"
             # reason=created means the holder founded the title himself (the game's own text is
             # "I created X"), not that he was enfeoffed; split as in the game's
             # desc_created_first / desc_created, so a title with an earlier holder reads as a
@@ -22796,7 +22822,7 @@ _SUCC_WORD = {
     "granted": "受封头衔",
     "conquest": "征服夺取",
     "conquest_claim": "凭宣称夺取",
-    "conquest_holy_war": "借圣战夺取",
+    "conquest_holy_war": "借圣战征服",
     "conquest_populist": "借民粹叛乱夺取",
     "usurped": "篡夺继位",
     "migration": "率部迁徙入主",
@@ -27138,7 +27164,8 @@ _GRANTED_REASONS = ("appointment", "appointment_succession", "granted",
 # Title gain reasons fall in three groups: seizure (naming the previous holder), inheritance
 # (naming the person inherited from), and the rest using the bare verb from TITLE_GAIN_VERBS.
 # The revoked/usurped/conquest* verbs in `TITLE_GAIN_VERBS` all mean seizure, so they always
-# name the previous holder.
+# name the previous holder; the conquest* reasons additionally go through style.TITLE_GAIN_CAUSE,
+# which phrases them as war deeds (从{loser}处… rather than 自{loser}手中…).
 _TITLE_TAKE_REASONS = ("revoked", "usurped", "conquest", "conquest_claim",
                        "conquest_populist", "conquest_holy_war", "migration")
 _TITLE_FROM_REASONS = ("inheritance",)
