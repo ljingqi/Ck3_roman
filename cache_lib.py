@@ -1503,6 +1503,21 @@ def resolved_name_order(cache, cid, melt=None, chars=None, memo=None, date=None)
     if cid is None:
         return None
     rec = (cache.get("characters") or {}).get(str(cid)) or {}
+    # A predecessor can be missing from this cache entirely: the merge target set keeps the player,
+    # his family and his own house, so a same-dynasty predecessor of another branch is absent and
+    # leaves no culture and no house id here (v117 ④b, cid 44503 in 洪光通's cache). The melt
+    # character still carries the house, and the house is what elects the name order of an Eastern
+    # house, so read it before giving up. The cache record always wins where it exists.
+    if not rec.get("dynasty_house") or not rec.get("culture"):
+        c = (chars or {}).get(str(cid)) or {}
+        fills = {}
+        if not rec.get("dynasty_house") and c.get("dynasty_house") is not None:
+            fills["dynasty_house"] = c["dynasty_house"]
+        if not rec.get("culture") and c.get("culture") is not None:
+            fills["culture"] = c["culture"]
+        if fills:
+            rec = dict(rec)
+            rec.update(fills)
     cultures = ((melt or {}).get("culture_manager") or {}).get("cultures") or {}
     cul = _culture_id_at_rec(rec, date)
     if cul is None:
