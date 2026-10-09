@@ -7798,6 +7798,34 @@ class Facts:
             return v
         return ""
 
+    def _unlanded_office_text(self, cid, tid, date=None):
+        """Label text of an unlanded office: the office's own name plus its holder word.
+
+        A landless adventurer camp takes the camp purpose word
+        (`duke_landless_adventurer_camp_<purpose>`: 领袖/头目/队长), a mercenary company or a holy
+        order its flavorization word (校官/大团长/总修院长). Any other rank-0 title — a nomadic yurt,
+        whose holder takes no word (`held_titles`), and the ranks-less script titles — yields '' so
+        the caller keeps its own fallbacks. The words are the same ones `held_titles` prints, so the
+        tenure line and the person label never disagree.
+        """
+        if tid is None:
+            return ""
+        kind = self.title_kind(tid)
+        if kind == "camp":
+            w = self._camp_holder_word(cid, date) \
+                or self._camp_holder_word_default(self._is_female(cid))
+        elif kind == "landless":
+            w = self._landless_holder_word(cid, tid, date)
+        else:
+            return ""
+        if not w or w.startswith(("$", "[")):
+            return ""
+        nm = self._title_display_name(tid, date, cid=cid) or self._name_at_date(tid, date) \
+            or self.title_base_name(tid)
+        if not nm:
+            return w
+        return nm if nm.endswith(w) else f"{nm}{w}"
+
     def _title_flags(self, tid, date=None):
         """Flag set of the title itself; the shogunate flag lands on e_japan this way.
 
@@ -7937,7 +7965,15 @@ class Facts:
                     nm = self.title_base_name(tid) or ""
                     sq = self._estate_holder_word(cid)
                     return f"{nm}{sq}" if nm else sq
-            return ""  # no title, or camp only (no office word)
+                # v119: a landless adventurer camp — and any other unlanded office — is rank 0, so
+                # it never reaches the landed branch below and used to fall through to the bare
+                # name (a 世系 head line read 「外来者洪蒙广」 while the tenure line of the same run
+                # said 「洪氏旅行团领袖」). The office words come from the same helpers as
+                # `held_titles`.
+                w = self._unlanded_office_text(cid, tid, anchor)
+                if w:
+                    return w
+            return ""  # no title, or a rank-0 title that takes no holder word (a yurt)
         # Ministry office holder → office word (not "X皇帝/帝国")
         mo = self._minister_office(tid)
         if mo:
