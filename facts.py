@@ -26161,6 +26161,79 @@ def _tree_count_zh(n):
     return str(n)
 
 
+def _tree_family(f, chars, cid):
+    """Normalised family links of one character for the tree.
+
+    A cache entry carries a normalised `family` dict; a character only the final save knows keeps his
+    links in the melt's raw `family_data`, which is normalised here instead. Both therefore reach the
+    tree in one shape, whatever the record's provenance."""
+    fam = (chars.get(str(cid)) or {}).get("family")
+    if fam:
+        return fam
+    raw = (getattr(f, "_chars", None) or {}).get(str(cid)) or {}
+    return cl.family_of(raw) if raw else {}
+
+
+def _tree_clan(f, chars, dname, dyn_id, root):
+    """The recorded clan around the played line: blood descendants of `root` inside the dynasty.
+
+    The printed 世系 documents one protagonist's own household at a time (see `_genealogy_groups`),
+    which is why the chart held 203 beads while the clan counts over a thousand. The reading page's
+    家谱 asks for the clan — every 分家, the long dead included — so the descent is walked here over
+    every same-dynasty character the caches or the final save know, and each member carries the house
+    he last belonged to (the 分家 the page's menu filters by, v119 user 2026).
+
+    Returns {"members": [cid...], "depth": {cid: 血亲世代}, "house": {cid: house_id},
+             "house_name": {house_id: label}, "orphans": [cid...]} — `orphans` are clan members with
+    no recorded way up to the founder, so no bead of the tree can hold them.
+    """
+    clan = {}
+    for key, rec in (chars or {}).items():
+        if str(key).isdigit() and (not dname or rec.get("dynasty_name") == dname):
+            clan[int(key)] = rec
+    for key, raw in (getattr(f, "_chars", None) or {}).items():
+        if not str(key).isdigit():
+            continue
+        cid = int(key)
+        if cid in clan:
+            continue
+        hid = (raw or {}).get("dynasty_house")
+        if hid is not None and dyn_id is not None and cl.dynasty_id_of(f.melt, hid) == dyn_id:
+            clan[cid] = None
+    kids = {}
+    for cid in clan:
+        fam = _tree_family(f, chars, cid)
+        for p in list(fam.get("father") or []) + list(fam.get("mother") or []):
+            if isinstance(p, int) and p != cid:
+                kids.setdefault(p, []).append(cid)
+    depth, members, queue, seen = {root: 0}, [], [root], set()
+    while queue:
+        x = queue.pop(0)
+        if x in seen:
+            continue
+        seen.add(x)
+        members.append(x)
+        for k in sorted(kids.get(x) or []):
+            if k not in seen:
+                depth.setdefault(k, depth[x] + 1)
+                queue.append(k)
+    house, house_name = {}, {}
+    for cid in clan:
+        rec = chars.get(str(cid)) or {}
+        hid = rec.get("dynasty_house")
+        nm = rec.get("house_name") or ""
+        if hid is None:
+            raw = (getattr(f, "_chars", None) or {}).get(str(cid)) or {}
+            hid = raw.get("dynasty_house")
+            if hid is not None:
+                nm = nm or (cl.house_name_zh(f.melt, hid) or "")
+        house[cid] = hid
+        if hid is not None and nm:
+            house_name.setdefault(hid, nm)
+    return {"members": members, "depth": depth, "house": house,
+            "house_name": house_name, "orphans": sorted(set(clan) - seen)}
+
+
 def genealogy_tree(f):
     """Su-Xun style (垂珠体) tree of the clan, for the HTML reading page (v113 user request).
 
@@ -26222,9 +26295,24 @@ def genealogy_tree(f):
             gen[x] = max(1, max(v.items(), key=lambda kv: (kv[1], -kv[0]))[0])
 
     chars = cache.get("characters") or {}
+    # the whole clan, not just the played line's own households (v119 user: the 家谱 must hold every
+    # 分家, the dead included — the printed 世系 keeps its own narrower scope, see `summary` below)
+    printed = set(node_set)
+    clan = _tree_clan(f, chars, cache.get("dynasty_name"), cache.get("dynasty_id"),
+                      members[0]["cid"])
+    clan_added = set()
+    for x in clan["members"]:
+        if x in node_set:
+            continue
+        node_set.add(x)
+        clan_added.add(x)
+        from_k[x] = 1
+        kind_of[x] = "族人"
+        if x not in gen and x in clan["depth"]:
+            gen[x] = clan["depth"][x]
 
     def _parents(x):
-        fam = (chars.get(str(x)) or {}).get("family") or {}
+        fam = _tree_family(f, chars, x)
         return ([y for y in (fam.get("father") or []) if isinstance(y, int)]
                 + [y for y in (fam.get("mother") or []) if isinstance(y, int)])
 
@@ -26411,17 +26499,25 @@ def genealogy_tree(f):
                 red.append([e[0], e[1], i])
 
     nodes = []
+    # a clan bead the printed 世系 never listed (v119) is named briefly, as of his own end, so the
+    # chart can afford a thousand labels; the beads the 世系 does list keep the label they always had
+    old_ids = printed | {x for x, sp in spouse_of.items() if sp in printed}
     for x in order:
         rec = chars.get(str(x)) or {}
+        is_clan = x not in old_ids
+        end_date = _gen_end_date(f, x)
         nodes.append({
             "id": x,
             "name": f.name_or(x) or "",
-            "label": f.kin_label(x) or f.name_or(x) or str(x),
+            "label": (f.person_label(x, end_date or f.as_of, "brief")
+                      if is_clan else (f.kin_label(x) or f.name_or(x) or str(x))),
+            "house": clan["house"].get(x),
+            "clan": 1 if is_clan else 0,
             "sex": 1 if f._is_female(x) else 0,
             "gen": gen.get(x, 1),
             "subj": subject.get(x, 0),
             "from_k": from_k.get(x, 1),
-            # why this person is on the tree (「传主」/儿子/正妻/父…) — the bead's subscript
+            # why this person is on the tree (「传主」/儿子/正妻/父/族人…) — the bead's subscript
             "note": kind_of.get(x, ""),
             "parent": parent_of.get(x),
             "spouse_of": spouse_of.get(x),
@@ -26429,17 +26525,36 @@ def genealogy_tree(f):
             "kids": kids_of.get(x) or [],
             "birth": rec.get("birth") or "",
             "death": (rec.get("death") or {}).get("date") or "",
-            "end": _gen_end_date(f, x),
+            "end": end_date,
         })
     span = _gen_word(1) if gens[-1] <= 1 else f"{_gen_word(1)}至{_gen_word(gens[-1])}"
+    # the 分家 of the clan, for the reading page's house menu (v119 user request): each house with its
+    # membership count and whether the played line itself sits in it, so the page can start on the
+    # protagonist's own house and let the other branches be ticked in
+    houses = {}
+    for x in blood:
+        hid = clan["house"].get(x)
+        if hid is None:
+            continue
+        row = houses.setdefault(hid, {"id": hid,
+                                      "label": (clan["house_name"].get(hid)
+                                                or f._house_label(hid) or str(hid)),
+                                      "n": 0, "chain": 0})
+        row["n"] += 1
+    for x in chain_ids:
+        hid = clan["house"].get(x)
+        if hid in houses:
+            houses[hid]["chain"] = 1
     return {
         "schema": 1,
         "player_id": int(pid),
         "as_of": f.as_of or "",
         "fanli": _GENEALOGY_FANLI,
-        # printed caption of the 家谱 section: the appendix states what the reading page draws
+        # printed caption of the 家谱 section: the appendix states what the reading page draws, so it
+        # counts the printed 世系 (the clan-wide beads the tree gained in v119 are the page's own)
         "summary": (f"本谱{span}，凡{_tree_count_zh(len(members))}位传主、"
-                    f"{_tree_count_zh(len(nodes))}人；家谱图见阅读页。"),
+                    f"{_tree_count_zh(len([n for n in nodes if not n.get('clan')]))}人；"
+                    f"家谱图见阅读页。"),
         "chain": [{"i": i + 1, "id": m["cid"], "gen": gens[i],
                    "name": f.name_or(m["cid"]) or "",
                    "label": f.kin_label(m["cid"]) or f.name_or(m["cid"]) or "",
@@ -26447,6 +26562,12 @@ def genealogy_tree(f):
                   for i, m in enumerate(members)],
         "pieces": {int(m["cid"]): i + 1 for i, m in enumerate(members)},
         "nodes": nodes,
+        "houses": sorted(houses.values(), key=lambda h: (-h["n"], h["label"])),
+        "chain_houses": sorted({clan["house"].get(x) for x in chain_ids
+                                if clan["house"].get(x) is not None}),
+        "clan_total": len(clan["members"]) + len(clan["orphans"]),
+        "clan_orphans": len(clan["orphans"]),
+        "spouse_n": len([n for n in nodes if n.get("spouse_of") is not None]),
         "red_edges": red,
         "red_dashed": dashed,
         "pairs": pairs,
@@ -26465,6 +26586,10 @@ def _saint_lines(f, tree):
     for n in (tree or {}).get("nodes") or []:
         x = n.get("id")
         if not isinstance(x, int):
+            continue
+        # the block reads the 世系 the appendix prints, so clan-wide beads stay out of it: the prompt
+        # (and every article built from it) keeps the scope it had before the tree grew (v119)
+        if n.get("clan"):
             continue
         if not (f._has_trait_at(x, "saint", f.as_of) or f._in_saint_register(x)):
             continue
