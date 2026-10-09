@@ -312,30 +312,154 @@ def find_cache_path(cfg, player_id, playthrough_id=None):
     return None
 
 
-def all_caches(cfg):
-    """All player caches as {(player_id, playthrough_id): (path, cache)}. The tuple key keeps
-    caches of one id in different campaigns apart (ids are reused across campaigns), while
-    several session folders of one campaign collapse to the newest session."""
+_CACHE_INDEX_NAME = "_caches_index.json"
+# Bumped whenever `cache_meta_fields` gains or renames a field: an index of another version is
+# ignored and rebuilt, since a stale shape would silently miss the new fields.
+_CACHE_INDEX_VERSION = 1
+_CACHE_INDEX_LOCK = threading.Lock()
+
+
+def cache_meta_fields(cache):
+    """The small metadata record of one player cache (v117 丙-2).
+
+    Deciding about a cache — which folder it is bound to, whether its subject's tenure ended, which
+    campaign it belongs to — needs only these fields, so the merge loop can read them from the index
+    instead of parsing the whole 267 MB file."""
+    pid = cache.get("player_id")
+    rec = (cache.get("characters") or {}).get(str(pid)) or {}
+    srcs = cache.get("sources") or []
+    return {
+        "player_id": pid,
+        "playthrough_id": cache.get("playthrough_id"),
+        "output_folder": cache.get("output_folder"),
+        "last_date": cache.get("last_date"),
+        "player_name": cache.get("player_name"),
+        "has_player_death": cache.get("player_death") is not None,
+        "has_reign_end": cache.get("reign_end") is not None,
+        "bio_generated": bool(cache.get("bio_generated")),
+        "bio_decades": list(cache.get("bio_decades") or []),
+        "bio_pname": _bio_pname(cache),
+        "birth": rec.get("birth") or cache.get("birth"),
+        # the two end-of-tenure records travel whole: the queue tests read their date and the
+        # successor's name, and both are a few short fields
+        "player_death": cache.get("player_death"),
+        "reign_end": cache.get("reign_end"),
+        "sources": list(srcs),
+        "first_source": srcs[0] if srcs else None,
+        "n_sources": len(srcs),
+        "n_characters": len(cache.get("characters") or {}),
+    }
+
+
+def cache_index_path(dirpath):
+    """Path of the metadata index of one campaign data directory."""
+    return os.path.join(dirpath, _CACHE_INDEX_NAME)
+
+
+def load_caches_index(dirpath):
+    """{filename: {"size", "mtime", "meta"}} of one data directory.
+
+    {} when the file is absent, unreadable or of another schema version, which makes the caller
+    rebuild it from full parses."""
+    try:
+        with open(cache_index_path(dirpath), encoding="utf-8") as fp:
+            d = json.load(fp)
+    except Exception:
+        return {}
+    if not isinstance(d, dict) or d.get("version") != _CACHE_INDEX_VERSION:
+        return {}
+    files = d.get("files")
+    return files if isinstance(files, dict) else {}
+
+
+def save_caches_index(dirpath, index):
+    """Persist the index atomically; a failure only costs a full parse on the next read."""
+    path = cache_index_path(dirpath)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fp:
+            json.dump({"version": _CACHE_INDEX_VERSION, "files": index},
+                      fp, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, path)
+    except Exception as e:
+        llm.log(f"  [索引] 写入失败 {os.path.basename(path)}: {e}", detail=True)
+
+
+def _cache_file_stamp(path):
+    """(size, mtime) validation stamp of a cache file, or None when it cannot be read."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return {"size": st.st_size, "mtime": int(st.st_mtime)}
+
+
+def update_cache_index(path, cache):
+    """Refresh one index entry after its cache was written, so the next read validates.
+
+    Without this the rewritten file would look stale and be parsed in full again."""
+    dirpath = os.path.dirname(path)
+    stamp = _cache_file_stamp(path)
+    if stamp is None:
+        return
+    entry = dict(stamp)
+    entry["meta"] = cache_meta_fields(cache)
+    with _CACHE_INDEX_LOCK:
+        index = load_caches_index(dirpath)
+        index[os.path.basename(path)] = entry
+        save_caches_index(dirpath, index)
+
+
+def all_caches(cfg, meta_only=False, playthrough_id=None):
+    """All player caches as {(player_id, playthrough_id): (path, cache or metadata)}. The tuple key
+    keeps caches of one id in different campaigns apart (ids are reused across campaigns), while
+    several session folders of one campaign collapse to the newest session.
+
+    Every data directory carries a metadata index (v117 丙-2). When a file's size+mtime still match
+    its entry, the 267 MB cache is not parsed at all and `meta_only=True` returns that small record
+    (see `cache_meta_fields`); `playthrough_id` then restricts the result to one campaign, so other
+    campaigns are never loaded. A missing, stale or unreadable entry is rebuilt from one full parse,
+    which also refreshes the index: it is derived data that heals itself and may be deleted freely."""
     out = {}
     for root in (cfg.get("output_dir", ""), cfg.get("cache_dir", "")):
         if not root or not os.path.isdir(root):
             continue
         for dp, _dn, fns in os.walk(root):
+            index = load_caches_index(dp)
+            dirty = False
             for fn in fns:
                 m = re.match(r"player_(\d+)\.json$", fn)
                 if not m:
                     continue
                 pid = int(m.group(1))
                 path = os.path.join(dp, fn)
-                cache = cl.load_cache(path)
-                if not cache.get("player_id"):
-                    continue  # a corrupt cache (renamed by load_cache) joins no campaign
-                key = (cache.get("player_id") or pid,
-                       cache.get("playthrough_id"))
+                stamp = _cache_file_stamp(path)
+                if stamp is None:
+                    continue
+                ent = index.get(fn)
+                meta = None
+                if isinstance(ent, dict) and ent.get("size") == stamp["size"] \
+                        and ent.get("mtime") == stamp["mtime"]:
+                    meta = ent.get("meta") or None
+                cache = None
+                if meta is None:
+                    cache = cl.load_cache(path)
+                    if not cache.get("player_id"):
+                        continue  # a corrupt cache (renamed by load_cache) joins no campaign
+                    meta = cache_meta_fields(cache)
+                    index[fn] = dict(stamp, meta=meta)
+                    dirty = True
+                if playthrough_id is not None \
+                        and str(meta.get("playthrough_id")) != str(playthrough_id):
+                    continue
+                key = (meta.get("player_id") or pid, meta.get("playthrough_id"))
                 prev = out.get(key)
-                if prev is None or _cache_pick_key(path, cache) > \
+                if prev is None or _cache_pick_key(path, meta) > \
                         _cache_pick_key(prev[0], prev[1]):
-                    out[key] = (path, cache)
+                    out[key] = (path, meta if meta_only else
+                                (cache if cache is not None else cl.load_cache(path)))
+            if dirty:
+                save_caches_index(dp, index)
     return out
 
 
@@ -424,7 +548,7 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
             return cur
         pt = cache.get("playthrough_id")
         if pt:
-            for _key, (_path, other) in all_caches(cfg).items():
+            for _key, (_path, other) in all_caches(cfg, meta_only=True).items():
                 if other.get("playthrough_id") == pt and other.get("output_folder") \
                         and os.path.isdir(os.path.join(out, other["output_folder"])):
                     return other["output_folder"]
@@ -443,7 +567,7 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
         if key != _WATCH_SESSION["player_key"] and _WATCH_SESSION["player_key"] is not None:
             pt = cache.get("playthrough_id")
             if pt:
-                for _key, (_path, other) in all_caches(cfg).items():
+                for _key, (_path, other) in all_caches(cfg, meta_only=True).items():
                     if other.get("playthrough_id") == pt and other.get("output_folder") \
                             and os.path.isdir(os.path.join(out, other["output_folder"])):
                         _WATCH_SESSION["folder"] = other["output_folder"]
@@ -462,7 +586,7 @@ def resolve_output_folder(cfg, cache, continue_mode=False):
         return cur
     pt = cache.get("playthrough_id")
     if pt:
-        for _key, (_path, other) in all_caches(cfg).items():
+        for _key, (_path, other) in all_caches(cfg, meta_only=True).items():
             if other.get("playthrough_id") == pt and other.get("output_folder") \
                     and os.path.isdir(os.path.join(out, other["output_folder"])):
                 return other["output_folder"]
@@ -498,6 +622,7 @@ def save_session_cache(cfg, cache, continue_mode=False):
     except Exception:
         pass
     cl.save_cache(cache, path)
+    update_cache_index(path, cache)
     return path
 
 
@@ -1253,38 +1378,44 @@ def _cross_check_deaths(cfg, melt, current_player):
     """Look for a previous player character's death among this save's dead_unprunable, verifying
     identity by name (ids are reused across campaigns) and by a death date after that character's last
     living save. Caches are indexed by id once, and a same-campaign cache is preferred."""
-    caches = all_caches(cfg)  # {(player_id, playthrough_id): (path, cache)}
+    caches = all_caches(cfg, meta_only=True)  # {(player_id, playthrough_id): (path, metadata)}
     melt_pt = melt.get("playthrough_id")
+    # Index the metadata by character id once, so the scan below only looks at caches whose subject
+    # is this id; the 259k dead characters of the melt thus cost no cache parse at all (v117 丙-2).
+    by_cid = {}
+    for key, hit in caches.items():
+        by_cid.setdefault(key[0], []).append(hit)
     for cid, c in (melt.get("dead_unprunable") or {}).items():
         if not isinstance(c, dict):  # guard against a `none` entry (broken or half-written save)
             continue
         cid = int(cid)
         if cid == current_player:
             continue
-        hits = [v for k, v in caches.items() if k[0] == cid]
+        hits = by_cid.get(cid)
         if not hits:
             continue
         hits.sort(key=lambda hv: hv[1].get("playthrough_id") != melt_pt)
-        for path, prev in hits:
+        for path, meta in hits:
             # Another campaign's cache never takes this death record: character ids are reused, and
             # same-campaign caches sort first, so only other campaigns remain here.
-            prev_pt = prev.get("playthrough_id")
+            prev_pt = meta.get("playthrough_id")
             if melt_pt and prev_pt and str(prev_pt) != str(melt_pt):
                 continue
             dd = c.get("dead_data") or {}
             if not dd.get("date"):
                 continue
-            if prev.get("player_death") is not None:
+            if meta.get("has_player_death"):
                 continue
-            # identity check: the names must agree
+            # the death date must be later than that character's last living save
+            if cl.date_key(dd.get("date")) <= cl.date_key(meta.get("last_date") or "0.0.0"):
+                continue
+            # everything above came from the index; the identity test needs the record itself
+            prev = cl.load_cache(path)
             rec = (prev.get("characters") or {}).get(str(cid)) or {}
             cached_name = rec.get("name_zh") or rec.get("name_full") or ""
             dead_name = cl.name_zh(c)
             if cached_name and dead_name and cl.zh(cached_name) != cl.zh(dead_name):
                 continue  # colliding id, not the same person
-            # the death date must be later than that character's last living save
-            if cl.date_key(dd.get("date")) <= cl.date_key(prev.get("last_date") or "0.0.0"):
-                continue
             prev["player_death"] = {
                 "date": dd.get("date"),
                 "reason": dd.get("reason"),
@@ -1301,6 +1432,7 @@ def _cross_check_deaths(cfg, melt, current_player):
             if _chain:
                 prev["played_legacy"] = _chain
             cl.save_cache(prev, path)
+            update_cache_index(path, prev)
             llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 死于 {dd.get('date')}, "
                     f"原因 {dd.get('reason')} — 待生成终传")
             break
@@ -1382,8 +1514,11 @@ def _cross_check_reign_ends(cfg, melt, current_player):
     rows = _lineage_chain(melt)
     if len(rows) < 2:
         return 0
-    caches = all_caches(cfg)
+    caches = all_caches(cfg, meta_only=True)
     melt_pt = melt.get("playthrough_id")
+    by_cid = {}
+    for key, hit in caches.items():
+        by_cid.setdefault(key[0], []).append(hit)
     living = cl._living(melt)
     dead_un = cl._dead_unprunable(melt)
     n = 0
@@ -1397,19 +1532,19 @@ def _cross_check_reign_ends(cfg, melt, current_player):
         c = living.get(str(cid))
         if not isinstance(c, dict):      # "not dead" cannot be confirmed -> write nothing
             continue
-        hits = [v for k, v in caches.items() if k[0] == cid]
+        hits = by_cid.get(cid)
         if not hits:
             continue
         hits.sort(key=lambda hv: hv[1].get("playthrough_id") != melt_pt)
-        for path, prev in hits:
-            prev_pt = prev.get("playthrough_id")
+        for path, meta in hits:
+            prev_pt = meta.get("playthrough_id")
             if melt_pt and prev_pt and str(prev_pt) != str(melt_pt):
                 continue
-            if prev.get("player_death") is not None \
-                    or prev.get("reign_end") is not None:
+            if meta.get("has_player_death") or meta.get("has_reign_end"):
                 continue
-            if cl.date_key(succ_date) <= cl.date_key(prev.get("last_date") or "0.0.0"):
+            if cl.date_key(succ_date) <= cl.date_key(meta.get("last_date") or "0.0.0"):
                 continue
+            prev = cl.load_cache(path)
             rec = (prev.get("characters") or {}).get(str(cid)) or {}
             cached_name = rec.get("name_zh") or rec.get("name_full") or ""
             now_name = cl.name_zh(c)
@@ -1428,6 +1563,7 @@ def _cross_check_reign_ends(cfg, melt, current_player):
             # copy the succession chain into the previous cache, as on the death path
             prev["played_legacy"] = [{"cid": c_, "date": d_} for c_, d_ in rows]
             cl.save_cache(prev, path)
+            update_cache_index(path, prev)
             llm.log(f"  [更替] 前代玩家 {cid} ({cached_name}) 在位终于 {succ_date}，"
                     f"非死亡（{_REIGN_END_WORD.get(kind, '让位')}），"
                     f"后任 {succ_cid} — 待生成终传")
@@ -1454,10 +1590,14 @@ def _ensure_bio_worker(cfg):
         _BIO_WORKER.start()
 
 
-def _campaign_caches(cfg, anchor):
+def _campaign_caches(cfg, anchor, meta_only=False):
     """Player caches of the campaign anchor belongs to (same playthrough_id) as
     {player_id: cache}; an anchor without a playthrough id returns only itself. Callers
-    therefore look at the current campaign's players instead of scanning old campaigns."""
+    therefore look at the current campaign's players instead of scanning old campaigns.
+
+    meta_only=True returns the small metadata records of the index instead of the parsed caches
+    (v117 丙-2): the queue tests only read those fields, and the biography worker loads whichever
+    cache it actually generates from disk."""
     out = {}
     if anchor is None:
         return out
@@ -1467,7 +1607,8 @@ def _campaign_caches(cfg, anchor):
         if pid is not None:
             out[pid] = anchor
         return out
-    for _k, (_path, c) in all_caches(cfg).items():
+    for _k, (_path, c) in all_caches(cfg, meta_only=meta_only,
+                                     playthrough_id=pt).items():
         if c.get("playthrough_id") == pt:
             out[_k[0]] = c
     return out
@@ -1479,7 +1620,7 @@ def _auto_bio(cfg, caches=None):
     bio_generated unset so the next round retries after a backoff; caches limits the scope."""
     _ensure_bio_worker(cfg)
     if caches is None:
-        caches = {k: c for k, (_path, c) in all_caches(cfg).items()}
+        caches = {k: c for k, (_path, c) in all_caches(cfg, meta_only=True).items()}
     else:
         # A caller may pass {player_id: cache} (int keys, from _campaign_caches), so the
         # keys are normalized to the (player_id, playthrough_id) tuples worker tasks use
@@ -1495,7 +1636,7 @@ def _auto_bio(cfg, caches=None):
                 continue
             if not cfg.get("auto_bio_on_death", True):
                 llm.log(f"[待生成] 玩家 {cache.get('player_name')} (id={key[0]}) 位终于 "
-                        f"{re_end.get('date') or death.get('date')}, "
+                        f"{re_end.get('date') or (death or {}).get('date')}, "
                         f"但 auto_bio_on_death=false, 跳过")
                 continue
             qkey = (key, "death", None)
@@ -1544,7 +1685,7 @@ def _generated_decades_on_disk(cfg, cache):
     out_dir = os.path.join(cfg.get("output_dir", ""), folder)
     pid = cache.get("player_id")
     rec = (cache.get("characters") or {}).get(str(pid)) or {}
-    by = str(rec.get("birth") or "").split(".")[0]
+    by = str(rec.get("birth") or cache.get("birth") or "").split(".")[0]
     if by.isdigit():
         # birth-year anchor: see _decade_file_pattern (the display name changes with the life)
         pat = re.compile(rf".*\({by}\)_传记_第(\d+)个十年_.*\.md$")
@@ -1565,7 +1706,7 @@ def _auto_decade_bios(cfg, caches=None):
     a subject whose tenure ended gets no more because the final biography covers the whole life."""
     _ensure_bio_worker(cfg)
     if caches is None:
-        caches = {k: c for k, (_path, c) in all_caches(cfg).items()}
+        caches = {k: c for k, (_path, c) in all_caches(cfg, meta_only=True).items()}
     else:
         # normalize to (player_id, playthrough_id) tuple keys, as in _auto_bio
         caches = {(k if isinstance(k, tuple) else (k, c.get("playthrough_id"))): c
@@ -1641,6 +1782,7 @@ def _bio_worker_loop(cfg):
                     cur = cl.load_cache(path, fresh=True)  # an independent copy for the write
                     cur["bio_generated"] = True
                     cl.save_cache(cur, path)
+                    update_cache_index(path, cur)
                     llm.log(f"终传已生成: {out_path}")
             elif kind == "decade":
                 if cache.get("player_death") or _reign_end(cache):
@@ -1654,6 +1796,7 @@ def _bio_worker_loop(cfg):
                     cur = cl.load_cache(path, fresh=True)
                     cur.setdefault("bio_decades", []).append(decade)
                     cl.save_cache(cur, path)
+                    update_cache_index(path, cur)
                     llm.log(f"十年传记已生成 (第{decade}个十年): {out_path}")
         except Exception as e:
             # The catch-all also logs the last traceback frames: `str(e)` alone leaves an
@@ -1783,8 +1926,8 @@ def step_watch(cfg, continue_mode=False):
     # Startup check: continue uses the current campaign's cache; watch has no campaign yet and
     # waits until the first new save establishes one.
     if continue_anchor:
-        _auto_bio(cfg, _campaign_caches(cfg, continue_anchor))
-        _auto_decade_bios(cfg, _campaign_caches(cfg, continue_anchor))
+        _auto_bio(cfg, _campaign_caches(cfg, continue_anchor, meta_only=True))
+        _auto_decade_bios(cfg, _campaign_caches(cfg, continue_anchor, meta_only=True))
     # Monitoring loop: newest save only, session dedup, wait for a stable file, and checks
     # scoped to the current campaign
     interval = cfg.get("poll_interval_seconds", 60)
@@ -1864,7 +2007,7 @@ def step_watch(cfg, continue_mode=False):
             else:
                 anchor = watch_anchor
             if anchor:
-                caches = _campaign_caches(cfg, anchor)
+                caches = _campaign_caches(cfg, anchor, meta_only=True)
                 _auto_bio(cfg, caches)  # every round checks pending final biographies of this campaign
                 _auto_decade_bios(cfg, caches)  # every round checks pending decade biographies
         except Exception as e:
@@ -1884,8 +2027,8 @@ def step_scan(cfg):
     llm.log(f"当前战役: {cache.get('player_name')} (id={pid}, 家族={cache.get('house_name')}, "
             f"最后存档={cache.get('last_date')})")
     n = _catchup(cfg, cache, continue_mode=True)
-    _auto_bio(cfg, _campaign_caches(cfg, cache))
-    _auto_decade_bios(cfg, _campaign_caches(cfg, cache))
+    _auto_bio(cfg, _campaign_caches(cfg, cache, meta_only=True))
+    _auto_decade_bios(cfg, _campaign_caches(cfg, cache, meta_only=True))
     llm.log(f"补录完成: 处理 {n} 个新档")
 
 
