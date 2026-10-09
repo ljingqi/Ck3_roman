@@ -2322,6 +2322,10 @@ class Facts:
         # Name rendering cache: the underlying cache is immutable within one build_facts.
         self._name_cache = {}
         self._tpl_memo = {}
+        # House lookups and the per-house character index (v117 丙-1): see `_house_of_cid` and
+        # `_house_index`, both built once and reused by every house-level scan.
+        self._house_memo = {}
+        self._hidx = {}
 
     # ---- names ----
     def name(self, cid, date=None):
@@ -8104,16 +8108,62 @@ class Facts:
     }
 
     def _house_of_cid(self, cid):
-        """Character's house id (cache first, then melt)."""
+        """Character's house id (cache first, then melt).
+
+        Memoized: the house-level scans of the feud record ask for the same ids millions of times
+        (v117 丙-1 measured 24.5M calls for one volume), and the cache is immutable within a build."""
         if not isinstance(cid, int):
             return None
+        memo = self._house_memo
+        if cid in memo:
+            return memo[cid]
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         h = rec.get("dynasty_house")
-        if isinstance(h, int):
-            return h
-        c = self._chars.get(str(cid)) or {}
-        h = c.get("dynasty_house")
-        return int(h) if isinstance(h, int) else None
+        if not isinstance(h, int):
+            c = self._chars.get(str(cid)) or {}
+            h = c.get("dynasty_house")
+            h = int(h) if isinstance(h, int) else None
+        memo[cid] = h
+        return h
+
+    def _house_index(self, cont, raw):
+        """{house_id: [(position, cid)]} over one character container, built once per build.
+
+        `cont` is "melt" (`self._chars`) or "cache" (`cache["characters"]`); `raw=True` reads the
+        record's own `dynasty_house`, `raw=False` resolves it through `_house_of_cid` (what the
+        prison/war node scans do). The four house-level scans of the feud record need one or two
+        houses out of the whole save, so the per-house loop walked every character in the container
+        once per house; walking the house's own list instead is the v117 丙-1 speedup. Each list
+        keeps the container's own order, so iterating several houses by position reproduces the
+        order of the original full scan exactly."""
+        ck = (cont, bool(raw))
+        idx = self._hidx.get(ck)
+        if idx is not None:
+            return idx
+        idx = {}
+        src = self._chars if cont == "melt" else (self.cache.get("characters") or {})
+        for pos, (cid_s, c) in enumerate(src.items()):
+            if not isinstance(c, dict):  # guard against a "none" entry
+                continue
+            try:
+                cid = int(cid_s)
+            except (TypeError, ValueError):
+                continue
+            h = c.get("dynasty_house") if raw else self._house_of_cid(cid)
+            if isinstance(h, int):
+                idx.setdefault(h, []).append((pos, cid))
+        self._hidx[ck] = idx
+        return idx
+
+    def _house_cids_in_order(self, cont, raw, houses):
+        """The cids of several houses of one container, in the container's own order."""
+        idx = self._house_index(cont, raw)
+        rows = []
+        for h in houses:
+            if isinstance(h, int):
+                rows.extend(idx.get(h) or ())
+        rows.sort()
+        return [cid for _pos, cid in rows]
 
     def _dynasty_of_cid(self, cid):
         """Character's dynasty id (via house); None when unknown."""
@@ -11423,9 +11473,8 @@ class Facts:
         not jailed on their purge day (members jailed on one day, the head executed on another), so
         prison nodes alone would miss their house-level row."""
         out = set()
-        for cid, c in self._chars.items():
-            if not isinstance(c, dict) or c.get("dynasty_house") != house_id:
-                continue
+        for cid in self._house_cids_in_order("melt", True, [house_id]):
+            c = self._chars.get(str(cid)) or {}
             dd = c.get("dead_data") or {}
             if dd.get("reason") != "death_execution":
                 continue
@@ -11452,15 +11501,12 @@ class Facts:
         if not house_label:
             return ""
         n = 0
-        for cid, c in self._chars.items():
-            if not isinstance(c, dict):
-                continue
+        for cid in self._house_cids_in_order("melt", True, [house_id]):
+            c = self._chars.get(str(cid)) or {}
             dd = c.get("dead_data") or {}
             if dd.get("reason") != "death_execution" or dd.get("killer") != int(killer):
                 continue
             if str(dd.get("date") or "") != d:
-                continue
-            if c.get("dynasty_house") != house_id:
                 continue
             n += 1
         jn = self._feud_role_title(killer, d) or "主角"
@@ -11512,14 +11558,10 @@ class Facts:
 
         out = []
         _seen = set()
-        for cid_s, rec in chars.items():
-            try:
-                cid = int(cid_s)
-            except (TypeError, ValueError):
-                continue
+        _want = [other_house] + [h for h in my_houses if h != other_house]
+        for cid in self._house_cids_in_order("cache", False, _want):
+            rec = chars.get(str(cid)) or {}
             vh = _house(cid)
-            if vh != other_house and vh not in my_houses:
-                continue
             for m in rec.get("memories") or []:
                 if (m.get("type") or "") != "imprisoned":
                     continue
@@ -11676,9 +11718,8 @@ class Facts:
         # the verdicts and wording, so no per-person prison sentence is emitted here ----
         # ---- ③ titles the other side lost ----
         lost_titles = []
-        for cid, rec in chars.items():
-            if _house(int(cid)) != other_house:
-                continue
+        for cid in self._house_cids_in_order("cache", False, [other_house]):
+            rec = chars.get(str(cid)) or {}
             for m in rec.get("memories") or []:
                 if (m.get("type") or "") != "lost_title_memory":
                     continue
