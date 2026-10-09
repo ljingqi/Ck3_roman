@@ -23,6 +23,7 @@ import hashlib
 import json
 import lzma
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -1099,23 +1100,73 @@ def _process_save(cfg, save, continue_mode=False):
 
 
 def _prebuild_melt_index(mp, melt):
-    """Build the memory archive sidecar of a melt while it is being merged. Backfill reads the save just
-    before a death, so X's sidecar is needed once X+1 merges, and building it here avoids a second full
-    parse (18.2 s for 244 MiB against 4 s to build and store). An existing sidecar is kept, and a
+    """Queue the memory archive sidecar of a melt for the background worker and return at once.
+
+    Backfill reads the save just before a death, so X's sidecar is needed once X+1 merges, and
+    building it here avoids a second full parse (18.2 s for 244 MiB against 4 s to build and store).
+    The build itself is pure CPU plus one compressed write, and the melt is already in memory and
+    read-only, so the merge no longer waits for it: the sidecar used to hold the main thread for
+    9-57 s per merge (v117 丙-4, measured in the production journal). The queue holds ONE melt, so
+    the memory peak grows by at most one live melt; a producer that finds the worker still busy waits
+    for that slot, i.e. it is never slower than building it inline. An existing sidecar is kept, and a
     failure is only logged because the sidecar is derived and falls back to the lazy path."""
     if not mp or not melt or not os.path.isfile(mp):
         return None
     try:
         if any(os.path.isfile(p) for p in cl._melt_index_variants(mp)):
             return None
-        t0 = time.time()
-        path = cl.save_melt_index(mp, melt)
-        llm.log(f"  [边车] {os.path.basename(mp)} 记忆归档已预建 "
-                f"({time.time() - t0:.0f}s)")
-        return path
+        _ensure_sidecar_worker()
+        with _SIDECAR_LOCK:
+            if mp in _SIDECAR_PENDING:
+                return None
+            _SIDECAR_PENDING.add(mp)
+        _SIDECAR_QUEUE.put((mp, melt))
+        llm.log(f"  [边车] {os.path.basename(mp)} 记忆归档已交后台预建")
     except Exception as e:
-        llm.log(f"  [边车] {os.path.basename(mp)} 预建失败: {e}")
-        return None
+        with _SIDECAR_LOCK:
+            _SIDECAR_PENDING.discard(mp)
+        llm.log(f"  [边车] {os.path.basename(mp)} 入队失败: {e}")
+    return None
+
+
+def _sidecar_worker():
+    """Background loop: build one queued memory archive sidecar, then take the next.
+
+    The archiver runs while the merge continues, so the melt may be archived away in the meantime
+    (its extension changes and the sidecar follows it); a vanished melt is simply skipped, since the
+    lazy path rebuilds the sidecar from the archive when a backfill asks for it."""
+    while True:
+        item = _SIDECAR_QUEUE.get()
+        try:
+            if item is None:
+                return
+            mp, melt = item
+            if not os.path.isfile(mp):
+                llm.log(f"  [边车] {os.path.basename(mp)} 期间已归档, 侧车留给回溯路径自建",
+                        detail=True)
+                continue
+            if any(os.path.isfile(p) for p in cl._melt_index_variants(mp)):
+                continue
+            t0 = time.time()
+            cl.save_melt_index(mp, melt)
+            llm.log(f"  [边车] {os.path.basename(mp)} 记忆归档已预建 "
+                    f"({time.time() - t0:.0f}s)")
+        except Exception as e:
+            llm.log(f"  [边车] 预建失败: {e}")
+        finally:
+            if item is not None:
+                with _SIDECAR_LOCK:
+                    _SIDECAR_PENDING.discard(item[0])
+            _SIDECAR_QUEUE.task_done()
+
+
+def _ensure_sidecar_worker():
+    """Start the single background sidecar worker once."""
+    global _SIDECAR_THREAD
+    if _SIDECAR_THREAD is not None:
+        return
+    _SIDECAR_THREAD = threading.Thread(target=_sidecar_worker, daemon=True)
+    _SIDECAR_THREAD.start()
 
 
 def _recover_dead_memories(cfg, cache, new_deaths=None):
@@ -2297,6 +2348,13 @@ def step_compact(cfg, codec=None, quiet_if_idle=True):
 
 
 _COMPACT_THREAD = None
+
+
+# Memory archive sidecar queue (v117 丙-4): one melt at a time, one worker thread.
+_SIDECAR_QUEUE = queue.Queue(maxsize=1)
+_SIDECAR_PENDING = set()
+_SIDECAR_LOCK = threading.Lock()
+_SIDECAR_THREAD = None
 
 
 def _compact_loop(cfg):
