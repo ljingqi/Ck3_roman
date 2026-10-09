@@ -30,14 +30,20 @@ KEEP_HEADS = """  const __rs = {}; (TREE.red_edges || []).forEach(e => { __rs[e[
 KEEP_SPOUSE = KEEP_HEADS + """
   const __in = {}; keep.forEach(n => { __in[n.id] = 1; });
   (TREE.nodes || []).forEach(n => { if(n.spouse_of != null && __in[n.spouse_of] && !__in[n.id]) keep.push(n); });"""
+# 「全开」: every bead open, so the drawn set is the whole scope (v119's widest state)
+OPEN_ALL_RE = re.compile(r"function defaultOpen\(sc, n\)\{.*?\n\}", re.S)
 
 
-def measure(tag, keep_block=None):
+def measure(tag, keep_block=None, open_all=False):
     html = open(PAGE, encoding="utf-8").read()
     if keep_block is not None:
         if KEEP_LINE not in html:
             raise SystemExit("keep line not found — htmlview.py layout changed")
         html = html.replace(KEEP_LINE, keep_block)
+    if open_all:
+        if not OPEN_ALL_RE.search(html):
+            raise SystemExit("defaultOpen not found — htmlview.py layout changed")
+        html = OPEN_ALL_RE.sub("function defaultOpen(sc, n){ return 1; }", html, count=1)
     path = os.path.join(ROOT, "logs", f"v119_tree_{tag}.html")
     open(path, "w", encoding="utf-8").write(html)
     out = subprocess.run([NODE, HARNESS, path], capture_output=True, text=True, encoding="utf-8")
@@ -45,17 +51,41 @@ def measure(tag, keep_block=None):
         raise SystemExit(f"{tag}: harness failed\n{out.stderr[:800]}")
     data = json.loads(out.stdout)
     case = [c for c in data["cases"] if c["k"] == data["K"]][0]
-    return {"tag": tag, "k": data["K"], "beads": case["bead_count"], "view": case["view"]}
+    return {"tag": tag, "k": data["K"], "beads": case["bead_count"], "view": case["view"],
+            "tog": sum(1 for b in case["beads"] if b["tog"])}
+
+
+# 2K 屏：treeFontSize 会算出 14px —— 用一个植桩版本量出该字号下的画布 (几何同比例放大)
+FS_RE = re.compile(r"function treeFontSize\(\)\{.*?\n\}", re.S)
+
+
+def measure_fs(fs):
+    html = open(PAGE, encoding="utf-8").read()
+    html = FS_RE.sub(f"function treeFontSize(){{ return {fs}; }}", html, count=1)
+    path = os.path.join(ROOT, "logs", f"v119_tree_fs{fs}.html")
+    open(path, "w", encoding="utf-8").write(html)
+    out = subprocess.run([NODE, HARNESS, path], capture_output=True, text=True, encoding="utf-8")
+    if out.returncode:
+        raise SystemExit(f"fs{fs}: harness failed\n{out.stderr[:800]}")
+    data = json.loads(out.stdout)
+    case = [c for c in data["cases"] if c["k"] == data["K"]][0]
+    os.remove(path)
+    return {"tag": f"默认@{fs}px", "k": data["K"], "beads": case["bead_count"],
+            "view": case["view"], "tog": sum(1 for b in case["beads"] if b["tog"])}
 
 
 rows = [measure("baseline"),
+        measure_fs(14),
+        measure("open", open_all=True),
         measure("chain", KEEP_HEADS),
         measure("chain_spouse", KEEP_SPOUSE)]
-print(f"{'变体':<14}{'珠子':>6}{'宽':>8}{'高':>7}   屏幕数@2K(2280px 视口)")
+print(f"{'变体':<14}{'珠子':>6}{'宽':>8}{'高':>7}{'▶钮':>5}   屏幕数@2K(2280px 视口)")
 for r in rows:
     w, h = r["view"]
-    print(f"{r['tag']:<14}{r['beads']:>6}{w:>8}{h:>7}   {w / 2280:.2f}")
+    print(f"{r['tag']:<14}{r['beads']:>6}{w:>8}{h:>7}{r['tog']:>5}   {w / 2280:.2f}")
 json.dump(rows, open(os.path.join(ROOT, "logs", "v119_tree_size.json"), "w", encoding="utf-8"),
           ensure_ascii=False, indent=1)
 for r in rows:
-    os.remove(os.path.join(ROOT, "logs", f"v119_tree_{r['tag']}.html"))
+    p = os.path.join(ROOT, "logs", f"v119_tree_{r['tag']}.html")
+    if os.path.exists(p):
+        os.remove(p)

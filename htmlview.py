@@ -271,16 +271,24 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
 .bead rect{fill:#fffdf6;stroke:#8d7f61;stroke-width:1}
 .bead.subj rect{fill:#fdf3e2;stroke:#b3352a;stroke-width:1.6}
 .bead.kin rect{fill:#f7f4ea}
-.bead text{font-size:13px;fill:var(--ink);dominant-baseline:middle;text-anchor:middle;cursor:default}
-.bead text.yr{font-size:9.5px;fill:#8a7a55}
-.bead text.tog{font-size:10px;fill:#6f6247;text-anchor:middle}
+/* v119: the bead text size comes from the SVG root's font-size, which is set from the monitor
+   (see treeFontSize in the script); every other size is relative to it. */
+.bead text{font-size:1em;fill:var(--ink);dominant-baseline:middle;text-anchor:middle;cursor:default}
+.bead text.yr{font-size:.77em;fill:#8a7a55}
+.bead text.tog{font-size:.77em;fill:#6f6247;text-anchor:middle}
 .bead{cursor:pointer}
 .bead:hover rect{stroke:var(--gold)}
 .edge{fill:none;stroke:#4a4238;stroke-width:1.2}
 .edge.red{stroke:#b3352a;stroke-width:2}
 .edge.dashed{stroke:#b3352a;stroke-width:1.6;stroke-dasharray:5 4}
 .spouse-link{fill:none;stroke:#a08a5e;stroke-width:1;stroke-dasharray:2 3}
-.gen-head{font-size:13px;fill:#8a7a55;text-anchor:start}
+.gen-head{font-size:1em;fill:#8a7a55;text-anchor:start}
+/* v119: the family tree is the one view that wants the whole landscape screen — the essay pages keep
+   their 880px measure, the tree drops it and takes whatever the monitor gives. */
+body.tree-mode #wrap{max-width:none}
+body.tree-mode #stage{max-width:none}
+body.tree-mode .paper{padding:18px 20px 22px}
+body.tree-mode .tree-scroll{max-height:calc(100vh - 200px)}
 @media (max-width:640px){.paper{padding:22px 18px 26px}h1.masthead{font-size:24px}}
 </style>
 </head>
@@ -315,6 +323,8 @@ function show(nci, nai){
   const meta = document.getElementById('meta-line');
   const tocEl = document.getElementById('toc');
   document.getElementById('tree-btn').classList.remove('active');
+  // essay pages keep their 880px measure; only the family tree takes the whole screen
+  document.body.classList.remove('tree-mode');
   if(!ch){ stage.innerHTML = '<div class="empty">（无传记）</div>'; meta.textContent = ''; tocEl.innerHTML = '<div class="empty">（无章节）</div>'; return; }
   const tabs = document.getElementById('tabs');
   tabs.innerHTML = '';
@@ -422,17 +432,58 @@ function beadOrder(sc, collapsed){
   return order;
 }
 
+/* Bead text size follows the monitor: 13px at 1080p (1920 physical px), 14px at 2K, clamped to
+   12-20px. `A-`/`A+` in the tree bar overrule it and the choice is kept in localStorage, so a
+   wrong guess (an external monitor, a scaled display) is one click away from being fixed. */
+function treeFontSize(){
+  let manual = 0;
+  try{ manual = parseInt(localStorage.getItem('tree-fs') || '0', 10) || 0; }catch(e){ manual = 0; }
+  if(manual >= 12 && manual <= 20) return manual;
+  let phys = 1920;
+  try{ phys = (screen.width || 1920) * (window.devicePixelRatio || 1); }catch(e){ phys = 1920; }
+  return Math.max(12, Math.min(20, Math.round(13 + (phys - 1920) / 640)));
+}
+
+/* A-/A+ pick the bead text size by hand and keep it; 12-20px covers a small laptop panel up to a
+   scaled 4K display. */
+function setTreeFont(v){
+  const fs = Math.max(12, Math.min(20, v));
+  try{ localStorage.setItem('tree-fs', String(fs)); }catch(e){}
+  return fs;
+}
+
+/* A bead starts open when it belongs to the played line, sits on the red succession path, or is the
+   spouse hanging beside one of those (v119); everything else starts closed. */
+function defaultOpen(sc, n){
+  if(sc.isSubj(n) || sc.redNodes[n.id]) return 1;
+  const sp = n.spouse_of;
+  if(sp == null || !sc.byId[sp]) return 0;
+  const p = sc.byId[sp];
+  return !!(sc.isSubj(p) || sc.redNodes[sp]);
+}
+
 function renderTree(host, k){
   if(!TREE || !k){ host.innerHTML = '<div class="tree-bar">（尚无家谱数据）</div>'; return; }
   const sc = scopeOf(k);
   const collapsed = host._collapsed || (host._collapsed = {});
   if(!host._inited){
     host._inited = 1;
-    // 默认只全开传主与其传承路径上的先人, 其余收拢 (user 2026-10-06)
-    sc.nodes.forEach(n => { if(!sc.isSubj(n) && !sc.redNodes[n.id]) collapsed[n.id] = 1; });
+    sc.nodes.forEach(n => { collapsed[n.id] = defaultOpen(sc, n) ? 0 : 1; });
   }
   const z = host._zoom || 1;
-  const order = beadOrder(sc, collapsed);
+  // v119: the canvas is only as wide as what is on screen. A closed bead hides itself and its
+  // descendants, so the default view (the played line plus the spouses beside it) fits one screen
+  // instead of spreading every clansman across 6200px of mostly empty rows.
+  const order = beadOrder(sc, {}).filter(id => !collapsed[id]);
+  const drawn = {};
+  order.forEach(id => { drawn[id] = 1; });
+  const kidsOf = id => (sc.kids[id] || []).filter(x => drawn[x]);
+  const spousesOf = id => (sc.spouses[id] || []).filter(x => drawn[x]);
+  // text size and bead geometry share one factor, so a bigger font gets a bigger box rather than
+  // squeezed glyphs (fitText below measures against the same numbers)
+  const FS = treeFontSize(), BEAD_W = 134 * FS / 13, BEAD_H = 34 * FS / 13,
+        ROW_H = 118 * FS / 13, GAP_X = 18 * FS / 13, PAD_X = 40 * FS / 13,
+        PAD_Y = 34 * FS / 13, GUT = 60 * FS / 13;
   // 宝塔式: one row per generation, 始祖 at the top and each generation below its father's
   const row = {}, genList = {}, rowOf = {};
   order.forEach(id => {
@@ -453,7 +504,7 @@ function renderTree(host, k){
   const placeNode = id => {
     if(xOf[id] != null) return;
     const g = sc.byId[id].gen || 1;
-    const kids = (sc.kids[id] || []).filter(k => sc.byId[k] != null);
+    const kids = kidsOf(id);
     kids.forEach(placeNode);
     if(kids.length){
       const a = kids.map(k => xOf[k]);
@@ -463,13 +514,13 @@ function renderTree(host, k){
       slot[g] = xOf[id] + BEAD_W + GAP_X;
     }
     // 配 beads sit beside their husband/wife and take their own room in the row
-    (sc.spouses[id] || []).forEach((s, j) => {
+    spousesOf(id).forEach((s, j) => {
       if(xOf[s] != null) return;
       xOf[s] = xOf[id] + (j + 1) * (BEAD_W + GAP_X);
       slot[g] = Math.max(slot[g] || 0, xOf[s] + BEAD_W + GAP_X);
     });
   };
-  sc.roots.forEach(placeNode);
+  sc.roots.filter(id => drawn[id]).forEach(placeNode);
   order.forEach(id => { if(xOf[id] == null){ xOf[id] = slot[sc.byId[id].gen || 1] || 0;
                                              slot[sc.byId[id].gen || 1] = xOf[id] + BEAD_W + GAP_X; } });
   const repack = g => {
@@ -501,8 +552,8 @@ function renderTree(host, k){
   Object.keys(xOf).forEach(id => { xOf[id] = Math.round(xOf[id] - minX + GUT + PAD_X); });
   const bx = id => xOf[id];
   const y = id => PAD_Y + rowOf[sc.byId[id].gen || 1] * ROW_H;
-  const W = Math.round(maxX - minX) + BEAD_W + PAD_X * 2 + GUT;
-  const H = PAD_Y * 2 + gens.length * ROW_H;
+  const W = Math.round(Math.round(maxX - minX) + BEAD_W + PAD_X * 2 + GUT);
+  const H = Math.round(PAD_Y * 2 + gens.length * ROW_H);
   const parts = [];
   gens.forEach(g => {
     const yy = PAD_Y + rowOf[g] * ROW_H;
@@ -553,34 +604,48 @@ function renderTree(host, k){
     const subj = sc.isSubj(n) ? n.subj : 0;
     const cls = subj ? 'bead subj' : (isSpouse ? 'bead kin' : 'bead');
     const note = isSpouse ? (n.spouse_word || '配') : (subj ? '' : (n.note || ''));
-    const tog = (sc.kids[id] || []).length ? (collapsed[id] ? '▶' : '▼') : '';
+    // ▼ marks a bead whose descendants are drawn, ▶ one whose branch is closed
+    const tog = (sc.kids[id] || []).length ? (kidsOf(id).length ? '▼' : '▶') : '';
     const nm = (subj ? SUBJ_NUM[subj] + ' ' : '') + (n.name || '');
     const sub = [lifeSpan(n), note].filter(Boolean).join(' · ');
     parts.push('<g class="' + cls + '" data-id="' + id + '"><title>' + esc(n.label || n.name) + '</title>'
       + '<rect x="' + x + '" y="' + yy + '" width="' + BEAD_W + '" height="' + BEAD_H + '" rx="4"/>'
-      + '<text x="' + (x + BEAD_W / 2) + '" y="' + (yy + 13) + '"'
-      + fitText(nm, BEAD_W - 12, 13) + '>' + esc(nm) + '</text>'
-      + '<text class="yr" x="' + (x + BEAD_W / 2) + '" y="' + (yy + 26) + '"'
-      + fitText(sub, BEAD_W - 22, 10) + '>' + esc(sub) + '</text>'
+      + '<text x="' + (x + BEAD_W / 2) + '" y="' + (yy + FS) + '"'
+      + fitText(nm, BEAD_W - 12, FS) + '>' + esc(nm) + '</text>'
+      + '<text class="yr" x="' + (x + BEAD_W / 2) + '" y="' + (yy + FS * 2) + '"'
+      + fitText(sub, BEAD_W - 22, FS * 0.77) + '>' + esc(sub) + '</text>'
       + (tog ? '<text class="tog" x="' + (x + BEAD_W - 9) + '" y="' + (yy + BEAD_H / 2) + '">' + tog + '</text>' : '')
       + '</g>');
   });
   const chain = (TREE.chain || []).slice(0, k);
   const bar = '<div class="tree-bar">'
     + '<span class="key red"><i></i>传主传承</span><span class="key"><i></i>父子相承</span>'
-    + '<span>本图 ' + sc.nodes.length + ' 人 · 传主 ' + chain.length + ' 位</span>'
+    + '<span>本图 ' + order.length + ' / ' + sc.nodes.length + ' 人 · 传主 ' + chain.length + ' 位'
+    + ' · 字号 ' + FS + 'px</span>'
     + '<button data-z="out">缩小</button><button data-z="in">放大</button>'
     + '<button data-z="fit">原大</button><button data-z="open">全开</button>'
+    + '<button data-z="def">默认视图</button>'
     + '<button data-z="chain">只留传主</button>'
+    + '<button data-z="fs-">A-</button><button data-z="fs+">A+</button>'
     + '</div>';
-  host.innerHTML = bar + '<div class="tree-scroll" style="max-height:82vh">'
+  host.innerHTML = bar + '<div class="tree-scroll">'
     + '<svg xmlns="http://www.w3.org/2000/svg" width="' + Math.round(W * z) + '" height="'
-    + Math.round(H * z) + '" viewBox="0 0 ' + W + ' ' + H + '">' + parts.join('') + '</svg></div>';
+    + Math.round(H * z) + '" viewBox="0 0 ' + W + ' ' + H + '" font-size="' + FS + '">'
+    + parts.join('') + '</svg></div>';
   host.querySelectorAll('.bead').forEach(el => {
     el.onclick = () => {
       const id = el.getAttribute('data-id');
-      if(!(sc.kids[id] || []).length) return;
-      collapsed[id] = collapsed[id] ? 0 : 1;
+      const kids = sc.kids[id] || [];
+      if(!kids.length) return;
+      // One click opens or closes the whole branch below the bead, so a line is revealed in one
+      // go instead of one generation at a time
+      const open = !kidsOf(id).length;
+      const stack = kids.slice();
+      while(stack.length){
+        const x = stack.pop();
+        collapsed[x] = open ? 0 : 1;
+        (sc.kids[x] || []).forEach(c => stack.push(c));
+      }
       renderTree(host, k);
     };
   });
@@ -599,7 +664,10 @@ function renderTree(host, k){
       else if(a === 'out') host._zoom = Math.max(0.45, z - 0.15);
       else if(a === 'fit') host._zoom = 1;
       else if(a === 'open'){ sc.nodes.forEach(n => { collapsed[n.id] = 0; }); }
-      else if(a === 'chain'){ sc.nodes.forEach(n => { collapsed[n.id] = (!sc.isSubj(n) && !sc.redNodes[n.id]) ? 1 : 0; }); }
+      else if(a === 'def'){ sc.nodes.forEach(n => { collapsed[n.id] = defaultOpen(sc, n) ? 0 : 1; }); }
+      else if(a === 'chain'){ sc.nodes.forEach(n => { collapsed[n.id] = (sc.isSubj(n) || sc.redNodes[n.id]) ? 0 : 1; }); }
+      else if(a === 'fs-') setTreeFont(FS - 1);
+      else if(a === 'fs+') setTreeFont(FS + 1);
       renderTree(host, k);
     };
   });
@@ -615,6 +683,7 @@ function showTree(){
   document.getElementById('meta-line').textContent = '全族家谱 ｜ 宝塔式世系图';
   document.getElementById('tabs').innerHTML = '';
   document.getElementById('tree-btn').classList.add('active');
+  document.body.classList.add('tree-mode');
   renderTree(stage.querySelector('.tree-host'), k);
   tocEl.innerHTML = '<div class="toc-root">家谱</div>';
   if(TREE.fanli){
