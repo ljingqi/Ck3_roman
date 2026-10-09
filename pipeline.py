@@ -19,6 +19,7 @@ Usage:
   python pipeline.py migrate            # move legacy caches under output/<house>/data/, rebuild
 """
 import gzip
+import atexit
 import hashlib
 import json
 import lzma
@@ -410,6 +411,67 @@ def update_cache_index(path, cache):
         save_caches_index(dirpath, index)
 
 
+# Background cache writes (v117 丙-3a): writing a 267 MB cache costs ~20 s on the merge path
+# (`save_cache`), while the next save's melt — rakaly unpack plus parse — is minutes away, so the
+# write moves to a thread. Correctness rests on one rule: every read-modify-write of a cache file
+# flushes the pending write of that path first, so no version can be lost. `cl.save_cache` already
+# writes through a per-path mutex and a unique temp name, and a process killed inside the window
+# only loses the newest cache version, which the next catch-up re-merges from the melt on disk.
+_SAVE_THREADS = {}          # absolute path -> (thread, [exception])
+_SAVE_PENDING_LOCK = threading.Lock()
+
+
+def flush_saves(path=None):
+    """Wait for pending background cache writes (all of them, or one path) and re-raise their errors."""
+    want = os.path.abspath(path) if path else None
+    while True:
+        with _SAVE_PENDING_LOCK:
+            items = [(p, v) for p, v in _SAVE_THREADS.items()
+                     if want is None or p == want]
+        if not items:
+            return
+        for p, (t, errs) in items:
+            t.join()
+            with _SAVE_PENDING_LOCK:
+                _SAVE_THREADS.pop(p, None)
+            if errs:
+                raise errs[0]
+
+
+def save_cache_async(path, cache):
+    """Write a cache in a background thread; the next flush of this path reports its errors."""
+    path = os.path.abspath(path)
+    flush_saves(path)
+    errs = []
+    t = threading.Thread(target=_write_cache, args=(path, cache, errs),
+                         daemon=True, name="cache-write")
+    with _SAVE_PENDING_LOCK:
+        _SAVE_THREADS[path] = (t, errs)
+    t.start()
+    return path
+
+
+def _write_cache(path, cache, errs):
+    """Body of a cache write: persist the file, then its index entry (size+mtime are read after)."""
+    try:
+        cl.save_cache(cache, path)
+        update_cache_index(path, cache)
+    except Exception as e:
+        errs.append(e)
+
+
+def save_cache_now(path, cache):
+    """Write a cache on the calling thread, after any pending write of the same file."""
+    path = os.path.abspath(path)
+    flush_saves(path)
+    cl.save_cache(cache, path)
+    update_cache_index(path, cache)
+    return path
+
+
+atexit.register(flush_saves)   # a clean exit never drops a cache write in flight
+
+
 def all_caches(cfg, meta_only=False, playthrough_id=None):
     """All player caches as {(player_id, playthrough_id): (path, cache or metadata)}. The tuple key
     keeps caches of one id in different campaigns apart (ids are reused across campaigns), while
@@ -610,9 +672,16 @@ def session_data_path(cfg, cache, folder=None):
 def save_session_cache(cfg, cache, continue_mode=False):
     """Write the cache into its session folder and persist the folder binding. bio_decades and
     bio_generated are merged from disk first, so flags set by the background biography thread
-    between this read and write are not lost and a decade cannot run twice."""
+    between this read and write are not lost and a decade cannot run twice.
+
+    The write itself runs in the background (see `save_cache_async`): it costs ~20 s for a 267 MB
+    cache and nothing reads the file until the next save is merged."""
     folder = ensure_output_folder(cfg, cache, continue_mode)
     path = session_data_path(cfg, cache, folder)
+    try:
+        flush_saves(path)
+    except Exception as e:
+        llm.log(f"  [缓存] 上一次后台写盘失败: {e}")
     try:
         disk = cl.load_cache(path)
         bd = set(disk.get("bio_decades") or []) | set(cache.get("bio_decades") or [])
@@ -621,8 +690,7 @@ def save_session_cache(cfg, cache, continue_mode=False):
             cache["bio_generated"] = True
     except Exception:
         pass
-    cl.save_cache(cache, path)
-    update_cache_index(path, cache)
+    save_cache_async(path, cache)
     return path
 
 
@@ -1002,7 +1070,7 @@ def _backfill_tail_deaths(cfg, cache):
         path = find_cache_path(cfg, cache.get("player_id"),
                                cache.get("playthrough_id"))
         if path:
-            cl.save_cache(cache, path)
+            save_cache_now(path, cache)
         llm.log(f"  [终传回填] 尾年死者死亡记录 {n} 条写入 "
                 f"{cache.get('output_folder') or cache.get('player_id')}")
     return n, melt
@@ -1134,7 +1202,7 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
         cache["output_folder"] = house
         path = find_cache_path(cfg, cache.get("player_id"), cache.get("playthrough_id"))
         if path:
-            cl.save_cache(cache, path)
+            save_cache_now(path, cache)
     try:
         import htmlview
         page = htmlview.rebuild_folder(cfg.get("output_dir", ""), house)
@@ -1172,6 +1240,8 @@ def _process_save(cfg, save, continue_mode=False):
         melt_pt = melt.get("playthrough_id")
         # Filter by campaign: player ids are reused, and without it an old campaign's cache loads.
         path0 = find_cache_path(cfg, player_id, melt_pt)
+        if path0:
+            flush_saves(path0)   # a background write of the same file must land before this read
         cache = cl.load_cache(path0 or "", fresh=True)  # an independent copy for extraction
         # Last gate: a campaign that still disagrees rebuilds the cache empty, so no memory or title
         # history of the old campaign enters the new one.
@@ -1410,6 +1480,7 @@ def _cross_check_deaths(cfg, melt, current_player):
             if cl.date_key(dd.get("date")) <= cl.date_key(meta.get("last_date") or "0.0.0"):
                 continue
             # everything above came from the index; the identity test needs the record itself
+            flush_saves(path)
             prev = cl.load_cache(path)
             rec = (prev.get("characters") or {}).get(str(cid)) or {}
             cached_name = rec.get("name_zh") or rec.get("name_full") or ""
@@ -1431,8 +1502,7 @@ def _cross_check_deaths(cfg, melt, current_player):
                       if isinstance(e, dict) and isinstance(e.get("character"), int)]
             if _chain:
                 prev["played_legacy"] = _chain
-            cl.save_cache(prev, path)
-            update_cache_index(path, prev)
+            save_cache_now(path, prev)
             llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 死于 {dd.get('date')}, "
                     f"原因 {dd.get('reason')} — 待生成终传")
             break
@@ -1544,6 +1614,7 @@ def _cross_check_reign_ends(cfg, melt, current_player):
                 continue
             if cl.date_key(succ_date) <= cl.date_key(meta.get("last_date") or "0.0.0"):
                 continue
+            flush_saves(path)
             prev = cl.load_cache(path)
             rec = (prev.get("characters") or {}).get(str(cid)) or {}
             cached_name = rec.get("name_zh") or rec.get("name_full") or ""
@@ -1562,8 +1633,7 @@ def _cross_check_reign_ends(cfg, melt, current_player):
             }
             # copy the succession chain into the previous cache, as on the death path
             prev["played_legacy"] = [{"cid": c_, "date": d_} for c_, d_ in rows]
-            cl.save_cache(prev, path)
-            update_cache_index(path, prev)
+            save_cache_now(path, prev)
             llm.log(f"  [更替] 前代玩家 {cid} ({cached_name}) 在位终于 {succ_date}，"
                     f"非死亡（{_REIGN_END_WORD.get(kind, '让位')}），"
                     f"后任 {succ_cid} — 待生成终传")
@@ -1779,10 +1849,10 @@ def _bio_worker_loop(cfg):
                 out = generate_bio(cfg, cache, continue_mode=True)  # background resolves by binding
                 if out:
                     out_path, _ = out
+                    flush_saves(path)
                     cur = cl.load_cache(path, fresh=True)  # an independent copy for the write
                     cur["bio_generated"] = True
-                    cl.save_cache(cur, path)
-                    update_cache_index(path, cur)
+                    save_cache_now(path, cur)
                     llm.log(f"终传已生成: {out_path}")
             elif kind == "decade":
                 if cache.get("player_death") or _reign_end(cache):
@@ -1793,10 +1863,10 @@ def _bio_worker_loop(cfg):
                 out = generate_bio(cfg, cache, decade=decade, continue_mode=True)  # by binding
                 if out:
                     out_path, _ = out
+                    flush_saves(path)
                     cur = cl.load_cache(path, fresh=True)
                     cur.setdefault("bio_decades", []).append(decade)
-                    cl.save_cache(cur, path)
-                    update_cache_index(path, cur)
+                    save_cache_now(path, cur)
                     llm.log(f"十年传记已生成 (第{decade}个十年): {out_path}")
         except Exception as e:
             # The catch-all also logs the last traceback frames: `str(e)` alone leaves an
@@ -1897,9 +1967,9 @@ def step_watch(cfg, continue_mode=False):
     # Startup performs no localization check and rebuilds no table: tables are built by hand
     # (build-tables), and an outdated one only prints a line when loaded lazily. The baseline order is
     # unchanged (baseline first) so saves written during startup are not missed.
-    # Cold melts are archived in the background every 10 minutes; a continue run catches up in bursts,
-    # so its archiving thread waits for _catchup and never competes with xz preset 6 for core and disk,
-    # while watch starts archiving immediately.
+    # Cold melts are archived in the background every 10 minutes, on the current campaign only and at
+    # lzma preset 3 (v117 丙-5); a continue run catches up in bursts, so its archiving thread waits for
+    # _catchup and stays off the merge loop's core and disk, while watch starts archiving immediately.
     if not continue_mode:
         _ensure_compact_worker(cfg)
     llm.log("监控存档中 (只处理本程序启动后保存的新存档)...")
@@ -2328,13 +2398,23 @@ def step_index_melts(cfg):
     llm.log(f"归档完成: 新建 {built} 份, 已有 {skipped} 份, 失败 {failed} 份")
 
 
-def _compress_file(path, codec="xz", out_path=None):
+# Archiving CPU budget (v117 丙-5): preset 3 compresses a melt in roughly a third of preset 6's time
+# for a few percent more bytes, and the background archiver shares CPU and disk with the merge loop.
+# config.compact_lzma_preset overrides it; a manual `compact` run uses the same value.
+_LZMA_PRESET = 3
+# The background archiver works on the campaign being played only, and on at most this many of its
+# newest melts per pass, so those older campaigns' archives no longer load the machine for 20-35 min.
+_COMPACT_BG_MELTS = 3
+
+
+def _compress_file(path, codec="xz", out_path=None, preset=None):
     """Archive a cold melt or sidecar: atomic write plus a round-trip sha1 check, deleting the source
     only on success; a path already ending in `.gz`/`.xz` comes back as is unless it is migrated.
 
-    The default codec xz (lzma preset 6) shrinks a 244 MiB melt from 37.1 MB with gzip to 22.8 MB, at
-    46 s to compress and 1.22 s to decompress. The round-trip check is not optional, because these melts
-    are the only copy of 60 years of saves: a mismatch removes the partial file and raises."""
+    The default codec xz (lzma preset `_LZMA_PRESET`) shrinks a 244 MiB melt from 37.1 MB with gzip to
+    22.8 MB at preset 6, which costs 46 s to compress and 1.22 s to decompress. The round-trip check is
+    not optional, because these melts are the only copy of 60 years of saves: a mismatch removes the
+    partial file and raises."""
     p = str(path)
     low = p.lower()
     if out_path is None:
@@ -2346,10 +2426,11 @@ def _compress_file(path, codec="xz", out_path=None):
         return out
     tmp = out + ".tmp"
     use_xz = str(codec).lower() == "xz"
+    lvl = _LZMA_PRESET if preset is None else int(preset)
     h_in = hashlib.sha1()
     try:
         with open(p, "rb") as fi:
-            opener = (lzma.open(tmp, "wb", preset=6) if use_xz
+            opener = (lzma.open(tmp, "wb", preset=lvl) if use_xz
                       else gzip.open(tmp, "wb", compresslevel=6))
             with opener as fo:
                 while True:
@@ -2379,7 +2460,7 @@ def _compress_file(path, codec="xz", out_path=None):
     return out
 
 
-def _recompress_file(path, codec="xz"):
+def _recompress_file(path, codec="xz", preset=None):
     """Archive a cold file or sidecar in the target format for the codec migration and delete the source
     on success: plaintext is compressed directly, a `.gz` file is decompressed to a temporary plaintext
     and compressed to `.xz`, and a file already in the target format comes back as is."""
@@ -2392,7 +2473,7 @@ def _recompress_file(path, codec="xz"):
         # Upgrading only: `compact --gz` touches plaintext and never inflates an existing .xz.
         return p
     if not low.endswith((".gz", ".xz")):
-        out = _compress_file(p, codec)
+        out = _compress_file(p, codec, preset=preset)
         if out != p:
             try:
                 os.remove(p)
@@ -2407,7 +2488,7 @@ def _recompress_file(path, codec="xz"):
     try:
         with reader as fi, open(tmp_plain, "wb") as fo:
             shutil.copyfileobj(fi, fo, 8 << 20)
-        got = _compress_file(tmp_plain, codec, out_path=out)
+        got = _compress_file(tmp_plain, codec, out_path=out, preset=preset)
     finally:
         try:
             os.remove(tmp_plain)
@@ -2435,16 +2516,33 @@ def _compact_keep_paths(cfg):
     return keep
 
 
-def step_compact(cfg, codec=None, quiet_if_idle=True):
+def _compact_scope(melts, scope):
+    """Melt list of one archiving pass.
+
+    `current` narrows the sweep to the campaign of the newest melt — the one being played — and to its
+    newest `_COMPACT_BG_MELTS` melts, so the background archiver stays off the other campaigns' files
+    instead of loading the machine for 20-35 minutes. `all` keeps the full sweep a manual
+    `compact` run wants."""
+    if scope != "current" or not melts:
+        return melts
+    folder = melts[-1][0]          # _iter_melts is sorted by date, so the last one is the newest
+    mine = [t for t in melts if t[0] == folder]
+    return mine[-_COMPACT_BG_MELTS:]
+
+
+def step_compact(cfg, codec=None, quiet_if_idle=True, scope="all"):
     """Archive cold melts and memory archive sidecars; safe to run repeatedly.
 
-    quiet_if_idle keeps the console silent when there is nothing to do. The codec defaults to xz (lzma
-    preset 6), overridable through config.compact_codec or `compact --gz`; existing `.gz` archives are
-    recompressed to `.xz` and files already in the target format are skipped, while every reader accepts
-    all three suffixes. Returns (files archived, bytes freed)."""
+    quiet_if_idle keeps the console silent when there is nothing to do. `scope="current"` restricts the
+    pass to the campaign being played (see `_compact_scope`); the manual command uses "all". The codec
+    defaults to xz (lzma preset `_LZMA_PRESET` or config.compact_lzma_preset), overridable through
+    config.compact_codec or `compact --gz`; existing `.gz` archives are recompressed to `.xz` and files
+    already in the target format are skipped, while every reader accepts all three suffixes. Returns
+    (files archived, bytes freed)."""
     codec = (codec or cfg.get("compact_codec") or "xz").lower()
+    preset = cfg.get("compact_lzma_preset")
     want = ".xz" if codec == "xz" else ".gz"
-    melts = _iter_melts(cfg)
+    melts = _compact_scope(_iter_melts(cfg), scope)
     if not melts:
         llm.log("未找到 melt 文件, 无需归档")
         return 0, 0
@@ -2473,7 +2571,7 @@ def step_compact(cfg, codec=None, quiet_if_idle=True):
     for k, p in enumerate(todo, 1):
         try:
             before = os.path.getsize(p)
-            out = _recompress_file(p, codec)
+            out = _recompress_file(p, codec, preset=preset)
         except Exception as e:
             llm.log(f"  [归档失败] {os.path.basename(p)}: {e}")
             continue
@@ -2502,10 +2600,11 @@ _SIDECAR_THREAD = None
 
 def _compact_loop(cfg):
     """Background archiving thread: one pass at startup, then one every 10 minutes, since the
-    previous newest melt turns cold once a newer save is merged."""
+    previous newest melt turns cold once a newer save is merged. The pass stays on the campaign being
+    played, so it never competes with the merge loop across every old campaign."""
     while True:
         try:
-            step_compact(cfg)
+            step_compact(cfg, scope="current")
         except Exception as e:
             llm.log(f"  [归档] 失败: {e}")
         time.sleep(600)
