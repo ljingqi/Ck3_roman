@@ -1115,11 +1115,26 @@ def _backfill_tail_deaths(cfg, cache):
         rec["birth"] = c2.get("birth")
         rec["female"] = bool(c2.get("female"))
         rec["dynasty_house"] = c2.get("dynasty_house")
+        # house/dynasty names and the first house-history point, exactly as a merge writes them, so
+        # the created record is indistinguishable from a merged one (`char_record` leaves them empty
+        # and the merge fills them only on a first sighting)
+        if rec["dynasty_house"] is not None:
+            rec["house_name"] = cl.house_name_zh(melt, rec["dynasty_house"])
+            _did = cl.dynasty_id_of(melt, rec["dynasty_house"])
+            if _did is not None:
+                rec["dynasty_name"] = cl.dynasty_name_zh(melt, _did) or None
+            rec["house_history"] = [{
+                "from": ddate,
+                "house_id": rec["dynasty_house"],
+                "house_name": rec.get("house_name") or "",
+                "dynasty_id": _did,
+                "dynasty_name": rec.get("dynasty_name") or "",
+            }]
         rec["culture"] = c2.get("culture")
         rec["faith"] = c2.get("faith")
-        if rec["culture"]:
+        if rec["culture"] is not None:
             rec["culture_history"] = [{"from": ddate, "culture": rec["culture"]}]
-        if rec["faith"]:
+        if rec["faith"] is not None:
             rec["faith_history"] = [{"from": ddate, "faith": rec["faith"]}]
         rec["death"] = {
             "date": ddate,
