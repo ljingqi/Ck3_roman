@@ -2964,9 +2964,27 @@ def epilogue_menu(cands):
             idx = int(key) - 1
 
 
+def _draft_epilogue_part(msgs, cfg, min_chars, label):
+    """Draft one part of the epilogue. The model sometimes closes a part after a short opening or
+    stops mid-sentence, so a draft below `min_chars` or without a closing mark is redrafted once; the
+    longer draft survives."""
+    best = ""
+    for i in range(2):
+        text = llm.call_deepseek(msgs, cfg).strip()
+        text = llm.normalize_zh_punct(llm.clean_number_spaces(text))
+        if len(text) > len(best):
+            best = text
+        if len(text) >= min_chars and text.rstrip()[-1:] in "。！？…」』）\"'":
+            return text
+        llm.log(f"封档总评{label}第{i + 1}稿偏短或未收尾 ({len(text)} 字, 末句 {text[-24:]}), 重写一次")
+        print(f"  {label}第{i + 1}稿仅 {len(text)} 字且未收尾，重写一次…", flush=True)
+    return best
+
+
 def step_epilogue(cfg, folder=None, force=False):
     """Write the campaign epilogue of one folder: part 1 over the 终传 first chapters, part 2 over the
-    same-dynasty rulers of the newest save. Returns the written path or None."""
+    same-dynasty rulers of the newest save. Returns the written path, None when cancelled or skipped,
+    and False when the requested folder does not exist (the caller turns that into a non-zero exit)."""
     import epilogue as E
     import facts as F
     import style
@@ -2977,7 +2995,7 @@ def step_epilogue(cfg, folder=None, force=False):
         if row is None:
             print(f"没有找到家族文件夹: {folder}")
             print("可选: " + "、".join(c["folder"] for c in cands))
-            return None
+            return False
     else:
         row = epilogue_menu(cands)
         if row is None:
@@ -3016,15 +3034,15 @@ def step_epilogue(cfg, folder=None, force=False):
     cfg1 = dict(cfg)
     cfg1["max_tokens"] = min(cfg.get("max_tokens", 12800), 6000)
     print("撰写第一部分《历代总述》…", flush=True)
-    part1 = llm.call_deepseek(E.part1_messages(ch, rep, row["folder"], rule_block), cfg1).strip()
+    part1 = _draft_epilogue_part(E.part1_messages(ch, rep, row["folder"], rule_block),
+                                 cfg1, 1600, "第一部分")
     cfg2 = dict(cfg)
     cfg2["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)
     table = E.roster_text(rep) or E.roster_others_text(rep)
     print("撰写第二部分《当世同宗诸统治者》…", flush=True)
-    part2 = llm.call_deepseek(
-        E.part2_messages(ch, rep, row["folder"], rule_block, roster_override=table), cfg2).strip()
-    part1 = llm.normalize_zh_punct(llm.clean_number_spaces(part1))
-    part2 = llm.normalize_zh_punct(llm.clean_number_spaces(part2))
+    part2 = _draft_epilogue_part(
+        E.part2_messages(ch, rep, row["folder"], rule_block, roster_override=table),
+        cfg2, 900, "第二部分")
     md = E.assemble(row["folder"], ch, rep, part1, part2, row["pid"])
     with open(out_path, "w", encoding="utf-8", newline="") as fp:
         fp.write(md)
@@ -3097,7 +3115,10 @@ def main():
         elif "--folder" in sys.argv:
             i = sys.argv.index("--folder")
             folder = sys.argv[i + 1] if i + 1 < len(sys.argv) else None
-        step_epilogue(cfg, folder=folder, force="--force" in sys.argv)
+        _epilogue_result = step_epilogue(cfg, folder=folder, force="--force" in sys.argv)
+        if _epilogue_result is False:
+            # a wrong folder name must fail for a script calling this command
+            raise SystemExit(1)
     else:
         print(__doc__)
 

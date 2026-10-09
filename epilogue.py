@@ -91,7 +91,7 @@ def roster(facts, rank_min=2):
     titles of county tier and above form the main list; camp leaders, barons and the untitled are kept
     in `others` so the caller can widen the report when `rows` comes out short.
     """
-    as_of = facts.as_of
+    as_of = facts.as_of or facts.cache.get("last_date")
     pid = facts.cache.get("player_id")
     house = facts._house_of_cid(pid)
     dyn = facts.cache.get("dynasty_id") or (cl.dynasty_id_of(facts.melt, house) if house else None)
@@ -156,13 +156,28 @@ def roster_text(rep):
     return "\n".join(_roster_line(r) for r in rep["rows"])
 
 
+def others_titled(rep, limit=24):
+    """The sub-county holders worth printing: those with a title of any kind, capped at `limit`."""
+    other = [r for r in rep["others"] if r["rank"] or r["title"]]
+    return other[:limit], len(other)
+
+
 def roster_others_text(rep, limit=24):
     """Untitled or sub-county holders, for the fallback when the landed list is short."""
-    other = [r for r in rep["others"] if r["rank"] or r["title"]]
-    out = [_roster_line(r) for r in other[:limit]]
-    if len(other) > limit:
+    other, total = others_titled(rep, limit)
+    out = [_roster_line(r) for r in other]
+    if total > limit:
         out.append(f"（另在世同宗 {len(rep['others']) - limit} 人，多为无地或未受封者）")
     return "\n".join(out)
+
+
+def _strip_lead_headings(text):
+    """Drop the headings the model may open a part with: the assembly writes the part titles."""
+    lines = text.strip().split("\n")
+    i = 0
+    while i < len(lines) and (not lines[i].strip() or lines[i].lstrip().startswith("#")):
+        i += 1
+    return "\n".join(lines[i:]).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -240,11 +255,11 @@ def assemble(folder, ch, rep, part1, part2, pid):
         "",
         "## 一、历代总述",
         "",
-        part1.strip(),
+        _strip_lead_headings(part1),
         "",
         "## 二、当世同宗诸统治者",
         "",
-        part2.strip(),
+        _strip_lead_headings(part2),
         "",
         "---",
         "",
@@ -256,9 +271,10 @@ def assemble(folder, ch, rep, part1, part2, pid):
         body.append(table)
     else:
         body.append("（本存档中同宗在世者皆无领地与头衔）")
-    loose = roster_others_text(rep)
+    loose, n_title = others_titled(rep)
     if loose:
-        body += ["", f"### 其余在世同宗（共 {rep['alive']} 人在世）", "", loose]
+        body += ["", f"### 其余在世同宗（其中有头衔者 {n_title} 人；同宗在世共 {rep['alive']} 人）",
+                 "", roster_others_text(rep)]
     body += ["", f"<!-- 名册依据: {rep.get('dynasty_name') or ''}宗族｜"
                  f"在世 {rep['alive']} 人｜有地者 {len(rep['rows'])} 人 -->", ""]
     return "\n".join(body)
