@@ -2635,6 +2635,37 @@ def player_landed_block(melt, cid, ld=None):
     return block
 
 
+def _merge_seed(cache, chars, player_id):
+    """Characters whose records a merge always keeps: the player, his family, his own house, and
+    every 传主 of this campaign's chain.
+
+    The player/family/house set alone misses a predecessor of ANOTHER branch of the same dynasty
+    (v117 ④c: 44503 belongs to house 12295 洪本家 while the player holds 31062 哈德良波利斯洪, and
+    his record was absent from the merged cache). The genealogy and every predecessor mention are
+    written from `played_legacy`, so each chain member's record has to resolve in this volume; the
+    caller's kinship closure then pulls in his family. `played_legacy` is written just before this
+    is called, from this save's own `played_character.legacy`."""
+    targets = set()
+    if player_id is not None:
+        targets.add(player_id)
+        p = chars.get(str(player_id))
+        if p:
+            for ids in family_of(p).values():
+                targets.update(ids)
+            house = p.get("dynasty_house")
+            if house is not None:
+                for cid, c in chars.items():
+                    if not isinstance(c, dict):  # guard against a "none" entry
+                        continue
+                    if c.get("dynasty_house") == house:
+                        targets.add(int(cid))
+    for e in (cache.get("played_legacy") or []):
+        cid = e.get("cid") if isinstance(e, dict) else None
+        if isinstance(cid, int):
+            targets.add(cid)
+    return targets
+
+
 def extract_snapshot(cache, melt, date_label, _new_deaths=None):
     """Merge one save snapshot into the cache; False when the player does not match.
 
@@ -2751,20 +2782,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             cache["played_legacy"] = _chain
 
     # Target character set: player + house/family + memory participants
-    targets = set()
-    if player_id is not None:
-        targets.add(player_id)
-        p = chars.get(str(player_id))
-        if p:
-            for ids in family_of(p).values():
-                targets.update(ids)
-            house = p.get("dynasty_house")
-            if house is not None:
-                for cid, c in chars.items():
-                    if not isinstance(c, dict):  # guard against a "none" entry
-                        continue
-                    if c.get("dynasty_house") == house:
-                        targets.add(int(cid))
+    targets = _merge_seed(cache, chars, player_id)
 
     def add_participants(owner_id):
         c = chars.get(str(owner_id))
