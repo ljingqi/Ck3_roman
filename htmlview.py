@@ -259,7 +259,7 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
 #tree-btn,#epi-btn{font:inherit;padding:5px 14px;border:1px solid #8f7d55;background:#3a3121;color:var(--bar-ink);border-radius:5px;cursor:pointer}
 #tree-btn.active,#epi-btn.active{background:var(--gold);border-color:var(--gold);color:#211a0c;font-weight:700}
 #tree-btn[disabled]{opacity:.45;cursor:default}
-.tree-host{font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif;background:#fdfaf0;border:1px solid var(--paper-edge);border-radius:3px;margin:14px 0 18px}
+.tree-host{font-family:"HarmonyOS Sans SC","鸿蒙黑体","HarmonyOS Sans","Noto Sans SC","Microsoft YaHei UI","Microsoft YaHei",sans-serif;background:#fdfaf0;border:1px solid var(--paper-edge);border-radius:3px;margin:14px 0 18px}
 .tree-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:8px 12px;border-bottom:1px solid #e4d9bd;background:#f6efdd;font-size:13px;color:var(--ink-soft)}
 .tree-bar button{font:inherit;font-size:13px;padding:3px 10px;border:1px solid #c0ae86;background:#fffdf6;border-radius:4px;cursor:pointer}
 .tree-bar .key{display:inline-flex;align-items:center;gap:5px}
@@ -496,8 +496,9 @@ function setTreeFont(v){
   return fs;
 }
 
-/* A bead starts open when it belongs to the played line, sits on the red succession path, or is the
-   spouse hanging beside one of those (v119); everything else starts closed. */
+/* The played line plus the spouses beside it: the 「传主与配偶」 button narrows the chart to what the
+   v119 default used to be, one branch at a time. The chart itself now opens every clansman (see
+   `renderTree`), so the other branches are on screen without a click. */
 function defaultOpen(sc, n){
   if(sc.isSubj(n) || sc.redNodes[n.id]) return 1;
   const sp = n.spouse_of;
@@ -512,12 +513,14 @@ function renderTree(host, k){
   const collapsed = host._collapsed || (host._collapsed = {});
   if(!host._inited){
     host._inited = 1;
-    sc.nodes.forEach(n => { collapsed[n.id] = defaultOpen(sc, n) ? 0 : 1; });
+    // Every clansman of every branch is on the chart at the start: the family tree is the page the
+    // reader goes to for "who else was in this family", so hiding the cadet branches turned it into a
+    // played-line diagram and the other 分家 looked missing. 「传主与配偶」/「只留传主」 narrow it back.
+    sc.nodes.forEach(n => { collapsed[n.id] = 0; });
   }
   const z = host._zoom || 1;
-  // v119: the canvas is only as wide as what is on screen. A closed bead hides itself and its
-  // descendants, so the default view (the played line plus the spouses beside it) fits one screen
-  // instead of spreading every clansman across 6200px of mostly empty rows.
+  // v119: the canvas takes the full width of the screen (see body.tree-mode), so the wide rows of a
+  // fully opened family need less dragging than they did inside the reading column.
   const order = beadOrder(sc, {}).filter(id => !collapsed[id]);
   const drawn = {};
   order.forEach(id => { drawn[id] = 1; });
@@ -667,8 +670,8 @@ function renderTree(host, k){
     + '<span>本图 ' + order.length + ' / ' + sc.nodes.length + ' 人 · 传主 ' + chain.length + ' 位'
     + ' · 字号 ' + FS + 'px</span>'
     + '<button data-z="out">缩小</button><button data-z="in">放大</button>'
-    + '<button data-z="fit">原大</button><button data-z="open">全开</button>'
-    + '<button data-z="def">默认视图</button>'
+    + '<button data-z="fit">原大</button><button data-z="open">全族</button>'
+    + '<button data-z="def">传主与配偶</button>'
     + '<button data-z="chain">只留传主</button>'
     + '<button data-z="fs-">A-</button><button data-z="fs+">A+</button>'
     + '</div>';

@@ -30,20 +30,23 @@ KEEP_HEADS = """  const __rs = {}; (TREE.red_edges || []).forEach(e => { __rs[e[
 KEEP_SPOUSE = KEEP_HEADS + """
   const __in = {}; keep.forEach(n => { __in[n.id] = 1; });
   (TREE.nodes || []).forEach(n => { if(n.spouse_of != null && __in[n.spouse_of] && !__in[n.id]) keep.push(n); });"""
-# 「全开」: every bead open, so the drawn set is the whole scope (v119's widest state)
-OPEN_ALL_RE = re.compile(r"function defaultOpen\(sc, n\)\{.*?\n\}", re.S)
+# 「传主与配偶」: the narrow state the v119 default used to be — collapse everything `defaultOpen`
+# does not vouch for. The shipped default now opens every clansman, so the narrow variant is measured
+# by patching the init line back.
+NARROW_FROM = "    sc.nodes.forEach(n => { collapsed[n.id] = 0; });"
+NARROW_TO = "    sc.nodes.forEach(n => { collapsed[n.id] = defaultOpen(sc, n) ? 0 : 1; });"
 
 
-def measure(tag, keep_block=None, open_all=False):
+def measure(tag, keep_block=None, narrow=False):
     html = open(PAGE, encoding="utf-8").read()
     if keep_block is not None:
         if KEEP_LINE not in html:
             raise SystemExit("keep line not found — htmlview.py layout changed")
         html = html.replace(KEEP_LINE, keep_block)
-    if open_all:
-        if not OPEN_ALL_RE.search(html):
-            raise SystemExit("defaultOpen not found — htmlview.py layout changed")
-        html = OPEN_ALL_RE.sub("function defaultOpen(sc, n){ return 1; }", html, count=1)
+    if narrow:
+        if NARROW_FROM not in html:
+            raise SystemExit("init line not found — htmlview.py layout changed")
+        html = html.replace(NARROW_FROM, NARROW_TO, 1)
     path = os.path.join(ROOT, "logs", f"v119_tree_{tag}.html")
     open(path, "w", encoding="utf-8").write(html)
     out = subprocess.run([NODE, HARNESS, path], capture_output=True, text=True, encoding="utf-8")
@@ -74,11 +77,11 @@ def measure_fs(fs):
             "view": case["view"], "tog": sum(1 for b in case["beads"] if b["tog"])}
 
 
-rows = [measure("baseline"),
+rows = [measure("默认(全族)"),
         measure_fs(14),
-        measure("open", open_all=True),
-        measure("chain", KEEP_HEADS),
-        measure("chain_spouse", KEEP_SPOUSE)]
+        measure("传主与配偶", narrow=True),
+        measure("只留传主", KEEP_HEADS),
+        measure("传主线+配偶", KEEP_SPOUSE)]
 print(f"{'变体':<14}{'珠子':>6}{'宽':>8}{'高':>7}{'▶钮':>5}   屏幕数@2K(2280px 视口)")
 for r in rows:
     w, h = r["view"]
