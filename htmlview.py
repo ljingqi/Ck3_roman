@@ -283,6 +283,18 @@ code{background:#efe7d3;border-radius:3px;padding:1px 5px;font-family:Consolas,m
 .edge.dashed{stroke:#b3352a;stroke-width:1.6;stroke-dasharray:5 4}
 .spouse-link{fill:none;stroke:#a08a5e;stroke-width:1;stroke-dasharray:2 3}
 .gen-head{font-size:1em;fill:#8a7a55;text-anchor:start}
+/* v119: the 分家 menu. The clan tree carries every branch, and this is where the reader ticks the
+   ones worth drawing; the ticks are kept per family in localStorage. */
+.tree-bar .houses{position:relative}
+.tree-bar .houses>summary{cursor:pointer;color:var(--ink);background:#fffdf6;border:1px solid #c0ae86;border-radius:4px;padding:3px 10px}
+.house-list{position:absolute;left:0;top:140%;z-index:30;background:#fffdf6;border:1px solid #cdbf9d;border-radius:6px;box-shadow:0 8px 22px rgba(60,45,20,.22);padding:8px 10px;max-height:46vh;overflow:auto;min-width:230px;text-align:left}
+.house-list label{display:block;font-size:12px;color:#4a4238;white-space:nowrap;cursor:pointer;padding:1px 0;line-height:1.55}
+.house-list .chip{display:inline-block;width:10px;height:10px;border:1px solid #c2b291;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.house-list .n{color:#8a7a55}
+.house-list .presets{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid #e8dfc8}
+.house-list .presets label{margin-left:2px}
+.house-list button.only{font-size:11px;padding:0 4px;margin-left:5px;border:1px solid #c9b992;background:#fdf9ee;border-radius:3px;cursor:pointer;color:#6f6247}
+.house-list .foot{color:#8a7a55;font-size:11px;margin-top:6px;padding-top:5px;border-top:1px solid #e8dfc8}
 /* v119: the family tree is the one view that wants the whole landscape screen — the essay pages keep
    their 880px measure, the tree drops it and takes whatever the monitor gives. */
 body.tree-mode #wrap{max-width:none}
@@ -407,7 +419,10 @@ const GAP_X = 18, ROW_H = 118, BEAD_W = 134, BEAD_H = 34, PAD_X = 40, PAD_Y = 34
 const GEN_NUM = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
                  '十一', '十二', '十三', '十四', '十五', '十六'];
 const SUBJ_NUM = ['', '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
-                  '⑪', '⑫', '⑬', '⑭', '⑮'];
+                  '⑪', '⑫', '⑬', '⑭', '⑮', '⑯'];
+/* a played line longer than the circled numerals above falls back to the plain number (洪氏2 reached
+   a sixteenth protagonist, v119) */
+function subjNum(i){ return SUBJ_NUM[i] || String(i); }
 
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function yearOf(d){ return d ? String(d).split('.')[0] : ''; }
@@ -507,6 +522,93 @@ function defaultOpen(sc, n){
   return !!(sc.isSubj(p) || sc.redNodes[sp]);
 }
 
+/* v119: the 分家 (house) menu. The clan tree holds every branch of the family, which is far more than
+   one screen; the reader ticks the houses worth drawing instead of every bead being on the canvas at
+   once. A bead's house is the one it last belonged to (`TREE.houses[].id`, `node.house`), the 传主
+   beads stay on the chart whatever is ticked (they are the red spine of the whole page), and the
+   配 beads follow their own checkbox. Ticks are kept per family under localStorage. */
+const HOUSE_TINTS = ['#fffdf6', '#fbf3e2', '#f1f6ea', '#edf4f9', '#f9eef0', '#f3eff9',
+                     '#eef7f2', '#fdf5e5', '#ecf1f7', '#f8f0e7', '#f4f7ec', '#f6eef7'];
+function houseTint(i){ return HOUSE_TINTS[((i % HOUSE_TINTS.length) + HOUSE_TINTS.length)
+                                          % HOUSE_TINTS.length]; }
+function houseTintOf(n){
+  const hs = (TREE && TREE.houses) || [];
+  const i = hs.findIndex(h => String(h.id) === String(n.house));
+  return i < 0 ? '' : houseTint(i);
+}
+function chainHousesOnly(st){
+  st.checked = {};
+  ((TREE && TREE.chain_houses) || []).forEach(k => { st.checked[String(k)] = 1; });
+}
+function houseState(host){
+  if(host._hs) return host._hs;
+  const st = {checked: null, spouses: 0};
+  try{
+    const raw = localStorage.getItem('tree-house-' + ((TREE && TREE.player_id) || ''));
+    if(raw){
+      const o = JSON.parse(raw);
+      if(o && o.checked){ st.checked = o.checked; st.spouses = o.spouses ? 1 : 0; }
+    }
+  }catch(e){}
+  // first visit: the protagonist's own houses, which is where the reader starts reading the family
+  if(!st.checked) chainHousesOnly(st);
+  host._hs = st;
+  return st;
+}
+function saveHouseState(st){
+  try{ localStorage.setItem('tree-house-' + ((TREE && TREE.player_id) || ''),
+                            JSON.stringify({checked: st.checked, spouses: st.spouses})); }catch(e){}
+}
+function houseMenuHtml(hs, open){
+  const hs0 = (TREE.houses) || [];
+  const on = hs0.filter(h => hs.checked[String(h.id)]).length;
+  const iOf = h => hs0.findIndex(x => x.id === h.id);
+  const items = hs0.map(h => '<label><input type="checkbox" data-house="' + h.id + '"'
+    + (hs.checked[String(h.id)] ? ' checked' : '')
+    + '><span class="chip" style="background:' + houseTint(iOf(h)) + '"></span>'
+    + esc(h.label) + ' <span class="n">' + h.n + '</span>' + (h.chain ? ' ★' : '')
+    + '<button class="only" data-h="only-' + h.id + '" title="只看这一房">独</button></label>')
+    .join('');
+  return '<details class="houses"' + (open ? ' open' : '') + '><summary>分家 ' + on + '/'
+    + hs0.length + ' ▾</summary><div class="house-list">'
+    + '<div class="presets"><button data-h="all">全选</button>'
+    + '<button data-h="chain">只留传主房</button><button data-h="none">清空</button>'
+    + '<label><input type="checkbox" data-house="spouse"' + (hs.spouses ? ' checked' : '')
+    + '>含配偶（' + (TREE.spouse_n || 0) + '）</label></div>'
+    + items
+    + '<div class="foot">★ 传主所在房 · 族人 ' + (TREE.clan_total || 0) + ' 人'
+    + ((TREE.clan_orphans || 0) ? ' · 另有 ' + TREE.clan_orphans + ' 人未记父母' : '') + '</div>'
+    + '</div></details>';
+}
+
+/* Which beads the 分家 menu lets through: a bead whose house is ticked, a 传主 on the red spine, or an
+   ancestor needed to hang a drawn cadet house off the trunk (otherwise ticking one 分家 alone would
+   leave it floating with no line up to the founder). 配 beads follow their own switch and their own
+   spouse's fate. Returns {keep, hidden} keyed by id. */
+function treeKeep(sc, hs){
+  const keep = {};
+  sc.nodes.forEach(n => {
+    if(n.spouse_of != null) return;
+    if(sc.isSubj(n) || sc.redNodes[n.id] || n.house == null
+       || hs.checked[String(n.house)]) keep[n.id] = 1;
+  });
+  sc.nodes.forEach(n => {
+    if(!keep[n.id]) return;
+    let p = n.parent, guard = 0;
+    while(p != null && sc.byId[p] && !keep[p] && guard++ < 64){
+      keep[p] = 1;
+      p = sc.byId[p].parent;
+    }
+  });
+  sc.nodes.forEach(n => {
+    if(n.spouse_of == null) return;
+    keep[n.id] = (hs.spouses && keep[n.spouse_of]) ? 1 : 0;
+  });
+  const hidden = {};
+  sc.nodes.forEach(n => { if(!keep[n.id]) hidden[n.id] = 1; });
+  return {keep: keep, hidden: hidden};
+}
+
 function renderTree(host, k){
   if(!TREE || !k){ host.innerHTML = '<div class="tree-bar">（尚无家谱数据）</div>'; return; }
   const sc = scopeOf(k);
@@ -519,9 +621,11 @@ function renderTree(host, k){
     sc.nodes.forEach(n => { collapsed[n.id] = 0; });
   }
   const z = host._zoom || 1;
+  const hs = houseState(host);
+  const hidden = treeKeep(sc, hs).hidden;
   // v119: the canvas takes the full width of the screen (see body.tree-mode), so the wide rows of a
   // fully opened family need less dragging than they did inside the reading column.
-  const order = beadOrder(sc, {}).filter(id => !collapsed[id]);
+  const order = beadOrder(sc, {}).filter(id => !collapsed[id] && !hidden[id]);
   const drawn = {};
   order.forEach(id => { drawn[id] = 1; });
   const kidsOf = id => (sc.kids[id] || []).filter(x => drawn[x]);
@@ -650,13 +754,17 @@ function renderTree(host, k){
     const isSpouse = n.spouse_of != null;
     const subj = sc.isSubj(n) ? n.subj : 0;
     const cls = subj ? 'bead subj' : (isSpouse ? 'bead kin' : 'bead');
+    // each 分家 carries its own tint, so a branch is recognisable at a glance (the menu shows the
+    // same chip beside the house's name)
+    const tint = (subj || isSpouse) ? '' : houseTintOf(n);
     const note = isSpouse ? (n.spouse_word || '配') : (subj ? '' : (n.note || ''));
     // ▼ marks a bead whose descendants are drawn, ▶ one whose branch is closed
     const tog = (sc.kids[id] || []).length ? (kidsOf(id).length ? '▼' : '▶') : '';
-    const nm = (subj ? SUBJ_NUM[subj] + ' ' : '') + (n.name || '');
+    const nm = (subj ? subjNum(subj) + ' ' : '') + (n.name || '');
     const sub = [lifeSpan(n), note].filter(Boolean).join(' · ');
     parts.push('<g class="' + cls + '" data-id="' + id + '"><title>' + esc(n.label || n.name) + '</title>'
-      + '<rect x="' + x + '" y="' + yy + '" width="' + BEAD_W + '" height="' + BEAD_H + '" rx="4"/>'
+      + '<rect x="' + x + '" y="' + yy + '" width="' + BEAD_W + '" height="' + BEAD_H + '" rx="4"'
+      + (tint ? ' style="fill:' + tint + '"' : '') + '/>'
       + '<text x="' + (x + BEAD_W / 2) + '" y="' + (yy + FS) + '"'
       + fitText(nm, BEAD_W - 12, FS) + '>' + esc(nm) + '</text>'
       + '<text class="yr" x="' + (x + BEAD_W / 2) + '" y="' + (yy + FS * 2) + '"'
@@ -667,6 +775,7 @@ function renderTree(host, k){
   const chain = (TREE.chain || []).slice(0, k);
   const bar = '<div class="tree-bar">'
     + '<span class="key red"><i></i>传主传承</span><span class="key"><i></i>父子相承</span>'
+    + houseMenuHtml(hs, host._menu)
     + '<span>本图 ' + order.length + ' / ' + sc.nodes.length + ' 人 · 传主 ' + chain.length + ' 位'
     + ' · 字号 ' + FS + 'px</span>'
     + '<button data-z="out">缩小</button><button data-z="in">放大</button>'
@@ -710,11 +819,41 @@ function renderTree(host, k){
       if(a === 'in') host._zoom = Math.min(2, z + 0.15);
       else if(a === 'out') host._zoom = Math.max(0.45, z - 0.15);
       else if(a === 'fit') host._zoom = 1;
-      else if(a === 'open'){ sc.nodes.forEach(n => { collapsed[n.id] = 0; }); }
-      else if(a === 'def'){ sc.nodes.forEach(n => { collapsed[n.id] = defaultOpen(sc, n) ? 0 : 1; }); }
-      else if(a === 'chain'){ sc.nodes.forEach(n => { collapsed[n.id] = (sc.isSubj(n) || sc.redNodes[n.id]) ? 0 : 1; }); }
+      // 全族 ticks every house and shows the 配 beads with it; the two narrowing buttons fall back to
+      // the protagonist's own houses, so the three of them stay one gesture apart
+      else if(a === 'open'){ sc.nodes.forEach(n => { collapsed[n.id] = 0; });
+                             (TREE.houses || []).forEach(h => { hs.checked[String(h.id)] = 1; });
+                             hs.spouses = 1; saveHouseState(hs); }
+      else if(a === 'def'){ sc.nodes.forEach(n => { collapsed[n.id] = defaultOpen(sc, n) ? 0 : 1; });
+                            chainHousesOnly(hs); hs.spouses = 1; saveHouseState(hs); }
+      else if(a === 'chain'){ sc.nodes.forEach(n => { collapsed[n.id] = (sc.isSubj(n) || sc.redNodes[n.id]) ? 0 : 1; });
+                              chainHousesOnly(hs); hs.spouses = 0; saveHouseState(hs); }
       else if(a === 'fs-') setTreeFont(FS - 1);
       else if(a === 'fs+') setTreeFont(FS + 1);
+      renderTree(host, k);
+    };
+  });
+  // 分家 menu: a tick redraws the chart, and the panel stays open while the reader works through it
+  const menu = host.querySelectorAll('.houses')[0];
+  if(menu){ menu.ontoggle = () => { host._menu = menu.open ? 1 : 0; }; }
+  host.querySelectorAll('.house-list input').forEach(el => {
+    el.onchange = () => {
+      const key = String(el.getAttribute('data-house'));
+      if(key === 'spouse') hs.spouses = el.checked ? 1 : 0;
+      else if(el.checked) hs.checked[key] = 1;
+      else delete hs.checked[key];
+      saveHouseState(hs);
+      renderTree(host, k);
+    };
+  });
+  host.querySelectorAll('.house-list button').forEach(el => {
+    el.onclick = () => {
+      const a = el.getAttribute('data-h');
+      if(a === 'all') (TREE.houses || []).forEach(h => { hs.checked[String(h.id)] = 1; });
+      else if(a === 'chain') chainHousesOnly(hs);
+      else if(a === 'none') hs.checked = {};
+      else if(a && a.indexOf('only-') === 0){ hs.checked = {}; hs.checked[a.slice(5)] = 1; }
+      saveHouseState(hs);
       renderTree(host, k);
     };
   });
@@ -741,7 +880,7 @@ function showTree(){
   }
   (TREE.chain || []).forEach(c => {
     const a = document.createElement('a');
-    a.textContent = SUBJ_NUM[c.i] + ' ' + c.name;
+    a.textContent = subjNum(c.i) + ' ' + c.name;
     a.className = c.i === k ? 'lv2 hl' : 'lv2';
     tocEl.appendChild(a);
   });

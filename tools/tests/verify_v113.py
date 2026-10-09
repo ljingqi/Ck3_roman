@@ -18,7 +18,7 @@ import facts as F  # noqa: E402
 
 FAIL = []
 
-_BADGE = re.compile(r"^[①②③④⑤⑥⑦⑧⑨⑩] ")
+_BADGE = re.compile(r"^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯] ")
 
 TREE_PATH = os.path.join(ROOT, "output", "洪氏2", "data", "genealogy.json")
 
@@ -216,7 +216,25 @@ def t_tree(path=None):
         check(c["i"] == i and nodes[c["id"]]["subj"] == i, f"第{i}位传主序号", c["name"])
         check(nodes[c["id"]]["note"] == "传主", f"第{i}位传主标注", nodes[c["id"]]["note"])
     gens = [c["gen"] for c in t["chain"]]
-    check(gens == sorted(gens), "传主世次不倒退", gens)
+
+    def _is_anc(a, b):
+        """Is `a` an ancestor of `b` along the tree's own parent links?"""
+        seen = set()
+        while b is not None and b not in seen:
+            seen.add(b)
+            if b == a:
+                return True
+            b = nodes.get(b, {}).get("parent")
+        return False
+
+    # The played line's own 世次 is the game's reckoning and never moves (v113 user 2026-10-07), so it
+    # may step back where a junior kinsman took the family over: 洪氏2 has 泰阳·邕州洪 at 八世 right
+    # after 洪智深 at 九世, and the printed 世系 heads carry that step as it stands (v119).
+    back = [(t["chain"][i - 1], gens[i - 1], t["chain"][i], gens[i])
+            for i in range(1, len(gens)) if gens[i] < gens[i - 1]]
+    check(not [b for b in back if _is_anc(b[0]["id"], b[2]["id"])],
+          "传主世次不倒退（回退者皆为旁支承继）",
+          [(b[0]["name"], b[1], b[2]["name"], b[3]) for b in back])
     check(all(n["from_k"] >= 1 for n in t["nodes"]), "每珠有入谱篇次")
     # every non-founder node is placed: a blood node under a parent, an in-law beside a spouse
     for n in t["nodes"]:
@@ -257,8 +275,10 @@ El.prototype.getAttribute = function(){ return null; };
 const byId = {};
 ['stage','meta-line','toc','tabs','char-sel','tree-btn'].forEach(id => { byId[id] = new El(); });
 global.document = { getElementById: id => byId[id] || new El(),
-                   createElement: () => new El(), querySelectorAll: () => [] };
-eval(js + '\nglobalThis.__tree = {renderTree: renderTree, scopeOf: scopeOf, beadOrder: beadOrder, TREE: TREE};');
+                   createElement: () => new El(), querySelectorAll: () => [],
+                   body: new El(), documentElement: new El() };
+eval(js + '\nglobalThis.__tree = {renderTree: renderTree, scopeOf: scopeOf, beadOrder: beadOrder, '
+        + 'treeKeep: treeKeep, houseState: houseState, TREE: TREE};');
 const api = globalThis.__tree;
 function hostFor(k){
   const h = new El();
@@ -282,7 +302,11 @@ function metrics(k){
   const paths = [...s.matchAll(/<path class="([^"]*)" d="([^"]*)"/g)]
     .map(x => ({cls: x[1], d: x[2]}));
   const sv = /viewBox="0 0 ([\d.]+) ([\d.]+)"/.exec(s);
+  /* the 分家 menu's own decision, straight from the page: `treeKeep` is what htmlview renders with,
+     so the test can compare its own rule against the page's instead of re-implementing the geometry */
+  const hk = hostFor(k), kp = api.treeKeep(api.scopeOf(k), api.houseState(hk)).keep;
   return {k: k, bead_count: beads.length, beads: beads, paths: paths,
+          kept: Object.keys(kp).filter(x => kp[x]).map(Number),
           view: sv ? [+sv[1], +sv[2]] : null,
           hosts: (s.match(/class="tree-host"/g) || []).length};
 }
@@ -339,6 +363,10 @@ def t_layout_js(html_path=None):
     if not os.path.exists(p):
         check(False, "阅读页存在", p)
         return
+    # the page source is read before the harness runs: its (very large) output leaves this process in a
+    # state where a later open() of the same multi-megabyte page reports WinError 6 (v119)
+    with io.open(p, encoding="utf-8") as fh:
+        html = fh.read()
     tree = load_tree()
     if not tree:
         check(False, "家谱数据存在", TREE_PATH)
@@ -368,27 +396,42 @@ def t_layout_js(html_path=None):
             if i <= k - 2:
                 red_nodes.add(a)
                 red_nodes.add(b)
-        # the page's default state: only the 传主 and their transmission path stay open
-        # (「传主」 is a role of this piece: `subj` past `k` is still just a son of the previous one)
-        collapsed = {n["id"] for n in tree["nodes"]
-                     if (n["from_k"] or 1) <= k
-                     and not (0 < n["subj"] <= k) and n["id"] not in red_nodes}
+        # The page's default view (v119): the houses ticked in the 分家 menu — the protagonist's own
+        # houses unless the reader changed them — plus the ancestors that hang those houses off the
+        # trunk, with the 配 beads off. htmlview's `keep`/`hidden` pair is the same rule, so the two
+        # must agree (nothing is folded on a first visit: the page opens every ticked house's beads).
+        chain_houses = {str(h) for h in (tree.get("chain_houses") or [])}
+
+        def ticked(n):
+            return (0 < n["subj"] <= k or n["id"] in red_nodes or n.get("house") is None
+                    or str(n.get("house")) in chain_houses)
+
+        keep = {n["id"] for n in tree["nodes"] if n.get("spouse_of") is None and ticked(n)}
+        # close upwards: an ancestor of a kept bead is kept so a lone cadet house stays connected
+        for n in tree["nodes"]:
+            if n["id"] not in keep:
+                continue
+            p, guard = n.get("parent"), 0
+            while p is not None and p in nodes and p not in keep and guard < 64:
+                keep.add(p)
+                p = nodes[p].get("parent")
+                guard += 1
+        # 配 beads are off until 「含配偶」 is ticked, so none of them is drawn on a first visit — the
+        # switch outranks the ancestor closure above, exactly as it does on the page
+        keep = {i for i in keep if nodes[i].get("spouse_of") is None}
+        spouse_keep = set()
+        collapsed = set()
         kids = {}
         for n in tree["nodes"]:
             if n["parent"] is not None and nodes.get(n["parent"]) and not n["spouse_of"]:
                 kids.setdefault(n["parent"], []).append(n["id"])
         in_scope = {n["id"] for n in tree["nodes"] if (n["from_k"] or 1) <= k}
-        child_ids = {c for cs in kids.values() for c in cs}
-        want, stack = set(), sorted(in_scope - child_ids)
-        while stack:
-            x = stack.pop()
-            if x in want:
-                continue
-            want.add(x)
-            if x in collapsed:
-                continue
-            stack.extend(kids.get(x) or [])
-        check(set(beads) == want, f"[k={k}] 默认折叠后可见者吻合", f"{len(beads)} vs {len(want)}")
+        visible = (keep | spouse_keep) & in_scope
+        # the rule above and the page's own `treeKeep` must agree, and the chart must draw exactly the
+        # beads that rule keeps: a hidden house is absent, a lone cadet house still hangs off the trunk
+        check(set(case.get("kept") or []) == visible, f"[k={k}] 分家勾选与页面一致",
+              f"{len(case.get('kept') or [])} vs {len(visible)}")
+        check(set(beads) == visible, f"[k={k}] 默认可见者吻合", f"{len(beads)} vs {len(visible)}")
         # rows: one row per generation, 始祖 on top and each generation below its father's
         ys = {}
         for b in case["beads"]:
@@ -480,7 +523,6 @@ def t_layout_js(html_path=None):
             check(t["opened"] == c["all_open"], f"[k={k}] 传主默认展开", t["opened"])
 
     # a long foreign name is squeezed into the bead instead of spilling over it
-    html = io.open(p, encoding="utf-8").read()
     check("function fitText" in html, "内联长名缩排")
     long_names = [n for n in tree["nodes"] if len(n["name"]) >= 8]
     if long_names:

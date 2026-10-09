@@ -26162,16 +26162,23 @@ def _tree_count_zh(n):
 
 
 def _tree_family(f, chars, cid):
-    """Normalised family links of one character for the tree.
+    """Normalised family links of one character for the tree, from the cache and the final save.
 
     A cache entry carries a normalised `family` dict; a character only the final save knows keeps his
-    links in the melt's raw `family_data`, which is normalised here instead. Both therefore reach the
-    tree in one shape, whatever the record's provenance."""
-    fam = (chars.get(str(cid)) or {}).get("family")
-    if fam:
-        return fam
+    links in the melt's raw `family_data`. Both are read and unioned, so a link one source dropped
+    (a stale cache entry, a father the save never wrote down for him) still reaches the tree."""
+    rec = chars.get(str(cid)) or {}
+    fam = dict(rec.get("family") or {})
     raw = (getattr(f, "_chars", None) or {}).get(str(cid)) or {}
-    return cl.family_of(raw) if raw else {}
+    if not raw:
+        return fam
+    for key, val in cl.family_of(raw).items():
+        cur = fam.get(key)
+        if not cur:
+            fam[key] = val
+        elif isinstance(cur, list) and isinstance(val, list):
+            fam[key] = cur + [x for x in val if x not in cur]
+    return fam
 
 
 def _tree_clan(f, chars, dname, dyn_id, root):
@@ -26420,6 +26427,26 @@ def genealogy_tree(f):
                     spouse_word[x] = "配"
                     break
 
+    # the 配 beads of the clan-wide branches (v119): a 分家's own marriages are how the rest of the
+    # world enters the family, and the reading page's menu asks for them by name. They are drawn only
+    # when that box is ticked, which is why they are marked exactly like the 世系's own in-laws.
+    # Concubine lists stay out here: a 家谱 marks wives, and a thousand 妾 beads would drown the lines.
+    for x in sorted(clan_added):
+        if x not in blood or x in spouse_of:
+            continue
+        fam = _tree_family(f, chars, x)
+        fem = bool(f._is_female(x))
+        for key, word in (("primary_spouse", "配"), ("spouse", "侧室" if fem else "侧夫")):
+            for y in (fam.get(key) or []):
+                if not isinstance(y, int) or y == x or y in node_set:
+                    continue
+                node_set.add(y)
+                from_k[y] = from_k.get(x, 1)
+                kind_of[y] = word
+                gen[y] = gen.get(x, 1)
+                spouse_of[y] = x
+                spouse_word[y] = word
+
     # the other direction: a marriage the game records as matrilineal (入赘) marries an outsider
     # INTO the clan, so his wife is the one who carries the clan's line. He is drawn as a 「赘夫」
     # bead beside her, unless the tree already holds him as a clansman's spouse (v114 user
@@ -26430,7 +26457,7 @@ def genealogy_tree(f):
             continue
         if f._is_female(x) is not True:
             continue
-        fam = (chars.get(str(x)) or {}).get("family") or {}
+        fam = _tree_family(f, chars, x)
         for y in (list(fam.get("primary_spouse") or []) + list(fam.get("spouse") or [])):
             if not isinstance(y, int) or y == x or y in node_set:
                 continue
@@ -26506,6 +26533,16 @@ def genealogy_tree(f):
         rec = chars.get(str(x)) or {}
         is_clan = x not in old_ids
         end_date = _gen_end_date(f, x)
+        # a clan bead enters the chart at the piece whose cutoff first reaches his birth, so an early
+        # piece's chart stays the family of its own day; an unknown birth is present from the start
+        fk = from_k.get(x, 1)
+        if is_clan:
+            b = rec.get("birth") or ""
+            fk = len(dates)
+            for i, d in enumerate(dates):
+                if d and (not b or d >= b):
+                    fk = i + 1
+                    break
         nodes.append({
             "id": x,
             "name": f.name_or(x) or "",
@@ -26516,7 +26553,7 @@ def genealogy_tree(f):
             "sex": 1 if f._is_female(x) else 0,
             "gen": gen.get(x, 1),
             "subj": subject.get(x, 0),
-            "from_k": from_k.get(x, 1),
+            "from_k": fk,
             # why this person is on the tree (「传主」/儿子/正妻/父/族人…) — the bead's subscript
             "note": kind_of.get(x, ""),
             "parent": parent_of.get(x),
