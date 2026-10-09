@@ -7396,6 +7396,35 @@ class Facts:
                 return v
         return ""
 
+    def death_date(self, cid):
+        """Day this character died, from every source the save offers ('' when none is known).
+
+        Order: this volume's own character record → the character's own player cache of this
+        campaign (`player_death`) → the melt's character bucket (`dead_data.date`, which
+        `dead_unprunable` keeps for every dead character).
+
+        A predecessor's record can be missing from the cache altogether: the merge target set keeps
+        the player, his family and his own house, so a same-dynasty predecessor of another branch
+        never enters it (v117 ④: `characters['44503']` is absent from 洪光通's cache while
+        `player_44503.json` and every melt carry 952.1.29). Reading only the cache left
+        `_anchor_date` standing on the death day itself and dropped its "day before death" fold.
+        """
+        if cid is None:
+            return ""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        dd = (rec.get("death") or {}).get("date") or ""
+        if dd:
+            return dd
+        pv = self.campaign.get(int(cid)) if str(cid).isdigit() else None
+        if isinstance(pv, dict) and pv.get("player_id") == int(cid):
+            dd = (pv.get("player_death") or {}).get("date") or ""
+            if dd:
+                return dd
+        c = self._chars.get(str(cid)) if str(cid).isdigit() else None
+        if isinstance(c, dict):
+            return ((c.get("dead_data") or {}).get("date")) or ""
+        return ""
+
     def _anchor_date(self, cid, date=None):
         """Date anchor for office and realm names: an explicit date, else the day before death for a
         character dead inside the biography window, else as_of.
@@ -7404,10 +7433,7 @@ class Facts:
         character's own titles, and a date at or after death folds there too. A character who died
         after as_of counts as living, so a later realm name cannot leak into an early decade.
         """
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        dd = (rec.get("death") or {}).get("date")
-        if not dd and cid == self.cache.get("player_id"):
-            dd = (self.cache.get("player_death") or {}).get("date")
+        dd = self.death_date(cid)
         if date:
             if dd and cl.date_key(date) >= cl.date_key(dd):
                 return _day_before(dd)          # a date at or after death -> standing at death
@@ -25874,7 +25900,8 @@ def _gen_end_date(f, cid):
             v = pv.get(key)
             if isinstance(v, dict) and v.get("date"):
                 return v["date"]
-    return ""
+    # Last resort: the melt knows the death day even when this cache never carried the record.
+    return f.death_date(cid)
 
 
 def _genealogy_gens(f, members):
