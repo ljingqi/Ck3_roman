@@ -3140,6 +3140,36 @@ def _appendix_text(facts):
     events = [e for e in facts.get("timeline") or []
               if any(n and n in e["text"] for n in names)]
     by_day = {}   # (y, m, d) -> {event key: (priority, text)}; d == 0 means "month-granularity row"
+
+    def _add(y, mo, d, body):
+        key = _timeline_event_key(body)
+        if key is None:
+            return
+        cur = by_day.setdefault((y, mo, d), {})
+        prio = _timeline_event_priority(body, pname)
+        old = cur.get(key)
+        if old is None or prio > old[0]:
+            cur[key] = (prio, body)
+
+    # `_pair_war_events` writes the outcome's own date into the declaring row's body
+    # ("…应战；962年7月6日，…战胜…。"), which under a day grid makes the row contradict its own cell.
+    # Such a body becomes two dated events (方案 v121 §2.4(4)).
+    _EMB_DATE_RE = re.compile(r"^([^；;]+)[；;](\d+)年(?:(\d+)月(?:(\d+)日)?)?[，,](.+)$")
+
+    def _split_embedded(y, mo, d, body):
+        """[(y, mo, d, text)] — one entry, or two when the body embeds a second date."""
+        m = _EMB_DATE_RE.match(body)
+        if not m:
+            return [(y, mo, d, body)]
+        head = m.group(1).rstrip("。 \u3000") + "。"
+        out = [(y, mo, d, head)]
+        if m.group(3):
+            out.append((int(m.group(2)), int(m.group(3)),
+                        int(m.group(4)) if m.group(4) else 0, m.group(5)))
+        else:
+            out.append((int(m.group(2)), 1, 1, m.group(5)))
+        return out
+
     for e in events:
         y, mo, d = 0, 0, 0
         try:
@@ -3154,14 +3184,8 @@ def _appendix_text(facts):
         body = re.sub(r"^\d+年\d+月\d+日，?", "", e["text"])
         body = re.sub(r"^\d+年\d+月，?", "", body)
         body = re.sub(r"^\d+年，?", "", body)
-        key = _timeline_event_key(body)
-        if key is None:
-            continue
-        cur = by_day.setdefault((y, mo, d), {})
-        prio = _timeline_event_priority(body, pname)
-        old = cur.get(key)
-        if old is None or prio > old[0]:
-            cur[key] = (prio, body)
+        for (yy, mm, dd, part) in _split_embedded(y, mo, d, body):
+            _add(yy, mm, dd, part)
     if by_day:
         lines.append("")
         lines.append("### 大事年表")
