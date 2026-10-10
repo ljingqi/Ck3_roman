@@ -5047,13 +5047,19 @@ class Facts:
         """The seat word from the game's own name chain, or '' when the chain yields nothing.
 
         `council_seat_word` reads one key per government variant, which cannot express the chain's
-        ordered arms; the chain is what names a Chinese family head's spymaster 提管
-        (`councillor_spymaster_celestial_family_head`) instead of the generic 间谍首脑. The arm's
-        desc is a localization key, so it goes through `clean_loc_value` (v109 §2.1)."""
+        ordered arms; the chain is what names a Japanese marshal 大将 (`japan_feudal`) or 侍
+        (`japan_administrative`) instead of the generic 军事统帅. The arm's desc is a localization
+        key, so it goes through `clean_loc_value` (v109 §2.1).
+
+        The court-chaplain position is excluded: its chain holds a `NOR` inside `rite = { … }`, whose
+        compiled form (`localization.cond_match`, an unmodelled trigger inside a `none` node) matches
+        every scope, and the seat would read 大阿亚图拉 for every realm. That seat's word comes from
+        the clerical appellation instead (see `council_line`), and its generic word 宫廷司祭 is the
+        game's own fallback."""
         if not isinstance(seat, dict) or not self._council_names:
             return ""
         pos = ((self._council_tasks or {}).get("tasks") or {}).get(seat.get("type") or "") or ""
-        if not pos:
+        if not pos or pos == "councillor_court_chaplain":
             return ""
         owner = seat.get("court_owner")
         if not isinstance(owner, int):
@@ -16152,13 +16158,17 @@ class Facts:
         return "；".join(parts)
 
     def trait_history_lines(self, cid):
-        """Trait history: each entry reads 「<trait>（自X年起获得 / 自X年后消失…）」.
+        """Trait history, written by the age the trait was gained: 「63岁获得骨质脆弱」.
 
-        Truncated at as_of, so intervals gained later are dropped, and intervals present at first sight
+        The age replaces the year (v120) because a trait's own onset is what the profile must state
+        outright: the year 944 next to a birth in 880 leaves the model to subtract, and it read a
+        geriatric `age_related_ailment` such as 骨质脆弱 as congenital (see `_age_phrase`). Truncated
+        at as_of, so intervals gained later are dropped, and intervals present at first sight
         (`first=True`, existing before the data start) are omitted because the trait still appears in the
         「为人」 list. Transient condition traits (pregnancy/illness/injury) are excluded: births are carried
-        by the 「添丁进口」 memory, so the history keeps only traits that constitute a record. Dates keep the
-        year only, since snapshot diff dates are all 1 January. Disease traits use the game's contemporary
+        by the 「添丁进口」 memory, so the history keeps only traits that constitute a record. A trait
+        with several intervals writes one clause per interval, each naming the trait. Disease traits
+        use the game's contemporary
         epidemic name (`epidemics.database[*].name`, e.g. 「平原热」 rather than a static 「伤寒」), preferring
         an epidemic touching the character's realm or county and then the latest starting one, so two bouts
         of one disease in different places do not read as a single sentence."""
@@ -16178,26 +16188,27 @@ class Facts:
                     continue
                 if iv.get("first"):
                     continue  # present at first sight — carries no information
-                d_from = self._year_only(iv.get("from"))
-                d_to = self._year_only(iv.get("to"))
                 # Disease traits use the contemporary epidemic name; the name is swapped only at the
                 # first occurrence so one line never mixes two disease names.
-                _dyn = ""
-                if key in _DISEASE_TRAITS and iv.get("from"):
-                    _dyn = _disease_dynamic_name(
-                        self, cid, key, _year_of(iv.get("from")))
+                if not spans and key in _DISEASE_TRAITS and iv.get("from"):
+                    z = _disease_dynamic_name(
+                        self, cid, key, _year_of(iv.get("from"))) or z
+                # Every clause names the trait: with the age leading the clause (「63岁获得骨质脆弱」)
+                # a name-less continuation such as 「40岁获得，51岁后消失」 would no longer read as the
+                # same trait's later interval.
+                nm = z
+                a_from = self._age_phrase(cid, iv.get("from"))
+                a_to = self._age_phrase(cid, iv.get("to"))
                 if iv.get("from") and not iv.get("to"):
-                    spans.append(f"自{d_from}起获得")
+                    spans.append(f"{a_from}获得{nm}")
                 elif iv.get("from") and iv.get("to"):
-                    spans.append(f"自{d_from}起获得，自{d_to}后消失")
+                    spans.append(f"{a_from}获得{nm}，{a_to}后消失")
                 elif iv.get("to"):
-                    spans.append(f"至{d_to}后消失")
-                if _dyn:
-                    z = _dyn
+                    spans.append(f"{a_to}后{nm}消失")
             if spans:
-                # no parentheses: 「诗人自921年起获得」 rather than 「诗人（自921年起获得）」
-                lines.append(z + "；".join(spans))
-        # track level-ups: 「不法之徒·强盗（自872年起）」
+                # no parentheses: 「63岁获得骨质脆弱」 rather than 「骨质脆弱（自921年起获得）」
+                lines.append("；".join(spans))
+        # track level-ups: 「不法之徒·强盗32岁起，38岁益进」
         lines.extend(self.trait_level_history(cid))
         return lines
 
@@ -16214,12 +16225,12 @@ class Facts:
         return TRAIT_ZH.get(key, "")
 
     def trait_level_history(self, cid):
-        """Track level-up history: 「<trait>·<track>（自X年起，Y年益进）」.
+        """Track level-up history, written by age: 「老练的旅行者·漫游者32岁起，38岁益进」.
 
         Diffs the `rec["trait_xp"]` samples: a track crossing its next threshold is recorded once, with
-        as_of truncation. Same source as the trait history and likewise year-only, since yearly
-        snapshots carry no intra-day detail. Level ordinals such as 「进至N阶」 are never written — the
-        game has no such terminology."""
+        as_of truncation. Same source and same age wording as the trait history (v120), because a
+        level-up is dated by the same 1 January snapshots. Level ordinals such as 「进至N阶」 are never
+        written — the game has no such terminology."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         samples = [s for s in (rec.get("trait_xp") or []) if isinstance(s, dict)]
         if not samples:
@@ -16268,15 +16279,30 @@ class Facts:
                 continue
             steps = []
             for i, (lv, frm) in enumerate(rows):
-                yr = self._year_only(frm)
+                age = self._age_phrase(cid, frm)
                 # only the entry year is recorded, never a level ordinal such as 「进至一阶」
-                steps.append(f"自{yr}起" if i == 0 else f"{yr}益进")
+                steps.append(f"{age}起" if i == 0 else f"{age}益进")
             # A single-track trait's track name equals its trait name (「老练的旅行者·老练的旅行者」),
             # so it is not repeated.
             name = f"{base}·{tn}" if len(tracks.get(key) or []) > 1 else base
-            # no parentheses: 「不法之徒·强盗自921年起，924年益进」
+            # no parentheses: 「不法之徒·强盗32岁起，38岁益进」
             lines.append(name + "，".join(steps))
         return lines
+
+    def _age_phrase(self, cid, date):
+        """A snapshot date as the character's age there: 「63岁」; the year alone (「944年」) when the
+        birth date is unknown.
+
+        `_chrono_year_age` needs the full birth date, so day-precision ages are exact. Trait and
+        trait-xp intervals are dated 1 January (`_year_only`), the day of the snapshot that first
+        showed them, so the age is the lowest age at which the change can have happened: 944 against a
+        birth on 880.8.4 reads 63岁 while the game may have granted the trait any time after 63.5岁.
+        The year is the fallback rather than dropping the clause, since a character without a birth
+        date still has a usable record."""
+        age = _chrono_year_age(self._birth_of(cid), date)
+        if age is not None:
+            return "%d岁" % age
+        return self._year_only(date)
 
     @staticmethod
     def _year_only(d):
@@ -16346,9 +16372,12 @@ class Facts:
 
         Resolved from `council_task_manager` + `council_tasks` (a celestial empire uses
         宰相/户部尚书/御史大夫/大将军/礼部尚书; a non-imperial celestial realm 长史/司户/察事/司马/博士;
-        feudal 掌玺大臣/财政总管…). The save stores only task ids, so a seat name comes from
-        `council_tasks.position` plus the government variant key; when no seat can be resolved the
-        result is '' rather than a constant 「御前会议六席」 string."""
+        a Japanese realm 右笔/奉行/大将/目付 under the Soryo government and 別当/家令/侍/目代 under
+        the Ritsuryo one). The word comes from the game's ordered seat-name chain
+        (`council_seat_arm_word`), falling back to the government-variant key when the chain yields
+        nothing — the key alone cannot express the chain and names every seat generically. The save
+        stores only task ids, so a seat name comes from `council_tasks.position` plus that word; when
+        no seat can be resolved the result is '' rather than a constant 「御前会议六席」 string."""
         pid = self.cache.get("player_id")
         if pid is None:
             return ""
@@ -16366,21 +16395,21 @@ class Facts:
             owner = e.get("court_owner")
             if isinstance(owner, int) and owner != pid:
                 continue          # someone else's council, including a spouse's seat
-            word = L.council_seat_word(self.table, self._council_tasks,
-                                       e.get("type") or "", gov, imperial)
+            word = self.council_seat_arm_word(e, pid, self.as_of)
+            if not word:
+                word = L.council_seat_word(self.table, self._council_tasks,
+                                           e.get("type") or "", gov, imperial)
             who = e.get("owner")
             nm = self.person_label(who, date=self.as_of, style="brief") if isinstance(who, int) else ""
             # The court-chaplain seat carries a clerical appellation (the game displays
-            # 「宫廷司祭佛罗伦萨主教卡利斯托」). For a temporal-theocracy faith or a pagan religion the
-            # game delegates the whole seat-name chain to `actual_bishop_title`
-            # (`00_council_positions.txt`), and then the seat name *is* the clerical word — so it
-            # replaces the seat word and yields 「日本和尚忠盛」 rather than 「宫廷司祭日本和尚忠盛」.
+            # 「宫廷司祭佛罗伦萨主教卡利斯托」), and that appellation *is* this seat's office word: a
+            # Japanese Buddhist realm reads 「陆奥和尚本道」, where 「宫廷司祭」 would only repeat the
+            # clerical idea. The generic seat word is kept for the case where no appellation resolves.
             if (e.get("type") or "") in self._CHAPLAIN_SEAT_TASKS \
                     and isinstance(who, int):
                 _ct = self.chaplain_title(who, date=self.as_of)
                 if _ct:
-                    if self._chaplain_seat_is_bishop_title(e, who):
-                        word = ""
+                    word = ""
                     nm = f"{_ct}{nm}" if nm else _ct
             if word and nm:
                 # The office is written directly against the holder's name (「长史延寿」) rather than
@@ -16408,10 +16437,11 @@ class Facts:
     def _chaplain_seat_is_bishop_title(self, seat, who=None):
         """Whether the game delegates this chaplain seat's *name* to `actual_bishop_title`.
 
-        Criterion: resolve the `name = { first_valid = … }` arm list in `common/council_positions` and
-        check whether the first matching arm's desc equals `actual_bishop_title` (the name chain in
-        `00_council_positions.txt` and its delegating arm, whose condition is a temporal-theocracy
-        faith `doctrine_theocracy_temporal` or a pagan religion `rf_pagan`)."""
+        Retained as the reference resolver for that one arm (the seat chain in
+        `00_council_positions.txt` delegates through a temporal-theocracy faith
+        `doctrine_theocracy_temporal` or a pagan religion `rf_pagan`); `council_line` no longer needs
+        it, since the clerical appellation always replaces the seat word. Note that the chain's
+        compiled chaplain arms are themselves unreliable (`council_seat_arm_word`)."""
         pos = ((self._council_tasks or {}).get("tasks") or {}) \
             .get(seat.get("type") or "") or ""
         if not pos or not self._council_names:
@@ -16434,8 +16464,8 @@ class Facts:
     # `localization/simp_chinese/council_l_simp_chinese.yml` under
     # `councillor_court_chaplain_<religion group>_{county,duchy,kingdom,empire}` (Catholic: 伯爵级 =
     # 隶属主教, 公国级 = 主教, 王国级 = 总主教, 帝国级 = 牧首). The place name is the liege's primary
-    # title name, which together with the council seat word yields
-    # 「宫廷司祭托斯卡纳主教卡利斯托」.
+    # title name, and the appellation replaces the seat word (v120): 「陆奥和尚本道」 rather than
+    # 「宫廷司祭陆奥和尚本道」.
     _CHAPLAIN_SEAT_TASKS = ("task_religious_relations",)
     _CHAPLAIN_WORD_RE = re.compile(
         r"^councillor_court_chaplain_(?P<rel>.+?)_"
@@ -16528,9 +16558,14 @@ class Facts:
         faiths_map = maps.get("faiths") or {}
         rel = self.melt.get("religion") or {}
         fid = self._faith_id(liege, d)
-        fe = (rel.get("faiths") or {}).get(str(fid)) or {}
+        # The faith definition comes from `cl.faith_entry`, which reads the top-level
+        # `faiths.database` of a 1.20 save and falls back to `religion.faiths` for older ones: in 1.20
+        # the `religion` section holds only religions / great_holy_wars / holy_sites, so reading the
+        # old path left the religion slot empty and every religion-gated arm failed (a Japanese
+        # Buddhist chaplain then read 主教 from the generic theocrat arm instead of 和尚).
+        fe = cl.faith_entry(self.melt, fid)
         re_ = (rel.get("religions") or {}).get(str(fe.get("religion"))) or {}
-        fkey = str(fe.get("key") or fe.get("tag") or "")
+        fkey = str(fe.get("faith_type") or fe.get("tag") or fe.get("key") or "")
         rkey = str(re_.get("religion_type") or re_.get("tag") or "")
         if fkey and fkey in faiths_map:
             # the faith key is folded into its religion key first, matching the game's faith.religion
@@ -16712,7 +16747,9 @@ class Facts:
         if not word:
             fid = self._faith_id(liege, d)
             rel = self.melt.get("religion") or {}
-            fe = (rel.get("faiths") or {}).get(str(fid)) or {}
+            # 1.20 faiths live in `faiths.database`; the old `religion.faiths` path is empty there (see
+            # `_bishop_scope`).
+            fe = cl.faith_entry(self.melt, fid)
             re_ = (rel.get("religions") or {}).get(str(fe.get("religion"))) or {}
             rel_id = re_.get("religion_type") or re_.get("tag") or ""
             rel_tag = re_.get("tag") or ""

@@ -240,6 +240,18 @@ def group_a():
     for t, gov, imp, want in cases:
         got = L.council_seat_word(table, tasks, t, gov, imp)
         check(f"{t}+{gov}{'(帝国)' if imp else ''} → {want}", got == want, got)
+    # v120: 键名猜测表达不了游戏的臂链，日本政体只能靠臂链取词
+    # （律令制 別当/家令/侍/目代，总领制 右笔/奉行/大将/目付）。
+    print("[A4b] 议会席位臂链取词 (council_name_desc)")
+    for gov, words in (("japan_feudal", ("右笔", "奉行", "大将", "目付")),
+                       ("japan_administrative", ("別当", "家令", "侍", "目代"))):
+        scope = {"tier": 3, "independent": True, "landless": False, "gov_flag": gov,
+                 "is_governor_or_admin_count": False, "chaplain_female": False}
+        got = tuple(L.loc(table, L.council_name_desc(
+            L.council_names(), tasks["tasks"][t], scope))
+            for t in ("task_foreign_affairs", "task_collect_taxes",
+                      "task_train_commanders", "task_disrupt_schemes"))
+        check(f"{gov} 臂链 → {'/'.join(words)}", got == words, got)
 
     print("[A5] 句首主语剥离 / 口粮档 / 健康压力")
     check("剥传主名 + 「的」",
