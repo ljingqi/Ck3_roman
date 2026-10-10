@@ -8350,6 +8350,33 @@ class Facts:
             return tid
         return self._last_high_title_before(cid, date)
 
+    def _title_still_his(self, cid, ivs, anchor):
+        """Whether a tenure is still in his hands at `anchor` — or was on the day he died.
+
+        Two sources of "held": an interval still open at the anchor (`_hold_intervals` folds a loss
+        falling after the anchor), and a tenure that ended only because he died. The second matters
+        because a tenure rebuilt from realm-history snapshots dates its loss to the **next** snapshot
+        — 田所健六 died on 968.12.27 holding 伊贺男爵 (the title record passes it to 田所千 that same
+        day), yet the snapshot fallback ends the tenure on 969.1.1 (方案 v121 §4 追补).
+
+        A title he gave up while alive is covered by neither test. Only the label tail
+        (`_held_landed_title`) reads the death arm: `_former_high_title` keeps the narrower
+        anchor test, because it also styles the children of a dead or deposed parent
+        (`_style_parent_title`), and 「前」 and 「公主」 must not both move for one man.
+        """
+        ao = cl.date_key(anchor) if anchor else None
+        dd = self.death_date(cid)
+        dk = cl.date_key(dd) if dd else None
+        for (g, l, _lt) in ivs:
+            if l is None:
+                return True
+            lk = cl.date_key(l)
+            if ao is not None and lk > ao:
+                return True
+            if dk is not None and lk >= dk:
+                return True
+        return False
+
     def _former_high_title(self, cid, date=None, exclude_tid=None):
         """Highest-tier title the character has **lost** as of `date`; None when there is none.
 
@@ -8360,8 +8387,9 @@ class Facts:
           then"; dropping that test made every rank-1 holder read as an ex-holder (田所健六 held
           伊贺男爵 from 963.1.1 until his death on 968.12.27, yet the lineage printed 前伊贺男爵,
           方案 v121 §4);
-        - baronies (rank 1) are place names, never a title — the same gate `_primary_title_at`
-          applies, so a man is never an "ex-baron" in a chronicle that never calls him a baron."""
+        - baronies (rank 1) are place names, never an office — the same gate `_primary_title_at`
+          applies, so a man is never an "ex-baron" in a chronicle that never calls him a baron. A
+          barony he still holds is not lost material: `_held_landed_title` writes it plainly."""
         best_tid, best_rank, best_gain = None, 0, None
         for tid, ivs in self._hold_intervals(cid, date).items():
             if exclude_tid is not None and tid == exclude_tid:
@@ -8385,16 +8413,27 @@ class Facts:
         return best_tid
 
     def _former_title_text(self, cid, tid, date=None):
-        """Chinese text of a former title: place name at the tenure midpoint plus the ruler word.
+        """Chinese text of a titled tenure: place name at the tenure midpoint plus the ruler word.
+
+        Serves both a title he lost (`前` + this text) and one still in his hands at the anchor
+        (the text alone), so the tenure picked is the one in hand when there is one — a title
+        granted twice would otherwise be read off the stale closed tenure.
 
         Deliberately not the `title_history_names` display name, which stacks into "高昌王国国王"."""
         if tid is None:
             return ""
         gain = None
         loss = None
-        for (g, l, _lt) in (self._hold_intervals(cid, date).get(tid) or []):
-            gain, loss = g, l
-            break
+        ivs = self._hold_intervals(cid, date).get(tid) or []
+        # Prefer the tenure in hand at `date` when there is one — a title granted twice would
+        # otherwise be read off the stale closed tenure. A tid from `_former_high_title` has no such
+        # tenure, so for it this keeps picking the first interval, as before.
+        ao = cl.date_key(date) if date else None
+        in_hand = [iv for iv in ivs
+                   if iv[1] is None or (ao is not None and cl.date_key(iv[1]) > ao)]
+        pick = in_hand[-1] if in_hand else (ivs[0] if ivs else None)
+        if pick is not None:
+            gain, loss = pick[0], pick[1]
         end = date or self.as_of
         mid = self._span_mid(gain, end)
         nm = self._name_at_date(tid, mid) or self._name_at_date(
@@ -8406,6 +8445,30 @@ class Facts:
         if nm and w and not nm.endswith(w):
             return f"{nm}{w}"
         return nm
+
+    def _held_landed_title(self, cid, anchor):
+        """Highest landed title still in his hands at `anchor` → tid, else None.
+
+        The label tail for a man whose only title is a barony. `_primary_title_at` keeps baronies
+        out of the office words (there a baronial title is a place name), so without this tail a
+        baron reads as a bare name: 田所健六 held 伊贺男爵 from 963.1.1 to his death on 968.12.27
+        and the lineage printed just 田所健六 (方案 v121 §4 追补). "Still his" is `_title_still_his`,
+        so the day before death is the right anchor for "the title he died with".
+        """
+        best_tid, best_rank, best_gain = None, 0, None
+        for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
+            if not self._is_landed_title(tid):
+                continue
+            if not self._title_still_his(cid, ivs, anchor):
+                continue
+            rank = self._TT_RANK.get(
+                ((self._lt.get(str(tid)) or {}).get("key") or "")[:2], 0)
+            gains = [g for (g, _l, _lt) in ivs if g]
+            gain = cl.date_key(max(gains, key=cl.date_key)) if gains else None
+            if rank > best_rank or (rank == best_rank and best_gain is not None
+                                    and gain is not None and gain > best_gain):
+                best_tid, best_rank, best_gain = tid, rank, gain
+        return best_tid
 
     # ------------------------------------------------------------------
     # "title + name" assembly — the single place that produces person labels
@@ -8821,7 +8884,10 @@ class Facts:
         current one; the same tid held now and then is not a former title.
 
         All three lookups share one anchor (`_anchor_date`, which folds post-death dates back),
-        or a dead character would lose his current title in favour of a "former" one."""
+        or a dead character would lose his current title in favour of a "former" one.
+        A title still in his hands at the anchor is written with no 「前」, baronies included: a
+        man who died as baron of 伊贺 reads 「伊贺男爵田所健六」, since 「前」 belongs to a title he
+        gave up while alive (`_former_high_title`)."""
         anchor = self._anchor_date(cid, date)
         # With no current office there is no current title, so the most recent high
         # title must not be excluded as if it were one (that would squeeze out a higher
@@ -8843,6 +8909,17 @@ class Facts:
             return self._join_office(cur, nm)
         if cur:
             return self._join_office(cur, nm)
+        # No office word: the title still in his hands at the anchor outranks one he lost, and is
+        # written with no 「前」 — the tail that gives a baron his only title at all.
+        held_tid = self._held_landed_title(cid, anchor)
+        held_rank = 0
+        if held_tid is not None:
+            key = (self._lt.get(str(held_tid)) or {}).get("key") or ""
+            held_rank = self._TT_RANK.get(key[:2], 0)
+        if held_tid is not None and (former_tid is None or held_rank >= f_rank):
+            ht = self._former_title_text(cid, held_tid, anchor)
+            if ht:
+                return self._join_office(ht, nm)
         if former_tid is not None:
             ft = self._former_title_text(cid, former_tid, anchor)
             if ft:

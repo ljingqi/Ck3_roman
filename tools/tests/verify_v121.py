@@ -13,6 +13,8 @@
   §3 骨器：材质后跟「遗骨主人：…」行，含亲属词与死因
   §4 前衔：_former_high_title 只认已失去的头衔（体检见 tools/tests/v121_probe_former.py），
      世系/专栏里不再出现「前伊贺男爵」
+  §5 卒时头衔：仍握在手里的头衔照写、不带「前」（`_held_landed_title`，男爵亦然；
+     体检见 tools/tests/v121_probe_baron.py）
 """
 import json
 import os
@@ -162,8 +164,36 @@ def check_former(snap, tag):
           m.group(0) if m else "")
 
 
+def _stale(snap, fname="facts.py"):
+    """快照是否由**当前**源码落的：`meta.code` 记了各源文件的字节数。
+
+    §5 断言的是本轮新加的收尾（`_held_landed_title`），旧快照当然不满足 —— 对旧快照整组 SKIP，
+    不把「改动前的存量」记成 FAIL。
+    """
+    cur = os.path.getsize(os.path.join(ROOT, fname))
+    got = (((snap.get("meta") or {}).get("code") or {}).get(fname) or [0])[0]
+    return got != cur
+
+
+def check_held(snap, tag):
+    """§5: 卒时/在世仍握在手里的头衔要写出来，且不带「前」。"""
+    surf = _surface(snap)
+    if "田所健六" not in surf:
+        print(f"  SKIP {tag} §5 该快照不含 田所健六")
+        return
+    if _stale(snap):
+        print(f"  SKIP {tag} §5 快照由旧 facts.py 落成（改动前的存量）")
+        return
+    check(f"{tag} §5a 卒时仍握男爵者写「伊贺男爵田所健六」", "伊贺男爵田所健六" in surf)
+    check(f"{tag} §5b 同一人不带「前」", "前伊贺男爵田所健六" not in surf)
+    if "田所千" in surf:
+        check(f"{tag} §5c 在世男爵同样写出「伊贺女男爵田所千」",
+              "伊贺女男爵田所千" in surf)
+
+
 def main():
     snaps = sys.argv[1:] or [
+        os.path.join(ROOT, "output", "田所2", "data", "snap_v121c_72914_final.json"),
         os.path.join(ROOT, "output", "田所2", "data", "snap_v121b_72914_final.json"),
         os.path.join(ROOT, "output", "田所2", "data", "snap_v121_16801324_final.json"),
     ]
@@ -178,6 +208,7 @@ def main():
         check_war(snap, tag)
         check_artifact(snap, tag)
         check_former(snap, tag)
+        check_held(snap, tag)
         print("")
     print("=" * 60)
     print(f"结果: {_N[0]} 条断言，" + ("全部 PASS" if _OK else "存在 FAIL"))
