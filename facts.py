@@ -21755,15 +21755,23 @@ _FEUD_RIVAL_KINDS = ("rival", "grudge", "nemesis")
 
 # Same-month same-type aggregation of routine events: only rows structurally identical apart from
 # one variable name slot (feuds, allies' wars joined, ...).
-# style: duo = "A与B结怨。" two slots; solo = "A助盟友作战。" one slot.
+# style: duo = "A与B结怨。" two slots; solo = "A助盟友作战。" one slot; allies = "{名}随{盟友}出战，对抗{敌手}" .
+#
+# The feud/friend sentences have TWO shapes and both are in production: the short one
+# ("A与B结为好友。") and the rich one, which appends the cause ("A与B结为好友；A与B在…分享了许多顿美味。",
+# the `；` clause being the memory's own description). Matching only the short shape silently killed
+# the rule for 33 of 34 became_friends rows in 田所2/亮四 (方案 v121 §2.3乙), so the pattern tolerates
+# the `；` tail and reads the two name slots from the leading clause.
 _AGG_SPEC = {
-    "became_grudge":    {"pat": r"^(.+?)与(.+?)结怨。$",     "verb": "结怨",     "style": "duo"},
-    "became_rivals":    {"pat": r"^(.+?)与(.+?)结仇。$",     "verb": "结仇",     "style": "duo"},
-    "became_nemesis":   {"pat": r"^(.+?)与(.+?)结为死敌。$", "verb": "结为死敌", "style": "duo"},
-    "became_friends":   {"pat": r"^(.+?)与(.+?)结为好友。$", "verb": "结为好友", "style": "duo"},
+    "became_grudge":    {"pat": r"^(.+?)与(.+?)结怨(?:；.*)?。?$",     "verb": "结怨",     "style": "duo"},
+    "became_rivals":    {"pat": r"^(.+?)与(.+?)结仇(?:；.*)?。?$",     "verb": "结仇",     "style": "duo"},
+    "became_nemesis":   {"pat": r"^(.+?)与(.+?)结为死敌(?:；.*)?。?$", "verb": "结为死敌", "style": "duo"},
+    "became_friends":   {"pat": r"^(.+?)与(.+?)结为好友(?:；.*)?。?$", "verb": "结为好友", "style": "duo"},
     # After the war reconstruction, ally-war rows read "{名}随{盟友}出战，对抗{敌手}[，此役为{战名}]", so the
     # old `^…助盟友作战。$` form no longer matches and aggregation is re-hung on the rich sentence: a
     # batch of call-ups in the same month for the same ally, opponent and war name becomes one row.
+    # A war has two sides, and both sides' call-ups land in the same month, so the bucket is the
+    # (ally, opponent, war name) triple rather than the whole month (方案 v121 §2.4).
     "joined_allys_war": {"pat": r"^(.+?)随(.+?)出战，对抗(.+?)(，此役为(.+?))?。$",
                          "verb": "",  "style": "allies"},
 }
@@ -21798,11 +21806,100 @@ def _agg_line(ym, names, verb, tail):
     return f"{y}年{int(m)}月，{joined}{tail}{verb}。"
 
 
+def _agg_slots(entries, spec, f):
+    """[{entry: (name slots)}] for the entries that match this spec's pattern.
+
+    The date prefix is stripped first (`facts.date` wording), then the pattern is tried. A row that
+    does not match is simply left out of the bucket list and kept verbatim by the caller: the old
+    all-or-nothing gate let ONE odd row (a feud written with a different phrasing, the enemy side of
+    a war) cancel the whole month (方案 v121 §2.3乙)."""
+    out = []
+    pat = spec["pat"]
+    for e in entries:
+        body = e.get("text") or ""
+        d0 = e.get("date")
+        if d0 and f:
+            prefix = f"{f.date(d0)}，"
+            if body.startswith(prefix):
+                body = body[len(prefix):]
+        m = re.match(pat, body)
+        if m:
+            out.append((m.groups(), e))
+    return out
+
+
+def _agg_buckets(spec, rows):
+    """[(bucket key, [entry, …])] — the rows that may be merged together.
+
+    `allies`: one bucket per (ally, opponent, war name). A war has two sides and both sides' call-up
+    rows fall in the same month, so keying on the month alone could never merge anything (方案 v121 §2.4).
+    `duo`: one bucket per shared partner, tried on the second slot first and then on the first, so
+    "one man befriending several people" still collapses while unrelated pairs in the same month do
+    not (each pair carries its own information). `solo`: one bucket holding everything.
+    """
+    style = spec["style"]
+    if style == "allies":
+        out = {}
+        for gs, e in rows:
+            out.setdefault((gs[1], gs[2], gs[4] or ""), []).append(e)
+        return list(out.items())
+    if style == "duo":
+        buckets, rest = [], list(rows)
+        for idx in (1, 0):
+            by = {}
+            for gs, e in rest:
+                by.setdefault(gs[idx], []).append((gs, e))
+            rest = []
+            for k, lst in by.items():
+                if len(lst) >= 2:
+                    buckets.append(((idx, k), [e for _gs, e in lst]))
+                else:
+                    rest.extend(lst)
+        buckets.extend((None, [e]) for _gs, e in rest)
+        return buckets
+    return [(None, [e for _gs, e in rows])] if rows else []
+
+
+def _agg_merged(bkey, ym, spec, typ, entries, f):
+    """Merged record for one bucket, or None when the bucket cannot be summarised.
+
+    `bkey` is the bucket key from `_agg_buckets`: `(idx, shared name)` for `duo`, where idx is the
+    slot the bucket was formed on and every other slot is the one that varies."""
+    gs_list = [gs for gs, _e in _agg_slots(entries, spec, f)]
+    if len(gs_list) != len(entries) or len(gs_list) < 2:
+        return None
+    style = spec["style"]
+    if style == "allies":
+        who = [gs[0] for gs in gs_list]
+        ally, foe, cb = gs_list[0][1], gs_list[0][2], gs_list[0][4] or ""
+        tail = f"随{ally}出战，对抗{foe}"
+        if cb:
+            tail += f"，此役为{cb}"
+        merged = _agg_line(ym, who, "", tail)
+    elif style == "duo":
+        idx = bkey[0]
+        names = [gs[1 - idx] for gs in gs_list]
+        merged = _agg_line(ym, names, spec["verb"], "先后与" + gs_list[0][idx])
+    else:
+        merged = _agg_line(ym, [gs[0] for gs in gs_list], spec["verb"], "")
+    if not merged:
+        return None
+    rec = {"date": ym, "type": typ, "text": merged,
+           "module": entries[0].get("module", "")}
+    if any("own_birth" in e for e in entries):
+        rec["own_birth"] = all(e.get("own_birth") is not False for e in entries)
+    return rec
+
+
 def _merge_same_month_events(events, f=None):
     """Same-month same-type aggregation into one row ("870年4月，甲、乙、丙三人先后与丁结怨。")
     for routine events identical apart from one name slot: saves tokens and keeps the model
     from counting dates one by one. Key events (marriage / death / child / feud / war) keep
-    their exact dates."""
+    their exact dates.
+
+    Buckets are refined per style (see `_agg_buckets`), and rows outside a bucket stay verbatim, so
+    an unmergeable row no longer cancels its whole month. Merged rows carry a month-granularity date
+    (`YYYY.M`), which `biography._appendix_text` prints at the month level."""
     groups = {}
     order = []
     for e in events:
@@ -21821,53 +21918,23 @@ def _merge_same_month_events(events, f=None):
         typ, ym = key
         spec = _AGG_SPEC.get(typ)
         if spec and len(entries) >= 2:
-            pat = spec["pat"]
-            slots = []
-            ok = True
-            for e in entries:
-                body = e["text"]
-                d0 = e.get("date")
-                if d0 and f:
-                    prefix = f"{f.date(d0)}，"
-                    if body.startswith(prefix):
-                        body = body[len(prefix):]
-                m = re.match(pat, body)
-                if not m:
-                    ok = False
-                    break
-                slots.append(m.groups())
-            if ok:
-                merged = None
-                if spec["style"] == "solo":
-                    merged = _agg_line(ym, [s[0] for s in slots],
-                                       spec["verb"], "")
-                elif spec["style"] == "allies":
-                    # same month + ally + opponent + war name: the call-ups for
-                    # one war become a single row
-                    who = [s[0] for s in slots]
-                    allies = {s[1] for s in slots}
-                    foes = {s[2] for s in slots}
-                    cbs = {(s[4] or "") for s in slots}
-                    if len(allies) == 1 and len(foes) == 1:
-                        tail = f"随{next(iter(allies))}出战，对抗{next(iter(foes))}"
-                        if len(cbs) == 1 and next(iter(cbs)):
-                            tail += f"，此役为{next(iter(cbs))}"
-                        merged = _agg_line(ym, who, "", tail)
-                else:
-                    s0 = [s[0] for s in slots]
-                    s1 = [s[1] for s in slots]
-                    if len(set(s1)) == 1:
-                        merged = _agg_line(ym, s0, spec["verb"], "先后与" + s1[0])
-                    elif len(set(s0)) == 1:
-                        merged = _agg_line(ym, s1, spec["verb"], "先后与" + s0[0])
-                if merged:
-                    _rec = {"date": ym, "type": typ, "text": merged,
-                            "module": entries[0].get("module", "")}
-                    if any("own_birth" in e for e in entries):
-                        _rec["own_birth"] = all(e.get("own_birth") is not False
-                                                for e in entries)
-                    out.append(_rec)
+            rows = _agg_slots(entries, spec, f)
+            buckets = _agg_buckets(spec, rows)
+            merged_at, consumed = {}, set()
+            for bkey, blist in buckets:
+                if len(blist) < 2:
                     continue
+                rec = _agg_merged(bkey, ym, spec, typ, blist, f)
+                if rec is None:
+                    continue
+                merged_at[id(blist[0])] = rec
+                consumed.update(id(x) for x in blist[1:])
+            if merged_at:
+                for e in entries:
+                    if id(e) in consumed:
+                        continue
+                    out.append(merged_at.get(id(e), e))
+                continue
         out.extend(entries)
     return _merge_affair_pairs(out, f)
 
