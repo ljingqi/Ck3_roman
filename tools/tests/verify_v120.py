@@ -21,6 +21,7 @@
     & tools\\py.ps1 tools\\tests\\verify_v120.py [快照...]
     （缺省 output/田所2/data/snap_v120_16801324.json）
 """
+import glob
 import json
 import os
 import re
@@ -35,9 +36,12 @@ import localization as L      # noqa: E402
 OK = True
 H2 = os.path.join(ROOT, "output", "田所2")
 DEFAULT = [os.path.join(H2, "data", "snap_v120_16801324_d4.json"),
-           os.path.join(H2, "data", "snap_v120_16801324.json")]
+           os.path.join(H2, "data", "snap_v120_16801324.json"),
+           os.path.join(H2, "data", "snap_v120_38990_d1.json"),
+           os.path.join(H2, "data", "snap_v120_38990_d2.json")]
 # 日本政体应有的席名（键名猜测出的是通用词，见 [2]）
 JP_FEUDAL = ("右笔", "奉行", "大将", "目付")
+JP_ADMIN = ("別当", "家令", "侍", "目代")
 GENERIC = ("掌玺大臣", "财政总管", "军事统帅", "间谍首脑")
 PAREN = re.compile(r"（[^）]{1,24}）")
 AGE_GAIN = re.compile(r"\d+岁获得")
@@ -101,22 +105,28 @@ def group_b(snap_path):
         check("快照存在", False, f"缺 {snap_path}（先跑 tools/tests/snap.py）")
         return
     snap = json.load(open(snap_path, encoding="utf-8"))
-    facts = snap["facts"]
+    meta, facts = snap["meta"], snap["facts"]
     p = facts.get("protagonist") or {}
     council = p.get("council") or ""
     th = p.get("trait_history") or ""
-    if snap["meta"].get("player_id") != 16801324:
-        print(f"  SKIP 田所2 专属断言 (player_id={snap['meta'].get('player_id')})")
+    if meta.get("folder") != "田所2":
+        print(f"  SKIP 田所2 专属断言 (folder={meta.get('folder')})")
         return
-    if not council and not snap["meta"].get("as_of"):
+    surface = snap["shared"] + "".join(
+        f"{m['system']}\n{m['user']}" for m in snap["messages"].values())
+    # 两问都不限于传主本人：全事实面不得再出现通用席名（含他人宫廷的司祭席）
+    hit = [w for w in GENERIC + ("宫廷司祭",) if w in surface]
+    check("全事实面无通用席名", not hit, hit)
+    if not council and not meta.get("as_of"):
         # 终传面的人物档案不带「御前会议」行（该行只在十年篇的档案里），议会断言交给十年快照
-        print("  SKIP 议会断言（终传快照无该行，见 snap_v120_16801324_d4.json）")
+        print("  SKIP 议会断言（终传快照无该行，见十年快照）")
     else:
         check("御前会议行存在", bool(council), council)
-        check("御前会议用总领制臂链词 (右笔/奉行/大将/目付)",
-              all(w in council for w in JP_FEUDAL), council)
-        check("御前会议无通用词",
-              not any(w in council for w in GENERIC), council)
+        # 政体不同席名词不同（总领制 右笔/奉行/大将/目付；律令制 別当/家令/侍/目代），
+        # 但「至多一个例外」的宽松度足以证明整行走的是臂链而不是键名猜测。
+        hit = [w for w in JP_FEUDAL + JP_ADMIN if w in council]
+        check("御前会议用臂链词 (日本政体)", len(hit) >= 3, council)
+        check("御前会议无通用词", not any(w in council for w in GENERIC), council)
         check("司祭为「和尚」", "和尚" in council, council)
         check("司祭无「主教」", "主教" not in council, council)
         check("无「大阿亚图拉」（v87 守卫）", "大阿亚图拉" not in council, council)
@@ -124,10 +134,22 @@ def group_b(snap_path):
     check("特质履历为年龄式", bool(AGE_GAIN.search(th)) and not YEAR_GAIN.search(th), th)
     check("进阶行无年份式", not YEAR_LEVEL.search(th), th)
     check("特质履历无「名词（名词）」括注", not PAREN.search(th), th)
-    surface = snap["shared"] + "".join(
-        f"{m['system']}\n{m['user']}" for m in snap["messages"].values())
     check("提示词面无「自X年起获得」", not YEAR_GAIN.search(surface),
           YEAR_GAIN.findall(surface)[:3])
+
+
+def group_c():
+    """成稿面：重生成后的 output/田所2/*.md 不得再出现通用席名与「生而骨质脆弱」。
+    「军事统帅」不列入（日常语里也讲得通）；「主教」不单列（「天主教」含此二字）。"""
+    print(f"[6] 成稿面 ({os.path.relpath(H2, ROOT)}\\*.md)")
+    files = sorted(glob.glob(os.path.join(H2, "*.md")))
+    check("成稿存在", bool(files), H2)
+    banned = ("宫廷司祭", "掌玺大臣", "财政总管", "间谍首脑", "生而骨质脆弱")
+    for p in files:
+        t = open(p, encoding="utf-8").read()
+        hits = [w for w in banned if w in t] + YEAR_GAIN.findall(t)
+        check(f"{os.path.basename(p)} 无通用席名/无先天写法/无年份式",
+              not hits, hits[:4])
 
 
 def main():
@@ -137,6 +159,8 @@ def main():
         if len(argv) > 1:
             print(f"=== {a} ===")
         group_b(os.path.abspath(a))
+    if "--snap-only" not in sys.argv:
+        group_c()
     print("\n结论: " + ("全部通过" if OK else "有失败项"))
     return 0 if OK else 1
 

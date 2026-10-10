@@ -5082,7 +5082,12 @@ class Facts:
         `council_tasks.position` with the government variant (see `council_line`). This is a
         separate outlet from `_court_positions_of` because the two tables are different: a celestial
         family head's 提管 is the spymaster seat
-        (`councillor_spymaster_celestial_family_head`) and never appears as a court position."""
+        (`councillor_spymaster_celestial_family_head`) and never appears as a court position.
+
+        The court-chaplain seat is labelled with its clerical appellation, exactly as the
+        protagonist's own council line does: the seat word 宫廷司祭 would describe the office but
+        leave the realm priest indistinguishable, while 「山城和尚」 names the man the way the game
+        does."""
         if cid is None:
             return []
         if subject is None:
@@ -5104,7 +5109,12 @@ class Facts:
                 continue
             if e.get("owner") != want:
                 continue
-            word = self.council_seat_arm_word(e, sub, date)
+            if self._is_chaplain_seat(e.get("type")):
+                word = self.chaplain_title(want, date=date)
+            else:
+                word = ""
+            if not word:
+                word = self.council_seat_arm_word(e, sub, date)
             if not word:
                 word = L.council_seat_word(self.table, self._council_tasks, e.get("type") or "",
                                            gov, imperial)
@@ -16167,11 +16177,11 @@ class Facts:
         (`first=True`, existing before the data start) are omitted because the trait still appears in the
         「为人」 list. Transient condition traits (pregnancy/illness/injury) are excluded: births are carried
         by the 「添丁进口」 memory, so the history keeps only traits that constitute a record. A trait
-        with several intervals writes one clause per interval, each naming the trait. Disease traits
-        use the game's contemporary
-        epidemic name (`epidemics.database[*].name`, e.g. 「平原热」 rather than a static 「伤寒」), preferring
-        an epidemic touching the character's realm or county and then the latest starting one, so two bouts
-        of one disease in different places do not read as a single sentence."""
+        with several intervals writes one clause per interval, each naming the trait. Disease traits use
+        the game's contemporary epidemic name (`epidemics.database[*].name`, e.g. 「平原热」 rather than a
+        static 「伤寒」), preferring an epidemic touching the character's realm or county and then the
+        latest starting one, so two bouts of one disease in different places do not read as a single
+        sentence."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
         ao = cl.date_key(self.as_of) if self.as_of else None
@@ -16405,8 +16415,7 @@ class Facts:
             # 「宫廷司祭佛罗伦萨主教卡利斯托」), and that appellation *is* this seat's office word: a
             # Japanese Buddhist realm reads 「陆奥和尚本道」, where 「宫廷司祭」 would only repeat the
             # clerical idea. The generic seat word is kept for the case where no appellation resolves.
-            if (e.get("type") or "") in self._CHAPLAIN_SEAT_TASKS \
-                    and isinstance(who, int):
+            if self._is_chaplain_seat(e.get("type")) and isinstance(who, int):
                 _ct = self.chaplain_title(who, date=self.as_of)
                 if _ct:
                     word = ""
@@ -16466,7 +16475,7 @@ class Facts:
     # 隶属主教, 公国级 = 主教, 王国级 = 总主教, 帝国级 = 牧首). The place name is the liege's primary
     # title name, and the appellation replaces the seat word (v120): 「陆奥和尚本道」 rather than
     # 「宫廷司祭陆奥和尚本道」.
-    _CHAPLAIN_SEAT_TASKS = ("task_religious_relations",)
+    _CHAPLAIN_POSITION = "councillor_court_chaplain"
     _CHAPLAIN_WORD_RE = re.compile(
         r"^councillor_court_chaplain_(?P<rel>.+?)_"
         r"(?P<tier>county|duchy|kingdom|empire)(?P<fem>_female)?$")
@@ -16705,14 +16714,25 @@ class Facts:
         v = L.loc(self.table, k2)
         return v if v and not v.startswith(("$", "[")) else ""
 
+    def _is_chaplain_seat(self, task_type):
+        """Whether a council seat is the court-chaplain one.
+
+        The position is the test, not the task id: `councillor_court_chaplain` holds four tasks
+        (`task_conversion`, `task_culture_minister`, `task_fabricate_claim`,
+        `task_religious_relations`), and matching one id left the other three seats unnamed by their
+        clerical appellation (a 888 realm priest sat on `task_conversion` and stayed 「宫廷司祭」)."""
+        pos = ((self._council_tasks or {}).get("tasks") or {}).get(task_type or "") or ""
+        return pos == self._CHAPLAIN_POSITION
+
     def chaplain_title(self, cid, date=None):
         """Clerical appellation of a court chaplain, e.g. 「托斯卡纳主教」 or 「日本和尚」; '' when unknown.
 
-        Criterion: `cid` holds the court-chaplain seat (`council_task_manager.active[*].type ==
-        task_religious_relations`) of some liege, whose primary title name supplies the place and whose
-        religion group supplies the word. The word comes from the game's order-preserving arm table
-        `GetActualBishopTitle` (`localization.bishop_titles`), first match wins; when that table is missing
-        or matches nothing, the older "religion group × tier" index still supplies a word."""
+        Criterion: `cid` holds the court-chaplain seat (the seat whose task-table position is
+        `councillor_court_chaplain` — see `_is_chaplain_seat`) of some liege, whose primary title name
+        supplies the place and whose religion group supplies the word. The word comes from the game's
+        order-preserving arm table `GetActualBishopTitle` (`localization.bishop_titles`), first match
+        wins; when that table is missing or matches nothing, the older "religion group × tier" index
+        still supplies a word."""
         if cid is None or not self.melt:
             return ""
         act = (self.melt.get("council_task_manager") or {}).get("active") or {}
@@ -16720,7 +16740,7 @@ class Facts:
         for e in act.values():
             if not isinstance(e, dict):
                 continue
-            if (e.get("type") or "") not in self._CHAPLAIN_SEAT_TASKS:
+            if not self._is_chaplain_seat(e.get("type")):
                 continue
             if e.get("owner") == cid:
                 liege = e.get("court_owner")
