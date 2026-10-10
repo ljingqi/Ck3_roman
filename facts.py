@@ -8351,18 +8351,28 @@ class Facts:
         return self._last_high_title_before(cid, date)
 
     def _former_high_title(self, cid, date=None, exclude_tid=None):
-        """Highest-tier lost title tid other than the current one; None when there is none.
+        """Highest-tier title the character has **lost** as of `date`; None when there is none.
 
-        Only landed titles count; camps, estates and offices are not former titles."""
+        Only landed titles count; camps, estates and offices are not former titles. Two tests, both
+        shared with `_primary_title_at`:
+        - a title still in his hands at `date` is NOT a former title. `_hold_intervals` folds a
+          tenure whose loss falls after `date` into an open interval, so `l is None` says "held
+          then"; dropping that test made every rank-1 holder read as an ex-holder (田所健六 held
+          伊贺男爵 from 963.1.1 until his death on 968.12.27, yet the lineage printed 前伊贺男爵,
+          方案 v121 §4);
+        - baronies (rank 1) are place names, never a title — the same gate `_primary_title_at`
+          applies, so a man is never an "ex-baron" in a chronicle that never calls him a baron."""
         best_tid, best_rank, best_gain = None, 0, None
         for tid, ivs in self._hold_intervals(cid, date).items():
             if exclude_tid is not None and tid == exclude_tid:
                 continue
             if not self._is_landed_title(tid):
                 continue
+            if any(_l is None for (_g, _l, _lt) in ivs):
+                continue
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
             rank = self._TT_RANK.get(key[:2], 0)
-            if rank <= 0:
+            if rank <= 1:
                 continue
             for (g, _l, _lt) in ivs:
                 if not g:
@@ -12230,6 +12240,46 @@ class Facts:
                 s = re.sub(r"这是[他她](?=被)", "这是", s)
         return s.rstrip("。") if loc_text_ok(s) else ""
 
+    def _artifact_victim_line(self, cid, manner=None):
+        """「遗骨主人」row for a body-part artifact: whose body the piece came from, how he is
+        related to the subject, and when and of what he died.
+
+        The material sentence names the man and nothing else, and the model then filled the gap with
+        contradictory inventions inside one batch of articles (「列子是健二第三子……以罪诛之」 next to
+        「列子是健二的族侄……因私通外敌被处死」), while the program already holds the truth: the
+        description's `ONCLICK:CHARACTER,<id>` names him, the kinship graph gives 堂姐, the birth and
+        death records give 899.5.20 and 957.9.4, and the death reason gives 忧惧而亡 (方案 v121 §3).
+        `manner` overrides the cause clause (the devouring mod writes `death_execution` for an eaten
+        man, which the bone's own "吃掉" row states better). '' when the man cannot be named."""
+        pid = self.cache.get("player_id")
+        if cid is None or cid == pid:
+            return ""
+        nm = self.name_or(cid, "")
+        if not nm:
+            return ""
+        bits = [nm]
+        rel = ""
+        if pid is not None:
+            for _fn in (self.blood_kin_word_for, self.kin_word_for):
+                try:
+                    rel = _fn(cid, pid) or ""
+                except Exception:                               # noqa: BLE001
+                    rel = ""
+                if rel:
+                    break
+        if rel:
+            bits.append(f"传主的{rel}")
+        birth = self._birth_of(cid)
+        if birth:
+            bits.append(f"{self.date(birth)}生")
+        ddate, reason, killer = self._death_info(cid)
+        if ddate:
+            clause = manner or self.death_clause(cid, date=ddate, reason=reason,
+                                                 killer=killer) or ""
+            bits.append(f"{self.date(ddate)}{clause}" if clause
+                        else f"{self.date(ddate)}亡")
+        return "遗骨主人：" + "，".join(bits) + "。"
+
     def _artifact_text(self, raw, date=None):
         """Artifact name or description → clean Chinese.
 
@@ -12549,11 +12599,24 @@ class Facts:
                         _hname = self.title(_ctid, self.as_of) or ""
             if _hname:
                 lines.append(f"现藏：{_hname}")
+            _is_bone = self._is_devour_bone(a)
             if kind == "part":
                 mat = self._artifact_material(a.get("description"), self.as_of)
                 if mat:
                     lines.append(f"材质：{mat}")
-            _is_bone = self._is_devour_bone(a)
+                # Whose body this is made of: the description's own `ONCLICK:CHARACTER,<id>`, else the
+                # artifact's character list minus the subject (方案 v121 §3).
+                _vid = self._artifact_actor_from_name(a.get("description"))
+                if not isinstance(_vid, int):
+                    _own = self.cache.get("player_id")
+                    _others = [c for c in (a.get("characters") or [])
+                               if isinstance(c, int) and c != _own]
+                    _vid = _others[0] if _others else None
+                if isinstance(_vid, int):
+                    _vl = self._artifact_victim_line(
+                        _vid, manner="被吃掉" if _is_bone else None)
+                    if _vl:
+                        lines.append(_vl)
             entries = []
             for e in reversed(hist):
                 # as_of cut: a decade volume lists only transfers up to that date
