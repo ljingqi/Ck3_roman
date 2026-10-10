@@ -164,8 +164,8 @@ def check_former(snap, tag):
 
 def main():
     snaps = sys.argv[1:] or [
-        os.path.join(ROOT, "output", "田所2", "data", "snap_v121_72914_final.json"),
-        os.path.join(ROOT, "output", "田所2", "data", "snap_v121_16801324_d4.json"),
+        os.path.join(ROOT, "output", "田所2", "data", "snap_v121b_72914_final.json"),
+        os.path.join(ROOT, "output", "田所2", "data", "snap_v121_16801324_final.json"),
     ]
     for path in snaps:
         if not os.path.exists(path):

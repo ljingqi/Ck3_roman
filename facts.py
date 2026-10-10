@@ -12258,6 +12258,13 @@ class Facts:
         if not nm:
             return ""
         bits = [nm]
+        # The father is named as well: a bare kinship word ("传主的堂姐") left the model free to
+        # rewrite it as 妹妹 (田所2 2026-10-10) even while it copied the dates from this very line.
+        # "田所亮一之女" cannot be read as a sister, since the reader can see whose daughter she is.
+        fid = self._father_id(cid)
+        fname = self.name(fid) if fid is not None else ""
+        if fname and fname != nm:
+            bits.append(f"{fname}之{'女' if self._is_female(cid) else '子'}")
         rel = ""
         if pid is not None:
             for _fn in (self.blood_kin_word_for, self.kin_word_for):
