@@ -872,8 +872,14 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         bits.append(p["culture"])
     if p.get("faith"):
         bits.append(f"信{p['faith']}")
+    # Birth date and birth place share ONE bit ("880年8月4日生于平安京"): while the place sat on a bare
+    # line of its own seven rows below, the model stitched the two rows together by hand and wrote
+    # 「生于…，地点是X」/「出生地是X」 (方案 v121 §1).
+    _bp_head = p.get("birth_place") or ""
     if p.get("birth"):
-        bits.append(f"生于{p['birth']}")
+        bits.append(f"{p['birth']}生于{_bp_head}" if _bp_head else f"生于{p['birth']}")
+    elif _bp_head:
+        bits.append(f"生于{_bp_head}")
     if p.get("court_service"):
         bits.append(p["court_service"])
     if p.get("motto"):
@@ -999,19 +1005,15 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         household_rows.extend(_rows)
     lines.extend(_render_household_rows(_rows))
     _hh_end = len(lines)
-    # barony-level places, same source as the assassin article's victim_place; with_death=False drops the place
-    _bp = p.get("birth_place") or ""
+    # Barony-level place of death, same source as the assassin article's victim_place; with_death=False
+    # drops it. The birth place no longer gets a row of its own (it rides on the identity line above,
+    # 方案 v121 §1), so a person with a birth place and no death place produces no row here at all.
     _dp = (p.get("death_place") or "") if with_death else ""
     # a protagonist-killer's death sentence already ends with the place (facts._death_sentence_body)
     if _dp and _dp in (p.get("death") or ""):
         _dp = ""
-    if _bp or _dp:
-        _place_bits = []
-        if _bp:
-            _place_bits.append(f"生于{_bp}")
-        if _dp:
-            _place_bits.append(f"死于{_dp}")
-        lines.append("；".join(_place_bits) + "。")
+    if _dp:
+        lines.append(f"死于{_dp}。")
     # birth mother's standing (not the child's origin), inner-household articles only, as its own sentence
     if with_real_parentage and p.get("mother_note"):
         lines.append(p["mother_note"])
@@ -3137,14 +3139,20 @@ def _appendix_text(facts):
     # protagonist-related events, grouped by (year, month, day) → semantic key → (priority, text)
     events = [e for e in facts.get("timeline") or []
               if any(n and n in e["text"] for n in names)]
-    by_day = {}   # (y, m, d) -> {event key: (priority, text)}
+    by_day = {}   # (y, m, d) -> {event key: (priority, text)}; d == 0 means "month-granularity row"
     for e in events:
         y, mo, d = 0, 0, 0
         try:
-            y, mo, d = (int(x) for x in str(e.get("date")).split(".")[:3])
+            # `YYYY.M` (a same-month aggregate row, see facts._merge_same_month_events) carries no day:
+            # d stays 0 and the row is printed at the month level instead of being dropped.
+            _parts = [int(x) for x in str(e.get("date")).split(".")[:3]]
+            y = _parts[0]
+            mo = _parts[1] if len(_parts) > 1 else 1
+            d = _parts[2] if len(_parts) > 2 else 0
         except Exception:
             continue
         body = re.sub(r"^\d+年\d+月\d+日，?", "", e["text"])
+        body = re.sub(r"^\d+年\d+月，?", "", body)
         body = re.sub(r"^\d+年，?", "", body)
         key = _timeline_event_key(body)
         if key is None:
@@ -3171,6 +3179,8 @@ def _appendix_text(facts):
                 for body in bodies:
                     if year_only:
                         lines.append(f"- {y}年 {body}")
+                    elif d == 0:
+                        lines.append(f"- {y}年{mo}月 {body}")
                     else:
                         lines.append(f"- {y}年{mo}月{d}日 {body}")
                 continue
@@ -3185,14 +3195,17 @@ def _appendix_text(facts):
                 continue
             if n_month[(y, mo)] == 1:
                 for body in bodies:
-                    lines.append(f"  - {mo}月{d}日 {body}")
+                    if d == 0:
+                        lines.append(f"  - {mo}月 {body}")
+                    else:
+                        lines.append(f"  - {mo}月{d}日 {body}")
                 last_mo = mo
                 continue
             if mo != last_mo:
                 lines.append(f"  - {mo}月")
                 last_mo = mo
             for body in bodies:
-                lines.append(f"    - {d}日 {body}")
+                lines.append(f"    - {body}" if d == 0 else f"    - {d}日 {body}")
     return "\n".join(lines)
 
 
