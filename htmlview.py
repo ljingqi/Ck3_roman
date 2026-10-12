@@ -1073,7 +1073,17 @@ def _article_label(fn, text, folder=None, h=None):
         if ending:
             if ending == "卒":
                 return f"{title}（终传）", f"死于{date}" if date else ""
-            return f"{title}（终传）", (f"{date}{ending}" if date else ending)
+            # The real-death cells read 死于1119年7月15日, so a non-death ending gets the same
+            # localized date shape ("1119年7月15日，去位，转徙无领地") instead of the dotted
+            # filename tail glued to the wording.
+            d_cn = date
+            _p = str(date or "").split(".")
+            if len(_p) == 3:
+                try:
+                    d_cn = f"{int(_p[0])}年{int(_p[1])}月{int(_p[2])}日"
+                except ValueError:
+                    d_cn = date
+            return f"{title}（终传）", (f"{d_cn}，{ending}" if d_cn else ending)
         _dead, _by = _byline_ending(text)
         if _dead:
             m2 = re.search(r"死于(\d+年\d+月\d+日)", _by)
