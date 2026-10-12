@@ -387,9 +387,9 @@ def group_b(snap_path):
         return
     check("现状句含档位词", all(w in (p.get("status") or "")
                               for w in ("虔诚", "威望", "影响力", "功勋")), p.get("status"))
-    check("御前会议席位为动态官职名 (长史/司户/…)",
-          bool(p.get("council")) and "席：" in p["council"]
-          and "（" not in p["council"], p.get("council"))
+    check("档案无「御前会议N席」行 (v122 删名册)",
+          not re.search(r"御前会议[〇零一二三四五六七八九十百]+席", surface)
+          and not (p.get("council") or ""), p.get("council"))
     check("【主角处境】已消失 / 无定居期驻地块",
           "【主角处境】" not in surface
           and not (facts.get("protagonist_stations") or []), facts.get("protagonist_stations"))
