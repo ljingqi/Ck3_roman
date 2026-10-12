@@ -427,11 +427,14 @@ function subjNum(i){ return SUBJ_NUM[i] || String(i); }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function yearOf(d){ return d ? String(d).split('.')[0] : ''; }
 function lifeSpan(n){
-  const b = yearOf(n.birth), d = yearOf(n.death || n.end);
+  const b = yearOf(n.birth), d = yearOf(n.death), e = yearOf(n.end);
   if(b && d && d !== b) return b + '–' + d;
+  /* a reign that ended without death (abdication / deposition / landless) is a span too, but it
+     is never written as 卒 (v122) */
+  if(b && !d && e && e !== b) return b + '–' + e;
   if(b) return b + '生';
   if(d) return d + '卒';
-  return '';
+  return e || '';
 }
 /* SVG text ignores the bead box, so a long foreign name is squeezed into it (full-width glyphs
    take one em, the rest about 0.55) */
@@ -917,8 +920,8 @@ show(0, 0);
 
 def _parse_header(text):
     """Parse the Markdown header comment (person / person id / birth year / piece / decade /
-    playthrough id / reign date) into a dict. The trailing `-->` is removed first: the last
-    field has no following separator, so `[^|]+` would otherwise swallow it."""
+    playthrough id / reign date / ending) into a dict. The trailing `-->` is removed first: the
+    last field has no following separator, so `[^|]+` would otherwise swallow it."""
     out = {}
     for ln in (text or "").split("\n"):
         if not ln.strip().startswith("<!--"):
@@ -931,6 +934,7 @@ def _parse_header(text):
         b = re.search(r"出生:\s*(\d+)年", ln)
         t = re.search(r"战役ID:\s*([^|]+)", ln)
         g = re.search(r"执政:\s*(\d+\.\d+\.\d+)", ln)
+        e = re.search(r"终局:\s*([^|]+)", ln)
         if m:
             out["person"] = m.group(1).strip()
         if p:
@@ -945,6 +949,8 @@ def _parse_header(text):
             out["playthrough_id"] = t.group(1).strip()
         if g:
             out["reign"] = g.group(1)
+        if e:
+            out["ending"] = e.group(1).strip()
         break
     return out
 
@@ -1012,6 +1018,30 @@ def _person_identity(fn, folder, text, h=None):
     return ("name", base, year), base
 
 
+def _byline_ending(text):
+    """(is_death, ending) read from a final biography's byline line, e.g.
+    `> 家族：…｜人物：…｜1119年7月15日，去位，转徙无领地，传位于…，此为终传`.
+
+    Fallback for files written before the header carried a `终局:` field; the byline is written by
+    the same program that writes the header, so it is the next most faithful source."""
+    for ln in (text or "").split("\n"):
+        s = ln.strip()
+        if not s.startswith(">"):
+            continue
+        tail = s.lstrip(">").strip()
+        if "｜" in tail:
+            tail = tail.rsplit("｜", 1)[-1].strip()
+        tail = tail.replace("，此为终传", "").strip()
+        if not tail:
+            return (False, "")
+        if tail.startswith("死于"):
+            return (True, tail)
+        # keep the date and the first clause after it (「1119年7月15日，去位」)
+        parts = [x for x in tail.split("，") if x]
+        return (False, "，".join(parts[:2]) if len(parts) >= 2 else tail)
+    return (False, "")
+
+
 def _article_label(fn, text, folder=None, h=None):
     """Return (label, meta) for one article: the Chinese label of a decade / final / ordinary
     biography plus its date line; files without a header comment fall back to the filename
@@ -1036,7 +1066,21 @@ def _article_label(fn, text, folder=None, h=None):
         label = f"第{h['decade']}个十年传记"
         return label, f"至{date}" if date else ""
     if h.get("piece") == "终传" or kind == "终传":
-        return f"{title}（终传）", f"死于{date}" if date else ""
+        # Only a death may read as 死于: the file name's date is the day the reign ended, which
+        # for an abdication / deposition is not a death day (v122). The `终局:` header field
+        # decides; older files fall back to the byline's own wording.
+        ending = h.get("ending") or ""
+        if ending:
+            if ending == "卒":
+                return f"{title}（终传）", f"死于{date}" if date else ""
+            return f"{title}（终传）", (f"{date}{ending}" if date else ending)
+        _dead, _by = _byline_ending(text)
+        if _dead:
+            m2 = re.search(r"死于(\d+年\d+月\d+日)", _by)
+            return f"{title}（终传）", (f"死于{m2.group(1)}" if m2 else _by)
+        if _by:
+            return f"{title}（终传）", _by
+        return f"{title}（终传）", ""
     if kind == "传记":
         return f"{title}（传记）", f"至{date}" if date else ""
     return title, ""

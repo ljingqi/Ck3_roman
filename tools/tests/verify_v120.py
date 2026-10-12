@@ -13,9 +13,10 @@
 断言：
   [1] 纯函数：`_age_phrase` 的年龄式与生年缺失时的年份回落
   [2] 纯函数：歧路守卫 —— `L.council_name_desc` 的日本臂链词 vs `L.council_seat_word` 的通用词
-  [3] 快照：御前会议行为臂链词，且不含通用词；司祭为和尚，且无主教/大阿亚图拉
+  [3] 快照：档案不再有「御前会议N席」「僚属任职」两行
   [4] 快照：特质履历/进阶为年龄式（无「自X年起获得」），且无「名词（名词）」括注
   [5] 快照：提示词面同样只见年龄式
+  v122 (user)：两行花名册已删除，席名改挂在本人名字前，故 [3] 的断言改为「行不存在」。
 
 用法：
     & tools\\py.ps1 tools\\tests\\verify_v120.py [快照...]
@@ -43,6 +44,9 @@ DEFAULT = [os.path.join(H2, "data", "snap_v120_16801324_d4.json"),
 JP_FEUDAL = ("右笔", "奉行", "大将", "目付")
 JP_ADMIN = ("別当", "家令", "侍", "目代")
 GENERIC = ("掌玺大臣", "财政总管", "军事统帅", "间谍首脑")
+# v122 (user): the two roster lines are gone; the .md assertion is on the rendered lines
+COUNCIL_LINE = re.compile(r"御前会议[〇零一二三四五六七八九十百]+席")
+RETAINER_LINE = re.compile(r"(廷中|营中|帐下)僚属任职")
 PAREN = re.compile(r"（[^）]{1,24}）")
 AGE_GAIN = re.compile(r"\d+岁获得")
 YEAR_GAIN = re.compile(r"自\d{3,4}年起获得")
@@ -117,19 +121,13 @@ def group_b(snap_path):
     # 两问都不限于传主本人：全事实面不得再出现通用席名（含他人宫廷的司祭席）
     hit = [w for w in GENERIC + ("宫廷司祭",) if w in surface]
     check("全事实面无通用席名", not hit, hit)
-    if not council and not meta.get("as_of"):
-        # 终传面的人物档案不带「御前会议」行（该行只在十年篇的档案里），议会断言交给十年快照
-        print("  SKIP 议会断言（终传快照无该行，见十年快照）")
-    else:
-        check("御前会议行存在", bool(council), council)
-        # 政体不同席名词不同（总领制 右笔/奉行/大将/目付；律令制 別当/家令/侍/目代），
-        # 但「至多一个例外」的宽松度足以证明整行走的是臂链而不是键名猜测。
-        hit = [w for w in JP_FEUDAL + JP_ADMIN if w in council]
-        check("御前会议用臂链词 (日本政体)", len(hit) >= 3, council)
-        check("御前会议无通用词", not any(w in council for w in GENERIC), council)
-        check("司祭为「和尚」", "和尚" in council, council)
-        check("司祭无「主教」", "主教" not in council, council)
-        check("无「大阿亚图拉」（v87 守卫）", "大阿亚图拉" not in council, council)
+    if True:
+        # v122 (user): the council roster line is gone from the profile and the seat words ride
+        # on the councillors' own names instead, so the line itself must not appear.
+        check("档案无「御前会议N席」行", not COUNCIL_LINE.search(surface),
+              COUNCIL_LINE.findall(surface)[:2])
+        check("档案无「僚属任职」行", not RETAINER_LINE.search(surface),
+              RETAINER_LINE.findall(surface)[:2])
     check("特质履历存在", bool(th), th)
     check("特质履历为年龄式", bool(AGE_GAIN.search(th)) and not YEAR_GAIN.search(th), th)
     check("进阶行无年份式", not YEAR_LEVEL.search(th), th)
@@ -140,15 +138,23 @@ def group_b(snap_path):
 
 def group_c():
     """成稿面：重生成后的 output/田所2/*.md 不得再出现通用席名与「生而骨质脆弱」。
+
+    v122 (user): the council roster line and the retainer roster line are gone from every piece,
+    so their seat words no longer have a carrier at all; the assertion is now on the lines
+    themselves (a model-written narrative mention of a council stays legitimate).
     「军事统帅」不列入（日常语里也讲得通）；「主教」不单列（「天主教」含此二字）。"""
     print(f"[6] 成稿面 ({os.path.relpath(H2, ROOT)}\\*.md)")
     files = sorted(glob.glob(os.path.join(H2, "*.md")))
     check("成稿存在", bool(files), H2)
-    banned = ("宫廷司祭", "掌玺大臣", "财政总管", "间谍首脑", "生而骨质脆弱")
+    banned = ("宫廷司祭", "生而骨质脆弱")
     for p in files:
         t = open(p, encoding="utf-8").read()
         hits = [w for w in banned if w in t] + YEAR_GAIN.findall(t)
-        check(f"{os.path.basename(p)} 无通用席名/无先天写法/无年份式",
+        if COUNCIL_LINE.search(t):
+            hits.append("御前会议N席")
+        if RETAINER_LINE.search(t):
+            hits.append("僚属任职")
+        check(f"{os.path.basename(p)} 无席名行/无先天写法/无年份式",
               not hits, hits[:4])
 
 

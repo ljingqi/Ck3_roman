@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""v119 check: every prison-row tail clause names its own subject.
+"""v119 check: every prison-row tail clause names the prisoner.
 
 The head is 「{jailer}囚禁{victim}」, so a subject-less tail attaches to the head's subject — the
 protagonist — and 「1个月后遭阉割而获释」 read as if the jailer had been castrated (the 1232
-洪希晏/朮赤 line). This check renders each tail with sample names and requires either the prisoner's
-name or an explicit actor inside it:
+洪希晏/朮赤 line). v122 (user) rewrote the punished tails so the prisoner is the subject of the
+whole clause; this check renders each tail with sample names and requires the prisoner's name (or
+an explicit actor) inside it:
 
     python tools/tests/v119_check_wording.py
 """
@@ -29,8 +30,11 @@ TAILS = ("prison_released", "prison_release_on", "prison_released_same_day",
 SAMPLES = {"jailer": "甲", "victim": "乙", "sp": "1个月后", "span": "1个月",
            "date": "1234年1月2日", "bound": "1289.1.1", "n": 3, "y": 1, "m": 2,
            "slave": "乙", "actor": "甲", "year": "1234年", "since": "", "names": "丙、丁",
-           "name": "", "strength": "强", "other": "丙", "owner": "甲"}
-# 「被其」/「被甲」 hangs the act on the jailer, so the sufferer can only be the prisoner
+           "name": "", "strength": "强", "other": "丙", "owner": "甲",
+           "torture": "折磨与"}
+# 「被其」/「被甲」 hangs the act on the jailer, so the sufferer can only be the prisoner.
+# v122: the punished tails name the prisoner *as the subject* of the whole clause (「乙被囚禁后
+# 遭到阉割，并在1个月后释放」), and the victim slot is what the check reads there.
 SUFFERER_RE = re.compile(r"乙|被其|被甲|尽数|\d+人")
 
 

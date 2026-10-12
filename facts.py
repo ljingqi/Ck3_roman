@@ -2897,12 +2897,13 @@ class Facts:
         return [{"date": d, "government": merged[d]}
                 for d in sorted(merged, key=cl.date_key)]
 
-    def _character_government(self, cid, date=None):
+    def _character_government(self, cid, date=None, _depth=0):
         """Government of the character at date: per-save history first, melt state as fallback.
 
         The history comes from cache["char_government_history"] (change points per save). A
-        date earlier than the history's start returns '' rather than passing the final save's
-        government off as history.
+        date earlier than the history's start has no observation of its own; the word then
+        follows the previous holder of the same title (the reign was younger than a year when
+        no save covered it), so a ruler never renders without a government word.
         """
         if cid is None:
             return ""
@@ -2917,9 +2918,11 @@ class Facts:
                     break
             if hit:
                 return hit
-            # before the history's start the government is unknown
+            # Before the history's start the character's own government is unknown: the
+            # previous holder of his primary title carries the wording (v122 rule), and
+            # `_depth` keeps a predecessor chain from looping.
             if hist[0].get("date") and cl.date_key(hist[0]["date"]) > dk:
-                return ""
+                return self._prev_holder_government(cid, date, _depth=_depth)
         # fallback: the melt state (no date given, or the character has no government history)
         if date:
             last = self.cache.get("last_date")
@@ -2927,6 +2930,47 @@ class Facts:
                 return ""
         c = self._chars.get(str(cid)) or {}
         return (c.get("landed_data") or {}).get("government") or ""
+
+    def _prev_holder_government(self, cid, date, _depth=0):
+        """Government of the previous holder of the subject's primary title at date.
+
+        Used when the subject's own government has no observation at or before `date` (a reign
+        younger than a year is covered by no save). Falls back to the title's own recorded
+        government; `""` when neither is available.
+        """
+        if _depth > 2 or date is None:
+            return ""
+        try:
+            _tier, tid = self._primary_title_at(cid, as_of=date)
+        except Exception:
+            tid = None
+        if tid is None:
+            return ""
+        try:
+            _cid = int(cid)
+        except (TypeError, ValueError):
+            return ""
+        dk = cl.date_key(date)
+        prev = None
+        for d, ev in (self._title_seqs.get(int(tid)) or []):
+            if cl.date_key(d) > dk:
+                break
+            for e in (ev if isinstance(ev, list) else [ev]):
+                h = e.get("holder") if isinstance(e, dict) else e
+                if h is None:
+                    prev = None
+                    continue
+                try:
+                    h = int(h)
+                except (TypeError, ValueError):
+                    continue
+                if h != _cid:
+                    prev = h
+        if prev is not None:
+            g = self._character_government(prev, date, _depth=_depth + 1)
+            if g:
+                return g
+        return self._title_government_hist(tid, date)
 
     def _character_government_or_earliest(self, cid, date):
         """Government of the character at date; before the history's start only a celestial
@@ -8859,6 +8903,30 @@ class Facts:
         self._log_label(cid, out)
         return out
 
+    def _subject_office_words(self, cid, date):
+        """Office words `cid` holds in the biography subject's court at `date` (v122).
+
+        The profile's retainer roster and council roster lines are gone, so a court office is
+        written against the holder's own name wherever he is mentioned. Court positions come
+        first (差遣), then council seats, each word deduped; the caller joins them with 「兼」,
+        because the offices are held concurrently."""
+        pid = self.cache.get("player_id")
+        if cid is None or pid is None:
+            return []
+        try:
+            if int(cid) == int(pid):
+                return []
+        except (TypeError, ValueError):
+            return []
+        out = []
+        for w in self._court_positions_of(cid, subject=pid, date=date):
+            if w and w not in out:
+                out.append(w)
+        for w in self._council_seats_of(cid, subject=pid, date=date):
+            if w and w not in out:
+                out.append(w)
+        return out
+
     def _person_label_uncached(self, cid, date, style):
         nm = self.name_with_regnal(cid, date)
         if not nm or nm in self._PLACEHOLDER_NAMES:
@@ -8893,6 +8961,12 @@ class Facts:
             word = self.faction_word(cid)
             if word:
                 off = f"{word}领袖"
+        # v122 (user): a court office rides on the holder's own name. Several offices are
+        # concurrent, so they are joined with 「兼」 (「长史兼司马某人」), and a landed title stays
+        # closest to the name.
+        _seats = self._subject_office_words(cid, date)
+        if _seats:
+            off = "兼".join([off] + _seats) if off else "兼".join(_seats)
         if style == "full":
             return self._full_label(cid, date, off, pn)
         return self._join_office(off, pn)
@@ -16554,8 +16628,14 @@ class Facts:
         title ≥ e_. `cid` is the court's owner (the protagonist when omitted), so a seat can also be
         worded for a third party's court."""
         pid = self.cache.get("player_id") if cid is None else cid
-        rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
-        gov = (rec.get("landed") or {}).get("government") or ""
+        # The paragraph is dated, so the subject's government at `as_of` decides the seat wording;
+        # the cache's landed block holds the LAST save's government and only serves as a fallback
+        # (a realm that turned administrative later used to word an early paragraph with the
+        # later government's seats).
+        gov = self._character_government(pid, self.as_of)
+        if not gov:
+            rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+            gov = (rec.get("landed") or {}).get("government") or ""
         return gov, (self._top_rank_now(pid) >= 5
                      and bool(self._is_independent(pid, self.as_of)))
 
@@ -22460,10 +22540,9 @@ def _protagonist(f):
     mot = f.motto()
     if mot:
         p["motto"] = mot
-    cpl, _cpch = f.court_positions_lines()
-    if cpl:
-        # the subject is the office holder ("仲宣任丑角…"), groups separated by "；"
-        p["court_positions"] = "；".join(cpl)
+    # v122 (user): the retainer roster line ("廷中僚属任职：…") is gone from the profile; a court
+    # office now rides on the holder's own name wherever he is mentioned (see
+    # `_person_label_uncached`). `court_positions_lines` itself stays for the realm sections.
     # Court offices granted to the protagonist (太师 etc.): only offices he himself received
     # (employee = protagonist), kept apart from the retainer roster, and shared with the realm
     # facts side (朝局风云录 reads the same source).
@@ -22588,11 +22667,8 @@ def _protagonist(f):
             _vcount = int(ld.get("vassal_count") or 0)
             if _vcount:
                 p["vassal_count"] = _vcount
-            # council seats use the dynamic office name + the councillor's name; no
-            # clause is emitted when it cannot be parsed
-            cl_line = f.council_line()
-            if cl_line:
-                p["council"] = cl_line
+            # v122 (user): the council roster line ("御前会议N席：…") is gone; a seat word now
+            # rides on the councillor's own name wherever he is mentioned.
         # Nomadic herd / camp provisions: current value only, read from the melt at as_of rather than
         # the last snapshot (which would leak later values). Herd only in a yurt, provisions only in a
         # landless camp, neither in an estate or landed realm; zero values are omitted.
@@ -26320,23 +26396,34 @@ def _genealogy_rows(f, cid, date):
     return lines
 
 
-def _gen_end_date(f, cid):
-    """The day that generation's household is read on: his death, else the day his reign ended.
+def _gen_end(f, cid):
+    """(date, is_death, exit_word) for one generation: the day his household is read on.
 
     A generation before the subject is not written with the subject's own household: his family is
-    the one he left behind, so the rows stop at that day (user 2026-10-08)."""
+    the one he left behind, so the rows stop at that day (user 2026-10-08). The second field keeps
+    a reign that ended without death (abdication, deposition, going landless) from being written
+    as 卒 (v122): only a real death day is a death.
+    """
     rec = (f.cache.get("characters") or {}).get(str(cid)) or {}
     d = (rec.get("death") or {}).get("date") or ""
     if d:
-        return d
+        return (d, True, "")
     pv = f.campaign.get(int(cid)) if str(cid).isdigit() else None
     if isinstance(pv, dict):
+        pd = pv.get("player_death")
+        if isinstance(pd, dict) and pd.get("date"):
+            return (pd["date"], True, "")
         for key in ("reign_end", "player_death"):
             v = pv.get(key)
             if isinstance(v, dict) and v.get("date"):
-                return v["date"]
+                return (v["date"], False, f.reign_end_word(v) or "让位")
     # Last resort: the melt knows the death day even when this cache never carried the record.
-    return f.death_date(cid)
+    return (f.death_date(cid), True, "")
+
+
+def _gen_end_date(f, cid):
+    """The day that generation's household is read on: his death, else the day his reign ended."""
+    return _gen_end(f, cid)[0]
 
 
 def _genealogy_gens(f, members):
@@ -26434,9 +26521,14 @@ def _genealogy_parts(f):
             # the chain's first member inherited from nobody: he opens the line of play
             line += (f"，{f.date(start)}起为传主" if i == 0
                      else f"，{f.date(start)}继为传主")
-        end = _gen_end_date(f, cid)
-        if end:
-            line += f"，{f.date(end)}卒"
+        # Only a real death day reads as 卒; a reign that ended without death names the day with
+        # its exit word (「1119年7月15日，去位，转徙无领地」, v122).
+        _end, _is_death, _endw = _gen_end(f, cid)
+        if _is_death and _end:
+            line += f"，{f.date(_end)}卒"
+        elif _end:
+            if _endw:
+                line += f"，{f.date(_end)}{_endw}"
         elif last:
             line += "，今在世"
         # canonization is posthumous, so only a volume written after it names the year (v114)

@@ -953,8 +953,6 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
         # provisions arrive as a band word from facts.provisions_band (facts gates by domicile, drops zeros).
         if p.get("provisions_word"):
             gov = (gov + "，" if gov else "") + p["provisions_word"]
-        if p.get("council") and with_court:
-            gov = (gov + "，" if gov else "") + p["council"]
         if gov:
             lines.append(gov + "。")
         # estate identity, kept apart from the camp line (a camp wanders, an estate is rooted)
@@ -969,15 +967,8 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
             else:
                 lines.append(f"{_since}{p.get('estate_word') or '家族庄园'}"
                              f"「{p['estate_name']}」{_place}。")
-    # p.court_positions is a roster of OTHER people serving under the protagonist; the heading must not read
-    # as the protagonist's own office history, so camp and court keep separate headings.
-    if p.get("court_positions") and with_court:
-        if cid is None and p.get("landless"):
-            lines.append(f"营中僚属任职：{p['court_positions']}。")
-        elif cid is None:
-            lines.append(f"廷中僚属任职：{p['court_positions']}。")
-        else:
-            lines.append(f"帐下僚属任职：{p['court_positions']}。")
+    # v122 (user): the retainer roster line ("廷中/营中/帐下僚属任职：…") is gone; each retainer's
+    # office now rides on his own name wherever the timeline or a section mentions him.
     if p.get("court_position"):
         lines.append(f"在主角处任{p['court_position']}。")
     # court office granted to the protagonist himself, opposite the roster above (cid is None)
@@ -4178,12 +4169,22 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
         piece = "终传"                    # abdication save keeps the same piece name
     else:
         piece = "传记"
+    # v122: a final piece may end in a death or in a non-death exit (abdication / deposition /
+    # going landless), so the machine-readable token is written here; the reading page writes
+    # 「死于」 only when it reads 卒, and names the exit word otherwise.
+    ending = ""
+    if piece == "终传":
+        if facts.get("player_death"):
+            ending = "卒"
+        else:
+            ending = (facts.get("reign_end") or {}).get("word_zh") or "让位"
     header = (f"<!-- 人物: {person} | 人物ID: {facts.get('player_id')}"
               + (f" | 战役ID: {cache.get('playthrough_id')}"
                  if cache.get("playthrough_id") else "")
               + (f" | 出生: {birth}" if birth else "")
               + (f" | 执政: {reign}" if reign else "")
               + f" | 篇目: {piece}"
+              + (f" | 终局: {ending}" if ending else "")
               + (f" | 十年: {decade}" if decade else "")
               + " -->\n\n")
     if out_path:
