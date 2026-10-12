@@ -16606,6 +16606,12 @@ class Facts:
 
         '' when nothing supports a name."""
         g = self._character_government(cid, date or self.as_of)
+        if not g and not (date or self.as_of):
+            # The final piece has no cut-off date: it reads the last snapshot, whose `landed`
+            # block IS the most recent year's government, so that is the answer (v122 — the
+            # profile used to come out with an empty 政体 for a whole final biography).
+            rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+            g = (rec.get("landed") or {}).get("government") or ""
         if not g and int(self.cache.get("schema") or 1) < 2:
             # older caches (schema<2) have no per-tier government history: fall back to the last tier
             rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
@@ -20748,6 +20754,10 @@ def _pair_imprisonments(events, f, pid, pname=""):
                         sp=W["prison_same_day"] if same else f"{span}后",
                         jailer=jn, victim=vn,
                         torture=W["prison_torture_prefix"] if pun[2] else "")
+                    # The templates carry a leading 「，」 (they are tails appended to the jailer's
+                    # head sentence), and this branch replaces that head, so the comma comes off.
+                    if body.startswith("，"):
+                        body = body[1:]
                     head = ""
                     o_kind = "punished"
                 elif owned is not None and not out.get("escape"):
@@ -22568,6 +22578,9 @@ def _protagonist(f):
     # raw government key, used by the prompt side to vary the wording
     # (天朝制 / 行政制 = office rotation)
     p["government_key"] = gov_asof
+    # One source of truth: the profile's 政体 word and the raw key are written from the same value,
+    # so the word can never be empty while the key is set (v122).
+    p["government"] = f._government_zh(gov_asof)
     # Only a true landless-adventurer camp (x_d_laamp_ / mercenary company / holy order) takes
     # the camp branch; family estates (x_nf_) and nomadic yurts (x_c_nomad_) are a seat of
     # power, not a camp.
