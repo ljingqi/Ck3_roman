@@ -3132,9 +3132,14 @@ def _appendix_text(facts):
             for nm in ln.split("：", 1)[1].replace("、", " ").split():
                 if nm:
                     names.add(nm)
-    # protagonist-related events, grouped by (year, month, day) → semantic key → (priority, text)
+    # protagonist-related events, grouped by (year, month, day) → semantic key → (priority, text).
+    # v122: an imprisonment is always the subject's own act (facts builds that module from the
+    # memories he owns as the jailer), and the punishment sentence names only the prisoner, so the
+    # name filter alone would drop those rows from the appendix.
+    _SUBJECT_ACT_TYPES = frozenset({"imprisoned", "imprisoned_other", "war_capture"})
     events = [e for e in facts.get("timeline") or []
-              if any(n and n in e["text"] for n in names)]
+              if (e.get("type") or "") in _SUBJECT_ACT_TYPES
+              or any(n and n in e["text"] for n in names)]
     by_day = {}   # (y, m, d) -> {event key: (priority, text)}; d == 0 means "month-granularity row"
 
     def _add(y, mo, d, body):
