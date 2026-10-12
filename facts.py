@@ -20351,6 +20351,11 @@ _PUNISH_RELEASE_KEYS = {
     "maim_leg": "prison_punish_generic",
 }
 
+# A mutilating punishment outranks a plain torture on the same day (see `_punishment_on`);
+# these kinds are the plain ones that feed the sentence's optional "折磨与" slot.
+_PUNISH_MUTILATION = frozenset({"castrated", "castrated_beardless", "blind", "blinded"})
+_PUNISH_PLAIN = frozenset({"torture", "disfigured", "maim_arm", "maim_leg"})
+
 # Death causes counted as a judicial killing when a custody ends in death (others: dying in prison)
 _PRISON_EXEC_REASONS = frozenset({
     "death_execution", "death_punishment", "death_imprisonment",
@@ -20359,11 +20364,14 @@ _PRISON_EXEC_REASONS = frozenset({
 
 
 def _punishment_on(events, victim, date):
-    """victim's torture event on this exact date -> (FACT_WORDING template key, event index); None if none.
+    """victim's torture event on this exact date -> (FACT_WORDING template key, event index,
+    extra-torture flag); None if none.
 
     The criterion is only "same victim + same date", with no hardcoded torture names,
     so a plain torture on another day naturally fails to match and two events are
-    never merged into one."""
+    never merged into one. A mutilating punishment outranks a plain torture when both
+    fall on that day, and the plain one then becomes the "折磨与" slot of the sentence."""
+    hits = []
     for i, e in enumerate(events):
         if e.get("type") not in ("torturer_memory", "tortured_memory"):
             continue
@@ -20375,9 +20383,13 @@ def _punishment_on(events, victim, date):
         v = parts.get("victim") if e.get("type") == "torturer_memory" \
             else owner
         if isinstance(v, int) and v == victim:
-            kind = ident.get("torture_kind") or "torture"
-            return (_PUNISH_RELEASE_KEYS.get(kind, "prison_punish_generic"), i)
-    return None
+            hits.append((i, ident.get("torture_kind") or "torture"))
+    if not hits:
+        return None
+    # A mutilation names the punishment; a plain torture only gives the generic wording.
+    main = next((h for h in hits if h[1] in _PUNISH_MUTILATION), hits[0])
+    extra = any(i != main[0] and k in _PUNISH_PLAIN for i, k in hits)
+    return (_PUNISH_RELEASE_KEYS.get(main[1], "prison_punish_generic"), main[0], extra)
 
 
 def _war_end_with(events, victim, jailer, date):
@@ -20589,11 +20601,18 @@ def _pair_imprisonments(events, f, pid, pname=""):
                         jailer=_wn or jn or "其监禁者", victim=vn)
                     o_kind = "war_end"
                 elif pun is not None:
-                    # pun = (FACT_WORDING key, event index), see _punishment_on; the same day otherwise "N days later"
+                    # pun = (FACT_WORDING key, event index, extra-torture flag), see
+                    # _punishment_on; the same day otherwise "N days later". The template
+                    # makes the prisoner the subject of the whole clause ("X 被囚禁后遭到
+                    # 阉割，并在22日后释放"), so the jailer's head sentence is replaced
+                    # rather than appended to, and `head` is cleared so that the fold
+                    # bookkeeping (t = body[len(head):]) stays consistent.
                     drop.add(pun[1])
-                    body += W[pun[0]].format(
+                    body = W[pun[0]].format(
                         sp=W["prison_same_day"] if same else f"{span}后",
-                        jailer=jn, victim=vn)
+                        jailer=jn, victim=vn,
+                        torture=W["prison_torture_prefix"] if pun[2] else "")
+                    head = ""
                     o_kind = "punished"
                 elif owned is not None and not out.get("escape"):
                     body += W["prison_enslaved"].format(victim=vn)

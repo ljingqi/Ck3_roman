@@ -407,12 +407,19 @@ FACT_WORDING = {
     "prison_war_end": "{jailer}战胜{victim}，俘之",
     # Castration/blinding always falls on the release day (21 of 21 saves), so the
     # punishment becomes the release reason inside the imprisonment sentence instead
-    # of a line of its own; {sp} is the elapsed span (same day, or the elapsed days).
-    "prison_punish_castrated": "，{sp}被其阉割而获释",
-    "prison_punish_blinded": "，{sp}被其剜目而获释",
+    # of a line of its own. The prisoner is the subject of the whole clause: every
+    # jailer in this material is the protagonist or the biography's subject, so the
+    # sentence names no jailer, and a reader can no longer attach the punishment to
+    # the wrong person (the old subject-less "，22日后被其阉割而获释" was read as the
+    # protagonist himself being castrated). {sp} is the elapsed span ("当日" or
+    # "22日后"); {torture} is "折磨与" only when the record holds a separate torture
+    # on that day, and empty otherwise.
+    "prison_torture_prefix": "折磨与",
+    "prison_punish_castrated": "，{victim}被囚禁后遭到{torture}阉割，并在{sp}释放",
+    "prison_punish_blinded": "，{victim}被囚禁后遭到{torture}剜目，并在{sp}释放",
     "prison_punish_beardless":
-        "，{sp}{victim}尚在成年前，被{jailer}阉割，终身无须，因而获释",
-    "prison_punish_generic": "，{sp}被其用刑而获释",
+        "，{victim}被囚禁时尚在成年前，遭到{torture}阉割，终身无须，并在{sp}释放",
+    "prison_punish_generic": "，{victim}被囚禁后遭到{torture}用刑，并在{sp}释放",
     # Prison terms closed by death: a death record with no release and no escape is
     # written as an execution or a death in prison.
     "prison_died_executed": "，{sp}被其处决",
