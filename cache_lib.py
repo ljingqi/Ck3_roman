@@ -2480,6 +2480,24 @@ def _contract_levels_map(levels):
     return out
 
 
+# Contract groups the game marks `is_tributary = yes`
+# (game/common/subject_contracts/groups/subject_contract_groups.txt:72-306). A tributary keeps
+# its own realm, so its ruler counts as independent for flavorization (`only_vassals` /
+# `only_independent`), see `Facts._is_independent`.
+TRIBUTARY_CONTRACT_GROUPS = frozenset({
+    "tributary_settled", "tributary_nomadic", "tributary_subjugated", "tributary_steppe",
+    "tributary_celestial", "tributary_hegemonic", "tributary_mandala",
+    "tributary_mandala_tribal", "tributary_wanua",
+})
+
+
+def is_tributary_contract(contract):
+    """Whether a contract record is a tributary tie rather than vassalage."""
+    if not isinstance(contract, dict):
+        return False
+    return str(contract.get("contract_group") or "") in TRIBUTARY_CONTRACT_GROUPS
+
+
 def vassal_obligation_flags(contract):
     """One vassal contract -> obligation flags (only celestial_provinces is decoded).
 
@@ -2498,7 +2516,7 @@ def vassal_obligation_flags(contract):
 
 
 def _vassal_snapshot(melt):
-    """This snapshot's vassal contracts -> {vassal_id: {liege, flags}}."""
+    """This snapshot's vassal contracts -> {vassal_id: {liege, flags, trib}}."""
     out = {}
     db = (melt.get("vassal_contracts") or {}).get("database") or {}
     for rec in db.values():
@@ -2516,7 +2534,8 @@ def _vassal_snapshot(melt):
             liege = int(liege) if liege is not None else None
         except (TypeError, ValueError):
             liege = None
-        out[vid] = {"liege": liege, "flags": vassal_obligation_flags(rec)}
+        out[vid] = {"liege": liege, "flags": vassal_obligation_flags(rec),
+                    "trib": is_tributary_contract(rec)}
     return out
 
 
@@ -2742,12 +2761,19 @@ def _record_vassal_and_cycle(cache, melt, date_label):
         _vc = _vassal_now.get(vid)
         _v_liege = (_vc or {}).get("liege") if _vc else None
         _v_flags = (_vc or {}).get("flags") or []
+        # A tributary tie is not vassalage: the flag is recorded so that later reads keep the
+        # ruler independent (the entry is written only when the value changes).
+        _v_trib = bool((_vc or {}).get("trib")) if _vc else False
         _vh = _vh_all.setdefault(str(vid), [])
         if _vc is not None:
             if (not _vh or _vh[-1].get("liege") != _v_liege
-                    or (_vh[-1].get("flags") or []) != _v_flags):
-                _vh.append({"date": date_label, "liege": _v_liege,
-                            "flags": list(_v_flags)})
+                    or (_vh[-1].get("flags") or []) != _v_flags
+                    or bool(_vh[-1].get("trib")) != _v_trib):
+                _ent = {"date": date_label, "liege": _v_liege,
+                        "flags": list(_v_flags)}
+                if _v_trib:
+                    _ent["trib"] = True
+                _vh.append(_ent)
         elif _vh and _vh[-1].get("liege") is not None:
             _vh.append({"date": date_label, "liege": None, "flags": []})
     return _vassal_now

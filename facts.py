@@ -2120,14 +2120,23 @@ class Facts:
             if _tpl and _lg:
                 self._tpl_to_lang.setdefault(_tpl, _lg)
         # O(1) independence: full vassal id set plus a per-character cache
-        # keyed by (cid, date) (holder/office code calls this heavily).
+        # keyed by (cid, date) (holder/office code calls this heavily). Tributary contracts are
+        # ties between realms, not vassalage, so a tributary ruler stays out of the vassal set
+        # and is kept separately for the snapshot's own date (see `_is_independent`).
         self._vassal_ids = set()
+        self._melt_tributary = set()
+        self._melt_contract_date = str((melt.get("meta_data") or {}).get("meta_date")
+                                       or melt.get("date") or "")
         for _k, _c in ((melt.get("vassal_contracts") or {}).get("database") or {}).items():
             if isinstance(_c, dict) and _c.get("vassal") is not None:
                 try:
-                    self._vassal_ids.add(int(_c["vassal"]))
+                    _vid = int(_c["vassal"])
                 except Exception:
-                    pass
+                    continue
+                if cl.is_tributary_contract(_c):
+                    self._melt_tributary.add(_vid)
+                    continue
+                self._vassal_ids.add(_vid)
         self._indep_cache = {}
         # Per-executioner criterion {executioner: {date: frozenset(purged houses)}},
         # see `purged_houses`.
@@ -2975,6 +2984,28 @@ class Facts:
                 break
         # normalize the Japanese government prefix only for tier-prefixed keys
         _norm = str(fkey).startswith(self._GOV_NORM_RANK_PREFIXES)
+
+        # A key with no government segment at all (`king_male_korean`: tier + sex + culture)
+        # cannot be checked against that day's government. The tier is then the criterion: the
+        # save baked this key at death from the titles of that moment, and the game's own word
+        # beats a word re-resolved from today's government (the Korean king of Silla, holder of
+        # k_silla, came out as a Chinese "乡绅" through the re-resolution path).
+        if not gov_prefix:
+            want = None
+            for pfx, rk in (("hegemon_", 6), ("emperor_", 5), ("king_", 4),
+                            ("duke_", 3), ("count_", 2), ("baron_", 1)):
+                if str(fkey).startswith(pfx):
+                    want = rk
+                    break
+            if want is None:
+                return False
+            try:
+                _pt, ptid = self._primary_title_at(cid, as_of=date)
+            except Exception:
+                ptid = None
+            if ptid is None:
+                return False
+            return self._eff_rank(ptid) == want
 
         def _eq_gov(x, y):
             if _norm:
@@ -6448,6 +6479,10 @@ class Facts:
         matching `_is_independent`'s lookahead.
         """
         ent = self._vassal_entry_at(cid, date)
+        # A tributary tie carries no obligation: the ruler keeps his own realm (see
+        # `_is_independent`), so the flags slot stays empty.
+        if ent and ent.get("trib"):
+            return []
         if (not ent or ent.get("liege") is None) and date:
             hist = self._vassal_history(cid)
             dk = cl.date_key(date)
@@ -6464,13 +6499,34 @@ class Facts:
         """Independence (not someone's vassal): with a date, from char_vassal_history; a date before
         the history starts returns None so the caller uses a generic word; without history the final
         save's vassal id set decides.
+
+        A tributary contract (`trib` in the history entry, see `cl.TRIBUTARY_CONTRACT_GROUPS`)
+        means the ruler kept his own realm, so it counts as independence. The melt in hand is one
+        dated snapshot, so for a date inside its own window its contract group decides too — that
+        covers caches accumulated before the group was recorded.
         """
         if cid is None:
             return True
         key = (int(cid), str(date or ""))
         if key in self._indep_cache:
             return self._indep_cache[key]
+        try:
+            _cid = int(cid)
+        except (TypeError, ValueError):
+            _cid = None
+        if _cid is not None and _cid in self._melt_tributary and date \
+                and self._melt_contract_date \
+                and abs(_date_ord(date) - _date_ord(self._melt_contract_date)) <= 400:
+            self._indep_cache[key] = True
+            return True
         hist = self._vassal_history(cid)
+
+        def _liege(ent):
+            """Contract entry -> liege, with a tributary tie counting as no liege."""
+            if not ent or ent.get("trib"):
+                return None
+            return ent.get("liege")
+
         v = None
         if hist and date:
             dk = cl.date_key(date)
@@ -6483,17 +6539,17 @@ class Facts:
             # Ennobled mid-year: this save has no contract yet but the next one (within about a year)
             # shows vassalage, so the vassal word is used for that day.
             nxt_gap = (_date_ord(nxt.get("date")) - _date_ord(date)) if nxt else None
-            if (ent is None or ent.get("liege") is None) \
-                    and nxt is not None and nxt.get("liege") is not None \
+            if (ent is None or _liege(ent) is None) \
+                    and nxt is not None and _liege(nxt) is not None \
                     and nxt_gap is not None and 0 < nxt_gap <= 400:
                 v = False
             elif hist[0].get("date") and cl.date_key(hist[0]["date"]) > dk \
                     and ent is None:
                 v = None
             else:
-                v = True if (ent is None or ent.get("liege") is None) else False
+                v = True if (ent is None or _liege(ent) is None) else False
         elif hist and not date:
-            v = hist[-1].get("liege") is None
+            v = _liege(hist[-1]) is None
         else:
             v = int(cid) not in self._vassal_ids
         self._indep_cache[key] = v

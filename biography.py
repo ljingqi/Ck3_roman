@@ -3089,7 +3089,12 @@ def _assemble(facts, intro, leads, sections, articles):
         for s in a["sections"][1:]:
             parts.append("")
             parts.append(sections[(a["key"], s["key"])])
-    if death:
+    # The appendix belongs to every terminal article, whether it ends in death or in a
+    # non-death exit (abdication / deposition / going landless): the genealogy and the
+    # timeline come from facts and carry no death-only field. Regenerating a terminal
+    # article after a later death record is deliberately skipped - too expensive - so the
+    # exit-version appendix is the one that stays.
+    if death or re_end:
         parts.append("")
         parts.append("---")
         parts.append("")
