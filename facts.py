@@ -5093,8 +5093,16 @@ class Facts:
             out.append(zh)
         return out
 
+    # Government capability flags, one constant per flag the program asks about
+    # (`common/governments/00_government_types.txt` and `01_japan_government_types.txt`):
+    # `government_has_merit` on the celestial / meritocratic / steppe-administrative realms, and
+    # `government_has_influence` on those three plus administrative_government (:530) and
+    # japan_administrative_government (:72). A realm without the flag keeps no such currency in the
+    # game, so a stale value left in the save must not become a band word.
     _MERIT_GOVS = frozenset({"celestial_government", "meritocratic_government",
                              "steppe_admin_government"})
+    _INFLUENCE_GOVS = _MERIT_GOVS | {"administrative_government",
+                                     "japan_administrative_government"}
 
     def _council_seat_scope(self, liege, who=None, date=None):
         """Evaluation scope for the game's council seat name chain (`name = { first_valid = … }`).
@@ -7370,7 +7378,8 @@ class Facts:
         between feudal and administrative periods. `special` is passed through to `FZ.resolve` (None
         means the holder class), and `independent` can override independence: the independent/vassal
         choice for a prince or princess word looks at the ruling parent, while `cid` is the landless
-        child whose own independence is not determinable.
+        child whose own independence is not determinable. A passed-in None is read as "not
+        determinable at this date" and reaches the table as such.
         """
         if not self._flavor or tier is None or cid is None:
             return ""
@@ -7389,11 +7398,13 @@ class Facts:
             title_key = ((self._lt.get(str(tid)) or {}).get("key") or "")
         if independent is None:
             independent = self._is_independent(cid, date)
-        if independent is None:
-            independent = True
+        # Independence the history cannot settle (a date before the vassal record starts) stays
+        # None: the game's only_independent / only_vassals arms both need that fact, so an unknown
+        # state matches neither and the word falls back to the government arm (duchy_tribal →
+        # 大酋邦 rather than the Welsh 亲王国). `_is_independent` documents the same intent.
         # vassal: entries without an explicit top_liege = no are judged by the top liege (game default)
         top = None
-        if not independent and tid is not None:
+        if independent is False and tid is not None:
             lid, ltid = self._top_liege_of(cid, tid)
             if lid is not None and int(lid) != int(cid):
                 lce = self._culture_entry(lid, date)
@@ -7410,7 +7421,7 @@ class Facts:
                 name_list=ce.get("name_list") or "",
                 heritage=ce.get("heritage") or "",
                 faith=ftag, religion=rtag, rite=rtype, title_key=title_key,
-                independent=bool(independent), top=top,
+                independent=independent if independent is None else bool(independent), top=top,
                 obligation_flags=self._obligation_flags_at(cid, date),
                 special=(special or "holder"))
         except Exception:
@@ -8350,6 +8361,18 @@ class Facts:
         if not nm:
             return ""
         return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
+
+    def house_branch_label(self, cid, date=None):
+        """The branch wording an "属…" clause carries: `house_label` output, and '' while the
+        character sits in the dynasty's founding house (dynasty name == house name), where naming
+        a branch adds nothing. Same outlet as the profile's `house_label`, so the roster and the
+        profile call the house the same thing."""
+        dn, hn = self._house_names_at(cid, date)
+        if not _house_branch(dn, hn):
+            return ""
+        return house_label(dn, hn, self.name_order(cid),
+                           (self._culture_entry(cid, date or self.as_of) or {})
+                           .get("culture_template"))
 
     def _feud_event_fallback(self, my_houses, other_house, date, other_label):
         """Rebuild that day's feud sentence from cached memories when the raw text is unreadable.
@@ -14137,12 +14160,28 @@ class Facts:
             return ""
         return self._place_of_province(best.get("province"))
 
+    @staticmethod
+    def _join_ruling_texts(texts):
+        """One change point's ruling texts as a single phrase: '；'-joined, with a head of the form
+        改X信条：/改X核心教义： written once when every text carries the same one. The doctrine
+        fragments of one change point each carry that head, and reading it once is enough."""
+        joined, head = [], ""
+        for t in texts:
+            m = re.match(r"^(改.+?(?:信条|核心教义)：)", t)
+            if m and head and m.group(1) == head:
+                joined.append(t[m.end():])
+                continue
+            if m and not head:
+                head = m.group(1)
+            joined.append(t)
+        return "；".join(joined)
+
     def _event_line(self, e, clauses=None):
         """One event as 「<date>，<actor><phrase>[，<ruling>；<ruling>]。」"""
         body = f"{e['actor']}{e['phrase']}" if e["actor"] else e["phrase"]
         text = f"{self.date(e['date'])}，{body}"
         if clauses:
-            text = f"{text}，{'；'.join(clauses)}"
+            text = f"{text}，{self._join_ruling_texts(clauses)}"
         return f"{text}。"
 
     def church_event_lines(self, date=None):
@@ -14195,8 +14234,10 @@ class Facts:
         so the change happened in the half-open interval `(prev, from]` (the game dates no tenet or
         doctrine change; `cache_lib` latches the sets per snapshot). `kind` is one of
         `_RULING_ORDER`; `text` is the verb phrase the section writes, e.g.
-        「将原先禁止的「华夏综摄主义」改为允许」 or 「改天主教主流礼仪信条：血亲性关系由…改为…」;
-        `leader` is the rite head's clause at that point, used for a ruling no event claims.
+        「将原先禁止的「华夏综摄主义」改为允许」 or 「改天主教主流礼仪信条：血亲性关系由…改为…」
+        (one change point writes one row, so several slot moves of one act arrive as one text with
+        「；」 between the clauses); `leader` is the rite head's clause at that point, used for a
+        ruling no event claims.
 
         `ten_hist` / `doc_hist` override the histories read from the cache by rite id: the faith's
         mainline rite is latched under the faith (`faith_tenets_history`), not under the rite.
@@ -14254,9 +14295,14 @@ class Facts:
             cur = {str(x) for x in (h.get("doctrines") or [])}
             if prev_set is not None and self._in_church_window(d, win):
                 head = self._leader_clause(h, d)
-                for frag in self._doctrine_slot_lines(prev_set - cur, cur - prev_set):
+                # one row per change point: the slots a single act moved are clauses of one
+                # sentence, not separate rulings (docs/方案_v123 第三问)
+                frags = self._doctrine_slot_lines(prev_set - cur, cur - prev_set)
+                if frags:
                     rows.append({"from": d, "prev": prev_dd, "kind": "doctrine",
-                                 "text": f"改{label}信条：{frag.rstrip('。')}", "leader": head})
+                                 "text": f"改{label}信条："
+                                         + "；".join(x.rstrip("。") for x in frags),
+                                 "leader": head})
             prev_set, prev_dd = cur, d
         return rows
 
@@ -14318,7 +14364,8 @@ class Facts:
         to the last such event; when it holds no such event it falls to the last council started at
         most `_CHURCH_COUNCIL_LAG_DAYS` before `from`, since a council's debates settle over the
         years after it opens. Everything else keeps its own line, dated by the year it was first
-        seen and led by the rite head of that point."""
+        seen and led by the rite head of that point — one line per year and rite head, so a head's
+        several changes inside one year read as one act."""
         claimed, free = {}, []
         for r in rows:
             dk = cl.date_key(r["from"])
@@ -14342,9 +14389,17 @@ class Facts:
             best = max(cands, key=lambda e: cl.date_key(e["date"]))
             claimed.setdefault(id(best), []).append(r["text"])
         lines = [self._event_line(e, claimed.get(id(e))) for e in events]
+        # The rulings no event claims come out one line per (year, leader): one year's changes by
+        # one rite head read as that man's single act, so they share a line (docs/方案_v123 第三问).
+        grouped, order = {}, []
         for r in free:
-            yr = str(r["from"]).split(".")[0]
-            lines.append(f"{yr}年起，{r['leader']}{r['text']}。")
+            key = (str(r["from"]).split(".")[0], r["leader"])
+            if key not in grouped:
+                grouped[key] = []
+                order.append(key)
+            grouped[key].append(r["text"])
+        for yr, leader in order:
+            lines.append(f"{yr}年起，{leader}{self._join_ruling_texts(grouped[(yr, leader)])}。")
         return lines
 
     def doctrine_name(self, key):
@@ -22735,8 +22790,14 @@ def _protagonist(f):
         # Money and faith values are always banded: treasury gold, monthly income and the herd are
         # omitted entirely, while piety / prestige / influence / merit become game band words (defines
         # LEVELS_* plus the localization key <kind>_level_N, e.g. 戴罪之人 / 崭露头角 / 七品).
+        # Influence and merit are currencies only some governments carry (see `_INFLUENCE_GOVS`); a
+        # realm without the flag shows none of it, so a value the save still stores is not written.
         for kind, label in (("piety", "虔诚"), ("prestige", "威望"),
                             ("influence", "影响力"), ("merit", "功勋")):
+            if kind == "influence" and gov_asof not in f._INFLUENCE_GOVS:
+                continue
+            if kind == "merit" and gov_asof not in f._MERIT_GOVS:
+                continue
             v = (ad.get(kind) or {}).get("currency")
             w = L.level_word(f.table, f._bands, kind, v)
             if w:

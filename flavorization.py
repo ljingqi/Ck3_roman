@@ -193,7 +193,9 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
     governments / name_lists / heritages / faiths / rites / religions list means
     unrestricted, and entries marked unsupported at build time are skipped. `titles` is a
     restricted-title condition (a match only when title_key is among them); `independent`
-    drives the only_vassals/only_independent rules; `top` carries the top liege's fields,
+    drives the only_vassals/only_independent rules (True or False; None means the fact is not
+    determinable at that date, and then both gated families are skipped so the word falls back to
+    the government arm); `top` carries the top liege's fields,
     which entries not marked `top_liege = no` are judged against (the game's default).
     `obligation_flags` are the character's decoded contract obligation flags and must
     intersect an entry's own flags; `special` selects the entry class — "holder" by
@@ -265,9 +267,11 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
         rs = e.get("religions") or []
         if rs and re_x not in rs:
             continue
-        if rules.get("only_independent") and not independent:
+        # `independent` is a three-state fact: True / False match the gated arm, None (undeterminable
+        # at that date) matches neither.
+        if rules.get("only_independent") and independent is not True:
             continue
-        if rules.get("only_vassals") and independent:
+        if rules.get("only_vassals") and independent is not False:
             continue
         # Contract-obligation flags: an entry listing flags matches only on an intersection;
         # a character without flags skips such entries.
