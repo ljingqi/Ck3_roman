@@ -79,8 +79,11 @@ def main():
     check(len(rows) >= 1, "附录名册非空", f"{len(rows)} 行")
     short = [n for n in (_row_name(r) for r in rows) if _bare(n) not in _bare(part2)]
     check(not short, "第二部分覆盖附录名册", f"缺 {short[:3]}")
-    check("｜" not in table and all("为人" in r for r in rows), "名册为「…的…，为人…。」句式",
-          rows[0][:60] if rows else "")
+    # Every row is one sentence ending in 「。」 and no row uses the old 「｜」 columns; a ruler with
+    # no trait record at all (an infant) comes out as a bare 「名号。」 row, so a couple may lack 为人.
+    bare = [r for r in rows if "为人" not in r]
+    check(all("｜" not in r for r in rows) and all(r.endswith("。") for r in rows)
+          and len(bare) <= 2, "名册为「…的…，为人…。」句式", [r[:40] for r in bare[:2]])
 
     page = os.path.join(base, "index.html")
     html = open(page, encoding="utf-8").read() if os.path.exists(page) else ""

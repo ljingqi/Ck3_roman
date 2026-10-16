@@ -8365,12 +8365,21 @@ class Facts:
     def house_branch_label(self, cid, date=None):
         """The branch wording an "属…" clause carries: `house_label` output, and '' while the
         character sits in the dynasty's founding house (dynasty name == house name), where naming
-        a branch adds nothing. Same outlet as the profile's `house_label`, so the roster and the
-        profile call the house the same thing."""
+        a branch adds nothing.
+
+        A character whose name order is western (the same `name_order` the neighbouring 名号 is
+        rendered by) gets clan + dynasty instead — 洪宗族，布雷恩王朝 — because the western
+        `house_label` arm's 洪氏，布雷恩 would bury a comma of its own in the roster sentence's comma
+        chain, and the clause would then disagree with the way his own name is written. Eastern
+        orders keep the profile's `house_label` wording, so the roster and the profile call the
+        house the same thing."""
         dn, hn = self._house_names_at(cid, date)
         if not _house_branch(dn, hn):
             return ""
-        return house_label(dn, hn, self.name_order(cid),
+        order = self.name_order(cid)
+        if order not in cl.EASTERN_NAME_ORDERS:
+            return f"{dn[:-1] if dn.endswith('氏') else dn}宗族，{hn}王朝"
+        return house_label(dn, hn, order,
                            (self._culture_entry(cid, date or self.as_of) or {})
                            .get("culture_template"))
 
