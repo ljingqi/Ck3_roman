@@ -10,6 +10,7 @@ import sys
 import threading
 
 import cache_lib as cl   # same date-key convention as cache_lib.date_key; do not add a second parser
+import llm               # the single Chinese-date outlet (llm.fmt_cn_date)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -1179,7 +1180,10 @@ _EPILOGUE_RE = re.compile(r"^(.+)_封档总评_(\d{4})_(\d{2})_(\d{2})\.md$")
 
 
 def _load_epilogue(base):
-    """Newest `<家族>_封档总评_<存档>.md` of a folder as a reading-page entry, or None when absent."""
+    """Newest `<家族>_封档总评_<存档>.md` of a folder as a reading-page entry, or None when absent.
+
+    The bar date is written the way the article itself dates the save (`llm.fmt_cn_date`), so the
+    page and the text agree."""
     best = None
     for fn in os.listdir(base):
         m = _EPILOGUE_RE.match(fn)
@@ -1197,7 +1201,7 @@ def _load_epilogue(base):
         return None
     html_str, toc = md_to_html(text)
     return {"html": html_str, "toc": toc, "file": os.path.basename(best[1]),
-            "meta": f"封档总评 ｜ 存档 {best[0]} ｜ {os.path.basename(base)}"}
+            "meta": f"封档总评 ｜ 存档 {llm.fmt_cn_date(best[0])} ｜ {os.path.basename(base)}"}
 
 
 def rebuild_folder(output_dir, folder):

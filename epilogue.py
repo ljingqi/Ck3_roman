@@ -15,6 +15,7 @@ import os
 import re
 
 import cache_lib as cl
+import llm
 import style
 
 FINAL_RE = re.compile(r"^(.+)_终传_(.+)$")
@@ -26,6 +27,14 @@ H_PIECE = re.compile(r"篇目:\s*([^|]+)")
 FIRST_RE = re.compile(r"^## 1、《(.+?)》\s*\n(.+?)(?=\n## |\Z)", re.M | re.S)
 PIECE_RE = re.compile(r"^## \d+、《(.+?)》", re.M)
 EPILOGUE_RE = re.compile(r"^(.+)_封档总评_(\d{4}_\d{2}_\d{2})\.md$")
+
+
+def _cn(date_str):
+    """A game date as the reader sees it (`llm.fmt_cn_date`: 1121.1.1 -> 1121年). Every date this
+    module writes into a part, a byline or an appendix heading goes through here; only the
+    machine-readable header field (`存档: 1121.1.1`) and the file name keep the game format,
+    since the tools and `v119_check_epilogue` parse them."""
+    return llm.fmt_cn_date(date_str) if date_str else ""
 
 
 def chapters(folder_dir):
@@ -185,7 +194,7 @@ def _strip_lead_headings(text):
 # ---------------------------------------------------------------------------
 
 def _chain_line(ch):
-    return " → ".join(f"{r['person']}（{r['reign'] or r['end']}）" for r in ch["rows"])
+    return " → ".join(f"{r['person']}（{_cn(r['reign'] or r['end'])}）" for r in ch["rows"])
 
 
 def shared_block(ch, rep, folder):
@@ -194,13 +203,13 @@ def shared_block(ch, rep, folder):
     fam = prot.get("house") or rep.get("dynasty_name") or folder
     return (f"【家史】{fam}｜宗族：{rep.get('dynasty_name') or '—'}｜传主 {len(ch['rows'])} 代\n"
             f"【历代传主】{_chain_line(ch)}\n"
-            f"【存档】{rep['as_of']}（最新存档）｜今生传主：{prot.get('name') or '—'}")
+            f"【存档】{_cn(rep['as_of'])}（最新存档）｜今生传主：{prot.get('name') or '—'}")
 
 
 def _first_chapters(ch):
     blocks = []
     for i, r in enumerate(ch["rows"], 1):
-        blocks.append(f"〔第{i}代〕{r['person']}（{r['reign'] or r['end']}继位，{r['end']}止）"
+        blocks.append(f"〔第{i}代〕{r['person']}（{_cn(r['reign'] or r['end'])}继位，{_cn(r['end'])}止）"
                       f"《{r['first_title']}》\n{r['first']}")
     return "\n\n".join(blocks)
 
@@ -227,7 +236,7 @@ def part2_messages(ch, rep, folder, rule_block, roster_override=None):
         protagonist=(rep.get("protagonist") or {}).get("name") or "—",
         dynasty=rep.get("dynasty_name") or "—",
         n=len(table.split("\n")) if table else 0,
-        as_of=rep["as_of"],
+        as_of=_cn(rep["as_of"]),
         roster=table or "（本次存档中，同宗在世者皆无领地与头衔）")
     return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user}]
 
@@ -248,7 +257,7 @@ def assemble(folder, ch, rep, part1, part2, pid):
         f"# 《{fam}封档总评》",
         "",
         f"> 家族：{folder}｜宗族：{rep.get('dynasty_name') or '—'}｜传主：{prot}｜"
-        f"存档：{rep['as_of']}｜终传：{len(ch['rows'])} 篇",
+        f"存档：{_cn(rep['as_of'])}｜终传：{len(ch['rows'])} 篇",
         f"> 历代传主：{_chain_line(ch)}",
         "",
         "---",
@@ -263,7 +272,7 @@ def assemble(folder, ch, rep, part1, part2, pid):
         "",
         "---",
         "",
-        f"## 附：同宗统治者名册（{rep['as_of']} 存档，程序产物）",
+        f"## 附：同宗统治者名册（{_cn(rep['as_of'])} 存档，程序产物）",
         "",
     ]
     table = roster_text(rep)
