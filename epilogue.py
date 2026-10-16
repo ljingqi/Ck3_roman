@@ -3,9 +3,9 @@
 
 Part 1 reads the first chapter of every 终传 of the campaign (`## 1、《本纪·…》`) and reviews the whole
 line of protagonists in generation order; part 2 lists the same-dynasty rulers alive in the latest
-save — who they are, which land they hold, and how they are related to the current protagonist — and
-the model writes them up from the roster this module builds. Both parts share one system prompt, so the
-prefix cache hits for the second call.
+save — who they are, which branch they belong to, how they are related to the protagonist the campaign
+closed on, and what they are like — and the model writes them up from the roster this module builds.
+Both parts share one system prompt, so the prefix cache hits for the second call.
 
 Everything the program can settle deterministically (dates, names, titles, seats, kin words, the canon
 of protagonists) is settled here and handed over as material; the model turns it into prose.
@@ -93,15 +93,20 @@ def epilogue_file(folder_dir):
 # Part 2 roster: same-dynasty holders alive in the latest save
 # ---------------------------------------------------------------------------
 
-def roster(facts, rank_min=2):
+def roster(facts, rank_min=2, ref_cid=None):
     """Same-dynasty holders alive at `as_of`, highest tier first.
 
     The clan (宗族/dynasty) is the grouping the user asked for, so every house of it counts. Landed
     titles of county tier and above form the main list; camp leaders, barons and the untitled are kept
     in `others` so the caller can widen the report when `rows` comes out short.
+
+    `ref_cid` is the person the kin words are read against: the last 终传's protagonist, so the
+    roster speaks of the family as it stood when the campaign closed. Without it the newest cache's
+    player takes that place (the campaign's own protagonist).
     """
     as_of = facts.as_of or facts.cache.get("last_date")
     pid = facts.cache.get("player_id")
+    ref = pid if ref_cid is None else ref_cid
     house = facts._house_of_cid(pid)
     dyn = facts.cache.get("dynasty_id") or (cl.dynasty_id_of(facts.melt, house) if house else None)
     rows, others, alive = [], [], 0
@@ -118,13 +123,16 @@ def roster(facts, rank_min=2):
             "cid": cid,
             "label": facts.person_label(cid, as_of, "full"),
             "house": facts._house_label_at(cid, as_of),
+            "house_branch": facts.house_branch_label(cid, as_of),
+            "traits": facts.traits_sentence(cid, public=True),
             "tier": tier,
             "rank": facts._eff_rank(tid) if tid is not None else 0,
             "landed": landed,
             "title": facts.title(tid, as_of) if tid is not None else "",
             "title_kind": facts.title_kind(tid) if tid is not None else "",
             "seat": facts.artifact_home(cid, as_of),
-            "kin": "传主" if cid == pid else (facts.kin_word_for(cid, pid) or ""),
+            "kin": "" if cid == ref else (facts.kin_word_for(cid, ref) or ""),
+            "is_ref": cid == ref,
             "gen": facts.generation_delta(pid, cid) if cid != pid else 0,
             "independent": bool(facts._is_independent(cid, as_of)),
         }
@@ -143,26 +151,49 @@ def roster(facts, rank_min=2):
         "rows": rows,
         "others": others,
         "alive": alive,
+        "ref": {"cid": ref, "name": _ref_name(facts, ref, as_of)},
         "protagonist": {"cid": pid,
                         "name": facts.person_label(pid, as_of, "full"),
                         "house": prot.get("house") or facts._house_label_at(pid, as_of) or ""},
     }
 
 
-def _roster_line(r):
-    bits = [f"《{r['title']}》" if r["title"] else "（无头衔）"]
-    if r["seat"]:
-        bits.append(f"治所 {r['seat']}")
-    if r["house"]:
-        bits.append(f"房 {r['house']}")
-    if r["kin"]:
-        bits.append(f"与今生传主：{r['kin']}")
-    bits.append("独立" if r["independent"] else "臣属")
-    return f"- {r['label']}｜" + "｜".join(bits)
+def _ref_name(facts, cid, date=None):
+    """The reference protagonist's name as part 2's roster writes it: no title, the nickname kept,
+    and for a western name order the surname dropped once the nickname leads the name — 征服者威廉
+    instead of 征服者威廉·诺曼底. '' when the character is unknown."""
+    if cid is None:
+        return ""
+    nm = facts.name_with_regnal(cid, date) or ""
+    nick = facts.nickname(cid)
+    if nick and nm.startswith(nick):
+        head, sep, _tail = nm.partition("·")
+        if sep:
+            return head
+    return nm
+
+
+def _roster_line(r, ref_name=""):
+    """One ruler as one line: <reference protagonist>的<kin><label>，属<house>，为人<traits>。
+
+    The kin word is read against the last 终传's protagonist (see `roster`), so a reader of the
+    sealed campaign sees every living ruler through the eyes of the man it closed on. The house
+    clause is written only for a branch (see `Facts.house_branch_label`); the reference protagonist
+    himself, a ruler whose tie cannot be read, and nameless ties start the line with the label."""
+    head = r["label"]
+    if ref_name and r.get("kin") and not r.get("is_ref"):
+        head = f"{ref_name}的{r['kin']}{head}"
+    bits = [head]
+    if r.get("house_branch"):
+        bits.append(f"属{r['house_branch']}")
+    if r.get("traits"):
+        bits.append(f"为人{r['traits']}")
+    return "- " + "，".join(bits) + "。"
 
 
 def roster_text(rep):
-    return "\n".join(_roster_line(r) for r in rep["rows"])
+    ref_name = (rep.get("ref") or {}).get("name") or ""
+    return "\n".join(_roster_line(r, ref_name) for r in rep["rows"])
 
 
 def others_titled(rep, limit=24):
@@ -174,7 +205,8 @@ def others_titled(rep, limit=24):
 def roster_others_text(rep, limit=24):
     """Untitled or sub-county holders, for the fallback when the landed list is short."""
     other, total = others_titled(rep, limit)
-    out = [_roster_line(r) for r in other]
+    ref_name = (rep.get("ref") or {}).get("name") or ""
+    out = [_roster_line(r, ref_name) for r in other]
     if total > limit:
         out.append(f"（另在世同宗 {len(rep['others']) - limit} 人，多为无地或未受封者）")
     return "\n".join(out)
@@ -233,7 +265,8 @@ def part2_messages(ch, rep, folder, rule_block, roster_override=None):
     table = roster_override if roster_override is not None else roster_text(rep)
     user = p["epilogue_part2_user"].format(
         shared=shared_block(ch, rep, folder),
-        protagonist=(rep.get("protagonist") or {}).get("name") or "—",
+        protagonist=(rep.get("ref") or {}).get("name")
+                    or (rep.get("protagonist") or {}).get("name") or "—",
         dynasty=rep.get("dynasty_name") or "—",
         n=len(table.split("\n")) if table else 0,
         as_of=_cn(rep["as_of"]),

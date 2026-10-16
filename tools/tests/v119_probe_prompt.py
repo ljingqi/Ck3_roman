@@ -28,8 +28,9 @@ def main():
     # a stub roster: only the slots matter here
     rep = {"as_of": "1289.1.1", "dynasty_name": "洪", "house": 1, "house_label": "洪氏",
            "rows": [{"label": "某王", "title": "某王国", "seat": "某城", "house": "洪氏",
-                     "kin": "族人", "independent": True, "rank": 4}],
-           "others": [], "alive": 1,
+                     "house_branch": "", "traits": "性情谨慎", "kin": "族人", "is_ref": False,
+                     "independent": True, "rank": 4}],
+           "others": [], "alive": 1, "ref": {"cid": 2, "name": "洪先主"},
            "protagonist": {"cid": 1, "name": "洪非帝", "house": "洪氏"}}
     rep["rows"][0]["rank"] = 4
     rule = style.rule_block("east")

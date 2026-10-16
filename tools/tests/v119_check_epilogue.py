@@ -62,14 +62,25 @@ def main():
     check(part1.rstrip()[-1:] in "。！？…」", "第一部分收尾完整", part1.rstrip()[-12:])
     check(part2.rstrip()[-1:] in "。！？…」", "第二部分收尾完整", part2.rstrip()[-12:])
 
-    # the main table is what part 2 was given; the 其余在世同宗 sub-list is appendix-only
+    # the main table is what part 2 was given; the 其余在世同宗 sub-list is appendix-only.
+    # Each row reads 「<末代传主>的<亲属称谓><本人名号>，属<房支>，为人<…>。」and the label itself
+    # may carry offices separated by 「，」, so the ruler's name is taken from the segment before
+    # the 属/为人 clauses; the model re-punctuates everything, so the comparison bares punctuation
+    # and matches the closing three characters of the name (the given name, as the 传主 check does).
     main_table = table.split("### 其余在世同宗", 1)[0]
     rows = [ln for ln in main_table.split("\n") if ln.startswith("- ")]
+
+    def _row_name(ln):
+        s = ln[2:].rstrip("。")
+        for sep in ("，属", "，为人"):
+            s = s.split(sep, 1)[0]
+        return s.split("的")[-1][-3:]
+
     check(len(rows) >= 1, "附录名册非空", f"{len(rows)} 行")
-    short = [r.split("｜")[0][2:] for r in rows
-             if _bare(r.split("｜")[0][2:]) not in _bare(part2)]
+    short = [n for n in (_row_name(r) for r in rows) if _bare(n) not in _bare(part2)]
     check(not short, "第二部分覆盖附录名册", f"缺 {short[:3]}")
-    check("治所" in table, "名册带治所")
+    check("｜" not in table and all("为人" in r for r in rows), "名册为「…的…，为人…。」句式",
+          rows[0][:60] if rows else "")
 
     page = os.path.join(base, "index.html")
     html = open(page, encoding="utf-8").read() if os.path.exists(page) else ""

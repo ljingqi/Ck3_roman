@@ -3031,7 +3031,8 @@ def step_epilogue(cfg, folder=None, force=False):
     # the reading page's 家谱 is a program artifact of the same facts: write it here so the family
     # chart ends up as of the archive's last save, without a separate run (v119)
     bio._write_genealogy_tree(facts, out_path)
-    rep = E.roster(f)
+    # the roster and part 2 read kin against the protagonist the campaign closed on: the last 终传
+    rep = E.roster(f, ref_cid=(ch["rows"][-1]["cid"] if ch["rows"] else None))
     print(f"同宗在世 {rep['alive']} 人，有地者 {len(rep['rows'])} 人", flush=True)
     rule_block = style.rule_block(facts.get("bio_style") or style.DEFAULT_STYLE)
     cfg1 = dict(cfg)
