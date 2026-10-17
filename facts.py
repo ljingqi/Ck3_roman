@@ -945,7 +945,9 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older):
         return "clan_ancestor"
     if gap == -1:
         return "clan_niece" if c_female else "clan_nephew"
-    if gap == -2:
+    if gap <= -2:
+        # Sex-aware even in the coarse tier: 族孙 names a man, so a female descendant this deep
+        # would otherwise be labelled with the male word (v124 matrix run found one in 田所2).
         return "clan_granddaughter" if c_female else "clan_grandson"
     return "clan_descendant"
 
@@ -5731,30 +5733,26 @@ class Facts:
         return top, hops
 
     def _relation_partners(self, cid):
-        """Every cid sharing a scripted relation with `cid`, from both sources (memoised).
+        """Every cid sharing a scripted relation with `cid` (one reverse index over both sources).
 
         The melt's `active_opinions` **union** the latched `relation_reasons`: once a character dies
         the save drops his opinion rows (a dead protagonist keeps none in the final save), and the
-        latch is the only survivor of those relations."""
-        memo = getattr(self, "_rel_partner_memo", None)
-        if memo is None:
-            memo = self._rel_partner_memo = {}
+        latch is the only survivor of those relations. The map is built once and shared by every
+        reference person, because the search asks for it once per anchor set."""
+        idx = getattr(self, "_rel_partner_idx", None)
+        if idx is None:
+            idx = {}
+            for src in (self._any_opinion_index(), self._cached_opinion_index()):
+                for owner, target in src:
+                    if owner == target:
+                        continue
+                    idx.setdefault(owner, set()).add(target)
+                    idx.setdefault(target, set()).add(owner)
+            self._rel_partner_idx = idx
         try:
-            cid = int(cid)
+            return idx.get(int(cid)) or set()
         except (TypeError, ValueError):
             return set()
-        if cid in memo:
-            return memo[cid]
-        out = set()
-        for idx in (self._any_opinion_index(), self._cached_opinion_index()):
-            for owner, target in idx:
-                if owner == cid:
-                    out.add(target)
-                elif target == cid:
-                    out.add(owner)
-        out.discard(cid)
-        memo[cid] = out
-        return out
 
     def _path_anchors(self, subject):
         """People `subject` is named through, as `[(kind, cid, anchor word)]` in ranking order.

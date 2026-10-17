@@ -1165,10 +1165,13 @@ def _assassin_lead_line(k, facts=None, scope=None):
     relatives share a line, an uprising leader carries his home prefecture, first mention gets a kin attributive."""
     nm = k.get("name") or ""
     off = k.get("office") or ""
-    disp = k.get("label") or (f"{off}{nm}" if off else nm)
-    disp = _kin_tag(facts, scope, k.get("id"), disp)
+    plain = k.get("label") or (f"{off}{nm}" if off else nm)
+    disp = _kin_tag(facts, scope, k.get("id"), plain)
     db = k.get("death") or ""
-    for _p in (disp, nm):
+    # the death sentence is built from the *untagged* label, so the prefix match runs on `plain`
+    # first: a path word in front of the label (「领主的姐姐曹飞燕」) would otherwise leave
+    # 「曹飞燕，曹飞燕死于…」 behind
+    for _p in (plain, nm, disp):
         if _p and db.startswith(_p + "死于"):
             db = "死于" + db[len(_p) + 2:]  # drop the "title + died at" prefix
             break

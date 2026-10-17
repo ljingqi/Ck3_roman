@@ -45,12 +45,18 @@ def check(name, ok, detail=""):
 
 
 # ---- sex / seniority implied by a kin word ------------------------------------------------
-_SEX_TOKENS = {
-    "male": "M", "female": "F", "brother": "M", "sister": "F", "father": "M", "mother": "F",
-    "son": "M", "daughter": "F", "husband": "M", "wife": "F", "uncle": "M", "aunt": "F",
-    "nephew": "M", "niece": "F", "grandson": "M", "granddaughter": "F",
-    "grandfather": "M", "grandmother": "F",
-}
+# A kin word's last morpheme names the person's sex (父亲/伯父=男, 母亲/姑母=女), so the check reads
+# the tail instead of the KIN_WORDS key: the key spells the *path* (nephew_sister is a nephew
+# through a sister) and its last token is not always the person.
+_MALE_TAIL = ("父", "伯", "叔", "舅", "公", "哥", "弟", "兄", "子", "孙", "婿", "夫", "甥")
+_FEMALE_TAIL = ("母", "姑", "姨", "姐", "妹", "女", "妻", "嫂", "媳", "婆")
+# sex-neutral words that would otherwise trip the tail rule (兄弟/姊妹 are collectives)
+_NEUTRAL = {"兄弟", "姊妹", "堂兄弟", "堂姊妹", "表兄弟", "表姊妹", "堂表兄弟", "堂表姊妹",
+            "再从堂兄弟", "再从堂姊妹", "再从表兄弟", "再从表姊妹",
+            "三从堂兄弟", "三从堂姊妹", "三从表兄弟", "三从表姊妹",
+            "同族兄弟", "同族姊妹", "叔舅", "姑姨", "配偶", "姻亲兄弟", "姻亲姊妹"}
+_SEX_OVERRIDE = {"大姑子": "F", "小姑子": "F", "大伯子": "M", "小叔子": "M",
+                 "侄甥": "M", "侄甥女": "F", "妻子": "F", "新妇": "F"}
 # Sibling words only: their seniority is the named person's age against the reference person
 # (姐夫/嫂/内兄 and the like compare against the sibling or the spouse, so they are left out).
 _OLDER_WORDS = ("哥哥", "堂兄", "表兄", "再从堂兄", "再从表兄", "三从堂兄", "三从表兄",
@@ -58,27 +64,18 @@ _OLDER_WORDS = ("哥哥", "堂兄", "表兄", "再从堂兄", "再从表兄", "�
 _YOUNGER_WORDS = ("弟弟", "堂弟", "表弟", "再从堂弟", "再从表弟", "三从堂弟", "三从表弟",
                   "妹妹", "堂妹", "表妹", "再从堂妹", "再从表妹", "三从堂妹", "三从表妹")
 
-_SEX_OF_WORD = {}
-
-
-def _sex_table():
-    """{word: 'M'|'F'} built once from the KIN_WORDS keys (each key spells the person's sex)."""
-    if not _SEX_OF_WORD:
-        for key in F.KIN_WORDS:
-            word = F.kin_text(key)
-            if not word or word in _SEX_OF_WORD:
-                continue
-            sex = None
-            for tok in key.split("_"):
-                if tok in _SEX_TOKENS:
-                    sex = _SEX_TOKENS[tok]
-            if sex:
-                _SEX_OF_WORD[word] = sex
-    return _SEX_OF_WORD
-
 
 def kin_sex_of(word):
-    return _sex_table().get(word)
+    """'M'/'F' for a kin word, None when the word does not fix the person's sex."""
+    if not word or word in _NEUTRAL:
+        return None
+    if word in _SEX_OVERRIDE:
+        return _SEX_OVERRIDE[word]
+    if word.endswith(_MALE_TAIL):
+        return "M"
+    if word.endswith(_FEMALE_TAIL):
+        return "F"
+    return None
 
 
 def seniority_of(word):
@@ -210,10 +207,11 @@ def main():
                 bad_old.append((key, k2, o[k2], "（消失）"))
         if t_old != t_new:
             changed += 1
+            # every insertion is a path word; remove as many occurrences as were added (a word may
+            # legitimately appear more than once in a block), then the texts must match again
             t = t_new
-            for wd in ins:
-                if t.count(wd) == 1:
-                    t = t.replace(wd, "", 1)
+            for wd, k in collections.Counter(ins).items():
+                t = t.replace(wd, "", k)
             if t != t_old:
                 bad_text.append((key, t_old, t_new))
     check("旧口径的每一处标注逐字不变", not bad_old, bad_old[:3])
@@ -256,49 +254,32 @@ def main():
             for cid, _label in lst:
                 note(cid)
     ids = sorted(people)
-    w(f"人物 {len(ids)} 人（矩阵 {len(ids)**2:,} 个有序对）")
+    w(f"人物 {len(ids)} 人（矩阵 {len(ids)**2:,} 个有序对，逐对全算）")
 
-    def first_word(cid, subj):
-        parts = f.identity_parts(cid, subj, paths=False)
-        return parts[0][1] if parts else ""
-
+    # Per pair: the production answer (the identity list) and the path-free answer. The path word is
+    # read from the identity list itself, so the matrix checks what the biography would print.
     t0 = time.time()
-    direct = {(s, x): first_word(x, s) for s in ids for x in ids if s != x}
-    w(f"直接词 {len(direct):,} 对，{time.time()-t0:.1f}s")
-
-    t0 = time.time()
-    path, reachable = {}, {}
+    direct, path, bad_cat = {}, {}, []
     for s in ids:
-        todo = set()
-        for _kind, a, _w1 in f._path_anchors(s):
-            if a in people and a != s:
-                todo.add(a)
-            for x in (f._parent_ids(a) | f._child_ids(a) | f._sibling_ids(a)
-                      | set(f.spouses_now(a)) | f._relation_partners(a)):
-                if x in people and x != s:
-                    todo.add(x)
-            for emp, _typ, _h in f._court_rows_at(a):
-                if not isinstance(emp, int):
-                    continue
-                if emp in people and emp != s:
-                    todo.add(emp)
-                for x in (f._parent_ids(emp) | f._child_ids(emp) | f._sibling_ids(emp)):
-                    if x in people and x != s:
-                        todo.add(x)
-        reachable[s] = todo
-        for x in todo:
-            wd = f.path_word_for(x, s)
-            if wd:
-                path[(s, x)] = wd
-    w(f"路径词 {len(path):,} 对（搜索 {sum(len(v) for v in reachable.values()):,} 次），"
+        for x in ids:
+            if s == x:
+                continue
+            plain = f.identity_parts(x, s, paths=False)
+            full = f.identity_parts(x, s)
+            d = plain[0][1] if plain else ""
+            direct[(s, x)] = d
+            cats = [c for c, _w, _src in full]
+            p = next((wd for c, wd, _src in full if c == "path"), "")
+            if p:
+                path[(s, x)] = p
+                if d:
+                    bad_cat.append(((s, x), d, p, "直接词非空仍出路径词"))
+            elif full != plain:
+                bad_cat.append(((s, x), d, "", "无路径词但身份表变了"))
+    w(f"直接词 {sum(1 for v in direct.values() if v):,} 对，路径词 {len(path):,} 对，"
       f"{time.time()-t0:.1f}s")
+    check("路径词只在直接词为空时出现（身份表口径）", not bad_cat, bad_cat[:5])
 
-    rng = random.Random(124)
-    sample = [(s, x) for s in ids for x in ids if s != x and x not in reachable[s]]
-    rng.shuffle(sample)
-    bad_sample = [(s, x, f.path_word_for(x, s)) for s, x in sample[:300]
-                  if f.path_word_for(x, s)]
-    check("不可达的对抽查确实为空", not bad_sample, bad_sample[:3])
     bad_self = [s for s in ids if f.path_word_for(s, s)]
     check("自身路径词为空", not bad_self, bad_self[:3])
 
@@ -337,13 +318,14 @@ def main():
 
     bad_rec = [(s, x, wd) for (s, x), wd in path.items() if not recompute(s, x, wd)]
     check("路径词可由锚点独立复算", not bad_rec, bad_rec[:5])
+    bad_cons = [((s, x), wd) for (s, x), wd in path.items() if f.path_word_for(x, s) != wd]
+    check("身份表里的路径词与 path_word_for 一致", not bad_cons, bad_cons[:5])
 
-    bad_fill = [((s, x), wd) for (s, x), wd in path.items() if direct.get((s, x))]
-    check("路径词只出现在直接词为空的对上", not bad_fill, bad_fill[:5])
-
+    # sex: only the person's own word states his sex; a path word states the anchor's relation to
+    # him, so its tail belongs to the anchor-to-person step and is checked through `recompute`.
     bad_sex = []
-    for (s, x), wd in list(direct.items()) + list(path.items()):
-        want = kin_sex_of(wd.split("的")[-1])
+    for (s, x), wd in direct.items():
+        want = kin_sex_of(wd)
         actual = f._sex_of(x)
         if not want or actual is None:
             continue
@@ -352,8 +334,8 @@ def main():
     check("亲缘词的性别蕴含与缓存性别一致", not bad_sex, bad_sex[:5])
 
     bad_age = []
-    for (s, x), wd in list(direct.items()) + list(path.items()):
-        older = seniority_of(wd.split("的")[-1])
+    for (s, x), wd in direct.items():
+        older = seniority_of(wd)
         actual = f._older_ids(x, s) if older else None
         if actual is None:
             continue
