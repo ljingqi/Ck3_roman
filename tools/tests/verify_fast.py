@@ -1544,6 +1544,29 @@ class _KinRecScope(F.KinScope):
         return w
 
 
+_REL_WORD_SET = frozenset(F.RELATION_WORDS.values())
+
+
+def _identity_word_ok(word):
+    """v124: True when the identity layer may emit `word` as the first word of a chain.
+
+    That is a kin word from the whitelist (single definition site: `F.kin_texts`), a scripted
+    relation word, or a path word 「X的Y」 / 「X的Y的Z」 (see `Facts.path_word_for`). A path word's last
+    segment is always a kin or relation word, its earlier segments are kin words, relation words,
+    领主/最高领主 or a court office word -- the office vocabulary is the game's own localization, so
+    it is only checked for length."""
+    if not word:
+        return False
+    if word in F.kin_texts() or word in _REL_WORD_SET:
+        return True
+    segs = word.split("的")
+    if not 2 <= len(segs) <= 3 or not all(segs):
+        return False
+    if not (segs[-1] in F.kin_texts() or segs[-1] in _REL_WORD_SET):
+        return False
+    return all(len(s) <= 8 for s in segs)
+
+
 def group_v45(snap_path):
     """v45（亲缘定语）断言。
 
@@ -1566,7 +1589,7 @@ def group_v45(snap_path):
                   "family": {"siblings": [1]}}}}
 
     c = _sib("1100.1.1", "1090.1.1")
-    check("[1] 年长同胞 → 兄长", F.kin_word(c, 1, 2) == "兄长", F.kin_word(c, 1, 2))
+    check("[1] 年长同胞 → 哥哥", F.kin_word(c, 1, 2) == "哥哥", F.kin_word(c, 1, 2))
     c = _sib("1090.1.1", "1100.1.1", female_c=True)
     check("[1] 年幼同胞 → 妹妹", F.kin_word(c, 1, 2) == "妹妹", F.kin_word(c, 1, 2))
     c = _sib("", "")
@@ -1593,7 +1616,7 @@ def group_v45(snap_path):
             return {1: "主角甲", 2: "受试者乙"}.get(cid, "")
 
         def kin_word_for(self, cid, subject):
-            return "兄长" if (cid, subject) == (2, 1) else ""
+            return "哥哥" if (cid, subject) == (2, 1) else ""
 
         def relation_word_for(self, cid, subject):
             return ""
@@ -1610,7 +1633,7 @@ def group_v45(snap_path):
 
     ff = _FakeFacts()
     sc = F.KinScope(1)
-    check("[1] 首见加定语", sc.mark(2, "受试者乙", ff) == "兄长受试者乙", "")
+    check("[1] 首见加定语", sc.mark(2, "受试者乙", ff) == "哥哥受试者乙", "")
     check("[1] 再次不加", sc.mark(2, "受试者乙", ff) == "受试者乙", "")
     sc2 = F.KinScope(1).seed([2], ff)
     check("[1] 家世行已写明 → 点位不再加",
@@ -1626,7 +1649,7 @@ def group_v45(snap_path):
           bio._kin_tag_line(_stub({"name_index": {"1100年1月1日，受试者乙任宰相。":
                                                  [[2, "受试者乙"]]}}),
                             F.KinScope(1), "1100年1月1日，受试者乙任宰相。")
-          == "1100年1月1日，兄长受试者乙任宰相。", "")
+          == "1100年1月1日，哥哥受试者乙任宰相。", "")
     check("[1] 行内已带亲缘词 → 不重复插",
           bio._kin_tag_line(_stub({"name_index": {"1100年1月1日，其兄受试者乙卒。":
                                                  [[2, "受试者乙"]]}}),
@@ -1637,7 +1660,7 @@ def group_v45(snap_path):
           bio._kin_tag_line(_stub({"name_index": {"受试者乙任宰相。":
                                                  [[2, "受试者乙"]]}}),
                             F.KinScope(1), "1100年1月1日，受试者乙任宰相。")
-          == "1100年1月1日，兄长受试者乙任宰相。", "")
+          == "1100年1月1日，哥哥受试者乙任宰相。", "")
     check("[1] 传主本人不标", F.KinScope(1).mark(1, "主角甲", ff) == "主角甲", "")
 
     if not os.path.isfile(snap_path):
@@ -1699,8 +1722,6 @@ def group_v45(snap_path):
         F.KinScope = real
 
     n_tag, n_word, n_chars, words = 0, 0, 0, {}
-    # 词表白名单 = 双音节定语词 ∪ 史传单字 (单一定义处见 facts.kin_texts)
-    kin_ok = F.kin_texts()
     bad_word, bad_rep, bad_dup, bad_self, bad_in = [], [], [], [], []
     for key, blocks, sc in built:
         text = "\n".join(v for v in blocks.values() if isinstance(v, str))
@@ -1712,8 +1733,12 @@ def group_v45(snap_path):
             bad_dup.append((key, "同一人两次", sorted(cids)))
         for cid, out in sc.tags:
             n_tag += 1
-            w = f.kin_word_for(cid, sc.subject)
-            if not w or w not in kin_ok:
+            # v124: the inserted attributive is the composed identity chain, and its first word is
+            # either a direct word (kin / relation / office) or -- when the pair had none -- a path
+            # word (「领主的表姨」). Recompute the whole list so a path word is checked too.
+            parts = f.identity_parts(cid, sc.subject)
+            w = parts[0][1] if parts else ""
+            if not w or not _identity_word_ok(w):
                 bad_word.append((key, cid, out))
             if not w or not out.startswith(w) or len(out) <= len(w):
                 bad_rep.append((key, cid, out, w))
@@ -1728,14 +1753,16 @@ def group_v45(snap_path):
         for cid, w, _subj in sc.words:
             n_word += 1
             # issue 3: word_for may return 「亲属词兼关系词」; the basis-selection invariant is on the
-            # kinship part, so strip the relation suffix before comparing it against kin_word_for.
+            # first word of the chain, so compare that against the list recomputed on the basis the
+            # sentence actually has.
             wkin = w.split("兼", 1)[0] if w else w
-            if not wkin or wkin not in kin_ok:
+            parts = f.identity_parts(cid, _subj)
+            want = parts[0][1] if parts else ""
+            if not wkin or not _identity_word_ok(wkin):
                 bad_word.append((key, cid, w))
             # v63: 词必须能按**实际算词基准**复算 (句中第三方人名按本行主语算)
-            elif f.kin_word_for(cid, _subj) != wkin:
-                bad_rep.append((key, cid, w, f"基准{_subj}→"
-                                f"{f.kin_word_for(cid, _subj)}"))
+            elif want != wkin:
+                bad_rep.append((key, cid, w, f"基准{_subj}→{want}"))
             if not w:
                 continue
             if f"{w}" not in text:

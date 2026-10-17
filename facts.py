@@ -359,7 +359,7 @@ KIN_WORDS = {
     "mother":            ("relation_mother", "母亲"),
     "son":               ("relation_son", "儿子"),
     "daughter":          ("relation_daughter", "女儿"),
-    "brother_older":     ("", "兄长"),
+    "brother_older":     ("", "哥哥"),
     "brother_younger":   ("", "弟弟"),
     "sister_older":      ("", "姐姐"),
     "sister_younger":    ("", "妹妹"),
@@ -555,6 +555,26 @@ RELATION_COUNTERPART = {
     "mentor": "student", "student": "mentor",
     "elder": "disciple", "disciple": "elder",
 }
+
+# ---- v124: path words (an identity reached through someone else) ----
+# 「{anchor word}的{word}」 -- the anchor is a person the reference character is himself named
+# through (his relation of record, his liege, a retainer of his court, his own kin) and the last
+# word is how the named character stands to that anchor (「仇敌的哥哥」, 「领主的表姨」,
+# 「门生的狩猎总管的堂弟」). The anchor is always a word, never a person's name, so the phrase
+# needs no separate introduction. Used only where the direct identity list is empty, so every
+# label the earlier versions produced stays byte-identical.
+PATH_WORDS = {"liege": "领主", "top_liege": "最高领主"}
+# Ranking of the first hop: a relation of record reads best, then the liege, then an office, then
+# plain kinship. `top_liege` sits right after `liege` so 领主 wins a tie.
+_PATH_KIND_RANK = {"relation": 0, "liege": 1, "top_liege": 2, "office": 3, "kin": 4}
+# Ranking of the last hop: kin, then a relation, then an office; a relation reached through another
+# relation (「仇敌的仇敌」) is last within its width.
+_PATH_HOP2_RANK = {"kin": 0, "relation": 10, "office": 20}
+_PATH_MAX_WORDS = 3
+# Court rows scanned per anchor for the three-word shape; a fixed cap keeps the search bounded and
+# deterministic.
+_PATH_MAX_COURT = 12
+_REL_WORD_RANK = {RELATION_WORDS[k]: i for i, k in enumerate(RELATION_PRIORITY)}
 
 
 # Non-blood keys (affinal, step, spouse); negating this set yields the blood tier, which wins for a
@@ -5431,7 +5451,7 @@ class Facts:
     # Order of the categories in a composed identity list (user 2026-10-05): the marriage first,
     # then the blood routes (three at most), then the affinal routes (two at most), then the one
     # scripted relation, then every office the person holds in the reference person's court.
-    _IDENTITY_ORDER = ("marriage", "blood", "affinal", "relation", "office")
+    _IDENTITY_ORDER = ("marriage", "blood", "affinal", "relation", "path", "office")
     # Affinal terms one composed identity list may carry. A budget of its own, so an in-law route
     # never eats into the blood routes' budget (user 2026-10-06: both ties must be visible on the
     # same person, 「兄弟兼堂表兄弟兼姻亲兄弟兼朋友」).
@@ -5604,7 +5624,257 @@ class Facts:
                         return words
         return words
 
-    def identity_parts(self, cid, subject):
+    # ---- v124: path words (see PATH_WORDS for the word forms) ----
+
+    def _court_index(self):
+        """{employer: [(employee, position type, hire date)]} over the melt's court positions.
+
+        Built once: `_court_roster` rescans the whole table (about 7k rows) for every reference
+        person, and the path search asks for one court per anchor."""
+        idx = getattr(self, "_court_idx", None)
+        if idx is not None:
+            return idx
+        idx = {}
+        rows = ((self.melt.get("court_positions") or {}).get("database") or {})
+        for e in rows.values():
+            if not isinstance(e, dict):
+                continue
+            emp, typ, owner = e.get("employee"), e.get("court_position"), e.get("employer")
+            if not isinstance(emp, int) or not typ or not isinstance(owner, int):
+                continue
+            idx.setdefault(owner, []).append((emp, typ, e.get("hire_date")))
+        self._court_idx = idx
+        return idx
+
+    def _court_rows(self, employer):
+        """Raw court rows of one employer's court, from the source the program already trusts.
+
+        The player's court is read from the cache's latched roster (the same rows
+        `court_positions_lines` prints); anyone else's from the melt's database table.
+        [] without data (a kinship-only test harness runs without a melt)."""
+        try:
+            emp = int(employer)
+        except (TypeError, ValueError):
+            return []
+        if emp == self.cache.get("player_id"):
+            return [(p.get("employee"), p.get("type"), p.get("hire_date"))
+                    for p in self._court_roster(emp) if isinstance(p, dict)]
+        return list(self._court_index().get(emp) or ())
+
+    def _court_rows_at(self, employer):
+        """`_court_rows` as of `as_of`, in a fixed order (hire date, then id); memoised."""
+        memo = getattr(self, "_court_rows_memo", None)
+        if memo is None:
+            memo = self._court_rows_memo = {}
+        try:
+            emp = int(employer)
+        except (TypeError, ValueError):
+            return []
+        if emp in memo:
+            return memo[emp]
+        cut = cl.date_key(self.as_of) if self.as_of else None
+        rows = []
+        for x, typ, hire in self._court_rows(emp):
+            if cut is not None and hire and cl.date_key(hire) > cut:
+                continue            # the post did not exist yet at this date
+            rows.append((x, typ, hire))
+        rows.sort(key=lambda r: (str(r[2] or ""), r[0] if isinstance(r[0], int) else 0))
+        memo[emp] = rows
+        return rows
+
+    def _office_anchor_word(self, type_key, employer=None):
+        """Display name of one court position as that court words it, memoised per (type, employer).
+
+        The game picks a variant by the employer's government, independence, tier and heritage
+        (私人医生 → 医学博士), so the employer belongs to the key."""
+        if not type_key:
+            return ""
+        key = (str(type_key), employer if isinstance(employer, int) else None)
+        memo = getattr(self, "_cp_word_memo", None)
+        if memo is None:
+            memo = self._cp_word_memo = {}
+        if key in memo:
+            return memo[key]
+        v = self.court_position_word(type_key, cid=key[1]) or ""
+        if v == type_key:
+            v = ""
+        memo[key] = v
+        return v
+
+    def _liege_cid(self, cid, date=None):
+        """The person `cid` holds as his liege at `date`, or None.
+
+        A tributary contract is a tie between realms rather than vassalage (the same reading
+        `_is_independent` takes), so it yields no liege."""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return None
+        ent = self._vassal_entry_at(cid, date or self.as_of)
+        if not isinstance(ent, dict) or ent.get("trib"):
+            return None
+        liege = ent.get("liege")
+        try:
+            return int(liege) if liege is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _liege_chain_top(self, cid, max_hops=4):
+        """Topmost liege of `cid` and the number of hops walked; (None, 0) when he has none."""
+        top, hops, cur = None, 0, cid
+        for _ in range(max_hops):
+            nxt = self._liege_cid(cur)
+            if nxt is None or nxt == cur:
+                break
+            top, cur = nxt, nxt
+            hops += 1
+        return top, hops
+
+    def _relation_partners(self, cid):
+        """Every cid sharing a scripted relation with `cid`, from both sources (memoised).
+
+        The melt's `active_opinions` **union** the latched `relation_reasons`: once a character dies
+        the save drops his opinion rows (a dead protagonist keeps none in the final save), and the
+        latch is the only survivor of those relations."""
+        memo = getattr(self, "_rel_partner_memo", None)
+        if memo is None:
+            memo = self._rel_partner_memo = {}
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return set()
+        if cid in memo:
+            return memo[cid]
+        out = set()
+        for idx in (self._any_opinion_index(), self._cached_opinion_index()):
+            for owner, target in idx:
+                if owner == cid:
+                    out.add(target)
+                elif target == cid:
+                    out.add(owner)
+        out.discard(cid)
+        memo[cid] = out
+        return out
+
+    def _path_anchors(self, subject):
+        """People `subject` is named through, as `[(kind, cid, anchor word)]` in ranking order.
+
+        Four edge kinds: the subject's relations of record, his liege and his liege's own liege
+        (领主/最高领主), the retainers of his court, and his own kin (parents, children, siblings,
+        spouses). Sorted once per reference person, so the same pair always reads the same way."""
+        if subject is None:
+            return []
+        try:
+            s = int(subject)
+        except (TypeError, ValueError):
+            return []
+        memo = getattr(self, "_path_anchor_memo", None)
+        if memo is None:
+            memo = self._path_anchor_memo = {}
+        if s in memo:
+            return memo[s]
+        out, seen = [], set()
+
+        def add(kind, cid, word):
+            """Record one anchor; the first word offered for a (kind, cid) wins."""
+            if not word:
+                return
+            try:
+                cid = int(cid)
+            except (TypeError, ValueError):
+                return
+            if cid == s or (kind, cid) in seen:
+                return
+            seen.add((kind, cid))
+            out.append((kind, cid, word))
+
+        for x in self._relation_partners(s):
+            add("relation", x, self.relation_word_for(x, s))
+        liege = self._liege_cid(s)
+        if liege is not None:
+            add("liege", liege, PATH_WORDS["liege"])
+            top, _hops = self._liege_chain_top(s)
+            if top is not None and top != liege:
+                add("top_liege", top, PATH_WORDS["top_liege"])
+        for emp, typ, _hire in self._court_rows_at(s):
+            add("office", emp, self._office_anchor_word(typ, s))
+        for x in (sorted(self._parent_ids(s)) + sorted(self._child_ids(s))
+                  + sorted(self._sibling_ids(s)) + sorted(self.spouses_now(s))):
+            add("kin", x, self.kin_word_for(x, s))
+        out.sort(key=lambda t: (_PATH_KIND_RANK.get(t[0], 9),
+                                _REL_WORD_RANK.get(t[2], 99) if t[0] == "relation" else 0,
+                                t[1]))
+        memo[s] = out
+        return out
+
+    def path_word_for(self, cid, subject):
+        """Identity of `cid` as seen from `subject` through a third person; '' when there is none.
+
+        Two or three words (at most two 「的」): the first is the anchor word, the last is how `cid`
+        stands to the anchor, and a court office may sit in the middle
+        (「门生的狩猎总管的堂弟」). The search is bounded by `_PATH_MAX_WORDS` and by the shapes
+        `_path_word_search` admits; a pair with a direct word is never asked about, and any failure
+        returns '' rather than raising into the block builder."""
+        try:
+            s, c = int(subject), int(cid)
+        except (TypeError, ValueError):
+            return ""
+        if s == c:
+            return ""
+        memo = getattr(self, "_path_word_memo", None)
+        if memo is None:
+            memo = self._path_word_memo = {}
+        if (c, s) in memo:
+            return memo[(c, s)]
+        try:
+            word = self._path_word_search(c, s)
+        except Exception:                                    # noqa: BLE001
+            word = ""
+        memo[(c, s)] = word
+        return word
+
+    def _path_word_search(self, c, s):
+        """Best admissible path word for `(c, s)`; '' when no shape qualifies.
+
+        Shapes: last hop kin, last hop relation, and anchor → office → kin. Two kin hops are never
+        written (two kin steps name one relation, which `identity_parts` already computes directly
+        — 「妹妹的父亲的」 is not a phrase). Ranking is fixed: fewer words, then the first hop
+        (relation > liege > 最高领主 > office > kin, relations by `RELATION_PRIORITY`), then the
+        last hop (kin > relation > office, a relation reached through a relation last), then ids."""
+        best = None
+
+        def offer(key, w1, w2, w3=""):
+            """Keep the candidate when it ranks above the current best."""
+            nonlocal best
+            if best is None or key < best[0]:
+                best = (key, f"{w1}的{w2}" if not w3 else f"{w1}的{w2}的{w3}")
+
+        for kind, a, w1 in self._path_anchors(s):
+            if a == c or a == s:
+                continue
+            kr = _PATH_KIND_RANK.get(kind, 9)
+            rr = _REL_WORD_RANK.get(w1, 99) if kind == "relation" else 0
+            if kind != "kin":
+                k2 = self.kin_word_for(c, a)
+                if k2:
+                    offer((2, kr, rr, _PATH_HOP2_RANK["kin"], a, ""), w1, k2)
+            r2 = self.relation_word_for(c, a)
+            if r2:
+                h2 = _PATH_HOP2_RANK["relation"] + (1 if kind == "relation" else 0)
+                offer((2, kr, rr, h2, a, ""), w1, r2)
+            if kind in ("relation", "liege", "top_liege", "office"):
+                for b, typ, _hire in self._court_rows_at(a)[:_PATH_MAX_COURT]:
+                    if not isinstance(b, int) or b in (c, s, a):
+                        continue
+                    w2 = self._office_anchor_word(typ, a)
+                    if not w2:
+                        continue
+                    k3 = self.kin_word_for(c, b)
+                    if k3:
+                        offer((3, kr, rr, _PATH_HOP2_RANK["office"], a, b), w1, w2, k3)
+        return best[1] if best else ""
+
+    def identity_parts(self, cid, subject, paths=True):
         """Ordered `[(category, word, source)]` identities of `cid` as seen from `subject`.
 
         The single outlet for a composed identity attributive; `kin_chain_words_for` joins the
@@ -5612,10 +5882,14 @@ class Facts:
         protagonist here: the identity list of a person is asked for by whoever the sentence is
         about (user 2026-10-06 「计算的依据是该板块的主角」). Categories follow `_IDENTITY_ORDER`;
         every lookup is cid-based, and an undecidable relation contributes no word at all rather
-        than a guess.
+        than a guess. The `path` category (v124) fills in only when everything before it produced
+        nothing: a person with no direct tie to the reference person may still be his rival's
+        brother or his liege's aunt by marriage.
 
-        `source` names where the word came from (a `KIN_WORDS` key, `relation`, `court`, `council`),
-        which is what the regression scripts pin their assertions to."""
+        `source` names where the word came from (a `KIN_WORDS` key, `relation`, `court`, `council`,
+        `path`), which is what the regression scripts pin their assertions to. `paths=False` skips
+        the path search, which the post-processing passes ask for because they never rewrite a
+        path word (see `path_word_for`)."""
         out = []
         if cid is None or subject is None:
             return out
@@ -5660,6 +5934,10 @@ class Facts:
         for a in self.affinal_kin_words_for(c, s):
             _put("affinal", a, "affinal")
         _put("relation", self.relation_word_for(c, s), "relation")
+        if paths and not out:
+            # Only where nothing else names the pair, so a direct word is never replaced and every
+            # label the earlier versions produced stays byte-identical.
+            _put("path", self.path_word_for(c, s), "path")
         # Regency over the reference person (摄政) is an office of that lord's court, and reads as
         # one, so it stands with the offices and before them. The regency counts only when the
         # reference person is the lord she governs, never merely when she is a regent of somebody
@@ -5672,20 +5950,21 @@ class Facts:
             _put("office", seat, "council")
         return out
 
-    def kin_chain_words_for(self, cid, subject):
+    def kin_chain_words_for(self, cid, subject, paths=True):
         """The concurrent identity labels of `cid` to `subject`, in reading order, joined with 「兼」.
 
         Compatibility shell over `identity_parts`: the marriage word first, then the further blood
         routes (three blood terms at most in all), then the affinal routes (two at most), then the
-        one scripted relation, then every office the person holds in the subject's court. e.g. a
-        wife who is also the subject's daughter and cousin, and his marshal ->
-        [妻子, 女儿, 堂姐, 军事总管].
+        one scripted relation, then a path word when none of those exists, then every office the
+        person holds in the subject's court. e.g. a wife who is also the subject's daughter and
+        cousin, and his marshal -> [妻子, 女儿, 堂姐, 军事总管]. `paths=False` skips the path word
+        (the post-processing passes, which never rewrite one).
 
         Reading order and caps follow the user's 2026-10-05 ruling: a character holds at most one
         scripted relation to another (nobody is both a rival and a lover), while offices are all
         listed. The cascade ranks by degree, so a spouse+blood pair otherwise reads as the spouse
         and the blood tie is lost; that tie is recovered from the routes."""
-        return [w for _cat, w, _src in self.identity_parts(cid, subject)]
+        return [w for _cat, w, _src in self.identity_parts(cid, subject, paths=paths)]
 
     def _sibling_spouse_note(self, subject, sib, as_of=None):
         """A comma clause naming the marriage when a sibling was also the subject's spouse or
@@ -25881,9 +26160,11 @@ def _victim_identity_parts(f, cid, pid):
     Every entry of 《刺客列传》 was killed by the protagonist, and the save drops the opinion once
     one side dies, so a scripted relation word is often no longer readable. The enmity the killing
     itself establishes then takes the relation slot (after the kin words, before the offices), which
-    is exactly where `identity_parts` would have put a scripted one."""
+    is exactly where `identity_parts` would have put a scripted one. A path word is more specific
+    than that bare 「仇敌」 (「领主的表姨」 says how she stood to him, 「仇敌」 only what he did), so
+    it takes the slot instead and no enmity word is added."""
     parts = list(f.identity_parts(cid, pid))
-    if any(_cat == "relation" for _cat, _w, _src in parts):
+    if any(_cat in ("relation", "path") for _cat, _w, _src in parts):
         return parts
     cut = len(parts)
     while cut and parts[cut - 1][0] == "office":

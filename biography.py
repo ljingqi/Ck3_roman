@@ -2375,19 +2375,26 @@ def _accepted_kin_words(fi, cid, subj, row_words):
     """Words the fact layer itself composes or prints for one relative **as seen from `subj`**: the
     composed kin chain (`Facts.kin_chain_words_for`: 「妻子兼妹妹X」) plus the marriage word of the row
     they are listed in (「配偶X」 is the council's consort seat, 「妻室X」 the row head). `_fix_kin_roles`
-    leaves all of them alone; '' is not a word and is filtered by the caller."""
+    leaves all of them alone; '' is not a word and is filtered by the caller.
+
+    `paths=False`: this pass accepts direct words only. It runs once per relative per block, and a
+    path word (「仇敌的哥哥」) carries a 「的」, so it can never be the word the pass rewrites."""
     out = set(row_words or ())
     try:
-        out |= {w for w in (fi.kin_chain_words_for(cid, subj) or ()) if w}
+        out |= {w for w in (fi.kin_chain_words_for(cid, subj, paths=False) or ()) if w}
     except Exception:                                        # noqa: BLE001
         pass
     return out
 
 
 def _kin_chain_for(fi, cid, subj):
-    """`Facts.kin_chain_words_for` behind a guard: test stubs and a missing Facts instance yield []."""
+    """`Facts.kin_chain_words_for` behind a guard: test stubs and a missing Facts instance yield [].
+
+    `paths=False` is required for cost: `_fix_kin_roles` calls this once per (possessor, relative)
+    pair of every kin word in the finished section, and the path search costs milliseconds per pair.
+    A path word is never a rewrite target (it carries a 「的」, which `_KIN_MARKS` does not match)."""
     try:
-        return [w for w in (fi.kin_chain_words_for(cid, subj) or ()) if w]
+        return [w for w in (fi.kin_chain_words_for(cid, subj, paths=False) or ()) if w]
     except Exception:                                        # noqa: BLE001
         return []
 
