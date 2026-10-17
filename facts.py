@@ -880,11 +880,11 @@ def _deep_kin_key(s, c, fath, moth, anc_memo, c_female, older):
     gap = -gap
     if gap == 1:
         return "clan_nephew" if c_female is not True else "clan_niece"
-    if gap == 2:
-        if c_female is None:
-            return "clan_descendant"
-        return "clan_granddaughter" if c_female else "clan_grandson"
-    return "clan_descendant"
+    if c_female is None:
+        return "clan_descendant"
+    # sex-aware even in the coarse tier: 族孙 names a man, so a woman three or more generations
+    # down is 族孙女 (v124 matrix run found one in 洪氏2)
+    return "clan_granddaughter" if c_female else "clan_grandson"
 
 
 def _kin_word_coarse(term):
@@ -5932,20 +5932,25 @@ class Facts:
         for a in self.affinal_kin_words_for(c, s):
             _put("affinal", a, "affinal")
         _put("relation", self.relation_word_for(c, s), "relation")
-        if paths and not out:
-            # Only where nothing else names the pair, so a direct word is never replaced and every
-            # label the earlier versions produced stays byte-identical.
-            _put("path", self.path_word_for(c, s), "path")
+        # The offices stand after the path word in reading order, but they are collected first:
+        # their presence decides whether a gap exists at all. A court artisan of the subject has a
+        # direct tie already, so a path word there would put a second, weaker label on him
+        # (洪氏2 matrix run: 「宫廷匠师」 plus 「儿子的仇敌」 on one man).
+        offices = []
         # Regency over the reference person (摄政) is an office of that lord's court, and reads as
         # one, so it stands with the offices and before them. The regency counts only when the
         # reference person is the lord she governs, never merely when she is a regent of somebody
         # (v109 §2.1).
         if self.regent_of(s, date=self.as_of) == c:
-            _put("office", self.regency_of(c, date=self.as_of), "regency")
-        for off in self._court_positions_of(c, subject=s):
-            _put("office", off, "court")
-        for seat in self._council_seats_of(c, subject=s):
-            _put("office", seat, "council")
+            offices.append(("office", self.regency_of(c, date=self.as_of), "regency"))
+        offices.extend(("office", off, "court") for off in self._court_positions_of(c, subject=s))
+        offices.extend(("office", seat, "council") for seat in self._council_seats_of(c, subject=s))
+        if paths and not out and not offices:
+            # Only where nothing else names the pair, so a direct word is never replaced and every
+            # label the earlier versions produced stays byte-identical.
+            _put("path", self.path_word_for(c, s), "path")
+        for cat, word, src in offices:
+            _put(cat, word, src)
         return out
 
     def kin_chain_words_for(self, cid, subject, paths=True):

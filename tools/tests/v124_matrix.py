@@ -259,7 +259,7 @@ def main():
     # Per pair: the production answer (the identity list) and the path-free answer. The path word is
     # read from the identity list itself, so the matrix checks what the biography would print.
     t0 = time.time()
-    direct, path, bad_cat = {}, {}, []
+    direct, dcat, path, bad_cat = {}, {}, {}, []
     for s in ids:
         for x in ids:
             if s == x:
@@ -268,7 +268,7 @@ def main():
             full = f.identity_parts(x, s)
             d = plain[0][1] if plain else ""
             direct[(s, x)] = d
-            cats = [c for c, _w, _src in full]
+            dcat[(s, x)] = plain[0][0] if plain else ""
             p = next((wd for c, wd, _src in full if c == "path"), "")
             if p:
                 path[(s, x)] = p
@@ -343,9 +343,12 @@ def main():
             bad_age.append((s, x, wd, "实际更年长" if actual else "实际更年幼"))
     check("长幼词与生年一致", not bad_age, bad_age[:5])
 
+    # a kin or relation word names the pair from both sides; an office word does not (he is my
+    # court artisan, I am not his), so only the two-sided categories are compared
+    _TWO_SIDED = ("marriage", "blood", "affinal", "relation")
     bad_sym = [(s, x, wd, direct.get((x, s), "")) for (s, x), wd in direct.items()
-               if wd and not direct.get((x, s))]
-    check("直接词两个方向都出（单向断开即报）", not bad_sym, bad_sym[:5])
+               if wd and dcat.get((s, x)) in _TWO_SIDED and not direct.get((x, s))]
+    check("亲缘/关系词两个方向都出（单向断开即报）", not bad_sym, bad_sym[:5])
 
     # ---------------------------------------------------------------- D. 落盘
     w("\n== D. 产出 ==")
