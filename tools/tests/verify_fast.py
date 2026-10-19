@@ -1537,8 +1537,8 @@ class _KinRecScope(F.KinScope):
             self.tags.append((cid, out))
         return out
 
-    def word_for(self, cid, facts, subject=None):
-        w = super().word_for(cid, facts, subject=subject)
+    def word_for(self, cid, facts, subject=None, date=None):
+        w = super().word_for(cid, facts, subject=subject, date=date)
         if w:
             self.words.append((cid, w, self.subject if subject is None else subject))
         return w
@@ -1618,10 +1618,10 @@ def group_v45(snap_path):
         def kin_word_for(self, cid, subject):
             return "哥哥" if (cid, subject) == (2, 1) else ""
 
-        def relation_word_for(self, cid, subject):
+        def relation_word_for(self, cid, subject, date=None):
             return ""
 
-        def kin_chain_words_for(self, cid, subject):
+        def kin_chain_words_for(self, cid, subject, date=None):
             w = self.kin_word_for(cid, subject)
             if not w:
                 return []
@@ -2496,8 +2496,8 @@ def group_v63(snap_path):
     real_line, real_scope = bio._kin_tag_line, F.KinScope
 
     class _Scope(real_scope):
-        def word_for(self, cid, fa, subject=None):
-            w = real_scope.word_for(self, cid, fa, subject=subject)
+        def word_for(self, cid, fa, subject=None, date=None):
+            w = real_scope.word_for(self, cid, fa, subject=subject, date=date)
             if w:
                 cur.append((cid, w, self.subject if subject is None else subject))
             return w
