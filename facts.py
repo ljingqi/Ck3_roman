@@ -1362,13 +1362,14 @@ class KinScope:
                     self.held[w] = self.held.get(w, 0) + 1
         return self
 
-    def word_for(self, cid, facts, subject=None):
+    def word_for(self, cid, facts, subject=None, date=None):
         """On first occurrence return this person's kin attributive and claim the slot, else ''.
 
         Concurrent relations are joined with 「兼」 in reading order -- primary kin term, further
         blood routes (three blood terms at most), the one scripted relation, then every court office
         the person holds in the subject's court (see `Facts.kin_chain_words_for`).
-        `subject` overrides the reference person for sentences with their own subject."""
+        `subject` overrides the reference person for sentences with their own subject; `date` is
+        that sentence's own day, so a relation formed later stays out of it."""
         subj = self.subject if subject is None else subject
         if cid is None or subj is None:
             return ""
@@ -1379,7 +1380,7 @@ class KinScope:
         if cidi == subj or cidi in self.seen:
             return ""
         self.seen.add(cidi)
-        parts = facts.kin_chain_words_for(cidi, subj)
+        parts = facts.kin_chain_words_for(cidi, subj, date=date)
         if not parts:
             return ""
         w = "兼".join(parts)
@@ -2110,6 +2111,9 @@ class Facts:
         # (multi-dialect asides outside the timeline) are absent and fall back to the
         # subject of the biography.
         self.line_owner = {}
+        # line text -> the day that line is about ({index_names}' `date`), read by the section
+        # pass so a relation formed after that day never words an earlier line.
+        self.line_date = {}
         # line text -> counterparty cids whose relation the sentence already states
         # (marriage/birth/bereavement); see `_REL_STATED_TYPES`.
         self.line_stated = {}
@@ -4971,6 +4975,35 @@ class Facts:
             return ""
         return f"其{kin_word_short(key)}"
 
+    # Single-character chronicle forms for the composed succession attributive (`_chain_kin_word`):
+    # `kin_word_short` shortens the primary term the same way for `_kin_word`.
+    _CHAIN_KIN_SHORT = {"妻子": "妻", "丈夫": "夫"}
+
+    def _chain_kin_word(self, a, b):
+        """「其」 + the concurrent kin words of `a` relative to `b`, joined with 「兼」 (v125).
+
+        The succession sentences used the single-word outlet `_kin_word`, so a person who is
+        several things at once got one word only (「其妻」 for a successor who is also the subject's
+        granddaughter). This composes the kin categories — marriage, blood, affinal — and leaves out
+        the scripted relation (情人/灵魂伴侣: the sentence is about the line of descent) as well as
+        offices and path words. Falls back to `_kin_word` when nothing composes."""
+        try:
+            cid, subj = int(a), int(b)
+        except (TypeError, ValueError):
+            return self._kin_word(a, b)
+        words = []
+        # `_kin_word(a, b)` words `b` relative to `a` (the chain reads 「其妻杨丹霞」 from the
+        # subject's side), and `identity_parts(person, reference)` takes the same direction.
+        for cat, w, _src in self.identity_parts(subj, cid, paths=False):
+            if cat not in ("marriage", "blood", "affinal"):
+                continue
+            w = self._CHAIN_KIN_SHORT.get(w, w)
+            if w and w not in words:
+                words.append(w)
+        if not words:
+            return self._kin_word(a, b)
+        return "其" + "兼".join(words)
+
     def kin_word_for(self, cid, subject):
         """Kinship word of `cid` relative to `subject` (single outlet; see the module-level
         `kin_word`, whose first argument is the relative and the second the reference person).
@@ -5872,7 +5905,7 @@ class Facts:
                         offer((3, kr, rr, _PATH_HOP2_RANK["office"], a, b), w1, w2, k3)
         return best[1] if best else ""
 
-    def identity_parts(self, cid, subject, paths=True):
+    def identity_parts(self, cid, subject, paths=True, date=None):
         """Ordered `[(category, word, source)]` identities of `cid` as seen from `subject`.
 
         The single outlet for a composed identity attributive; `kin_chain_words_for` joins the
@@ -5887,7 +5920,8 @@ class Facts:
         `source` names where the word came from (a `KIN_WORDS` key, `relation`, `court`, `council`,
         `path`), which is what the regression scripts pin their assertions to. `paths=False` skips
         the path search, which the post-processing passes ask for because they never rewrite a
-        path word (see `path_word_for`)."""
+        path word (see `path_word_for`). `date` is the day the sentence is about: the scripted
+        relation is read as of it, so a tie formed later never words an earlier line (v125)."""
         out = []
         if cid is None or subject is None:
             return out
@@ -5931,7 +5965,7 @@ class Facts:
                 n_blood += 1
         for a in self.affinal_kin_words_for(c, s):
             _put("affinal", a, "affinal")
-        _put("relation", self.relation_word_for(c, s), "relation")
+        _put("relation", self.relation_word_for(c, s, date=date), "relation")
         # The offices stand after the path word in reading order, but they are collected first:
         # their presence decides whether a gap exists at all. A court artisan of the subject has a
         # direct tie already, so a path word there would put a second, weaker label on him
@@ -5953,7 +5987,7 @@ class Facts:
             _put(cat, word, src)
         return out
 
-    def kin_chain_words_for(self, cid, subject, paths=True):
+    def kin_chain_words_for(self, cid, subject, paths=True, date=None):
         """The concurrent identity labels of `cid` to `subject`, in reading order, joined with 「兼」.
 
         Compatibility shell over `identity_parts`: the marriage word first, then the further blood
@@ -5967,7 +6001,7 @@ class Facts:
         scripted relation to another (nobody is both a rival and a lover), while offices are all
         listed. The cascade ranks by degree, so a spouse+blood pair otherwise reads as the spouse
         and the blood tie is lost; that tie is recovered from the routes."""
-        return [w for _cat, w, _src in self.identity_parts(cid, subject, paths=paths)]
+        return [w for _cat, w, _src in self.identity_parts(cid, subject, paths=paths, date=date)]
 
     def _sibling_spouse_note(self, subject, sib, as_of=None):
         """A comma clause naming the marriage when a sibling was also the subject's spouse or
@@ -6225,7 +6259,7 @@ class Facts:
         nm = ""
         if isinstance(succ, int):
             nm = self._chain_person(succ)
-            kin = self._kin_word(cid, succ)
+            kin = self._chain_kin_word(cid, succ)
             if nm and kin:
                 nm = f"{kin}{nm}"
         if date and nm:
@@ -6261,7 +6295,7 @@ class Facts:
             pcid = int(prev["cid"])
             start = chain[idx].get("date") or ""
             nm = self._chain_person(pcid)
-            kin = self._kin_word(pid, pcid)
+            kin = self._chain_kin_word(pid, pcid)
             pv = self.campaign.get(pcid)
             death = ""
             re_end = {}
@@ -6319,7 +6353,7 @@ class Facts:
             ncid = int(nxt["cid"])
             start = nxt.get("date") or ""
             nm = self._chain_person(ncid)
-            kin = self._kin_word(pid, ncid)
+            kin = self._chain_kin_word(pid, ncid)
             if nm:
                 body = f"{kin}{nm}继为传主。" if kin else f"传主之位归于{nm}。"
                 out.append(f"后任：{self.date(start)}，{body}" if start
@@ -9031,10 +9065,11 @@ class Facts:
         `f.index_names(text, lg)` then records the line with the (cid, label) pairs it used."""
         return _NameLog(self)
 
-    def index_names(self, text, log, owner=None):
+    def index_names(self, text, log, owner=None, date=None):
         """Register a line and the (cid, label) pairs it used into `name_index`.
 
-        `owner` is the line's subject; the section pass uses it for kin attributes."""
+        `owner` is the line's subject; the section pass uses it for kin attributes. `date` is the
+        day the line is about, when it has one: the render pass reads relations as of that day."""
         if text and log is not None and log.items:
             self.name_index[text] = [list(x) for x in log.items]
             if owner is not None:
@@ -9042,16 +9077,18 @@ class Facts:
                     self.line_owner[text] = int(owner)
                 except (TypeError, ValueError):
                     pass
+            if date:
+                self.line_date[text] = str(date)
         return text
 
     def alias_line(self, old, new):
-        """Copy a line's label registration onto its rewritten form.
+        """Copy a line's registration onto its rewritten form.
 
-        `name_index`, `line_owner` and `line_stated` are keyed by sentence body, so without the
-        alias the section pass loses the line and its kin attributes."""
+        `name_index`, `line_owner`, `line_date` and `line_stated` are keyed by sentence body, so
+        without the alias the section pass loses the line and its kin attributes."""
         if not old or not new or old == new:
             return
-        for tbl in (self.name_index, self.line_owner, self.line_stated):
+        for tbl in (self.name_index, self.line_owner, self.line_date, self.line_stated):
             if old in tbl and new not in tbl:
                 tbl[new] = tbl[old]
 
@@ -9289,9 +9326,21 @@ class Facts:
         for w in self._court_positions_of(cid, subject=pid, date=date):
             if w and w not in out:
                 out.append(w)
+        # A Chinese celestial cabinet seat IS the board title (`e_minister_*`), so the same post
+        # also comes out of `_ministry_office_at` for `official_title`; listing it here as well
+        # wrote the post twice (v125: 枢密使兼枢密使). Skip a seat whose word is already the
+        # holder's board title that day, current or former.
+        _own = set()
+        for _m in (self._ministry_office_at(cid, date),
+                   self._ministry_office_at(cid, date, include_former=True)):
+            if _m:
+                _own.add(_m[1:] if _m.startswith("前") and len(_m) > 1 else _m)
         for w in self._council_seats_of(cid, subject=pid, date=date):
-            if w and w not in out:
-                out.append(w)
+            if not w or w in out:
+                continue
+            if _own and (w[1:] if w.startswith("前") and len(w) > 1 else w) in _own:
+                continue
+            out.append(w)
         return out
 
     def _person_label_uncached(self, cid, date, style):
@@ -9333,7 +9382,7 @@ class Facts:
         # closest to the name.
         _seats = self._subject_office_words(cid, date)
         if _seats:
-            off = "兼".join([off] + _seats) if off else "兼".join(_seats)
+            off = _join_office_words(off, _seats)
         if style == "full":
             return self._full_label(cid, date, off, pn)
         return self._join_office(off, pn)
@@ -15739,14 +15788,15 @@ class Facts:
                     out.add(ck)
         return out
 
-    def relation_word_for(self, cid, subject):
+    def relation_word_for(self, cid, subject, date=None):
         """The Chinese relation word for `cid`'s role toward `subject` (「朋友」/「仇敌」…), or '' when
         they share no scripted relation that already existed by as_of.
 
         When several relations hold, RELATION_PRIORITY picks the single most significant one, matching
         the game's one-key RelationToMe. Kinds with a known memory type are gated by `_rel_mem_date`
         (the same rule `relation_reasons` uses) so a decade chapter never shows a friendship or feud
-        formed after its cutoff; childhood/TGP kinds with no memory type pass ungated."""
+        formed after its cutoff; childhood/TGP kinds with no memory type pass ungated. `date` tightens
+        that gate to the sentence's own day: a relation formed after it does not word the line."""
         try:
             cid, subject = int(cid), int(subject)
         except (TypeError, ValueError):
@@ -15760,8 +15810,12 @@ class Facts:
             if k not in kinds:
                 continue
             mtypes = self._REL_REASON_KINDS.get(k)
-            if mtypes and not self._rel_mem_date(cid, mtypes, base=subject):
-                continue            # relation formed after as_of -> not rendered this decade
+            if mtypes:
+                _rd = self._rel_mem_date(cid, mtypes, base=subject)
+                if not _rd:
+                    continue        # relation formed after as_of -> not rendered this decade
+                if date and cl.date_key(_rd) > cl.date_key(date):
+                    continue        # relation formed after the sentence's own day
             return RELATION_WORDS.get(k, "")
         return ""
 
@@ -15923,7 +15977,7 @@ class Facts:
                 rel_d = self._rel_mem_date(cid, mtypes) if mtypes else None
                 if mtypes and not rel_d:
                     continue  # relation did not exist before as_of → not rendered
-                tpl = L.relation_templates().get(reason)
+                tpl = _reason_template(reason)
                 if not tpl:
                     continue  # older localization tables carry no template; cause/memory sentences fill in
                 extra = v.get("involved_character")
@@ -15940,7 +15994,8 @@ class Facts:
                     out.append(s)
         return out
 
-    def relation_reason_for_pair(self, a, b, kinds, styled=False, keys=False):
+    def relation_reason_for_pair(self, a, b, kinds, styled=False, keys=False,
+                                 with_subject=False):
         """Game reason sentences for any pair — same conventions as `relation_reasons` but with a
         reference person other than the subject, for pairs where neither side is the subject.
 
@@ -15950,7 +16005,9 @@ class Facts:
         order conventions). With `styled=True` all three appellations go through `event_name`,
         matching the rest of the fact layer. With `keys=True` each item is `(reason key, sentence)`,
         which lets a caller tell WHICH occasion a reason describes (a coronation feud names the
-        ceremony the witness memory also reports)."""
+        ceremony the witness memory also reports). With `with_subject=True` each item is
+        `(sentence, subject_cid)`: the cid of the template's first role tag, i.e. who the sentence
+        is grammatically about (see `_sub_relation_loc`)."""
         if not isinstance(a, int) or not isinstance(b, int) or a == b:
             return []
         melt_idx = self._any_opinion_index()
@@ -15972,7 +16029,7 @@ class Facts:
                 rel_d = self._rel_mem_date(b, mtypes, base=a) if mtypes else None
                 if mtypes and not rel_d:
                     continue      # relation did not exist before as_of → not rendered
-                tpl = L.relation_templates().get(reason)
+                tpl = _reason_template(reason)
                 if not tpl:
                     continue
                 extra = v.get("involved_character")
@@ -15987,13 +16044,23 @@ class Facts:
                         if isinstance(extra, int) else "",
                     ]
                 s = self.murder_relation_sentence(
-                    reason, pair[0], pair[1], rel_d, names=_names) \
-                    or _sub_relation_loc(self, tpl, pair[0], pair[1], extra,
-                                         province=v.get("province"), names=_names)
+                    reason, pair[0], pair[1], rel_d, names=_names)
+                _subj = None
+                if with_subject:
+                    _loc, _subj = _sub_relation_loc(
+                        self, tpl, pair[0], pair[1], extra,
+                        province=v.get("province"), names=_names, want_subject=True)
+                    s = s or _loc
+                elif not s:
+                    s = _sub_relation_loc(self, tpl, pair[0], pair[1], extra,
+                                          province=v.get("province"), names=_names)
                 s = s.strip("。") + "。" if s else ""
                 if s and s not in seen:
                     seen.add(s)
-                    out.append((reason, s) if keys else s)
+                    if with_subject:
+                        out.append((s, _subj))
+                    else:
+                        out.append((reason, s) if keys else s)
         return out
 
     def dynasty_name(self, cid):
@@ -18869,10 +18936,21 @@ def _mem_sentence(f, owner_id, mem):
     Wraps the body in an out-word log: every (cid, title form) used is recorded in
     `f.name_index[this sentence]` for the section pass to insert kinship attributes at the
     exact position, with the line subject `owner_id` registered so third-party attributes
-    count relative to it rather than to the section protagonist."""
+    count relative to it rather than to the section protagonist.
+
+    The subject is the sentence's grammar, not the memory's holder: a `_corresponding` reason
+    template names the object first (「[TARGET]勾引了[CHARACTER]」), and registering the holder there
+    made the attributes count from the wrong person (v125: 韩吉娘 记为行主语 → 「岳母兼儿媳」).
+    `_mem_sentence_body` therefore hands the template's own subject back through
+    `f._line_subject_hint`, and the sentence date goes along so the render pass reads relations as
+    of that day (a soulmate tie formed a year later stays out of the line)."""
+    f._line_subject_hint = None
     with f.log_names() as lg:
         out = _mem_sentence_body(f, owner_id, mem)
-    out = f.index_names(out, lg, owner=owner_id)
+        _hint = f._line_subject_hint
+        f._line_subject_hint = None
+    out = f.index_names(out, lg, owner=owner_id if _hint is None else _hint,
+                        date=mem.get("creation_date"))
     f.note_line_stated(out, mem, owner_id)
     return out
 
@@ -19017,9 +19095,15 @@ def _mem_sentence_body(f, owner_id, mem):
     if mtype == "became_lovers" and isinstance(other_id, int) \
             and other_id != owner_id:
         _rs = f.relation_reason_for_pair(owner_id, other_id, ("lover",),
-                                         styled=True)
+                                         styled=True, with_subject=True)
         if _rs:
-            return _rs[0]
+            # The template decides who the sentence is about: on the `_corresponding` keys that is
+            # the other party, and registering the holder would compute the attributes from the
+            # wrong person (v125).
+            _txt, _subj = _rs[0]
+            if isinstance(_subj, int):
+                f._line_subject_hint = _subj
+            return _txt
         _fb = _lovers_in_same_prison(f, owner_id, other_id,
                                      mem.get("creation_date"))
         if _fb:
@@ -25310,7 +25394,43 @@ def _province_label(f, province):
         return ""
 
 
-def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None):
+def _join_office_words(off, seats):
+    """Join a title/office word with the concurrently held seat words using 「兼」.
+
+    A post that reached the label through two outlets is written once: the same word (「前」 prefix
+    ignored, so 前枢密使 covers 枢密使) and a duplicate seat are dropped. `off` may itself be a
+    「兼」-joined chain, so every segment of it is compared. Pure function, no facts needed, which
+    is what the regression script asserts on (v125: 枢密使兼枢密使).
+    """
+    def _bare(w):
+        w = str(w or "").strip()
+        return w[1:] if w.startswith("前") and len(w) > 1 else w
+
+    segs = [x.strip() for x in str(off or "").split("兼") if x.strip()]
+    have = {_bare(x) for x in segs}
+    for w in seats or []:
+        w = str(w or "").strip()
+        if not w or _bare(w) in have:
+            continue
+        have.add(_bare(w))
+        segs.append(w)
+    return "兼".join(segs)
+
+
+def _reason_template(reason):
+    """Wording of a game relation-reason key: the project's own re-wording first
+    (`style.REASON_REWRITE`, the keys whose UI phrasing is not chronicle prose), else the
+    localization table's template. One outlet, so every reason sentence is audited in one place."""
+    if not reason:
+        return ""
+    tpl = _style.REASON_REWRITE.get(str(reason))
+    if tpl:
+        return tpl
+    return L.relation_templates().get(reason) or ""
+
+
+def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None,
+                      want_subject=False):
     """Relation-cause localization string -> clean Chinese sentence, placeholders filled.
 
     Tags: [CHARACTER.*] record owner, [TARGET_CHARACTER.*] counterpart,
@@ -25331,7 +25451,11 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
     A tag whose value cannot be produced (or a template that needs the third slot while `extra` is
     missing) drops the WHOLE sentence and returns '' — a hole in a sentence reads as if the game
     had said it, and a raw tag would leak a key into the prompt.
-    """
+
+    `want_subject=True` returns `(sentence, subject_cid)`: the subject is the person of the
+    template's FIRST role tag. The game writes every reason template subject-first (in the
+    `_corresponding` keys the memory holder is the OBJECT: 「[TARGET_CHARACTER]勾引了[CHARACTER]」),
+    so this is a rule of the template language, not a guess. None when the template names nobody."""
     if names is not None:
         oname, tname, xname = (list(names) + ["", "", ""])[:3]
     else:
@@ -25346,6 +25470,18 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
     def _cid(role):
         return {"CHARACTER": owner, "TARGET_CHARACTER": target,
                 "TARGET_CHARACTER_2": extra}.get(role)
+
+    _subject_cid = None
+    if want_subject:
+        _m0 = _REL_LOC_TAG_RE.search(s)
+        if _m0:
+            _r0 = _REL_ROLE_ALIAS.get(_m0.group(1), _m0.group(1))
+            _c0 = _cid(_r0)
+            if isinstance(_c0, int):
+                _subject_cid = int(_c0)
+
+    def _fail():
+        return ("", _subject_cid) if want_subject else ""
 
     def _appellation(role):
         """The role's appellation: the caller-supplied wording when it has one, else `name_or`."""
@@ -25547,13 +25683,13 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
 
     s = _REL_LOC_TAG_RE.sub(_rep, s)
     if need[0]:
-        return ""
+        return _fail()
     s = _REL_STANDALONE_TAG_RE.sub(_srep, s)
     if need[0]:
-        return ""
+        return _fail()
     s = _REL_CONCEPT_RE.sub(_crep, s)
     if need[0]:
-        return ""
+        return _fail()
     # Named tags still unrecognized (Select_CString(...) and the stripped custom locs) are cleared
     s = re.sub(r"\[[^\]]*\]", "", s)
     # The game's Chinese templates write the possessive as `[X.GetHerHis]的` (e.g.
@@ -25561,7 +25697,7 @@ def _sub_relation_loc(f, s, owner, target, extra=None, province=None, names=None
     # while our accessor already yields the possessive 「其」 — 「其的传奇」 is a duplicated particle.
     s = s.replace("其的", "其")
     s = re.sub(r"\s+", " ", s).strip()
-    return s
+    return (s, _subject_cid) if want_subject else s
 
 
 def _player_murder_map(f):
@@ -27975,6 +28111,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # `verify_fast`'s [V63] recomputes it from the same data and keys as name_index.
         "line_owner": f.line_owner,
         "line_stated": f.line_stated,
+        # line text -> that line's own day, when it has one: the section pass reads relations as of
+        # it so a later tie (a soulmate relation formed a year on) does not word an earlier line.
+        "line_date": f.line_date,
         "realm": _realm_facts(f),
         "player_death": pd,
         # reign ended without death (tonsure, abdication, deposition) -- the player_death shape

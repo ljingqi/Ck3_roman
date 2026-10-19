@@ -1488,6 +1488,9 @@ def _kin_tag_line(facts, scope, line):
     # this line's subject (unregistered → the article subject); the table sits in the facts dict, so a
     # snapshot rerun recomputes the same words from the original data.
     owner = (facts.get("line_owner") or {}).get(key) if key else None
+    # the day this line is about, when the fact layer registered one: relations are read as of it,
+    # so a tie formed later never words an earlier sentence (v125)
+    line_date = (facts.get("line_date") or {}).get(key) if key else None
     # counterpart whose relation the sentence already states → no attributive, which would add
     # "married husband X"-style redundancy
     stated = set((facts.get("line_stated") or {}).get(key) or ()) if key else set()
@@ -1512,7 +1515,7 @@ def _kin_tag_line(facts, scope, line):
         _subj = scope.subject
         if owner is not None and int(cid) != owner:
             _subj = owner
-        w = scope.word_for(cid, fi, subject=_subj)
+        w = scope.word_for(cid, fi, subject=_subj, date=line_date)
         if not w:
             scan = i + len(label)
             continue
