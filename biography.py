@@ -4061,7 +4061,7 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     articles = build_articles(facts, cache, cfg)
 
     intro_cfg = dict(cfg)
-    intro_cfg["max_tokens"] = min(cfg.get("max_tokens", 12800), 1500)
+    intro_cfg["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)
     intro = llm.call_deepseek(build_intro_messages(facts, cfg, articles),
                               intro_cfg).strip()
     intro = llm.clean_number_spaces(intro)
@@ -4071,7 +4071,7 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     intro = _fix_person_names(intro, facts, cache)
 
     sec_cfg = dict(cfg)
-    sec_cfg["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)
+    sec_cfg["max_tokens"] = min(cfg.get("max_tokens", 12800), 8000)
 
     def _draft_section(msg, sec_title, article_title, subject_ids=None):
         """Draft one section body, then check it with _tail_issue: a dangling bracket or
