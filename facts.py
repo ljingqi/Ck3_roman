@@ -8305,6 +8305,54 @@ class Facts:
             return self._JAPAN_OFFICE_SHOGUN
         return ""
 
+    def japan_retired_emperor(self, cid, date=None):
+        """「上皇」 for a throne holder who gave the throne up by handing it to someone else, else ''.
+
+        A retired emperor holds no Japanese top title any more, so `japan_top_office` cannot name
+        him and he fell back to the prince word (v125: 阵前俘获的惟仁 was written 亲王 while he was
+        the retired emperor). The game's own title history says how the tenure ended: the successor's
+        entry type is `appointment` when the throne was handed over, `abdication` when it was given up
+        in favour of a named heir. A tenure lost any other way (conquest, deposition: `conquest_claim`
+        and the like) is no retirement, so the word is withheld rather than guessed.
+        """
+        if cid is None:
+            return ""
+        anchor = self._anchor_date(cid, date)
+        if not anchor:
+            return ""
+        ao = cl.date_key(anchor)
+        for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
+            if ((self._lt.get(str(tid)) or {}).get("key") or "") not in self._TENNO_TITLE_KEYS:
+                continue
+            for (g, l, lt) in ivs:
+                if not g or not l or cl.date_key(l) > ao:
+                    continue          # still on the throne that day: japan_top_office names him
+                typ = str(lt or "").lower()
+                if not (typ.startswith("appoint") or typ.startswith("abdic")):
+                    continue
+                if self._throne_successor_at(tid, l, cid) is None:
+                    continue          # no other holder took the throne: not a hand-over
+                return self._JAPAN_OFFICE_JOKO
+        return ""
+
+    def _throne_successor_at(self, tid, date, exclude):
+        """Holder who took title `tid` on or after `date`, ignoring `exclude`; None when the throne
+        stayed with that person or the next entry names nobody."""
+        dk = cl.date_key(date)
+        for _d, _ev in self._title_seqs.get(tid) or []:
+            if cl.date_key(_d) < dk:
+                continue
+            for _e in (_ev if isinstance(_ev, list) else [_ev]):
+                h = _e.get("holder") if isinstance(_e, dict) else _e
+                try:
+                    h = int(h)
+                except (TypeError, ValueError):
+                    continue
+                if h == exclude:
+                    continue
+                return h
+        return None
+
     def official_title(self, cid, date=None):
         """Role office name, "<title name><office word>".
 
@@ -8318,6 +8366,11 @@ class Facts:
         _jw = self.japan_top_office(cid, date)
         if _jw:
             return _jw
+        # A throne given up by hand-over (v125: 惟仁 handed it to his heir and kept the
+        # retired-emperor style) holds no top title any more, so it needs its own outlet here.
+        _jko = self.japan_retired_emperor(cid, date)
+        if _jko:
+            return _jko
         anchor = self._anchor_date(cid, date)
         # Ministry offices come first: the save's flavor gives only the generic "尚书"
         # (minister_any_male) for the boards, so the board name must come from the title.
@@ -10761,6 +10814,11 @@ class Facts:
                 return ""  # already has a title, not applicable
         except Exception:
             return ""
+        try:
+            if self._ever_held_throne(cid, date):
+                return ""  # a former emperor is styled by his own office word, not as a prince
+        except Exception:
+            pass
         if self._imperial_clan_state(cid) != "imperial":
             return ""      # left the imperial clan (源/平/藤原…) or clan unknown
         for pid2 in self._parents_of_cid(cid):
@@ -10811,6 +10869,8 @@ class Facts:
         their word is already part of the display name."""
         if self._tenno_prince_word(cid, date):
             return ""
+        if self._ever_held_throne(cid, date):
+            return ""   # a former emperor carries his own office word (japan_retired_emperor)
         tier0, _ = self._primary_title_at(cid, as_of=date)
         if tier0 is not None:
             return ""  # already has a title, not applicable
