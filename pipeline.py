@@ -3036,12 +3036,12 @@ def step_epilogue(cfg, folder=None, force=False):
     print(f"同宗在世 {rep['alive']} 人，有地者 {len(rep['rows'])} 人", flush=True)
     rule_block = style.rule_block(facts.get("bio_style") or style.DEFAULT_STYLE)
     cfg1 = dict(cfg)
-    cfg1["max_tokens"] = min(cfg.get("max_tokens", 12800), 6000)
+    cfg1["max_tokens"] = min(cfg.get("max_tokens", 12800), 9000)
     print("撰写第一部分《历代总述》…", flush=True)
     part1 = _draft_epilogue_part(E.part1_messages(ch, rep, row["folder"], rule_block),
                                  cfg1, 1600, "第一部分")
     cfg2 = dict(cfg)
-    cfg2["max_tokens"] = min(cfg.get("max_tokens", 12800), 4000)
+    cfg2["max_tokens"] = min(cfg.get("max_tokens", 12800), 6000)
     table = E.roster_text(rep) or E.roster_others_text(rep)
     print("撰写第二部分《当世同宗诸统治者》…", flush=True)
     part2 = _draft_epilogue_part(
