@@ -350,7 +350,12 @@ def _limiter():
     return _LIMIT_SEM
 
 
-def call_deepseek(messages, cfg, retries=3):
+# 截断翻倍的总额上限：板块正文提到 8000 后，一次翻倍就是 16000，
+# 要给「长板块」留出第二级余量，否则翻倍等于没翻（v125）。
+MAX_TOKENS_CEILING = 32000
+
+
+def call_deepseek(messages, cfg, retries=4):
     """Call DeepSeek chat/completions and return the assistant message text; retries with
     a doubled max_tokens budget on truncation and gives up after CALL_BUDGET_SECONDS."""
     messages = clean_prompt_messages(messages)
@@ -416,12 +421,13 @@ def call_deepseek(messages, cfg, retries=3):
                   finish = choice.get("finish_reason")
                   log(_usage_line(data.get("usage"), messages, finish))
                   if finish == "length":
-                      if max_tokens >= 16000:
-                          log("输出仍被 max_tokens 截断(已达 16000 上限), 返回截断文本")
+                      if max_tokens >= MAX_TOKENS_CEILING:
+                          log(f"输出仍被 max_tokens 截断(已达 {MAX_TOKENS_CEILING} 上限), "
+                              f"返回截断文本")
                           if content.strip():
                               return content
                       else:
-                          max_tokens = min(max_tokens * 2, 16000)
+                          max_tokens = min(max_tokens * 2, MAX_TOKENS_CEILING)
                           log(f"输出因 max_tokens 不足被截断, 提高预算至 {max_tokens} 重试")
                           continue
                   elif finish and finish != "stop":
