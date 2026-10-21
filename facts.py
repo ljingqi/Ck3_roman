@@ -8180,7 +8180,7 @@ class Facts:
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
             if key.startswith("e_minister_") or self._is_estate_title(tid):
                 continue
-            if self._TT_RANK.get(key[:2], 0) >= 2:
+            if self._eff_rank(tid) >= 2:
                 return True
         return False
 
@@ -9007,8 +9007,7 @@ class Facts:
                 continue
             if any(_l is None for (_g, _l, _lt) in ivs):
                 continue
-            key = (self._lt.get(str(tid)) or {}).get("key") or ""
-            rank = self._TT_RANK.get(key[:2], 0)
+            rank = self._eff_rank(tid)
             if rank <= 1:
                 continue
             for (g, _l, _lt) in ivs:
@@ -9070,8 +9069,7 @@ class Facts:
                 continue
             if not self._title_still_his(cid, ivs, anchor):
                 continue
-            rank = self._TT_RANK.get(
-                ((self._lt.get(str(tid)) or {}).get("key") or "")[:2], 0)
+            rank = self._eff_rank(tid)
             gains = [g for (g, _l, _lt) in ivs if g]
             gain = cl.date_key(max(gains, key=cl.date_key)) if gains else None
             if rank > best_rank or (rank == best_rank and best_gain is not None
@@ -9549,13 +9547,11 @@ class Facts:
         cur_tid = self._current_title_tid(cid, anchor) if cur else None
         cur_rank = 0
         if cur_tid is not None:
-            key = (self._lt.get(str(cur_tid)) or {}).get("key") or ""
-            cur_rank = self._TT_RANK.get(key[:2], 0)
+            cur_rank = self._eff_rank(cur_tid)
         former_tid = self._former_high_title(cid, anchor, exclude_tid=cur_tid)
         f_rank = 0
         if former_tid is not None:
-            key = (self._lt.get(str(former_tid)) or {}).get("key") or ""
-            f_rank = self._TT_RANK.get(key[:2], 0)
+            f_rank = self._eff_rank(former_tid)
         if cur and former_tid is not None and f_rank > cur_rank:
             ft = self._former_title_text(cid, former_tid, anchor)
             if ft and ft != cur:
@@ -9568,8 +9564,7 @@ class Facts:
         held_tid = self._held_landed_title(cid, anchor)
         held_rank = 0
         if held_tid is not None:
-            key = (self._lt.get(str(held_tid)) or {}).get("key") or ""
-            held_rank = self._TT_RANK.get(key[:2], 0)
+            held_rank = self._eff_rank(held_tid)
         if held_tid is not None and (former_tid is None or held_rank >= f_rank):
             ht = self._former_title_text(cid, held_tid, anchor)
             if ht:
@@ -11053,8 +11048,7 @@ class Facts:
         ftid = self._former_high_title(parent, date)
         if ftid is None:
             return None, None, None
-        key = (self._lt.get(str(ftid)) or {}).get("key") or ""
-        rank = self._TT_RANK.get(key[:2], 0)
+        rank = self._eff_rank(ftid)
         tier = self._RANK_TIER.get(rank) if rank >= 1 else None
         if not tier:
             return None, None, None
@@ -14274,8 +14268,7 @@ class Facts:
         real title the location word switches to that title."""
         best, best_rank, best_key = None, -1, None
         for tid, ivs in (self._hold_intervals(cid, date) or {}).items():
-            key = (self._lt.get(str(tid)) or {}).get("key") or ""
-            rank = self._TT_RANK.get(key[:2], 0)
+            rank = self._eff_rank(tid)
             gains = [cl.date_key(iv[0]) for iv in (ivs or []) if iv and iv[0]]
             gk = max(gains) if gains else (0, 0, 0)
             if rank > best_rank or (rank == best_rank and best_key is not None
@@ -15538,7 +15531,7 @@ class Facts:
             return False
         if tid is None:
             return False
-        rank = self._TT_RANK.get((self._lt.get(str(tid)) or {}).get("key", "")[:2], 0)
+        rank = self._eff_rank(tid)
         return rank >= 4
 
     def imprison_duration(self, cid, date=None):
@@ -17239,7 +17232,7 @@ class Facts:
             if not ivs or ivs[-1][1] is not None:
                 continue
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
-            rank = self._TT_RANK.get(key[:2], 0)
+            rank = self._eff_rank(tid)
             if rank == 0 and key.startswith("x_"):
                 rank = 1 if self.title_kind(tid) else 0
             best = max(best, rank)
@@ -17963,8 +17956,7 @@ class Facts:
         title display name."""
         if tid is None:
             return ""
-        key = (self._lt.get(str(tid)) or {}).get("key") or ""
-        rank = self._TT_RANK.get(key[:2], 0)
+        rank = self._eff_rank(tid)
         if rank < 2:            # baronies (1) and camp names (0) get no office-style name
             return ""
         tier = self._RANK_TIER.get(rank)
@@ -18275,7 +18267,7 @@ class Facts:
             key = (self._lt.get(str(tid)) or {}).get("key") or ""
             if not key or self._is_estate_title(tid):
                 continue
-            rank = self._TT_RANK.get(key[:2], 0)
+            rank = self._eff_rank(tid)
             if rank <= 1:      # a barony is only a place name; camps and yurts (x_, rank 0) are no seat
                 continue
             for iv in (ivs or []):
@@ -18308,12 +18300,11 @@ class Facts:
         top_tid = self._primary_landed_at(pid, date)
         if top_tid is None:
             return False
-        top_key = (self._lt.get(str(top_tid)) or {}).get("key") or ""
-        top_rank = self._TT_RANK.get(top_key[:2], 0)
+        top_rank = self._eff_rank(top_tid)
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         if not key:
             return False
-        return self._TT_RANK.get(key[:2], 0) < top_rank
+        return self._eff_rank(tid) < top_rank
 
     def _seat_province_at(self, cid, date=None):
         """Province of the seat `cid` held on `date`, baronies and house estates included (v110).
@@ -18345,7 +18336,7 @@ class Facts:
             if not key:
                 continue
             prov = self._prov_inv().get(key)
-            rank = self._TT_RANK.get(key[:2], 0)
+            rank = self._eff_rank(tid)
             cap = rec.get("capital")
             estate = self._is_estate_title(tid)
             if not isinstance(prov, int) or estate:
@@ -18357,7 +18348,7 @@ class Facts:
                     if estate:
                         # A county surrounds its baronies, so an estate is the wider seat of the two
                         # and takes the county's tier for the tie-break, not the barony's.
-                        rank = max(rank, self._TT_RANK.get(ckey[:2], rank))
+                        rank = max(rank, self._eff_rank(cap))
                     prov = cprov
             if not isinstance(prov, int):
                 continue
@@ -25381,7 +25372,7 @@ def _realm_facts(f):
         nm = ln.split("：", 1)[0]
         for tid in chain_tids:
             if nm.startswith(f.title(tid)):
-                return (0, -f._TT_RANK.get((f._lt.get(str(tid)) or {}).get("key", "")[:2], 0))
+                return (0, -f._eff_rank(tid))
         return (1, 0)
     changes.sort(key=_sort_key)
     if changes:
