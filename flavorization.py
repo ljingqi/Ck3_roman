@@ -11,9 +11,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm                 # noqa: E402
 import localization as L    # noqa: E402
 
-_SCHEMA = 5   # parses the 1.20 `rites` condition (rite), marks `lessee_*` unsupported, keeps the
-              # tierless `special = saint` name-prefix entries (「圣」/「吾里」)
+_SCHEMA = 6   # evaluates `flag` against the holder's dated character flags (the march /
+              # palatinate / castellan contract family), so a duchy with `margrave_flag`
+              # resolves to 侯爵 instead of the generic 公爵
 _TABLE = None
+
+# Character flags the table may evaluate. The rest (cardinal_flag, ceremonial_liege_flag,
+# shogun_flag …) already have dedicated branches in facts.py; marking those unsupported keeps
+# this change to the vassal-contract family.
+_SUPPORTED_FLAGS = frozenset({
+    "margrave_flag",
+    "duchy_palatinate_flag",
+    "county_palatinate_flag",
+    "castellan_flag",
+})
 
 
 def _path(cfg):
@@ -103,14 +114,18 @@ def build_flavorization(cfg):
                     continue
                 rules = _rules_of(items)
                 # Anything not evaluable is marked unsupported: taking no word beats
-                # reusing another ruler's. This covers flag / holding / domicile_type /
+                # reusing another ruler's. This covers holding / domicile_type /
                 # de_jure_liege / council_position / single-value faith, the `titles`
                 # restriction (76 single-title entries in 00_title_holders.txt would
                 # otherwise call every European duke a Duke of Brittany), and the
                 # `lessee_*` family (only monastery_* uses it, 20_pam_flavorization.txt:382).
+                # `flag` is a character-flag condition (`_flavourization.info:223-226`). The
+                # vassal-contract flags are evaluable once the cache records a dated flag history;
+                # other flags keep their own branches in facts.py and stay unsupported here.
+                flags = _list_of(items, "flag")
                 obligation_flags = _list_of(items, "subject_contract_obligation_flags")
                 unsupported = bool(
-                    items.get("flag") or items.get("domicile_type")
+                    items.get("domicile_type")
                     or items.get("holding") or items.get("council_position")
                     or items.get("faith")
                     or items.get("_de_jure_liege")
@@ -118,6 +133,8 @@ def build_flavorization(cfg):
                     or items.get("_lessee_heritages")
                     or items.get("_lessee_faiths")
                     or items.get("_lessee_rites"))
+                if flags and not set(flags).issubset(_SUPPORTED_FLAGS):
+                    unsupported = True
                 # `special = ruler_child` is evaluable: its `governments` list holds no
                 # tribal/nomad entry at any tier, so "is there a prince title here" must be
                 # asked of the table rather than defaulted. `saint` is evaluable too: it is the
@@ -140,6 +157,7 @@ def build_flavorization(cfg):
                     "rites": _list_of(items, "rites"),
                     "religions": _list_of(items, "religions"),
                     "titles": _list_of(items, "titles"),
+                    "flags": flags,
                     "obligation_flags": obligation_flags,
                     "rules": rules,
                     "unsupported": unsupported,
@@ -186,7 +204,7 @@ def table(cfg=None):
 
 def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             faith="", religion="", rite="", title_key="", independent=True, top=None,
-            obligation_flags=None, cfg=None, special="holder"):
+            obligation_flags=None, character_flags=None, cfg=None, special="holder"):
     """Return the winning localization key (block name) or '' under the game's rules.
 
     Conditions are tried from the highest priority down and all must match; an empty
@@ -198,7 +216,8 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
     the government arm); `top` carries the top liege's fields,
     which entries not marked `top_liege = no` are judged against (the game's default).
     `obligation_flags` are the character's decoded contract obligation flags and must
-    intersect an entry's own flags; `special` selects the entry class — "holder" by
+    intersect an entry's own flags; `character_flags` are the character's own flags at the same
+    date and must intersect an entry's `flag` condition. `special` selects the entry class — "holder" by
     default (ruler addresses), "ruler_child" for prince/princess entries, the two classes
     never competing; `rite` is the character's rite_type, and an entry with `rites` cannot
     match when the rite is unknown."""
@@ -280,6 +299,13 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             have = set(obligation_flags or [])
             if not have.intersection(want_flags):
                 continue
+        # Character-flag condition (`flag = margrave_flag`): an entry listing flags matches only
+        # when the character carries one of them; a character without flags skips such entries.
+        want_chars = e.get("flags") or []
+        if want_chars:
+            have = set(character_flags or [])
+            if not have.intersection(want_chars):
+                continue
         best_key, best_pri, best_rites = e["key"], prio, bool(rts_e)
     return best_key
 
@@ -306,7 +332,7 @@ _PRINCE_CN_KEYS = frozenset({
 
 def ruler_child_exists(tier, gender, *, government="", name_list="", heritage="",
                        faith="", religion="", rite="", title_key="", independent=True,
-                       top=None, obligation_flags=None, cfg=None):
+                       top=None, obligation_flags=None, character_flags=None, cfg=None):
     """Return the prince/princess localization key the game has for (tier x gender x
     government x independent/vassal), or '' when there is none.
 
@@ -369,6 +395,9 @@ def ruler_child_exists(tier, gender, *, government="", name_list="", heritage=""
         want_flags = e.get("obligation_flags") or []
         if want_flags and not set(obligation_flags or []).intersection(want_flags):
             continue
+        want_chars = e.get("flags") or []
+        if want_chars and not set(character_flags or []).intersection(want_chars):
+            continue
         best_key, best_pri = e["key"], prio
     return best_key
 
@@ -395,7 +424,7 @@ def is_unconditional(key, cfg=None):
         return False
     return not any(e.get(k) for k in (
         "governments", "name_lists", "heritages", "faiths", "rites", "religions",
-        "titles", "obligation_flags", "rules"))
+        "titles", "flags", "obligation_flags", "rules"))
 
 
 def coverage(cfg=None):

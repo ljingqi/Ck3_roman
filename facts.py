@@ -7210,6 +7210,11 @@ class Facts:
                 break
         if not tier:
             return ""
+        # Uniform writing-time word (v131): the title's current word outranks the event-day
+        # government word, so a march names every holder of the title 侯爵.
+        w = self._title_writing_word(tid, cid)
+        if w:
+            return w
         gov = self._gov_for_word(cid, tid, date)
         female = self._is_female(cid)
         indep = self._is_independent(cid, date)
@@ -8348,7 +8353,7 @@ class Facts:
         return holder, top_tid
 
     def _flavor_key(self, kind, tier, cid, tid=None, gender=None, gov=None,
-                    date=None, special=None, independent=None):
+                    date=None, special=None, independent=None, context_cid=None):
         """Localization key chosen by flavorization, or '' when nothing matches.
 
         Government values for the character and his liege are taken at `date`, since the words differ
@@ -8357,16 +8362,24 @@ class Facts:
         choice for a prince or princess word looks at the ruling parent, while `cid` is the landless
         child whose own independence is not determinable. A passed-in None is read as "not
         determinable at this date" and reaches the table as such.
+
+        `cid` is the person being worded (sex / culture / faith). `context_cid` is the character
+        whose government, independence and contract flags decide the word; it defaults to `cid`
+        and differs when a title's writing-time holder is not the person being named (a dead
+        holder, for instance).
         """
-        if not self._flavor or tier is None or cid is None:
+        ctx = context_cid if context_cid is not None else cid
+        if not self._flavor or tier is None or ctx is None:
             return ""
+        if cid is None:
+            cid = ctx
         tkey = self._FLAVOR_TIER.get(tier, tier)
         if gender is None:
             gender = "female" if self._is_female(cid) else "male"
         if gov is None:
             # The government is the holder's own: flavorization evaluates `governments` on the
             # Context Character (see `_gov_for_word`)
-            gov = self._gov_for_word(cid, tid, date) if tid is not None else ""
+            gov = self._gov_for_word(ctx, tid, date) if tid is not None else ""
         ce = self._culture_entry(cid, date)
         ftag, rtag = self._faith_tags(cid, date)
         rtype = self._rite_type(cid, date)
@@ -8374,7 +8387,7 @@ class Facts:
         if tid is not None:
             title_key = ((self._lt.get(str(tid)) or {}).get("key") or "")
         if independent is None:
-            independent = self._is_independent(cid, date)
+            independent = self._is_independent(ctx, date)
         # Independence the history cannot settle (a date before the vassal record starts) stays
         # None: the game's only_independent / only_vassals arms both need that fact, so an unknown
         # state matches neither and the word falls back to the government arm (duchy_tribal →
@@ -8382,8 +8395,8 @@ class Facts:
         # vassal: entries without an explicit top_liege = no are judged by the top liege (game default)
         top = None
         if independent is False and tid is not None:
-            lid, ltid = self._top_liege_of(cid, tid)
-            if lid is not None and int(lid) != int(cid):
+            lid, ltid = self._top_liege_of(ctx, tid)
+            if lid is not None and int(lid) != int(ctx):
                 lce = self._culture_entry(lid, date)
                 lft, lrt = self._faith_tags(lid, date)
                 top = {"government": (self._gov_for_word(lid, ltid, date)
@@ -8399,7 +8412,11 @@ class Facts:
                 heritage=ce.get("heritage") or "",
                 faith=ftag, religion=rtag, rite=rtype, title_key=title_key,
                 independent=independent if independent is None else bool(independent), top=top,
-                obligation_flags=self._obligation_flags_at(cid, date),
+                obligation_flags=self._obligation_flags_at(ctx, date),
+                # `flag` conditions are character flags, and only the address-word class consults
+                # them here: the title-name suffix is a different table entry class whose callers
+                # have not been swept for this condition.
+                character_flags=(self._char_flags(ctx, date) if kind == "character" else None),
                 special=(special or "holder"))
         except Exception:
             return ""
@@ -8948,13 +8965,64 @@ class Facts:
                 for v in (((t.get("variables") or {}).get("data")) or [])
                 if isinstance(v, dict) and v.get("flag")}
 
-    def _char_flags(self, cid, date=None):
-        """Flag set of the character himself, read from `alive_data.variables.data[].flag`.
+    def _flag_history(self, cid):
+        """Merged dated flag observations of a character, oldest first.
 
-        A dead character's save has its variables cleared, so an empty set is returned and the baked
-        `dead_data.flavor` supplies the wording instead. Same "current state only" rule as
-        `_title_flags`.
+        Each cache records the flags it saw while that subject lived; merging every cache of the
+        campaign matters because the cache in hand can start after a contract change. Same merge
+        rule as `_gov_history`: the current cache wins a same-date tie.
         """
+        memo = getattr(self, "_flag_hist_memo", None)
+        if memo is None:
+            memo = {}
+            self._flag_hist_memo = memo
+        if cid in memo:
+            return memo[cid]
+        merged = {}
+        for src in [self.cache] + list((self.campaign or {}).values()):
+            if not isinstance(src, dict):
+                continue
+            rec = (src.get("characters") or {}).get(str(cid)) or {}
+            for h in rec.get("flag_history") or []:
+                d = h.get("from") or ""
+                if d:
+                    merged.setdefault(d, list(h.get("flags") or []))
+            # Older caches carry only the current set; date it at that cache's last date.
+            if not rec.get("flag_history") and rec.get("flags"):
+                d = src.get("last_date") or ""
+                if d:
+                    merged.setdefault(d, list(rec.get("flags") or []))
+        out = [{"date": d, "flags": merged[d]}
+               for d in sorted(merged, key=cl.date_key)]
+        memo[cid] = out
+        return out
+
+    def _char_flags(self, cid, date=None):
+        """Flag set of the character himself at `date`, from the cached dated history.
+
+        The save records only the current set (`alive_data.variables.data[].flag`) and clears it
+        at death, so a dated history is what lets a biography written at `as_of` see the contract
+        flags of that day (the march `margrave_flag` among them). Older caches without the
+        history keep the previous "current state only" rule.
+        """
+        if cid is None:
+            return set()
+        hist = self._flag_history(cid)
+        if hist:
+            if date is None:
+                return set(hist[-1].get("flags") or [])
+            dk = cl.date_key(date)
+            chosen = None
+            for h in hist:
+                try:
+                    hk = cl.date_key(h["date"])
+                except Exception:                             # noqa: BLE001
+                    continue
+                if hk <= dk:
+                    chosen = h
+                else:
+                    break
+            return set((chosen or {}).get("flags") or [])
         if date is not None:
             last = self.cache.get("last_date")
             if last and cl.date_key(str(date)) < cl.date_key(str(last)):
@@ -9051,6 +9119,55 @@ class Facts:
                 return h
         return None
 
+    def _title_writing_word(self, tid, subject_cid=None):
+        """Tier word the title carries at this biography's writing time, or ''.
+
+        The word is the game's dynamic title word for the title's holder at `self.as_of`, the
+        moment the biography speaks from: religion, culture and rite come from `subject_cid`
+        (the person being named), while government, independence, top liege and the vassal
+        contract flags come from that day's holder, exactly as the game evaluates a title's
+        address. `margrave_flag` is added when a march contract takes effect
+        (`00_flavorization_effects.txt:6-19`), so it anchors the 侯爵 word; a title whose holder
+        is gone, destroyed or wordless returns '' and the caller keeps its older path.
+        """
+        if tid is None:
+            return ""
+        T = self.as_of or self.cache.get("last_date")
+        if not T:
+            return ""
+        # A year-only as_of ("1043") compares below that year's first snapshot ("1043.1.1").
+        # Read the flag/government state through the end of that year instead.
+        Tq = str(T)
+        if len(Tq.split(".")) == 1:
+            Tq = f"{Tq}.12.31"
+        # Cardinal titles are person styles, not fief words (see `official_title`)
+        if self._is_cardinal_title(tid):
+            return ""
+        tier = self._RANK_TIER.get(self._eff_rank(tid))
+        if not tier or tier == "barony":
+            return ""
+        holder = self.holder_at(int(tid), Tq)
+        if holder is None:
+            return ""
+        subject = subject_cid if subject_cid is not None else holder
+        key = (int(tid), int(subject), str(Tq))
+        memo = getattr(self, "_title_word_memo", None)
+        if memo is None:
+            memo = {}
+            self._title_word_memo = memo
+        if key in memo:
+            return memo[key]
+        gov = self._gov_for_word(holder, tid, Tq)
+        fk = self._flavor_key("character", tier, subject, tid=tid, gov=gov, date=Tq,
+                              context_cid=holder)
+        word = ""
+        if fk and not (not gov and FZ.is_unconditional(fk)):
+            v = self._loc_or_custom_word(fk, cid=subject, tid=tid, date=Tq)
+            if v and not v.startswith(("$", "[")):
+                word = v
+        memo[key] = word
+        return word
+
     def official_title(self, cid, date=None):
         """Role office name, "<title name><office word>".
 
@@ -9086,7 +9203,32 @@ class Facts:
             if mo:
                 return mo
         c = self._chars.get(str(cid)) or {}
+        tier, tid = self._primary_title_at(cid, as_of=anchor)
         fkey = (c.get("dead_data") or {}).get("flavor")
+        # A dead holder's baked tier flavor was computed at death, when a march contract may not
+        # have existed yet. The title's writing-time word is the later, uniform word (v131: a
+        # 1044 biography names 杨景之's d_languedoc 侯爵 even though he died in 1035). Only the
+        # tier-prefixed flavors are overridden; cardinal/faction/culture styles keep their arms.
+        if fkey and fkey.startswith(self._TIER_FLAVOR_PREFIXES):
+            # On a date before the title was granted `_primary_title_at` can be empty while the
+            # baked flavor still names the realm; the highest title ever held is the one the
+            # place name came from (the old `_last_title_place` fallback). Only a title of the
+            # flavor's own rank may override it, or a king who had lost his kingdom would be
+            # renamed from the duchy he kept.
+            _rank_want = next((rk for pfx, rk in (("hegemon_", 6), ("emperor_", 5),
+                                                  ("king_", 4), ("duke_", 3),
+                                                  ("count_", 2), ("baron_", 1))
+                               if fkey.startswith(pfx)), None)
+            _wtid = tid if tid is not None and _rank_want is not None \
+                and self._eff_rank(tid) == _rank_want else self._highest_held_title(cid)
+            _w = self._title_writing_word(_wtid, cid) \
+                if _wtid is not None and _rank_want is not None \
+                and self._eff_rank(_wtid) == _rank_want else ""
+            if _w:
+                _nm = self._title_display_name(_wtid, anchor, cid=cid) \
+                    or self._name_at_date(_wtid, anchor) or self.title_base_name(_wtid)
+                if _nm:
+                    return f"{_nm}{_w}"
         # `dead_data.flavor` is baked at death from the LAST government of the save, so it can
         # contradict an earlier date's government; accept it only when
         # `_dead_flavor_consistent` agrees with the anchor day.
@@ -9115,7 +9257,6 @@ class Facts:
                     seat = self.cardinal_seat(cid, anchor)
                     return f"{seat}{v}" if seat else v
                 return v
-        tier, tid = self._primary_title_at(cid, as_of=anchor)
         if tid is None or tier is None:
             # Landless family estate titles (x_nf_*,「XX家族」): the holder word follows the
             # culture (Japan 当主, Korea 户长, otherwise 乡绅). Detected by `_is_estate_title`,
@@ -9144,26 +9285,32 @@ class Facts:
         # 惣領制 titles carry "武士团" in the display name (see `_title_display_name`)
         name = self._title_display_name(tid, anchor, cid=cid) \
             or self._name_at_date(tid, anchor) or self.title_base_name(tid)
-        # Government is resolved for the anchor day, not from the cache's last save.
-        # `_gov_for_word` adds the title-side government (`de_facto_liege` up to the liege) and,
-        # for the dead, `dead_data.government`; without them flavorization can fall back to the
-        # unconditional `duke` entry and give one title two different words.
-        gov = self._gov_for_word(cid, tid, anchor)
-        if not gov:
-            rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-            gov = (rec.get("landed") or {}).get("government") or ""
-        if not gov:
-            gov = (c.get("landed_data") or {}).get("government") or ""
-        # For Japan's top title (天皇座/e_japan) also try the title-side government: a holder
-        # whose government history starts after the cache window would otherwise get the
-        # generic "皇帝".
-        if ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
-            gov = self._gov_for_word(cid, tid, anchor) or gov
-        _indep = self._is_independent(cid, anchor)
-        word = self._office_word(tier, gov,
-                                 independent=bool(_indep) if _indep is not None else True,
-                                 female=self._is_female(cid),
-                                 tid=tid, cid=cid, date=anchor)
+        # The title word is the one the title carries at this biography's writing time
+        # (`_title_writing_word`): a march that exists by then names a holder from before the
+        # contract with 侯爵 as well. Fall back to the anchor-day office word when the title has
+        # no writing-time holder (destroyed) or no resolvable word.
+        word = self._title_writing_word(tid, cid)
+        if not word:
+            # Government is resolved for the anchor day, not from the cache's last save.
+            # `_gov_for_word` adds the title-side government (`de_facto_liege` up to the liege) and,
+            # for the dead, `dead_data.government`; without them flavorization can fall back to the
+            # unconditional `duke` entry and give one title two different words.
+            gov = self._gov_for_word(cid, tid, anchor)
+            if not gov:
+                rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+                gov = (rec.get("landed") or {}).get("government") or ""
+            if not gov:
+                gov = (c.get("landed_data") or {}).get("government") or ""
+            # For Japan's top title (天皇座/e_japan) also try the title-side government: a holder
+            # whose government history starts after the cache window would otherwise get the
+            # generic "皇帝".
+            if ((self._lt.get(str(tid)) or {}).get("key") or "") in self._JAPAN_TOP_TITLE_KEYS:
+                gov = self._gov_for_word(cid, tid, anchor) or gov
+            _indep = self._is_independent(cid, anchor)
+            word = self._office_word(tier, gov,
+                                     independent=bool(_indep) if _indep is not None else True,
+                                     female=self._is_female(cid),
+                                     tid=tid, cid=cid, date=anchor)
         # A place-less title yields a bare office word — return it and let person_label fall
         # back to a display name. Cardinal titles (d_cd_*) are landless titular (see
         # `07_pam_ecclesiastical_titles.txt`), and the office word is already "枢机".
@@ -18531,10 +18678,13 @@ class Facts:
         if not base or not tier:
             return ""
         _indep = self._is_independent(cid, date)
-        word = self._office_word(tier, self._gov_for_word(cid, tid, date),
-                                 independent=bool(_indep) if _indep is not None else True,
-                                 female=self._is_female(cid), tid=tid, cid=cid,
-                                 date=date)
+        # Uniform writing-time word, same as `official_title` and `_ruler_word_at` (v131)
+        word = self._title_writing_word(tid, cid)
+        if not word:
+            word = self._office_word(tier, self._gov_for_word(cid, tid, date),
+                                     independent=bool(_indep) if _indep is not None else True,
+                                     female=self._is_female(cid), tid=tid, cid=cid,
+                                     date=date)
         return f"{base}{word}" if word else base
 
     # ---- culture name order / style ----

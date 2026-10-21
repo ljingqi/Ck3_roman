@@ -1339,6 +1339,15 @@ EMPTY_CACHE = {
 }
 
 
+# Character flags whose dated history the wording needs: the vassal-contract family
+# (flavorization `flag`) plus the shogun office flag (facts.japan_top_office). Other flags are
+# event bookkeeping with no dated reader, so they stay out of the history to keep caches small.
+_FLAG_HISTORY_KEEP = frozenset({
+    "margrave_flag", "duchy_palatinate_flag", "county_palatinate_flag",
+    "castellan_flag", "shogun_flag",
+})
+
+
 def new_cache():
     """A brand-new empty cache (deep copy, so the containers are not shared)."""
     return copy.deepcopy(EMPTY_CACHE)
@@ -1441,6 +1450,11 @@ def char_record(cache, cid):
             "culture_history": [],  # [{from, culture}] culture change points (first sighting wins)
             "faith": None,
             "faith_history": [],   # [{from, faith}] conversion change points (first sighting wins)
+            # Character flags (the vassal-contract `margrave_flag` among them). The save holds
+            # only the current set, so the dated history is what lets a biography written at an
+            # earlier as_of see the contract state of that day.
+            "flags": [],
+            "flag_history": [],    # [{from, flags:[...]}] change points
             # [{from, nickname}] nickname change points (an empty string means none); reading
             # an era's nickname would otherwise need that era's whole melt file.
             "nickname_history": [],
@@ -3466,6 +3480,19 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                 if not rh or rh[-1].get("rite") != _rid:
                     rh.append({"from": date_label, "rite": _rid})
             rec["rite"] = _rid
+        # Character flags: the save keeps only the current set, so one change point per snapshot
+        # makes the vassal-contract state (`margrave_flag`) readable at any as_of. A dead
+        # character's variables are cleared; keep the last known set instead of a false empty one.
+        _ad = c.get("alive_data") or {}
+        _all_flags = sorted({str(v.get("flag"))
+                             for v in (((_ad.get("variables") or {}).get("data")) or [])
+                             if isinstance(v, dict) and v.get("flag")})
+        _flags_now = [f for f in _all_flags if f in _FLAG_HISTORY_KEEP]
+        if _flags_now or not c.get("dead_data") or not rec.get("flag_history"):
+            rec["flags"] = _all_flags
+            _fh = rec.setdefault("flag_history", [])
+            if not _fh or set(_fh[-1].get("flags") or []) != set(_flags_now):
+                _fh.append({"from": date_label, "flags": _flags_now})
         # Personal tenets, spiritual fulfillment and religious knowledge (1.20
         # playable_data), carried only by landed rulers and the player.
         _pd = c.get("playable_data")

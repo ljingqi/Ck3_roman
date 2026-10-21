@@ -2,9 +2,10 @@
 """只重建**一个**战役文件夹的缓存（tools/rebuild_folder.py）
 
 用法：
-    & tools\\py.ps1 tools\\rebuild_folder.py 马克龙 [玩家id]
+    & tools\\py.ps1 tools\\rebuild_folder.py 马克龙 [玩家id ...]
 
 不传玩家 id 时重建该文件夹下全部 `player_*.json`（斯卡利茨三传主各一份）。
+传多个 id 时在同一次熔件遍历里重建这几份缓存，避免为每个传主重载全部熔件。
 
 为什么要有它：`pipeline.py rebuild-cache` 遍历 `output/` 下**全部**战役文件夹的熔件
 （实测上百份，每份 1–3 分钟，数小时）；迭代时只需要重建当前在看的那一个战役。
@@ -50,7 +51,9 @@ def main():
         print(__doc__)
         return 2
     folder = sys.argv[1]
-    only_pid = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    only_pids = []
+    for arg in sys.argv[2:]:
+        only_pids.extend(int(x) for x in arg.replace(",", " ").split() if x)
     cfg = llm.load_config()
     data_dir = os.path.join(cfg.get("output_dir", ""), folder, "data")
     if not os.path.isdir(data_dir):
@@ -62,8 +65,8 @@ def main():
         return 2
     print(f"{folder}: {len(melds)} 份熔件 ({melds[0][1]} → {melds[-1][1]})", flush=True)
 
-    if only_pid is not None:
-        pids = [only_pid]
+    if only_pids:
+        pids = only_pids
     else:
         pids = []
         for fn in os.listdir(data_dir):
