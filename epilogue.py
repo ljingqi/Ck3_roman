@@ -427,10 +427,13 @@ def part2_messages(ch, rep, folder, rule_block, roster_override=None,
         n = 0
     lo = max(160, 35 * n)
     hi = max(280, 60 * n)
+    all_groups = house_groups(rep)
+    total_n = len(rep.get("rows") or [])
     opening = "本段为第二部分开篇，首句可总起当世同宗之盛。" if part_no <= 1 \
         else "承接前段，直接写本段第一位统治者。"
-    closing = "末段写出这一族当日分布的地域格局。" if part_no >= part_total \
-        else "本段写到名册最后一位为止，地域格局由末段收束。"
+    closing = ("末段写出本段诸房当日分布的地域格局。"
+               if part_no >= part_total
+               else "本段写到名册最后一位为止，地域格局由末段收束。")
     user = p["epilogue_part2_user"].format(
         shared=shared_block(ch, rep, folder),
         protagonist=ref_name,
@@ -439,6 +442,10 @@ def part2_messages(ch, rep, folder, rule_block, roster_override=None,
         part_no=part_no,
         part_total=part_total,
         n=n,
+        total_n=total_n,
+        group_count=len(all_groups),
+        all_families="、".join(f"{g['label']}{g['count']}人" for g in all_groups),
+        scope_note="",
         as_of=_cn(rep["as_of"]),
         roster=table,
         opening=opening,
