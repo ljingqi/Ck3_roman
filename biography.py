@@ -750,7 +750,12 @@ def _render_household_rows(rows):
                 out.extend("　" + t for t, _c in _ent)
         elif r.get("kind") == "kin":
             if _ent:
-                out.append(f"{r.get('header')}{'、'.join(t for t, _c in _ent)}。")
+                # A sibling who was also the subject's spouse carries a comma clause
+                # （「，曾为其妻」）. Joining that entry to the next name with 「、」 would read the
+                # clause onto the next sibling (the 杨献忠 case), so switch to 「；」 as soon as any
+                # entry owns a comma — the same rule `Facts.sibling_list` uses.
+                sep = "；" if any("，" in t for t, _c in _ent) else "、"
+                out.append(f"{r.get('header')}{sep.join(t for t, _c in _ent)}。")
         else:
             _t = r.get("text") or ""
             if _t:

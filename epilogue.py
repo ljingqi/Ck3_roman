@@ -93,6 +93,20 @@ def epilogue_file(folder_dir):
 # Part 2 roster: same-dynasty holders alive in the latest save
 # ---------------------------------------------------------------------------
 
+def _strength(facts, cid):
+    """Current military strength from the latest save; 0 when the record carries none.
+
+    The part-2 ordering uses this only as a tie-break inside one rank, so a missing value must not
+    drop the ruler or reorder him above a stronger peer.
+    """
+    rec = facts._chars.get(str(cid)) or {}
+    ld = rec.get("landed_data") or {}
+    try:
+        return int(ld.get("strength") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def roster(facts, rank_min=2, ref_cid=None):
     """Same-dynasty holders alive at `as_of`, highest tier first.
 
@@ -123,6 +137,7 @@ def roster(facts, rank_min=2, ref_cid=None):
             "cid": cid,
             "label": facts.person_label(cid, as_of, "full"),
             "house": facts._house_label_at(cid, as_of),
+            "house_id": facts._house_of_cid(cid),
             "house_branch": facts.house_branch_label(cid, as_of),
             "traits": facts.traits_sentence(cid, public=True),
             "tier": tier,
@@ -135,6 +150,7 @@ def roster(facts, rank_min=2, ref_cid=None):
             "is_ref": cid == ref,
             "gen": facts.generation_delta(pid, cid) if cid != pid else 0,
             "independent": bool(facts._is_independent(cid, as_of)),
+            "strength": _strength(facts, cid),
         }
         (rows if (landed and item["rank"] >= rank_min) else others).append(item)
     # unknown kin distance (generation_delta None) sorts after the known ones, same tier first
@@ -173,6 +189,113 @@ def _ref_name(facts, cid, date=None):
     return nm
 
 
+def _split_even(items, k):
+    """Split `items` into at most `k` contiguous chunks whose sizes differ by at most one.
+
+    The earlier chunks take the extra member. Empty chunks are dropped, so a list shorter than `k`
+    yields one chunk per item rather than empty requests.
+    """
+    if k <= 0 or not items:
+        return []
+    n = len(items)
+    base, extra = divmod(n, k)
+    out, i = [], 0
+    for j in range(k):
+        size = base + (1 if j < extra else 0)
+        if size:
+            out.append(items[i:i + size])
+        i += size
+    return out
+
+
+def _group_label(rows):
+    """The family label the part-2 heading carries: the branch name, or 「X氏（本家）」 when the
+    branch label is empty because the house is the dynasty's founding house."""
+    branch = (rows[0].get("house_branch") or "").strip() if rows else ""
+    if branch:
+        return branch
+    house = (rows[0].get("house") or "").strip() if rows else ""
+    return f"{house}（本家）" if house else "本家"
+
+
+def house_groups(rep):
+    """Group the landed roster by house, ordered and sorted for part 2.
+
+    Family order follows the user's rule: how many landed rulers the house has, then the highest
+    title in it, then its total troop strength, then the family name. Within a house the ruler with
+    the higher title comes first; equal titles are ordered by troop strength (user 2026-10-21).
+    """
+    by_house = {}
+    for r in rep.get("rows") or []:
+        by_house.setdefault(r.get("house_id"), []).append(r)
+    groups = []
+    for hid, rows in by_house.items():
+        rows.sort(key=lambda r: (-(r.get("rank") or 0), -(r.get("strength") or 0),
+                                 r.get("label") or ""))
+        groups.append({
+            "house_id": hid,
+            "label": _group_label(rows),
+            "rows": rows,
+            "count": len(rows),
+            "max_rank": max((r.get("rank") or 0) for r in rows),
+            "strength": sum((r.get("strength") or 0) for r in rows),
+        })
+    groups.sort(key=lambda g: (-g["count"], -g["max_rank"], -g["strength"], g["label"]))
+    # Two cadet houses can carry the same branch label (the 1044 save has two 交州杨氏).
+    # Without a suffix the request's range line reads as one family split in two; the top title
+    # (隋皇朝 / 慈州) is the deterministic, reader-facing distinction already in the row.
+    seen = {}
+    for g in groups:
+        seen[g["label"]] = seen.get(g["label"], 0) + 1
+    for g in groups:
+        if seen.get(g["label"], 0) > 1:
+            seat = (g["rows"][0].get("title") or "").strip()
+            g["label"] = f"{g['label']}（{seat}）" if seat else f"{g['label']}（{g['house_id']}）"
+    return groups
+
+
+def part2_plan(rep, max_parts=5):
+    """Partition the landed roster into at most `max_parts` requests.
+
+    Every house with two or more landed rulers gets its own request while requests remain; once
+    four such houses are placed, everything left (the fifth and later multi-ruler houses plus all
+    single-ruler houses) goes into the last request. With fewer than four multi-ruler houses, the
+    remaining requests split the single-ruler houses evenly (user 2026-10-21).
+
+    Returns a list of parts; each part is a list of house-group dicts. Empty parts are dropped.
+    """
+    groups = house_groups(rep)
+    if not groups:
+        return []
+    multi = [g for g in groups if g["count"] >= 2]
+    single = [g for g in groups if g["count"] == 1]
+    if len(multi) >= 4:
+        parts = [[g] for g in multi[:4]]
+        tail = multi[4:] + single
+        if tail:
+            parts.append(tail)
+    else:
+        parts = [[g] for g in multi]
+        rest = max_parts - len(parts)
+        parts.extend(_split_even(single, rest))
+    return [p for p in parts if p]
+
+
+def part_rows(part):
+    """The roster rows of one part, in group order and already sorted inside each group."""
+    return [r for g in part for r in g["rows"]]
+
+
+def part_families(part):
+    """「托尔托利杨氏（15人）、…」 for the request's range line."""
+    return "、".join(f"{g['label']}（{g['count']}人）" for g in part)
+
+
+def ordered_rows(rep):
+    """All landed rulers in part-2 order (house order, then title and strength)."""
+    return [r for part in part2_plan(rep) for r in part_rows(part)]
+
+
 def _roster_line(r, ref_name=""):
     """One ruler as one line: <reference protagonist>的<kin><label>，属<house>，为人<traits>。
 
@@ -191,9 +314,24 @@ def _roster_line(r, ref_name=""):
     return "- " + "，".join(bits) + "。"
 
 
-def roster_text(rep):
+def roster_text(rep, headings=False):
+    """The landed roster as lines, in part-2 family order.
+
+    `headings=True` adds one `### 家族（n 人）` line per house for the appendix; the part-2 requests
+    use the same grouping but pass only their own subset.
+    """
     ref_name = (rep.get("ref") or {}).get("name") or ""
-    return "\n".join(_roster_line(r, ref_name) for r in rep["rows"])
+    parts = part2_plan(rep)
+    if not parts:
+        return ""
+    if not headings:
+        return "\n".join(_roster_line(r, ref_name) for r in ordered_rows(rep))
+    out = []
+    for part in parts:
+        for g in part:
+            out.append(f"### {g['label']}（{g['count']} 人）")
+            out.extend(_roster_line(r, ref_name) for r in g["rows"])
+    return "\n".join(out)
 
 
 def others_titled(rep, limit=24):
@@ -258,19 +396,55 @@ def part1_messages(ch, rep, folder, rule_block):
     return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user}]
 
 
-def part2_messages(ch, rep, folder, rule_block, roster_override=None):
-    """[system, user] of part 2: the program-built roster of same-dynasty holders."""
+def part2_messages(ch, rep, folder, rule_block, roster_override=None,
+                   part=None, part_no=1, part_total=1):
+    """[system, user] of one part-2 request.
+
+    `part` is one element of `part2_plan`: only that family subset goes into the roster, so the
+    model writes the families assigned to this request. Without `part` the whole roster is sent
+    (the single-request fallback and the older callers).
+    """
     p = style.PROMPTS
     sys_msg = p["epilogue_system"].format(rule_block=rule_block)
-    table = roster_override if roster_override is not None else roster_text(rep)
+    ref_name = (rep.get("ref") or {}).get("name") \
+        or (rep.get("protagonist") or {}).get("name") or "—"
+    if roster_override is not None:
+        table = roster_override
+        n = len([ln for ln in table.splitlines() if ln.startswith("- ")])
+        families = rep.get("dynasty_name") or "同宗"
+    elif part:
+        rows = part_rows(part)
+        table = "\n".join(_roster_line(r, ref_name) for r in rows)
+        n = len(rows)
+        families = part_families(part)
+    else:
+        table = roster_text(rep)
+        n = len(rep.get("rows") or [])
+        families = "、".join(f"{g['label']}（{g['count']}人）"
+                             for g in house_groups(rep)) or (rep.get("dynasty_name") or "同宗")
+    if not table:
+        table = "（本次存档中，同宗在世者皆无领地与头衔）"
+        n = 0
+    lo = max(160, 35 * n)
+    hi = max(280, 60 * n)
+    opening = "本段为第二部分开篇，首句可总起当世同宗之盛。" if part_no <= 1 \
+        else "承接前段，直接写本段第一位统治者。"
+    closing = "末段写出这一族当日分布的地域格局。" if part_no >= part_total \
+        else "本段写到名册最后一位为止，地域格局由末段收束。"
     user = p["epilogue_part2_user"].format(
         shared=shared_block(ch, rep, folder),
-        protagonist=(rep.get("ref") or {}).get("name")
-                    or (rep.get("protagonist") or {}).get("name") or "—",
+        protagonist=ref_name,
         dynasty=rep.get("dynasty_name") or "—",
-        n=len(table.split("\n")) if table else 0,
+        families=families,
+        part_no=part_no,
+        part_total=part_total,
+        n=n,
         as_of=_cn(rep["as_of"]),
-        roster=table or "（本次存档中，同宗在世者皆无领地与头衔）")
+        roster=table,
+        opening=opening,
+        closing=closing,
+        lo=lo,
+        hi=hi)
     return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user}]
 
 
@@ -308,7 +482,7 @@ def assemble(folder, ch, rep, part1, part2, pid):
         f"## 附：同宗统治者名册（{_cn(rep['as_of'])} 存档，程序产物）",
         "",
     ]
-    table = roster_text(rep)
+    table = roster_text(rep, headings=True)
     if table:
         body.append(table)
     else:

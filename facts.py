@@ -2094,6 +2094,8 @@ class Facts:
             if k:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
+        self._script_ranks = {}  # x_script_* tid -> rank inferred from de jure structure
+        self._script_rank_busy = set()  # cycle guard while inferring a script title's rank
         self._regnal_cache = {}  # regnal number (cid, tid, date) -> ordinal
         self._mem_date_cache = {}  # title memory fact date (tid, cid, d, reason, type)
         self._dyn_hist_cache = {}  # per-save dynamic name evolution (this cache + campaign peers)
@@ -2710,8 +2712,7 @@ class Facts:
             (cl.date_key(self.as_of) if self.as_of else None)
         best_tid, best_rank, best_gain = None, -1, None
         for tid, ivs in self._hold_intervals(cid, date).items():
-            key = (self._lt.get(str(tid)) or {}).get("key") or ""
-            rank = self._TT_RANK.get(key[:2], 0)
+            rank = self._eff_rank(tid)
             for (g, _l, _lt) in ivs:
                 if not g:
                     continue
@@ -3159,7 +3160,9 @@ class Facts:
                 or (tnd.get("custom") or "").strip() \
                 or (tnd.get("name") or "").strip() \
                 or L.loc(self.table, key) or key
-        if key.startswith("x_"):  # landless camps/orders and similar: name only
+        if key.startswith("x_") and not self._is_landed_title(tid):
+            # landless camps/orders and similar: name only. A script-created landed title
+            # (x_script_* with a de jure rank) falls through to the tier word below.
             return name if site else (self._specific_name(tid) or name)
         # Cardinal titles (d_cd_*) take no tier word: they are landless titular titles
         # (`landless = yes`, `destroy_on_succession = yes`), and a tier word would read as if
@@ -3199,6 +3202,11 @@ class Facts:
             if key.startswith(pfx):
                 tier = tv
                 break
+        if not tier:
+            # Script-created landed titles carry no tier prefix: read the tier from the rank the
+            # de jure hierarchy gave them (kingdom for 巴勒斯坦王国).
+            _rank = self._eff_rank(tid)
+            tier = self._RANK_TIER.get(_rank, "") if _rank >= 1 else ""
         if tier:
             # The tier word follows the then-holder, not the final save's holder, which would
             # judge a 910 tenure by the independence/culture/top liege of 924.
@@ -3320,6 +3328,9 @@ class Facts:
             if key.startswith(pfx):
                 tier = tv
                 break
+        if not tier:
+            _rank = self._eff_rank(tid)
+            tier = self._RANK_TIER.get(_rank, "") if _rank >= 1 else ""
         if not tier:
             return ""
         # camp tier words come from the game's camp key, not from flavorization's feudal words
@@ -4165,6 +4176,69 @@ class Facts:
             return False
         return self._ESTATE_KEY_MARK in ((self._lt.get(str(tid)) or {}).get("key") or "")
 
+    def _script_title_rank(self, tid):
+        """Rank of a script-created landed title (`x_script_*`), inferred from its de jure position.
+
+        The save does not write a tier field for a title created by `create_dynamic_title`, and its
+        key carries no `k_`/`d_` prefix, so `_TT_RANK` cannot answer. A landed title's tier follows
+        the de jure hierarchy: a kingdom sits under an empire (rank 5 -> 4), a duchy under a kingdom
+        (4 -> 3), a county under a duchy (3 -> 2). When the title has no de jure liege (a titular
+        creation), its highest de jure vassal supplies the same relation from below.
+
+        Only titles whose `landless` field is absent qualify; `x_script_*` peasant revolts and
+        curias keep `landless = true` and stay rank 0. A title with neither a liege nor vassals
+        (a titular creation with no de jure structure) also stays 0: without a tier there is
+        nothing to promote, and the old name-only behaviour is safer than a guessed rank.
+        """
+        if tid is None:
+            return 0
+        try:
+            tid = int(tid)
+        except (TypeError, ValueError):
+            return 0
+        hit = self._script_ranks.get(tid)
+        if hit is not None:
+            return hit
+        t = self._lt.get(str(tid)) or {}
+        key = t.get("key") or ""
+        if not key.startswith("x_script_") or t.get("landless"):
+            self._script_ranks[tid] = 0
+            return 0
+        if tid in self._script_rank_busy:    # de jure cycle: fall back to "no rank"
+            return 0
+        self._script_rank_busy.add(tid)
+        try:
+            rank = 0
+            liege = t.get("de_jure_liege")
+            if liege:
+                lr = self._eff_rank(liege)
+                if lr >= 2:
+                    rank = lr - 1
+            if rank <= 0:
+                vmax = 0
+                for v in (t.get("de_jure_vassals") or []):
+                    vmax = max(vmax, self._eff_rank(v))
+                if vmax >= 1:
+                    rank = vmax + 1
+        finally:
+            self._script_rank_busy.discard(tid)
+        self._script_ranks[tid] = rank
+        return rank
+
+    def _is_landed_script(self, tid):
+        """True for a script-created *landed* title: `x_script_*`, no `landless` field, not a
+        clerical province / estate / camp / yurt, and a de jure rank of 2 or above."""
+        if tid is None:
+            return False
+        t = self._lt.get(str(tid)) or {}
+        key = t.get("key") or ""
+        if not key.startswith("x_script_") or t.get("landless"):
+            return False
+        if self._is_nomad_camp(tid) or self._is_estate_title(tid) \
+                or self._is_clerical_title(tid) or self._is_adventurer_camp(tid):
+            return False
+        return self._script_title_rank(tid) >= 2
+
     def _eff_rank(self, tid):
         """Effective rank of a title: a house estate (`_nf_`) is family property, not land, so it
         counts as rank 0 like a landless camp or yurt.
@@ -4173,12 +4247,17 @@ class Facts:
         (`common/landed_titles/04_china_noble_families.txt`) and the UI land column is empty, so
         ranking an estate by its `c_`/`d_` prefix would let a landless clan enter the primary
         title slot as a county.
+
+        A script-created landed title (`x_script_*`, no prefix tier) reads its rank from the de jure
+        hierarchy (see `_script_title_rank`); the other `x_` keys stay rank 0.
         """
         if tid is None:
             return 0
         if self._is_estate_title(tid):
             return 0
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
+        if key.startswith("x_script_"):
+            return self._script_title_rank(tid)
         return self._TT_RANK.get(key[:2], 0)
 
     def _is_clerical_title(self, tid):
@@ -4220,14 +4299,23 @@ class Facts:
 
         The holder is unlanded but is not a landless adventurer: the game words him from the
         title's own government (校官 / 大团长 / 总修院长, see `_landless_holder_word`).
+
+        A script title created by `create_dynamic_title` is landed: the save leaves its `landless`
+        field absent (peasant revolts and curias carry `landless = true`), and its de jure position
+        yields rank 2 or above. Those titles are not landless; a titular `x_script_*` with no de
+        jure structure keeps the old landless reading because no tier can be inferred.
         """
         if tid is None:
             return False
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         if not key.startswith("x_"):
             return False
-        return not (self._is_nomad_camp(tid) or self._is_estate_title(tid)
-                    or self._is_clerical_title(tid) or self._is_adventurer_camp(tid))
+        if self._is_nomad_camp(tid) or self._is_estate_title(tid) \
+                or self._is_clerical_title(tid) or self._is_adventurer_camp(tid):
+            return False
+        if key.startswith("x_script_"):
+            return not self._is_landed_script(tid)
+        return True
 
     # Adventurer (camp) period intervals: the adventurer itinerary section covers only these.
     def camp_intervals(self, cid=None, kind="camp"):
@@ -6290,6 +6378,10 @@ class Facts:
         if idx is None:
             return []
         out = []
+        def _subj_name(d):
+            """The subject's plain name, used as the anchor of a relation clause."""
+            return self.name_or(pid) or self.event_name(pid, date=d) or "本传主"
+
         if idx > 0:
             prev = chain[idx - 1]
             pcid = int(prev["cid"])
@@ -6302,14 +6394,17 @@ class Facts:
             if isinstance(pv, dict):
                 death = ((pv.get("player_death") or {}).get("date")) or ""
                 re_end = pv.get("reign_end") or {}
-            # no parentheticals: the relation meets the predecessor's own appellation directly
-            # (「其父伯爵时尚王子洪易卜拉欣」); the old 「、前代传主」 label is dropped (user 2026-10-08)
-            lead = kin
+            # The relation chain keeps its 「兼」 width, but the person now leads the clause:
+            # 「杨丹霞（杨阳明的母亲兼堂姐兼嫂兼岳母）」. The old 「其母亲兼…杨丹霞」 put the chain
+            # before the name and next to the successor line's 「其儿子兼…杨翊黄」; the model read
+            # the two chains together and gave the mother the successor's 「儿子」 (v126).
+            # The subject's name inside the parenthesis is explicit, so the direction is fixed
+            # even when two succession lines stand next to each other.
+            subj = _subj_name(start)
+            kin_chain = kin[1:] if kin.startswith("其") else kin
+            who = f"{nm}（{subj}的{kin_chain}）" if kin_chain else nm
             # a predecessor whose reign ended without death (abdication) must not be called dead
             re_date = re_end.get("date") or ""
-            # the subject himself closes the sentence by name, the way the chain reads in the rest
-            # of the article (「洪七公从此作为命运的主角」)
-            subj = self.event_name(pid, date=start) or self.name_or(pid) or "本传主"
 
             def _death_fate(when, same_day=False):
                 """Death phrase for the predecessor, including the specific cause when known.
@@ -6342,20 +6437,23 @@ class Facts:
                 fate = ""
             if nm and start:
                 if fate:
-                    out.append(f"承继：{self.date(start)}，{lead}{nm}{fate}，"
+                    out.append(f"承继：{self.date(start)}，{who}{fate}，"
                                f"{subj}从此作为命运的主角。")
                 else:
-                    out.append(f"承继：{self.date(start)}，{subj}继{lead}{nm}之位。")
+                    out.append(f"承继：{self.date(start)}，{subj}继{who}之位。")
             elif nm:
-                out.append(f"承继：{subj}继{lead}{nm}之位。")
+                out.append(f"承继：{subj}继{who}之位。")
         if idx + 1 < len(chain):
             nxt = chain[idx + 1]
             ncid = int(nxt["cid"])
             start = nxt.get("date") or ""
             nm = self._chain_person(ncid)
             kin = self._chain_kin_word(pid, ncid)
+            subj = _subj_name(start)
+            kin_chain = kin[1:] if kin.startswith("其") else kin
+            who = f"{nm}（{subj}的{kin_chain}）" if kin_chain else nm
             if nm:
-                body = f"{kin}{nm}继为传主。" if kin else f"传主之位归于{nm}。"
+                body = f"{who}继为传主。" if kin else f"传主之位归于{nm}。"
                 out.append(f"后任：{self.date(start)}，{body}" if start
                            else f"后任：其后{body}")
         return out
@@ -7911,6 +8009,9 @@ class Facts:
                 tier = tv
                 break
         if not tier:
+            _rank = self._eff_rank(tid)
+            tier = self._RANK_TIER.get(_rank, "") if _rank >= 1 else ""
+        if not tier:
             return name
         if cid is None:
             cid = self._holder_at_or_now(self._lt.get(str(tid)) or {}, tid, date)
@@ -8832,12 +8933,19 @@ class Facts:
     _NON_LANDED_KEY_PREFIXES = ("e_minister_", "x_")
 
     def _is_landed_title(self, tid):
-        """Whether `tid` is a landed title (h_/e_/k_/d_/c_/b_), not an office, camp or estate."""
+        """Whether `tid` is a landed title (h_/e_/k_/d_/c_/b_), not an office, camp or estate.
+
+        A script-created landed title (`x_script_*` with no `landless` field and a de jure rank of
+        2 or above) counts as landed; its key carries no tier prefix, so the generic prefix test
+        would otherwise reject it.
+        """
         if tid is None:
             return False
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         if not key:
             return False
+        if key.startswith("x_"):
+            return self._is_landed_script(tid)
         if any(key.startswith(p) for p in self._NON_LANDED_KEY_PREFIXES):
             return False
         return key[:2] in ("h_", "e_", "k_", "d_", "c_", "b_")
@@ -10257,8 +10365,7 @@ class Facts:
         held = set(ids)
 
         def _rank(tid):
-            return self._TT_RANK.get(
-                ((self._lt.get(str(tid)) or {}).get("key") or "")[:2], 0)
+            return self._eff_rank(tid)
 
         keep, folded = [], set()
         for tid in ids:

@@ -2981,6 +2981,34 @@ def _draft_epilogue_part(msgs, cfg, min_chars, label):
     return best
 
 
+def _draft_epilogue_parts(msgs_list, cfg, min_chars_list, labels):
+    """Draft several part-2 segments concurrently, preserving request order.
+
+    Each request gets its own `cfg` copy (the LLM layer reads but never mutates it), so a shared
+    dict is safe; the executor size follows `llm_max_concurrency` and never exceeds the number of
+    segments. A failed segment is retried once by `_draft_epilogue_part`; here an unexpected
+    exception is logged and that segment contributes an empty string so the other families still
+    reach the article.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    n = len(msgs_list)
+    workers = min(n, max(1, int(cfg.get("llm_max_concurrency") or 4)))
+    if workers <= 1:
+        return [_draft_epilogue_part(msgs_list[i], dict(cfg), min_chars_list[i], labels[i])
+                for i in range(n)]
+    out = [""] * n
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_draft_epilogue_part, msgs_list[i], dict(cfg),
+                          min_chars_list[i], labels[i]) for i in range(n)]
+        for i, fut in enumerate(futs):
+            try:
+                out[i] = fut.result()
+            except Exception as exc:                          # noqa: BLE001
+                llm.log(f"封档总评{labels[i]}生成失败: {exc!r}")
+    return out
+
+
 def step_epilogue(cfg, folder=None, force=False):
     """Write the campaign epilogue of one folder: part 1 over the 终传 first chapters, part 2 over the
     same-dynasty rulers of the newest save. Returns the written path, None when cancelled or skipped,
@@ -3042,11 +3070,27 @@ def step_epilogue(cfg, folder=None, force=False):
                                  cfg1, 1600, "第一部分")
     cfg2 = dict(cfg)
     cfg2["max_tokens"] = min(cfg.get("max_tokens", 12800), 6000)
-    table = E.roster_text(rep) or E.roster_others_text(rep)
-    print("撰写第二部分《当世同宗诸统治者》…", flush=True)
-    part2 = _draft_epilogue_part(
-        E.part2_messages(ch, rep, row["folder"], rule_block, roster_override=table),
-        cfg2, 900, "第二部分")
+    parts = E.part2_plan(rep)
+    if parts:
+        total = len(parts)
+        msgs_list, min_chars_list, labels = [], [], []
+        for i, part in enumerate(parts, 1):
+            n_part = len(E.part_rows(part))
+            lo = max(160, 35 * n_part)
+            msgs_list.append(E.part2_messages(ch, rep, row["folder"], rule_block,
+                                              part=part, part_no=i, part_total=total))
+            min_chars_list.append(max(120, int(lo * 0.8)))
+            labels.append(f"第二部分第{i}段")
+        print(f"撰写第二部分《当世同宗诸统治者》（{total} 段，{len(rep['rows'])} 人）…",
+              flush=True)
+        texts = _draft_epilogue_parts(msgs_list, cfg2, min_chars_list, labels)
+        part2 = "\n\n".join(t.strip() for t in texts if t.strip())
+    else:
+        table = E.roster_others_text(rep)
+        print("撰写第二部分《当世同宗诸统治者》…", flush=True)
+        part2 = _draft_epilogue_part(
+            E.part2_messages(ch, rep, row["folder"], rule_block, roster_override=table),
+            cfg2, 900, "第二部分")
     md = E.assemble(row["folder"], ch, rep, part1, part2, row["pid"])
     with open(out_path, "w", encoding="utf-8", newline="") as fp:
         fp.write(md)
