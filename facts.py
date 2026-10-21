@@ -524,6 +524,94 @@ KIN_WORDS = {
     "clan_grandson":     ("", "族孙"),     "clan_granddaughter": ("", "族孙女"),
     "clan_ancestor":     ("", "族祖"),     "clan_descendant":    ("", "族孙"),
     "clansman":          ("", "族人"),
+    # ---- v128: in-law and step terms the cascade and the six affinal routes never named ----
+    # Group Q1, a parent's sibling's spouse (the uncle's wife / the aunt's husband). The side and
+    # the linking sibling's sex pick the word; only the paternal uncle's wife needs a birth year
+    # (伯母 vs 婶母, the same seniority test 伯父/叔父 uses against the father).
+    "uncle_wife_pat_older":   ("", "伯母"),
+    "uncle_wife_pat_younger": ("", "婶母"),
+    "aunt_husband_pat":       ("", "姑父"),
+    "uncle_wife_mat":         ("", "舅母"),
+    "aunt_husband_mat":       ("", "姨父"),
+    # Group Q2, a sibling's child's spouse (侄媳/侄女婿 for a brother's child, 甥媳/甥女婿 for a
+    # sister's). The child's sex picks the word; the game keys are the coarse fallbacks.
+    "nephew_wife_brother":   ("", "侄媳"),
+    "niece_husband_brother": ("", "侄女婿"),
+    "nephew_wife_sister":    ("", "甥媳"),
+    "niece_husband_sister":  ("", "甥女婿"),
+    "nephew_in_law":         ("relation_nephewinlaw", "姻亲侄甥"),
+    "niece_in_law":          ("relation_nieceinlaw", "姻亲侄甥女"),
+    # Group Q3, a grandchild's spouse (孙媳/孙女婿 through a son, 外孙媳/外孙女婿 through a daughter).
+    "grandson_wife_son":             ("", "孙媳"),
+    "granddaughter_husband_son":     ("", "孙女婿"),
+    "grandson_wife_daughter":        ("", "外孙媳"),
+    "granddaughter_husband_daughter": ("", "外孙女婿"),
+    "grandchild_spouse_wife":   ("relation_granddaughterinlaw", "（外）孙媳"),
+    "grandchild_spouse_husband": ("relation_grandsoninlaw", "（外）孙女婿"),
+    # Group Q4, a child's spouse's parents (亲家). The parent's own sex picks the word.
+    "child_spouse_father": ("", "亲家公"),
+    "child_spouse_mother": ("", "亲家母"),
+    # Group Q5, a parent's spouse's child by another partner (继兄弟姊妹), seniority against the
+    # subject; the game's 继兄弟/继姊妹 are the fallback when a birth year is missing.
+    "step_brother_older":   ("", "继兄"),
+    "step_brother_younger": ("", "继弟"),
+    "step_sister_older":    ("", "继姐"),
+    "step_sister_younger":  ("", "继妹"),
+    "step_brother":         ("relation_stepbrother", "继兄弟"),
+    "step_sister":          ("relation_stepsister", "继姊妹"),
+    # Group Q6, the father's concubine (庶母): a mother's peer, never 继母, because the father's
+    # primary marriage is not the one that produced the subject.
+    "concubine_mother": ("", "庶母"),
+    # Group Q7, a 堂/表 cousin's child. 堂 only when both sides' hops to the shared grandparent are
+    # father edges; the cousin's own sex is not recorded on that route, so 侄 covers both a male
+    # and a female cousin's child (see _deep_kin_key).
+    "cousin_child_pat_male":    ("", "堂侄"),
+    "cousin_child_pat_female":  ("", "堂侄女"),
+    "cousin_child_mat_male":    ("", "表侄"),
+    "cousin_child_mat_female":  ("", "表侄女"),
+    # Group Q8, a 堂/表 cousin's spouse: the cousin's sex and seniority against the subject pick
+    # 堂嫂/堂弟媳/堂姐夫/堂妹夫, the side picks 堂/表.
+    "cousin_wife_pat_older":     ("", "堂嫂"),
+    "cousin_wife_pat_younger":   ("", "堂弟媳"),
+    "cousin_wife_mat_older":     ("", "表嫂"),
+    "cousin_wife_mat_younger":   ("", "表弟媳"),
+    "cousin_husband_pat_older":  ("", "堂姐夫"),
+    "cousin_husband_pat_younger": ("", "堂妹夫"),
+    "cousin_husband_mat_older":  ("", "表姐夫"),
+    "cousin_husband_mat_younger": ("", "表妹夫"),
+    "cousin_spouse_male":        ("relation_cousininlaw_male", "姻亲堂表兄弟"),
+    "cousin_spouse_female":      ("relation_cousininlaw_female", "姻亲堂表姊妹"),
+    # Group Q9, the wife's brother's child (内侄/内侄女).
+    "wife_brother_child_male":   ("", "内侄"),
+    "wife_brother_child_female": ("", "内侄女"),
+    # ---- v128: former-role words (the 前 layer, see Facts.former_kin_words_for) ----
+    # Group R1, the subject's own ended marriage: 前妻/前夫 for a divorce, 先妻/先夫 for a death
+    # (the game's own departed-spouse keys), 前妾/前男宠 for a concubine.
+    "former_wife":       ("", "前妻"),
+    "former_husband":    ("", "前夫"),
+    "former_concubine":  ("", "前妾"),
+    "former_consort":    ("", "前男宠"),
+    "departed_wife":     ("relation_wife_departed", "先妻"),
+    "departed_husband":  ("relation_husband_departed", "先夫"),
+    # Group R2, a relative's ended marriage: the superseded in-law role, prefixed 前 when the
+    # marriage ended in divorce or when the person now holds a closer role (妻子兼前嫂).
+    "former_sister_in_law_older":   ("", "前嫂"),
+    "former_sister_in_law_younger": ("", "前弟媳"),
+    "former_brother_in_law_older":  ("", "前姐夫"),
+    "former_brother_in_law_younger": ("", "前妹夫"),
+    "former_daughter_in_law":       ("", "前儿媳"),
+    "former_son_in_law":            ("", "前女婿"),
+    "former_step_father":           ("", "前继父"),
+    "former_step_mother":           ("", "前继母"),
+    "former_concubine_mother":      ("", "前庶母"),
+    # Group R3, the former spouse's own family (f5-f7): the tie survives a death in Chinese usage,
+    # so the plain word stands on widowhood and only a divorce takes 前.
+    "former_father_in_law":   ("", "前岳父"),
+    "former_mother_in_law":   ("", "前岳母"),
+    "former_husband_father":  ("", "前公公"),
+    "former_husband_mother":  ("", "前婆婆"),
+    "former_co_brother_in_law": ("", "前连襟"),
+    "former_co_sister_in_law":  ("", "前妯娌"),
 }
 
 _KIN_TEXT_CACHE = {}
