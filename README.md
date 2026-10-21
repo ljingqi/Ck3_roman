@@ -189,10 +189,12 @@ python pipeline.py epilogue 洪氏2 --force
 │   ├── data/                     熔件、记忆缓存、快照、家谱数据（genealogy.json）
 │   ├── <姓名>_终传_<日期>.md      成稿
 │   └── index.html                阅读页（含家谱页）
-└── logs/                         运行日志与提示词实录
+└── logs/                         运行日志 + 按版本归档的探针/取证（logs/vXX/，见 logs/README.md）
 ```
 
-`output/`、`logs/`、`config.json`、`cache/` 都不会进版本库。
+`output/`、`logs/`、`config.json`、`cache/` 都不会进版本库。`logs/` 的目录约定
+（一版一夹 `logs\vXX\`、脚本与输出同夹、根目录只留三个运行时日志）见
+`.agents/skills/log-version-folders`。
 
 ---
 
