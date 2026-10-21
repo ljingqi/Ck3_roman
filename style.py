@@ -633,7 +633,9 @@ FLAVOR_DEATH_ZH = {
     "death_consumption": "染肺痨而亡",
     "death_smallpox": "染天花而亡",
     "death_measles": "染麻疹而亡",
-    "death_cancer": "染恶疾而亡",
+    # The game's own row is a runtime trait template (死于[GetTrait('cancer')…]), which the
+    # death-reason layer drops, so the disease word is written out: the player sees 癌症.
+    "death_cancer": "患癌症而亡",
     "death_sickly": "体弱而亡",
     "death_typhus": "染斑疹伤寒而亡",
     "death_pneumonic": "染肺疾而亡",
