@@ -5681,7 +5681,7 @@ class Facts:
     # Affinal terms one composed identity list may carry. A budget of its own, so an in-law route
     # never eats into the blood routes' budget (user 2026-10-06: both ties must be visible on the
     # same person, 「兄弟兼堂表兄弟兼姻亲兄弟兼朋友」).
-    _KIN_CHAIN_AFFINAL_MAX = 2
+    _KIN_CHAIN_AFFINAL_MAX = 3
 
     def _sex_of(self, cid):
         """Recorded sex of `cid` as True/False; None when the cache does not record it."""
@@ -5791,6 +5791,79 @@ class Facts:
             return kin_text("co_sister_in_law")
         return ""
 
+    def _parent_sibling_spouse_word(self, subject, par, sib, cid):
+        """Word of `cid`, the spouse of the subject's parent's sibling `sib` (v128): 伯母/婶母 for
+        a father's brother's wife (seniority against the father, as 伯父/叔父), 姑父 for a father's
+        sister's husband, 舅母 for a mother's brother's wife, 姨父 for a mother's sister's husband.
+        '' when a sex is unrecorded; an unknown birth year keeps 婶母, the everyday default."""
+        pf, sf = self._sex_of(par), self._sex_of(sib)
+        if pf is None or sf is None:
+            return ""
+        if sf:                                   # the parent's sister: her husband
+            return kin_text("aunt_husband_pat" if pf is False else "aunt_husband_mat")
+        if pf is True:                           # the mother's brother: his wife
+            return kin_text("uncle_wife_mat")
+        older = self._older_ids(sib, par)
+        return kin_text("uncle_wife_pat_older" if older else "uncle_wife_pat_younger")
+
+    def _sibling_child_spouse_word(self, subject, sib, kid, cid):
+        """Word of `cid`, the spouse of the subject's sibling's child `kid` (v128): 侄媳/侄女婿 for
+        a brother's child, 甥媳/甥女婿 for a sister's; the child's sex picks the wife/husband form,
+        the game's 姻亲侄甥 is the fallback when a sex is unrecorded."""
+        sf, kf = self._sex_of(sib), self._sex_of(kid)
+        if sf is None or kf is None:
+            cf = self._sex_of(cid)
+            if cf is None:
+                return ""
+            return kin_text("niece_in_law" if cf else "nephew_in_law")
+        if sf is False:
+            return kin_text("nephew_wife_brother" if kf is False else "niece_husband_brother")
+        return kin_text("nephew_wife_sister" if kf is False else "niece_husband_sister")
+
+    def _grandchild_spouse_word(self, subject, kid, gc, cid):
+        """Word of `cid`, the spouse of the subject's child's child `gc` (v128): 孙媳/孙女婿 through
+        a son, 外孙媳/外孙女婿 through a daughter; the game's （外）孙媳 is the fallback when the
+        middle person's sex is unrecorded."""
+        gf = self._sex_of(gc)
+        if gf is None:
+            return ""
+        kf = self._sex_of(kid)
+        if kf is None:
+            return kin_text("grandchild_spouse_wife" if gf else "grandchild_spouse_husband")
+        if kf is False:
+            return kin_text("grandson_wife_son" if gf is False else "granddaughter_husband_son")
+        return kin_text("grandson_wife_daughter" if gf is False else "granddaughter_husband_daughter")
+
+    def _step_sibling_word(self, subject, cid):
+        """Word of `cid`, a child of the subject's parent's other spouse (v128): 继兄/继弟/继姐/
+        继妹 by sex and seniority against the subject; the game's 继兄弟/继姊妹 when either is
+        unrecorded."""
+        cf = self._sex_of(cid)
+        if cf is None:
+            return ""
+        older = self._older_ids(cid, subject)
+        if older is None:
+            return kin_text("step_brother" if cf is False else "step_sister")
+        if cf is False:
+            return kin_text("step_brother_older" if older else "step_brother_younger")
+        return kin_text("step_sister_older" if older else "step_sister_younger")
+
+    def _cousin_spouse_word(self, subject, cousin, cid, side):
+        """Word of `cid`, the spouse of the subject's 堂/表 cousin `cousin` (v128): 堂嫂/堂弟媳 for
+        a male cousin's wife, 堂姐夫/堂妹夫 for a female cousin's husband, the side picking 堂/表.
+        A same-sex pair and an unknown sex or birth year fall back to 姻亲堂表兄弟/姊妹."""
+        cf, xf = self._sex_of(cid), self._sex_of(cousin)
+        fallback = kin_text("cousin_spouse_male" if cf is False else "cousin_spouse_female")
+        if cf is None:
+            return ""
+        if xf is None or cf == xf:
+            return fallback
+        older = self._older_ids(cousin, subject)
+        if older is None:
+            return fallback
+        kind = "wife" if xf is False else "husband"
+        return kin_text(f"cousin_{kind}_{side}_{'older' if older else 'younger'}")
+
     def affinal_kin_words_for(self, cid, subject, limit=None):
         """Affinal terms of `cid` relative to `subject`, one per independent marriage route.
 
@@ -5847,6 +5920,76 @@ class Facts:
             for par in sorted(self._parent_ids(s)):
                 if c in self._primary_spouse_ids(par):
                     if cf is not None and _add(kin_text("step_mother" if cf else "step_father")):
+                        return words
+        # ---- v128 routes: the ties the six above never named. Appended after them so a new route
+        # ---- only fills a budget the old ones left, and an old word is never replaced. ----
+        parents_s = self._parent_ids(s)
+        # (7) a parent's sibling's spouse (伯母/婶母/姑父/舅母/姨父)
+        for par in sorted(parents_s):
+            for sib in sorted(self._sibling_ids(par)):
+                if sib in parents_s or c not in self._primary_spouse_ids(sib):
+                    continue
+                if _add(self._parent_sibling_spouse_word(s, par, sib, c)):
+                    return words
+        # (8) a sibling's child's spouse (侄媳/侄女婿/甥媳/甥女婿)
+        for sib in sorted(self._sibling_ids(s)):
+            for kid in sorted(self._child_ids(sib)):
+                if c in self._primary_spouse_ids(kid) \
+                        and _add(self._sibling_child_spouse_word(s, sib, kid, c)):
+                    return words
+        # (9) a grandchild's spouse (孙媳/孙女婿/外孙媳/外孙女婿)
+        for kid in sorted(self._child_ids(s)):
+            for gc in sorted(self._child_ids(kid)):
+                if c in self._primary_spouse_ids(gc) \
+                        and _add(self._grandchild_spouse_word(s, kid, gc, c)):
+                    return words
+        # (10) a child's spouse's parents (亲家公/亲家母)
+        for kid in sorted(self._child_ids(s)):
+            for sp in sorted(self._primary_spouse_ids(kid)):
+                if c in self._parent_ids(sp) and c not in parents_s and c != s:
+                    if cf is not None and _add(kin_text(
+                            "child_spouse_mother" if cf else "child_spouse_father")):
+                        return words
+        # (11) a parent's spouse's child by another partner (继兄/继弟/继姐/继妹)
+        for par in sorted(parents_s):
+            for sp in sorted(self._primary_spouse_ids(par)):
+                if sp in parents_s:
+                    continue
+                for kid in sorted(self._child_ids(sp) - self._child_ids(par)):
+                    if kid != c or kid == s or kid in self._sibling_ids(s):
+                        continue
+                    if _add(self._step_sibling_word(s, kid)):
+                        return words
+        # (12) the father's concubine (庶母)
+        for par in sorted(parents_s):
+            if self._sex_of(par) is not False:
+                continue
+            for conc in sorted(self._fam_ids(par, "concubine")):
+                if conc != c or conc == s or conc in parents_s:
+                    continue
+                if _add(kin_text("concubine_mother")):
+                    return words
+        # (13) a 堂/表 cousin's spouse (堂嫂/堂弟媳/堂姐夫/堂妹夫/表嫂…)
+        for par in sorted(parents_s):
+            for sib in sorted(self._sibling_ids(par)):
+                if sib == s or sib in parents_s:
+                    continue
+                side = "pat" if (self._sex_of(par) is False and self._sex_of(sib) is False) else "mat"
+                for cousin in sorted(self._child_ids(sib)):
+                    if c in self._primary_spouse_ids(cousin) \
+                            and _add(self._cousin_spouse_word(s, cousin, c, side)):
+                        return words
+        # (14) the wife's brother's child (内侄/内侄女)
+        for sp in sorted(self._primary_spouse_ids(s)):
+            if self._sex_of(sp) is not True:
+                continue
+            for sib in sorted(self._sibling_ids(sp)):
+                if self._sex_of(sib) is not False:
+                    continue
+                for kid in sorted(self._child_ids(sib)):
+                    if kid == c and cf is not None \
+                            and _add(kin_text("wife_brother_child_female" if cf
+                                              else "wife_brother_child_male")):
                         return words
         return words
 
