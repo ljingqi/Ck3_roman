@@ -6101,8 +6101,9 @@ class Facts:
             if d:
                 cands.append((cl.date_key(d), 1, "widowed", d, who))
         if not cands:
-            if not self._char_death_date(link) and not self._char_death_date(other):
-                return ("divorce", "", "divorce")     # both alive: the tie ended while both lived
+            # Neither a divorce line nor a death date: the save prunes most outsiders, so silence
+            # is the only honest reading (probe: real two-living former edges are 0/0/0). A tie the
+            # caller knows to be superseded still gets its 前 word; everybody else gets nothing.
             return None
         cands.sort()
         _k, _o, kind, date, who = cands[0]
@@ -6175,7 +6176,7 @@ class Facts:
             word when the linking relative died (the widow keeps 嫂/儿媳/岳父)."""
             if not base:
                 return ""
-            if end[0] == "divorce" or superseded:
+            if superseded or (end and end[0] == "divorce"):
                 return self._former_kin_word(base) or base
             return base
 
@@ -6195,9 +6196,11 @@ class Facts:
 
         # (a) the subject's own ended marriage: 前妻/前夫, 先妻/先夫, 前妾/前男宠
         if c in own:
-            end = self._former_end(s, c, cut)
+            # The subject's own record is never pruned, so an undated end here can only be a
+            # divorce the flow table did not parse; a death would have a date.
+            end = self._former_end(s, c, cut) or ("divorce", "", "divorce")
             fem = self._sex_of(c)
-            if end and end[2] != "link" and fem is not None:
+            if end[2] != "link" and fem is not None:
                 if c in set(self._fam_ids(s, "former_concubines")):
                     _add(kin_text("former_concubine" if fem else "former_consort"))
                 elif end[0] == "divorce":
@@ -6211,7 +6214,7 @@ class Facts:
         superseded = bool(self._spouse_kind_of(c, s)) if links else False
         for kind, link in links:
             end = self._former_end(link, c, cut)
-            if not end:
+            if not end and not superseded:
                 continue
             fem = self._sex_of(c)
             if kind == "child":
