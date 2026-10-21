@@ -458,6 +458,10 @@ KIN_WORDS = {
     "great_grandmother": ("relation_great_grandmother", "（外）曾祖母"),
     # Group I, grandparents' siblings (the linking grandparent is 祖父/祖母; maternal-grandparent
     # siblings are out of scope)
+    # v129: 伯祖父 is 祖父之兄 and 叔祖父 祖父之弟; the old word asserted 伯 for every paternal
+    # great-uncle and was checked against nothing (45 伯 vs 1 叔 across the finished biographies).
+    "granduncle_pat_older":   ("", "伯祖父"),
+    "granduncle_pat_younger": ("", "叔祖父"),
     "granduncle_pat":    ("", "伯祖父"),
     "grandaunt_pat":     ("", "姑祖母"),
     "granduncle_mat":    ("", "舅祖父"),
@@ -516,8 +520,18 @@ KIN_WORDS = {
     "cousin3_mat_sister_older":    ("", "三从表姐"), "cousin3_mat_sister_younger":  ("", "三从表妹"),
     "cousin3_pat_brother": ("", "三从堂兄弟"), "cousin3_pat_sister": ("", "三从堂姊妹"),
     "cousin3_mat_brother": ("", "三从表兄弟"), "cousin3_mat_sister": ("", "三从表姊妹"),
+    # v129: 长幼 wherever a birth year decides it. The clan tier used to answer with the game's
+    # collective 同族兄弟/同族姊妹 even when both birth years were on record, so a blood brother read
+    # 「弟弟兼同族兄弟」 and a 表姐 read 「表姐兼同族姊妹」; 族兄/族弟/族姐/族妹 keep the split and the
+    # collective survives only when a birth year is missing.
+    "clan_brother_older":   ("", "族兄"), "clan_brother_younger": ("", "族弟"),
+    "clan_sister_older":    ("", "族姐"), "clan_sister_younger":  ("", "族妹"),
     "clan_brother": ("", "同族兄弟"), "clan_sister": ("", "同族姊妹"),
     # Group P, asymmetric collateral (generation gap -> 族伯叔/族侄/族祖/族孙)
+    # v129: 族伯叔 merges the two words real usage splits on the father's birth year (伯父/叔父);
+    # the merged word stays as the answer only when the father's birth year is missing or when the
+    # person is the father himself (a second route to the father has nothing to compare against).
+    "clan_uncle_older":  ("", "族伯"),     "clan_uncle_younger": ("", "族叔"),
     "clan_uncle":        ("", "族伯叔"),   "clan_aunt":          ("", "族姑"),
     "clan_grandfather":  ("", "族祖父"),   "clan_grandmother":   ("", "族祖母"),
     "clan_nephew":       ("", "族侄"),     "clan_niece":         ("", "族侄女"),
@@ -963,11 +977,24 @@ def _deep_kin_key(s, c, fath, moth, anc_memo, c_female, older):
             sen = older(c, s)                    # 长幼 split like 堂兄/堂弟; None -> neutral 兄弟/姊妹
             tag = "" if sen is None else ("_older" if sen else "_younger")
             return f"cousin{r}_{side}_{sex}{tag}"
-        return "clan_sister" if c_female else "clan_brother"
+        # r >= 4: 从数 runs out at 三从, so the clan tier names it. A birth year still decides 长幼
+        # there (v129: this used to answer 同族兄弟/同族姊妹 with both birth dates on record).
+        sen = older(c, s)
+        if sen is None:
+            return "clan_sister" if c_female else "clan_brother"
+        return f"clan_{sex}_{'older' if sen else 'younger'}"
     # --- asymmetric collateral: generation gap picks 族伯叔/族侄/族祖/族孙 ---
     gap = up_s - up_c                            # >0: c senior; <0: c junior
     if gap > 0:
         if gap == 1:
+            if c_female is not True:
+                # 族伯/族叔 are judged against the subject's father, the same test 伯父/叔父 uses.
+                # A second route that lands on the father himself has nothing to compare against.
+                fa = sorted(fath(s))
+                if fa and c not in fa:
+                    sen = older(c, fa[0])
+                    if sen is not None:
+                        return "clan_uncle_older" if sen else "clan_uncle_younger"
             return "clan_uncle" if c_female is not True else "clan_aunt"
         if gap == 2:
             if c_female is None:
@@ -994,10 +1021,11 @@ def _kin_word_coarse(term):
     return term.startswith("族") or term.startswith("同族")
 
 
-def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older):
+def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None):
     """KIN_WORDS key for one blood route: the shared ancestor A is `up_s` generations above the
     subject and `up_c` above the relative, `ms`/`mc` say the subject's/relative's hops up to A are
-    all father edges, `older` reports whether the relative is the elder.
+    all father edges, `older` reports whether the relative is the elder, and `uncle_older` (v129)
+    whether the relative is older than the subject's father, which is what decides 族伯 from 族叔.
 
     Same decision table as `_deep_kin_key`, without its guards: those hold the *closest* route back
     so it cannot override the cascade, while a route reaching here is known to be a second,
@@ -1020,7 +1048,10 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older):
         if r in (2, 3):
             tag = "" if older is None else ("_older" if older else "_younger")
             return f"cousin{r}_{side}_{sex}{tag}"
-        return "clan_sister" if c_female else "clan_brother"
+        # v129: r >= 4 has no 从数 word, but 长幼 is still on record and the clan word keeps it.
+        if older is None:
+            return "clan_sister" if c_female else "clan_brother"
+        return f"clan_{sex}_{'older' if older else 'younger'}"
     gap = up_s - up_c                            # >0: the relative is senior
     if gap > 0:
         if gap == 1:
@@ -1030,12 +1061,16 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older):
             # tells 伯 from 舅), so the route decides instead — a sister of the father is 姑母, a
             # sister of the mother 姨母 (user 2026-10-06). A deeper route keeps the clan word, and a
             # route mixing father and mother hops stays undecided and keeps it too. The male arm
-            # needs the father's birth year, which this function is not given, so 伯父/叔父 stays out.
+            # keeps the same rule (v129): 族伯/族叔 need the father's birth year, which the caller
+            # passes as `uncle_older`, and stay 族伯叔 when it is missing or the route lands on the
+            # father himself.
             if up_c == 1 and c_female:
                 if ms is True:
                     return "aunt_pat"
                 if ms is False:
                     return "aunt_mat"
+            if not c_female and uncle_older is not None:
+                return "clan_uncle_older" if uncle_older else "clan_uncle_younger"
             return "clan_aunt" if c_female else "clan_uncle"
         if gap == 2:
             return "clan_grandmother" if c_female else "clan_grandfather"
@@ -1212,7 +1247,14 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_mem
             return "grandaunt" if c_female else "granduncle"
         if c_female:
             return "grandaunt_pat" if _gf is False else "grandaunt_mat"
-        return "granduncle_pat" if _gf is False else "granduncle_mat"
+        if _gf is False:
+            # v129: 伯祖父 is 祖父之兄 and 叔祖父 祖父之弟, decided by the same birth-date test 伯父/叔父
+            # uses against the father. The merged word stays for a grandparent without a birth year.
+            sen = _older(c, g)
+            if sen is None:
+                return "granduncle_pat"
+            return "granduncle_pat_older" if sen else "granduncle_pat_younger"
+        return "granduncle_mat"
 
     for p in sorted(_fath(s)):
         for g in sorted(_fath(p) | _moth(p)):        # grandfather / grandmother
@@ -5647,6 +5689,13 @@ class Facts:
         chars = self.cache.get("characters") or {}
         cfemale = self._is_female(c)
         older = _older_rec(chars.get(str(c)) or {}, chars.get(str(s)) or {}, c, s)
+        # 族伯/族叔 are judged against the subject's father; a route that lands on the father himself
+        # leaves `uncle_older` None, which keeps the merged 族伯叔.
+        _faths = sorted(fath.get(s) or ())
+        uncle_older = None
+        if _faths and c not in _faths:
+            uncle_older = _older_rec(chars.get(str(c)) or {},
+                                     chars.get(str(_faths[0])) or {}, c, _faths[0])
         sigs = set()
         for anc, sroutes in routes.items():
             c_routes = croutes.get(anc)
@@ -5662,11 +5711,11 @@ class Facts:
                     if (ds, ms) in smin and dc == dc_min:
                         sigs.add((ds + dc, ds, dc, ms, mc))
                         continue
-                    term = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older))
+                    term = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older, uncle_older))
                     if term and not _kin_word_coarse(term):
                         sigs.add((ds + dc, ds, dc, ms, mc))
         for _tot, ds, dc, ms, mc in sorted(sigs):
-            w = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older))
+            w = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older, uncle_older))
             if w and w not in seen:
                 seen.add(w)
                 words.append(w)
