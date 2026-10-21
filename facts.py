@@ -210,12 +210,18 @@ _TRANSIENT_TRAITS = {"pregnant", "ill", "wounded_1", "wounded_2", "wounded_3"}
 # `trait =` lines of common/epidemics/00_epidemics.txt), not the static trait name.
 _DISEASE_TRAITS = frozenset({"smallpox", "bubonic_plague", "typhus", "consumption",
                              "measles", "dysentery", "ergotism"})
-# Epidemic death-reason key -> disease trait key (for the dynamic epidemic name).
+# Disease death-reason key -> disease trait key. The clause states the disease name, and an
+# epidemic that can be resolved supplies the game's contemporary name in front of it
+# (「患汉痘（天花）而亡」); the epidemic-less diseases below carry the trait word alone
+# (「患癌症而亡」). Trait keys, so the word always matches what the player sees.
 _DEATH_DISEASE_REASON = {
     "death_typhus": "typhus", "death_smallpox": "smallpox",
     "death_bubonic_plague": "bubonic_plague",
     "death_consumption": "consumption", "death_measles": "measles",
     "death_dysentery": "dysentery", "death_ergotism": "ergotism",
+    "death_cancer": "cancer", "death_pneumonic": "pneumonic",
+    "death_leper": "leper", "death_great_pox": "great_pox",
+    "death_gout_ridden": "gout_ridden",
 }
 
 # Fertility traits are bodily details a chronicler could not know: the public (surface)
@@ -16228,14 +16234,18 @@ class Facts:
         if killer is not None and not insider and self.killer_hidden(cid, killer):
             killer = None
             _public = True
-        # Epidemic causes of death use the game's own contemporary disease name
-        # (「染丘陵热而亡」); the static period-flavoured word (「染斑疹伤寒而亡」) applies only when
-        # no epidemic can be resolved.
+        # Disease causes of death name the disease: the game's contemporary epidemic name first,
+        # the trait word the player sees in parentheses (「患汉痘（天花）而亡」); a disease with no
+        # resolvable epidemic keeps the trait word alone (「患癌症而亡」). The static table words in
+        # style.FLAVOR_DEATH_ZH stay as the last resort (unknown trait key).
         if reason in _DEATH_DISEASE_REASON and killer is None:
-            _dyn = _disease_dynamic_name(
-                self, cid, _DEATH_DISEASE_REASON[reason], _year_of(date))
-            if _dyn:
-                return f"染{_dyn}而亡"
+            _typ = _DEATH_DISEASE_REASON[reason]
+            _word = _trait_name(self.table, _typ)
+            if _word:
+                _dyn = _disease_dynamic_name(self, cid, _typ, _year_of(date))
+                if _dyn and _dyn != _word:
+                    return f"患{_dyn}（{_word}）而亡"
+                return f"患{_word}而亡"
         out = ""
         if reason == "death_disappearance":
             # Disappearance means the body was never found, so the sentence states the outcome
