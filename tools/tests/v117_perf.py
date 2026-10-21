@@ -21,7 +21,7 @@
     7  扫描类：_iter_melts / _compact_keep_paths / load_melt_index / xz 压缩
     8  cProfile：extract_snapshot 与 facts.build_facts 的 cumulative top-25
 
-输出同时写控制台与 logs/v117_perf.txt（UTF-8，追加）。
+输出同时写控制台与 logs/v117/v117_perf.txt（UTF-8，追加）。
 """
 import argparse
 import cProfile

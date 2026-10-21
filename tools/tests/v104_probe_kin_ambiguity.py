@@ -6,7 +6,7 @@
 已算好的 kin_ids 做断言；另用「按已证实的亲缘边重建的最小 chars」调用纯函数 kin_key，
 以确定它返回单值还是多值。
 
-输出：logs/v104_kin_evidence.txt（UTF-8）
+输出：logs/v104/v104_kin_evidence.txt（UTF-8）
 """
 import io
 import json
@@ -88,7 +88,7 @@ w()
 w("=" * 78)
 w("第 2 层 · 素材面（logs/prompts.log）")
 w("=" * 78)
-w("请求分块（`=====` 行）由 tools/tests/v104_probe_prompts.py 落盘，索引见 logs/v104_req_index.txt。")
+w("请求分块（`=====` 行）由 tools/tests/v104_probe_prompts.py 落盘，索引见 logs/v104/v104_req_index.txt。")
 w()
 
 # 两个《家室列传·纪事·门庭恩怨》请求

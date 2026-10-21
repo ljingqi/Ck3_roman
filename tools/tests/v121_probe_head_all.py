@@ -2,7 +2,7 @@
 """v121 探针（九）：一次熔件加载，把四问的「改动前事实面」全部取证。
 
 用法：& tools\\py.ps1 tools\\tests\\v121_probe_head_all.py
-产物：logs/v121_probe_head_all.txt
+产物：logs/v121/v121_probe_head_all.txt
 """
 import json
 import os

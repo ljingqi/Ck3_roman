@@ -8,7 +8,7 @@
   ⑤ 枢机头衔的地名（d_cd_* / 动态枢机职的名称）
 
 用法: & tools\\py.ps1 tools\\tests\\v114_probe_all.py
-输出: logs/v114_all.txt（UTF-8）并同时打印
+输出: logs/v114/v114_all.txt（UTF-8）并同时打印
 """
 import io
 import json

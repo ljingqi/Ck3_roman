@@ -6,7 +6,7 @@
   & tools\\py.ps1 tools\\tests\\v117_probe_gf2.py melt --melt=1285
   & tools\\py.ps1 tools\\tests\\v117_probe_gf2.py melt --melt=1283
 
-输出追加写 logs/v117_probe_gf.txt（UTF-8）。
+输出追加写 logs/v117/v117_probe_gf.txt（UTF-8）。
 """
 import io
 import json

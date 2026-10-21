@@ -26,7 +26,7 @@
   [F] 已知改错复现：把成稿原文里被 `_fix_kin_roles` 改错的五处直接跑一遍
       （tools/tests/v108_probe_d_repro.py）。
 
-只读：不重熔存档、不写 output/、不动缓存。结果落 logs/v108_kin_sweep.txt (+ .json)。
+只读：不重熔存档、不写 output/、不动缓存。结果落 logs/v108/v108_kin_sweep.txt (+ .json)。
 
 用法：
     & tools\\py.ps1 tools\\tests\\v108_kin_sweep.py [--folder 洪氏2] [--pid 135480]

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """v103 probe: dump culture / name-order inputs for 洪真一, 大江笛, 耀国 from 耀国's cache.
-Cache-only (no melt load). Writes logs/v103_probe_names.txt (UTF-8)."""
+Cache-only (no melt load). Writes logs/v103/v103_probe_names.txt (UTF-8)."""
 import json, os, sys, io
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, HERE)
@@ -46,4 +46,4 @@ for cid, nm in targets[:12]:
 
 with open(os.path.join(HERE, "logs", "v103_probe_names.txt"), "w", encoding="utf-8") as f:
     f.write(out.getvalue())
-print("wrote logs/v103_probe_names.txt", len(out.getvalue()), "chars")
+print("wrote logs/v103/v103_probe_names.txt", len(out.getvalue()), "chars")

@@ -70,5 +70,5 @@ if not ids:
         P(w.decode("utf-8", "replace"))
         P()
 
-open(r"logs\v122_probe_kim.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_kim.txt")
+open(r"logs\v122\v122_probe_kim.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_kim.txt")

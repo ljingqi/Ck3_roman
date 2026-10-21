@@ -19,7 +19,7 @@
 ①b 是同一句换段主语（布里基纳）：那一句并不属于他的段落，此时 圣缯=祖父、桑莎=母亲 是该段的
 正解，因此它检查的是「按段主语正确重判」，不是「逐字保留」。
 
-被 tools/tests/v108_kin_sweep.py 的 [F] 段引用。只读；单独运行写 logs/v108_repro_final.txt。
+被 tools/tests/v108_kin_sweep.py 的 [F] 段引用。只读；单独运行写 logs/v108/v108_repro_final.txt。
 """
 import io
 import json

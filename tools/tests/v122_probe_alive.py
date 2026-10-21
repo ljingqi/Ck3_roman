@@ -82,5 +82,5 @@ for cid, r in dead_un.items():
         if shown >= 3:
             break
 
-open(r"logs\v122_probe_alive.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_alive.txt")
+open(r"logs\v122\v122_probe_alive.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_alive.txt")

@@ -2,7 +2,7 @@
 """v114 取证 II（一次熔件加载）：封圣日期的可行来源、枢机头衔的字号/地名、入赘子女的落点。
 
 用法: & tools\\py.ps1 tools\\tests\\v114_probe_all2.py
-输出: logs/v114_all2.txt
+输出: logs/v114/v114_all2.txt
 """
 import io
 import json

@@ -57,5 +57,5 @@ P("=== '16912738' 作为值出现的位置 (前 12 处) ===")
 for o, w in find(MELT, '"16912738"', 150, 120, limit=12):
     P(f"--- 偏移 {o}: {w.decode('utf-8', 'replace')!r}")
 
-open(r"logs\v122_probe_kim2.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_kim2.txt")
+open(r"logs\v122\v122_probe_kim2.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_kim2.txt")

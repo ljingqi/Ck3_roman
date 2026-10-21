@@ -11,7 +11,7 @@
 `_merge_and_cap_feuds` 的合并/排序全部用 facts.py 原文（inspect.getsource 取源码 + 定点替换，
 替换失败即 assert 报错，不会静默走偏）。仅本进程内存，不改 facts.py。
 
-输出：追加到 logs/v117_probe_feuds.txt 的 [F-6] 节。
+输出：追加到 logs/v117/v117_probe_feuds.txt 的 [F-6] 节。
 """
 import inspect
 import os

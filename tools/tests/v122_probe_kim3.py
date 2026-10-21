@@ -81,5 +81,5 @@ try:
 except Exception as e:
     P(f"缓存读取失败: {e}")
 
-open(r"logs\v122_probe_kim3.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_kim3.txt")
+open(r"logs\v122\v122_probe_kim3.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_kim3.txt")

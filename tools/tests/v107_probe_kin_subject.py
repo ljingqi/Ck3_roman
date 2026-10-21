@@ -8,7 +8,7 @@ output/洪氏2/data/player_135480.json (244MB) -- the cache is never loaded whol
       corrected variant, showing whether the post-pass can see the slip at all;
   (c) asserts the material rows the model actually received, by line number, in logs/prompts.log.
 
-Output: logs/v107_kin_subject.txt (UTF-8).
+Output: logs/v107/v107_kin_subject.txt (UTF-8).
 """
 import io
 import json

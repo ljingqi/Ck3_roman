@@ -2,7 +2,7 @@
 """v117 取证探针 · 第三段：各卷缓存里 characters['44503']（洪天贵福）到底有没有 death。
 
 不整载 150–310MB 的缓存：按块扫描原始 JSON，抓 `"44503": {` 之后的一段文本，
-筛出含 birth/death/dead_data 的记录块。输出追加 logs/v117_probe_gf.txt。
+筛出含 birth/death/dead_data 的记录块。输出追加 logs/v117/v117_probe_gf.txt。
 """
 import os
 import re

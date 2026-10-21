@@ -12,7 +12,7 @@
   ② 父为行政制头衔持有者时，子女的旧称号 vs「按父之持有末日 + 存档死亡记录 liege 纠正」后的称号。
 
 用法：python -X utf8 tools/tests/v116_probe_admin_princes.py [--peers=135480,...]
-输出：logs/v116_probe_admin_princes.txt（调用方重定向）
+输出：logs/v116/v116_probe_admin_princes.txt（调用方重定向）
 """
 import io
 import json

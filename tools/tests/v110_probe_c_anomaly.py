@@ -3,12 +3,12 @@
 
 The sweep's C part replays 「错词必纠」 with the pivot as the subject: the post-processor must
 rewrite a wrong kin word in `X的<错词>Y。` into the word the calculator certifies. One case showed
-up in the v110 sweep log and was absent from `logs/v109_kin_after_step2.json`; this probe rebuilds
+up in the v110 sweep log and was absent from `logs/v109/v109_kin_after_step2.json`; this probe rebuilds
 the exact call with the sweep's own construction (the pivot facts, `family_ids` + the synthetic
 family roster, `check_owner(..., prod=False)`) to settle whether v110 caused it.
 
 Verdict (2026-10-07): it did not. With `git stash push -- facts.py` the same single failure
-reproduces byte-identically, and the case is already present in `logs/v109_kin_after_step1.json`
+reproduces byte-identically, and the case is already present in `logs/v109/v109_kin_after_step1.json`
 (therefore also in the v109 code). The pair has no common ancestor within `_DEEP_MAXD` and no blood
 term at all -- `blood_kin_words_for(44717, 16795531) == []`, its only chain word is the game
 relation 仇敌 -- so no route-enumeration change can reach it. The post-processor simply declines to

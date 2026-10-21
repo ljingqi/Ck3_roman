@@ -4,7 +4,7 @@ reference protagonist and the part-2 prompt block. Loads the newest cache + the 
 (the campaign caches are not needed: kin, houses and traits all come from the cache/melt).
 
 Usage:  python tools/tests/v123_probe_roster.py [家族文件夹]
-Writes  logs/v123_roster_<folder>.txt  and prints the tail.
+Writes  logs/v123/v123_roster_<folder>.txt  and prints the tail.
 """
 import io
 import os

@@ -30,7 +30,7 @@ def main():
             parts.append("########## ? ##########")
             parts.append(str(m))
     text = "\n".join(parts)
-    out = ROOT / (sys.argv[3] if len(sys.argv) > 3 else f"logs/v118_msg_{key}.txt")
+    out = ROOT / (sys.argv[3] if len(sys.argv) > 3 else f"logs/v118/v118_msg_{key}.txt")
     out.write_text(text, encoding="utf-8")
     print(f"wrote {out} ({len(text)} chars)")
 

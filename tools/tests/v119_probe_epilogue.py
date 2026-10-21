@@ -3,7 +3,7 @@
 `**总评：**` paragraph (the only authored summary inside a 终传), and the 世系 head lines whose label
 carries no title.
 
-Read-only: it prints and writes logs/v119_epilogue_<folder>.txt / .json only.
+Read-only: it prints and writes logs/v119/v119_epilogue_<folder>.txt / .json only.
 
 Usage:  python tools/tests/v119_probe_epilogue.py [家族文件夹] [--dump]
 """

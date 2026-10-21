@@ -4,7 +4,7 @@ the holder word of a landless-adventurer leader (the 世系 head-line bug).
 
 Loads the newest cache + the newest melt once (~175 MB + ~453 MB) and prints raw inputs, the current
 `official_title` / `person_label` output, the title keys/ranks, the camp purpose and the roster.
-Read-only apart from logs/v119_roster_<folder>.{txt,json}.
+Read-only apart from logs/v119/v119_roster_<folder>.{txt,json}.
 
 Usage:  python tools/tests/v119_probe_roster.py [家族文件夹] [--campaign] [--as-of Y.M.D]
 """

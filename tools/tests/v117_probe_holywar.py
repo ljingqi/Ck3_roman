@@ -2,7 +2,7 @@
 """v117 取证探针：洪希晏（cid=50565938）1205 年夺取彼刻拉里亚系的头衔，在熔件
 landed_titles.history 里的 type 到底是什么？「圣战」信息在存档里存在哪？
 
-只读，不改任何生产代码。输出同时写 logs/v117_probe_holywar.txt（UTF-8）。
+只读，不改任何生产代码。输出同时写 logs/v117/v117_probe_holywar.txt（UTF-8）。
 
 阶段：
   S1  段级读熔件 landed_titles（不整载 470MB），打印 1205-01-10 当天全部事件，

@@ -8,7 +8,7 @@ import os
 import sys
 
 MELT = r"D:\Roman\output\洪氏2\data\melt_1077_01_01.json"
-OUT = r"D:\Roman\logs\v104_patronym_probe4.txt"
+OUT = r"D:\Roman\logs\v104\v104_patronym_probe4.txt"
 
 out = io.StringIO()
 

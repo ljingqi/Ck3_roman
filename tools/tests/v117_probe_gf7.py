@@ -8,7 +8,7 @@ S13  只载 主缓存 + 熔件（campaign=None），把 _anchor_date / _gen_end_
      打印 14 位传主 改前/改后 person_label。
 
 用法：& tools\\py.ps1 tools\\tests\\v117_probe_gf7.py
-输出追加 logs/v117_probe_gf.txt。
+输出追加 logs/v117/v117_probe_gf.txt。
 """
 import json
 import os

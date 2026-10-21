@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """v98 成稿核对 2：抽三篇新稿的「纪事·枢机团与教宗选举」小节全文。
 
-输出 logs/v98_cardinal_sections.txt
+输出 logs/v98/v98_cardinal_sections.txt
 """
 import os
 import re

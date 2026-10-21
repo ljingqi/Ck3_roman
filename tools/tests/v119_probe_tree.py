@@ -3,7 +3,7 @@
 reserving room for collapsed branches.
 
 The real `renderTree` (the JS inside output/<folder>/index.html) is measured by the existing node
-harness `logs/v113_tree_harness.mjs`; this script only writes the patched variants of the page that
+harness `logs/v113/v113_tree_harness.mjs`; this script only writes the patched variants of the page that
 the harness reads. Nothing under output/ is modified: the copies live in logs/.
 
 Usage:  python tools/tests/v119_probe_tree.py [家族文件夹]      (default 洪氏2)

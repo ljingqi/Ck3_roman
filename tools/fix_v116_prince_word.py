@@ -18,7 +18,7 @@
 
 用法：
     python -X utf8 tools/fix_v116_prince_word.py --dry      # 只出表（默认）
-    python -X utf8 tools/fix_v116_prince_word.py --apply    # 落盘 + 存 logs/v116_prince_backup.json
+    python -X utf8 tools/fix_v116_prince_word.py --apply    # 落盘 + 存 logs/v116/v116_prince_backup.json
     python -X utf8 tools/fix_v116_prince_word.py --restore  # 回退
 """
 import collections

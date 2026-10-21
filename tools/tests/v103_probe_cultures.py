@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """v103 probe 3: one melt load -> culture_manager facts for issues 1 & 2.
 Extracts specific culture ids, name_order_convention distribution, hybrid markers,
-and localized names. Writes logs/v103_probe_cultures.txt (UTF-8)."""
+and localized names. Writes logs/v103/v103_probe_cultures.txt (UTF-8)."""
 import json, os, sys, io
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, HERE)
@@ -63,4 +63,4 @@ for cid, e in cultures.items():
 
 with open(os.path.join(HERE,"logs","v103_probe_cultures.txt"),"w",encoding="utf-8") as f:
     f.write(out.getvalue())
-print("wrote logs/v103_probe_cultures.txt", len(out.getvalue()), "chars")
+print("wrote logs/v103/v103_probe_cultures.txt", len(out.getvalue()), "chars")

@@ -9,7 +9,7 @@ MARK = "## 补记（主代理 2026-10-05 复核"
 NOTE = """## 补记（主代理 2026-10-05 复核，纠正本文件「② 地点无痕」的结论）
 
 本文件②的「无痕」是**只查了 1057.1.1 一档**得出的，结论**不成立**。主代理在 **melt_1060_01_01.json.xz** 的
-`activity_manager.database` 里直接取到了 **1059.12.5 图尔大公会议的活动对象**（取证 `logs/v104_melt1060_council.txt:17`）：
+`activity_manager.database` 里直接取到了 **1059.12.5 图尔大公会议的活动对象**（取证 `logs/v104/v104_melt1060_council.txt:17`）：
 
 ```
 {"type":"activity_ecumenical_council","host":50431299,

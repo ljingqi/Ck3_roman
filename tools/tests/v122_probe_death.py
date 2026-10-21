@@ -67,5 +67,5 @@ for year in (1119, 1120):
               f"dead_flag={rec.get('dead')!r}")
     P()
 
-open(r"logs\v122_probe_death.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_death.txt")
+open(r"logs\v122\v122_probe_death.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_death.txt")

@@ -8,7 +8,7 @@
   S11 建议补丁文本（只打印，不落盘）
 
 用法：& tools\\py.ps1 tools\\tests\\v117_probe_gf5.py [--stub] [--no-full]
-输出追加 logs/v117_probe_gf.txt（UTF-8）。
+输出追加 logs/v117/v117_probe_gf.txt（UTF-8）。
 """
 import io
 import json

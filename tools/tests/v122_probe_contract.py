@@ -65,5 +65,5 @@ for year in (1057, 1061, 1083):
             break
     P()
 
-open(r"logs\v122_probe_contract.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_contract.txt")
+open(r"logs\v122\v122_probe_contract.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_contract.txt")

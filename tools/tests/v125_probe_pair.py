@@ -8,7 +8,7 @@
   ⑥ 后任句为何只有「其妻」（_kin_word 单词 vs kin_chain_words_for 并称）
 
 用法：& tools\\py.ps1 tools\\tests\\probe_v125.py
-产物：logs/v125_probe.txt
+产物：logs/v125/v125_probe.txt
 """
 import json
 import os

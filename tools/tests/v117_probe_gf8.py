@@ -8,7 +8,7 @@ S14  A) 实跑缓存 player_17066495.json（1283, 无 44503 记录）
        display_name（说明「洪」从哪来）/ _saint_lines 封圣行
 
 用法：& tools\\py.ps1 tools\\tests\\v117_probe_gf8.py
-输出追加 logs/v117_probe_gf.txt。
+输出追加 logs/v117/v117_probe_gf.txt。
 """
 import json
 import os

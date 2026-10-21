@@ -13,7 +13,7 @@
   * 把 HOUSE_FEUDS_MAX 临时放大到 1e6，让 _merge_and_cap_feuds 返回**全部**已排序行（带 _w/_n/_first）。
 
 参数：--melt=<文件名> 可换档（默认 melt_1283_01_01.json）。
-输出：追加到 logs/v117_probe_feuds.txt。
+输出：追加到 logs/v117/v117_probe_feuds.txt。
 """
 import inspect
 import os
@@ -166,7 +166,7 @@ def main():
             for e in (r.get("history") or []) if str(e.get("date")) == "1232.12.16"]
     w(f"    全库 history 中日期为 1232.12.16 的条目：{len(near)} {near[:12]}")
     w("    （对照：melt_1233_01_01 与 melt_1245_01_01 里 key=83898143 houses=[31062, 22285] "
-      "level=feud 存在，见 logs/v117_probe_feuds_era.txt:119-122,179,196-203,264）")
+      "level=feud 存在，见 logs/v117/v117_probe_feuds_era.txt:119-122,179,196-203,264）")
 
     # ---- 生产原样 ----
     w("")

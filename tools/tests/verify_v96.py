@@ -4,7 +4,7 @@
 用法: & tools\\py.ps1 tools\\tests\\verify_v96.py [快照...]
       缺省取 output/洪氏2/data/ 下的 snap_v96_final / _d3 / _d4 (缺一则 SKIP)
 
-用户 2026-10-02 三问 (取证见 docs/方案_v96_洪氏2三问题.md, 日志 logs/v96_probe_*.txt):
+用户 2026-10-02 三问 (取证见 docs/方案_v96_洪氏2三问题.md, 日志 logs/v96/v96_probe_*.txt):
   1 终传写「其间九三四年、九四五年、九五〇年，三度采纳禁忌信条『你们要生育繁殖、
     恐怖节庆、自然原始主义』」—— 根因是 `forbidden_tenet_lines` 用**末档**的
     允许/禁止分档去配秘密的 `first_seen` 年: 934 年〈你们要生育繁殖〉〈恐怖节庆〉

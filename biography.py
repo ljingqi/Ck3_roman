@@ -2415,7 +2415,7 @@ _POSSESSOR_REFLEXIVE = ("自己", "他", "她", "其")
 # A kin word and the name it attributes never cross a sentence end or a closing quote: in
 # 「问了一句：“父亲还会醒吗？”洪真一说不会。」 the 「父亲」 belongs to the quoted question, while the old
 # 12-character window read it as 洪真一's own attributive and rewrote it to 母亲
-# (logs/v108_repro_final.txt ②). A comma is deliberately not a break: 「他是耀国·缯松的第三子，妹妹是X」
+# (logs/v108/v108_repro_final.txt ②). A comma is deliberately not a break: 「他是耀国·缯松的第三子，妹妹是X」
 # must still see the farther 「的」 and fall back to the section subject.
 _CLAUSE_BREAK = ("。", "；", "！", "？", "\n", "”", "」", "』", "\"")
 
@@ -2533,7 +2533,7 @@ def _possessor_words(cache, facts, pid, subject_ids):
     A name maps to **every** id that carries it (user ruling 2026-10-06 同名亲属用 cid 判断是否是
     同一人): one cache holds three 「耀国·洪堡」, and the old single-id map answered from whichever
     of them a `set` happened to yield first, which is what made 48 probes rewrite a correct word
-    (logs/v108_kin_sweep.txt B). The ids are ordered so the answer is deterministic. One-character
+    (logs/v108/v108_kin_sweep.txt B). The ids are ordered so the answer is deterministic. One-character
     names are included too (single-word names like 德/云 appear in 洪氏2); the two callers guard
     them so a one-character name only answers at a genuine name boundary."""
     chars = cache.get("characters") or {}
@@ -2629,7 +2629,7 @@ def _possessor_at(out, end, names_ordered, subjects, cids):
 _WORD_NAME_FILLER = frozenset("兼之的是为即乃曰叫唤名、， 　*#「」『』“”")
 # a coordinator directly after the word joins it to something else, so the name that follows is a
 # second member of the coordination, not the word's head: 「这两个妻子与洪玉英所出诸子」 does not
-# call 洪玉英 a wife (logs/v108_kin_sweep.txt D, 尼各老 §纪事·门庭恩怨·洪玉英等2房)
+# call 洪玉英 a wife (logs/v108/v108_kin_sweep.txt D, 尼各老 §纪事·门庭恩怨·洪玉英等2房)
 _WORD_NAME_COORD = frozenset("与及和同跟暨")
 
 
@@ -2638,8 +2638,8 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
     in the 12 characters before the name). Pure and idempotent; truth is the cache kin graph plus the
     words the fact layer composes for that person **as seen from the possessor of that word**.
 
-    Three guards keep it from destroying correct prose, all proven by logs/v106_fixkin_probe2.txt and
-    logs/v107_kin_subject.txt:
+    Three guards keep it from destroying correct prose, all proven by logs/v106/v106_fixkin_probe2.txt and
+    logs/v107/v107_kin_subject.txt:
       * name spans are matched longest-first and non-overlapping, so a relative whose `name_zh` is a
         bare substring of another relative's name (the father's 「耀国」 inside 「海伦·耀国斯多蒂尔」)
         cannot claim the other person's characters;
@@ -2793,7 +2793,7 @@ def _fix_kin_roles(text, facts, cache, subject_ids=None):
         # full name — 「爱尔兰公主海伦·耀国斯多蒂尔」 puts its title in this gap). Anything else
         # separates them: 「加上前妻娘娘所生的洪彝」 states 前妻 for 娘娘, not for the farther 洪彝,
         # and reading it onto him rewrote it into 儿子; 「这两个妻子与洪玉英所出诸子」 has no kin word
-        # of 洪玉英's at all (logs/v108_kin_sweep.txt D, 尼各老 §开篇·结缡与离异).
+        # of 洪玉英's at all (logs/v108/v108_kin_sweep.txt D, 尼各老 §开篇·结缡与离异).
         gap = out[at + len(best_w):st]
         if not (all(ch in _WORD_NAME_FILLER for ch in gap)
                 or (gap[:1] not in _WORD_NAME_COORD

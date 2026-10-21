@@ -67,5 +67,5 @@ for mid, e in db.items():
 for k, v in c.most_common(40):
     P(f"  {k}: {v}")
 
-open(r"logs\v122_probe_mem.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_mem.txt")
+open(r"logs\v122\v122_probe_mem.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_mem.txt")

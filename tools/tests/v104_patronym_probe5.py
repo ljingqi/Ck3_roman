@@ -21,7 +21,7 @@ import cache_lib as cl  # noqa: E402
 
 MELT = r"D:\Roman\output\洪氏2\data\melt_1077_01_01.json"
 CACHE = r"D:\Roman\output\洪氏2\data\player_135480.json"
-OUT = r"D:\Roman\logs\v104_patronym_probe5.txt"
+OUT = r"D:\Roman\logs\v104\v104_patronym_probe5.txt"
 SON = 117484775
 FATHER = 135480
 GRANDFATHER = 16878235

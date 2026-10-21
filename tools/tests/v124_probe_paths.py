@@ -13,7 +13,7 @@
 用法（熔件只整载一次）：
   & tools\\py.ps1 tools\\tests\\v124_probe_paths.py [快照]
 默认快照 output/田所2/data/v122_final4.json。
-输出 logs/v124_probe_paths.txt（UTF-8）。
+输出 logs/v124/v124_probe_paths.txt（UTF-8）。
 """
 import json
 import os

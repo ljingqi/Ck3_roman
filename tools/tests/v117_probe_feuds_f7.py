@@ -7,7 +7,7 @@
   B    : ① any(h in my_houses)       ③ other = [h not in OWN]      ← 父代理指出的副作用版
   B′   : ① any(h in my_houses)       ③ other = [h not in my_houses] or [h not in OWN]   ← 修正版
 
-输出：追加到 logs/v117_probe_feuds.txt 的 [F-7] 节。
+输出：追加到 logs/v117/v117_probe_feuds.txt 的 [F-7] 节。
 """
 import gc
 import inspect

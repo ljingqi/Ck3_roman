@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """v113 probe: draw the page's real tree geometry to PNG so the layout can be seen (no melt).
 
-The numbers come from the page's own renderer (logs/v113_tree_harness.mjs); this only paints them,
+The numbers come from the page's own renderer (logs/v113/v113_tree_harness.mjs); this only paints them,
 so the picture shows exactly what the browser would lay out."""
 import io
 import importlib.util

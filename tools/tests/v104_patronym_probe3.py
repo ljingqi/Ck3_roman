@@ -12,7 +12,7 @@ import sys
 from collections import Counter
 
 MELT = r"D:\Roman\output\洪氏2\data\melt_1077_01_01.json"
-OUT = r"D:\Roman\logs\v104_patronym_probe3.txt"
+OUT = r"D:\Roman\logs\v104\v104_patronym_probe3.txt"
 CHUNK = 8 * 1024 * 1024
 
 out = io.StringIO()

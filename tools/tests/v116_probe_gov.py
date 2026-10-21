@@ -6,7 +6,7 @@
 同样对 177780（洪因）、44503（洪天贵福）、38957（洪秀全）各来一遍。
 
 用法：python -X utf8 tools/tests/v116_probe_gov.py [--peers=...]
-输出：logs/v116_probe_gov.txt
+输出：logs/v116/v116_probe_gov.txt
 """
 import io
 import json

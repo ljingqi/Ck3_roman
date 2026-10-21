@@ -3,7 +3,7 @@
 
 做法：段级读取若干年份熔件的 house_relations 段，找 houses 同时含 22285(宁浦洪) 与 31062(哈德良波利斯洪) 的行；
       再从玩家缓存里打印洪希晏/洪景宪/洪光通等人的 house_history 与 house_feud_* 记忆。
-输出：logs/v117_probe_feuds_era.txt (UTF-8)。只读，不写任何生产数据。
+输出：logs/v117/v117_probe_feuds_era.txt (UTF-8)。只读，不写任何生产数据。
 """
 import os
 import sys

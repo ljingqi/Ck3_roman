@@ -6,7 +6,7 @@
   kin_key / blood_kin_words_for / kin_chain_words_for 各给出什么，链最多几个亲缘词。
 
 被 tools/tests/v108_kin_sweep.py 的 [E] 段引用（`CASES` / `chain_of`）。
-只读，不碰缓存；单独运行输出 logs/v108_chain_width.txt（UTF-8）。
+只读，不碰缓存；单独运行输出 logs/v108/v108_chain_width.txt（UTF-8）。
 """
 import io
 import os

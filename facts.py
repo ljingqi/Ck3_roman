@@ -756,7 +756,7 @@ def kin_rev_index(chars):
     Both directions are unioned (built once per build); `real_father` counts as a father edge in
     both directions, so a child recorded only under `real_father` is still that father's child
     (before v108 the reverse lookup ignored it and the pair read as 父亲 one way and as nothing the
-    other, see logs/v108_kin_sweep.txt A3).
+    other, see logs/v108/v108_kin_sweep.txt A3).
 
     Deliberately **not** memoized here: this module-level entry can be handed a table that a caller
     mutates in place (tools/tests/verify_fast.py:1822 rewrites one family record between two calls),
@@ -4200,7 +4200,7 @@ class Facts:
         The camp marker is `_laamp_` in the key: every title held by a
         `landless_adventurer_government` character in this playthrough either carries it or is an
         ecclesiastical province with a stale government field (checked against the whole save,
-        `logs/v97_probe_camps.txt`). Mercenary companies (`x_mc_*`, `mercenary_government`), holy
+        `logs/v97/v97_probe_camps.txt`). Mercenary companies (`x_mc_*`, `mercenary_government`), holy
         orders (`x_ho_*`, `holy_order_government` / `monastic_holy_order_government`) and script
         titles (`x_script_*`) are landless too but are not camps, so they must not take camp
         wording or the adventurer itinerary.
@@ -5048,7 +5048,7 @@ class Facts:
         The reference person is the `subject` argument, not the ambient protagonist (v108): the
         chain is asked for as seen from whoever the sentence is about, and reading the player's row
         instead made the same pair carry different chains under the two pivots (697 pair-cases in
-        洪氏2, logs/v108_kin_sweep.txt A5). The spouse latch is the protagonist's own lifetime
+        洪氏2, logs/v108/v108_kin_sweep.txt A5). The spouse latch is the protagonist's own lifetime
         record, so it is merged only when the subject *is* the protagonist; the other side's record
         is consulted otherwise, the same two-way union `_married` makes."""
         pid = self.cache.get("player_id") if subject is None else subject
@@ -5270,7 +5270,7 @@ class Facts:
 
         Each entry is the **full list** of recorded parents (v108). The earlier `setdefault` kept
         only the first father/mother, so a child whose record lists two of them lost the second
-        line outright and every route through it (7 children in 洪氏2, logs/v108_kin_sweep.txt A8;
+        line outright and every route through it (7 children in 洪氏2, logs/v108/v108_kin_sweep.txt A8;
         「儿子兼继子兼弟弟兼舅舅」 is uncomputable partly because of it). `real_father` joins the
         father routes, the same union `kin_key` uses."""
         if getattr(self, "_pmaps", None) is None:
@@ -5388,7 +5388,7 @@ class Facts:
         The nearest common ancestor (smallest total distance) fixes the gap as the difference of the
         two distances to it. The walk deliberately does not ban the other person, unlike
         `_ancestor_routes`: the direct father/son edge is exactly what the gap is read from, and
-        banning it turned fathers into grand-nephews (logs/v112_probe_generations.txt)."""
+        banning it turned fathers into grand-nephews (logs/v112/v112_probe_generations.txt)."""
         if a is None or b is None:
             return None
         try:
@@ -5433,7 +5433,7 @@ class Facts:
         by contrast, names a kind of kinship the shortest route does not (measured on the 洪氏2
         family: this rule keeps every 堂/表 correction the unrestricted walk makes while adding
         specific terms only, and halves the number of pairs whose chain changes;
-        logs/v110_rule_study.txt)."""
+        logs/v110/v110_rule_study.txt)."""
         if cid is None or subject is None:
             return []
         limit = self._KIN_CHAIN_BLOOD_MAX if limit is None else limit
@@ -15825,7 +15825,7 @@ class Facts:
     # the model invents the dead man. The victim is derivable: the killer's kill list, a kinship tie
     # to the grieving side, and a death date at or before the feud. Verified on this playthrough —
     # 阮处恭's only kill is 洪翊, the protagonist's younger brother, murdered 956.9.17, fifteen days
-    # before the feud of 956.10.2 (logs/v97_probe_murderer.txt, logs/v97_probe_kills.txt).
+    # before the feud of 956.10.2 (logs/v97/v97_probe_murderer.txt, logs/v97/v97_probe_kills.txt).
     #
     # Which side is the killer is decided by the reason key: the template's sentence subject is
     # `[TARGET_CHARACTER]` in the base key and `[CHARACTER]` (= the opinion's owner) in the
@@ -18212,7 +18212,7 @@ class Facts:
         """Province of the seat `cid` held on `date`, baronies and house estates included (v110).
 
         `victim_place`'s last resort, `last_location`, is an annual snapshot: its date can sit
-        months before the death (蔡偕: 356 days, logs/v109_victim_place_report.md §1.3), so a man who
+        months before the death (蔡偕: 356 days, logs/v109/v109_victim_place_report.md §1.3), so a man who
         moved between that save and his death is reported where he no longer was. The holding he
         still sat on that day is evidence about the man himself rather than about an old save, so it
         is preferred once the snapshot is stale (see `_location_fresh`).
@@ -18293,7 +18293,7 @@ class Facts:
 
         The seat replaces a stale snapshot; it never *invents* a place for someone the save recorded
         nowhere (that would add a death place to 7 273 more of 洪氏2's dead on a guess about where a
-        man with no recorded whereabouts sat -- measured, logs/v110_death_place_*.json).
+        man with no recorded whereabouts sat -- measured, logs/v110/v110_death_place_*.json).
 
         Anyone executed by the subject counts as being at the subject's capital of that time, since the
         execution happened there while the save records assorted execution sites; the capital place comes
@@ -26877,7 +26877,7 @@ def _gen_word(n):
     """Genealogy generation ordinal: 1 -> 一世, 12 -> 十二世.
 
     The classical genealogical ordinal counts generations of the clan, so the form is 「N世」 and
-    never 「第N代」 (see logs/v112_谱牒体例调研.md)."""
+    never 「第N代」 (see logs/v112/v112_谱牒体例调研.md)."""
     return _kin_rank_zh(n) + "世"
 
 

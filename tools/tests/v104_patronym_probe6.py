@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, r"D:\Roman")
 import cache_lib as cl  # noqa: E402
 
-OUT = r"D:\Roman\logs\v104_patronym_probe6.txt"
+OUT = r"D:\Roman\logs\v104\v104_patronym_probe6.txt"
 out = io.StringIO()
 
 

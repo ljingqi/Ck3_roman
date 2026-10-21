@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """v110 dev probe: what does a title's `capital` field hold, and where does a seat resolve?
 
-The v109 report left one question open (logs/v109_victim_place_report.md §6): is
+The v109 report left one question open (logs/v109/v109_victim_place_report.md §6): is
 `landed_titles[tid]["capital"]` a **title id** (as `_capital_province_at` assumes) or a
 **province id**? This probe loads one cache + melt and prints, for the given title ids,
 the raw landed_titles record, its key, whether the key is in the province map, and where

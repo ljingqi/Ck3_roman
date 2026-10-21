@@ -86,5 +86,5 @@ for want in (b'"28242"', b'"218169054"'):
                 break
         P(f"  {want.decode()} 偏移 {o} 段={owner} 前文={ctx.decode('utf-8','replace')!r}")
 
-open(r"logs\v122_probe_bytes.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_bytes.txt")
+open(r"logs\v122\v122_probe_bytes.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_bytes.txt")

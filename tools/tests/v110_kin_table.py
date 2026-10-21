@@ -2,7 +2,7 @@
 """v110 核对表：全宗族「血缘词 + 兼链」旧法 / 新法逐对比对（只读 · 缓存面）。
 
 为「堂表亲戚读取新方法」做前后对照：同一批 (传主, 亲属) 有序对，先按旧法落一份
-`logs/v110_before.json`，改完 facts.py 再落 `logs/v110_after.json`，用
+`logs/v110/v110_before.json`，改完 facts.py 再落 `logs/v110/v110_after.json`，用
 `--diff` 直接打印差异表（新增词 / 丢失词 / 改词），逐条审错。
 
 范围：某个战役缓存里**同一家族（dynasty_house / house_name）∪ 在册亲属**的全体人物，

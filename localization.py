@@ -554,7 +554,7 @@ def _parse_landed_titles(path, out):
     `b_Liao_Yizhou3 = {` / `c_LIAO_jinzhou = {`, and a key the pattern misses is not pushed on the
     stack while its closing `}` still pops it -- from there every following province is attributed
     one level off (`11765/11773` were read as 玉河井 instead of 辽州/宜州, and `11728/11759` were
-    lost altogether; logs/v109_victim_place_report.md §4). The pattern only ever *adds* keys, so a
+    lost altogether; logs/v109/v109_victim_place_report.md §4). The pattern only ever *adds* keys, so a
     line that used to push still pushes; verified over game/common/landed_titles/*.txt that no
     matched line has a net-negative brace count, i.e. the push/pop balance cannot regress."""
     try:

@@ -2,7 +2,7 @@
 """v98 成稿核对：三篇十年传（新稿 vs 备份）——署名、篇目、枢机团与教宗选举段落。
 
 用法：& tools\\py.ps1 tools\\tests\\v98_check_articles.py
-输出 logs/v98_check_articles.txt（UTF-8）+ 控制台摘要
+输出 logs/v98/v98_check_articles.txt（UTF-8）+ 控制台摘要
 """
 import glob
 import os

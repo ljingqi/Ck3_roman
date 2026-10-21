@@ -53,5 +53,5 @@ for kw in KEYS:
             break
     P(f"[{kw}] 命中请求块 {n} 个 (最多印 6 个)")
 
-open(r"logs\v122_probe_prompts.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_prompts.txt")
+open(r"logs\v122\v122_probe_prompts.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_prompts.txt")

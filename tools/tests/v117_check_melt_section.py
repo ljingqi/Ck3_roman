@@ -7,7 +7,7 @@ a truncated melt and for corrupt JSON -- and its per-melt offset table must be r
 the second call and invalidated when the melt's size or mtime changes.
 
 The reference implementation is the pre-rewrite `cache_lib.py`, kept as a snapshot in
-logs/_v117_old_cache_lib.py (sha1 ba5592c0..., = git HEAD at the time of the rewrite; the
+logs/v117/_v117_old_cache_lib.py (sha1 ba5592c0..., = git HEAD at the time of the rewrite; the
 probe regenerates it from `git show HEAD:cache_lib.py` when it is missing and refuses to
 run if what it finds is not the byte-level walker). Once the rewrite is committed, HEAD
 no longer holds the old implementation, so the saved snapshot -- not HEAD -- is the
@@ -19,7 +19,7 @@ Usage:
     & tools\\py.ps1 tools\\tests\\v117_check_melt_section.py
     & tools\\py.ps1 tools\\tests\\v117_check_melt_section.py --big   # also time the 470 MB melt
 
-Evidence report: logs/v117_load_melt_section.txt (UTF-8).
+Evidence report: logs/v117/v117_load_melt_section.txt (UTF-8).
 """
 import argparse
 import gc
@@ -422,7 +422,7 @@ def main():
       f"{' --big' if args.big else ''}）")
     w("=" * 78)
     old, old_sha = load_old_module()
-    w(f"[setup] 旧实现 logs/_v117_old_cache_lib.py  sha1 {old_sha}")
+    w(f"[setup] 旧实现 logs/v117/_v117_old_cache_lib.py  sha1 {old_sha}")
     try:
         head = subprocess.run(["git", "show", "HEAD:cache_lib.py"], cwd=ROOT,
                               capture_output=True, check=True).stdout

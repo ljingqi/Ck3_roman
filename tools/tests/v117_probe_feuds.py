@@ -7,7 +7,7 @@
   * 玩家缓存整载一次（cl.load_cache）；
   * 熔件只做**段级读取**：cl.load_melt_section(path, "dynasties") 与 "house_relations"；
   * 逐条套用 facts.py:11733-11894 house_feuds() 的过滤条件，打印每一步的去留；
-  * 输出同时写 logs/v117_probe_feuds.txt (UTF-8)。
+  * 输出同时写 logs/v117/v117_probe_feuds.txt (UTF-8)。
 
 用法： & tools\\py.ps1 tools\\tests\\v117_probe_feuds.py
 """

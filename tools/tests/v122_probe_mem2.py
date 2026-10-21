@@ -87,5 +87,5 @@ for mid, e in db.items():
     if TARGET in ids:
         P(f"  {cr}  {e.get('type')}  participants={e.get('participants')} vars={e.get('vars')}")
 
-open(r"logs\v122_probe_mem2.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_mem2.txt")
+open(r"logs\v122\v122_probe_mem2.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_mem2.txt")

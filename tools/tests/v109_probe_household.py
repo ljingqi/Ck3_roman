@@ -9,7 +9,7 @@
 
 用法：
     & tools\\py.ps1 tools\\tests\\v109_probe_household.py
-输出：logs/v109_household.txt（UTF-8）
+输出：logs/v109/v109_household.txt（UTF-8）
 """
 import glob
 import io

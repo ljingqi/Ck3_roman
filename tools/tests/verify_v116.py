@@ -12,7 +12,7 @@
 三层：
   A 规则层（合成桩，秒级）：政体 + 封臣/独立 → 词；卒档 liege 与卒后封臣史两条纠正。
   B 快照层：output/洪氏2/data/snap_v116_207044_final.json 的世系行（与 v115 快照逐行对照）。
-  C 成稿层：9 篇终传的逐串替换结果（logs/v116_prince_backup.json）。
+  C 成稿层：9 篇终传的逐串替换结果（logs/v116/v116_prince_backup.json）。
 
 用法: python -X utf8 tools/tests/verify_v116.py [--page]
   --page 另核对 output/洪氏2/index.html（需先 python -X utf8 htmlview.py rebuild 洪氏2）

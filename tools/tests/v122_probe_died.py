@@ -63,5 +63,5 @@ for mid, e in db.items():
         P(f"  {mid} type={e.get('type')!r} date={e.get('creation_date')!r} "
           f"end={e.get('end_date')!r} vars={str(e.get('vars'))[:220]}")
 
-open(r"logs\v122_probe_died.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_died.txt")
+open(r"logs\v122\v122_probe_died.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_died.txt")

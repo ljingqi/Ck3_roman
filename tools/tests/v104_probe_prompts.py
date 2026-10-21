@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """v104 取证探针 1：把 logs/prompts.log 的请求分块，定位耀国（135480）的
 《家室列传》/《纪事·门庭恩怨·...》请求，并逐行引出「妻室…子…女…」素材行。
-只读。输出 UTF-8 到 logs/v104_prompt_blocks.txt
+只读。输出 UTF-8 到 logs/v104/v104_prompt_blocks.txt
 """
 import re
 import sys

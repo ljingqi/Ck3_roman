@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 FILES = [
     ROOT / "output/洪氏2/洪光通(1236)_终传_1283_09_11.md",
-    ROOT / "logs/v117_before_洪光通终传.md",
+    ROOT / "logs/v117/v117_before_洪光通终传.md",
     ROOT / "output/洪氏2/洪七公(1109)_终传_1152_11_13.md",
     ROOT / "output/洪氏2/洪秀全(849)_终传_904_11_30.md",
 ]

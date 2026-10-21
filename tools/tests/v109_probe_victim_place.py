@@ -14,7 +14,7 @@ Usage:
     & tools\\py.ps1 tools\\tests\\v109_probe_victim_place.py
     & tools\\py.ps1 tools\\tests\\v109_probe_victim_place.py --deep
 Output:
-    logs/v109_victim_place.txt (UTF-8)
+    logs/v109/v109_victim_place.txt (UTF-8)
 """
 import argparse
 import glob
@@ -507,7 +507,7 @@ def province_map_audit():
 def report_tail():
     """Section 6: the actionable report (code trace, game semantics, candidate fixes).
 
-    Kept inside the probe so `logs/v109_victim_place.txt` regenerates as one self-contained
+    Kept inside the probe so `logs/v109/v109_victim_place.txt` regenerates as one self-contained
     artefact: evidence sections 0–5 plus this written report."""
     T = [
         "=" * 100,

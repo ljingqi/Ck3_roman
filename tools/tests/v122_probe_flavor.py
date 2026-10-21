@@ -40,5 +40,5 @@ for year in (1061, 1062, 1083):
         P(f"  [dead_prunable] dead_data = " + str((rec if isinstance(rec, dict) else rec[0]).get("dead_data"))[:600])
     P()
 
-open(r"logs\v122_probe_flavor.txt", "w", encoding="utf-8").write("\n".join(OUT))
-print("written logs/v122_probe_flavor.txt")
+open(r"logs\v122\v122_probe_flavor.txt", "w", encoding="utf-8").write("\n".join(OUT))
+print("written logs/v122/v122_probe_flavor.txt")

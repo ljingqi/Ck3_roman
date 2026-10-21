@@ -2,7 +2,7 @@
 import re
 from collections import Counter
 
-lines = open(r"logs/v86_rite0_full.txt", encoding="utf-8").read().splitlines()
+lines = open(r"logs/v86/v86_rite0_full.txt", encoding="utf-8").read().splitlines()
 c = Counter()
 names = {}
 for ln in lines:
