@@ -941,6 +941,15 @@ def _deep_kin_key(s, c, fath, moth, anc_memo, c_female, older):
     # --- collateral ---
     if max(up_s, up_c) <= 2:
         return ""                                # within 2 generations: the cascade above owns it
+    # v128: a 堂/表 cousin's child. The shared ancestor is the subject's grandparent (2 up) and the
+    # relative's great-grandparent (3 up), so the middle person is the cousin. 堂 needs every hop on
+    # both sides to be a father edge; anything else (a father's sister, a mother's sibling) is 表.
+    # The cousin's own sex is not recoverable from (up_s, up_c, ms, mc), so 侄 covers both sexes.
+    if up_s == 2 and up_c == 3:
+        if c_female is None:
+            return ""
+        side = "pat" if (ms and mc) else "mat"
+        return f"cousin_child_{side}_{'female' if c_female else 'male'}"
     if up_s == up_c:                             # same generation -> 从数 cousins
         if c_female is None:
             return ""
@@ -1032,6 +1041,12 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older):
             return "clan_grandmother" if c_female else "clan_grandfather"
         return "clan_ancestor"
     if gap == -1:
+        # v128: a cousin's child (the shared ancestor is the subject's grandparent, 2 up, and the
+        # relative's great-grandparent, 3 up) gets 堂侄/表侄 instead of the clan fallback. 堂 needs
+        # both sides' hops to be father edges; the cousin's sex is not on the route, so 侄 covers it.
+        if up_s == 2 and up_c == 3:
+            side = "pat" if (ms and mc) else "mat"
+            return f"cousin_child_{side}_{'female' if c_female else 'male'}"
         return "clan_niece" if c_female else "clan_nephew"
     if gap <= -2:
         # Sex-aware even in the coarse tier: 族孙 names a man, so a female descendant this deep
