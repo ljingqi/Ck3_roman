@@ -18,8 +18,8 @@ description: >-
 ## 硬规则
 
 1. **位置**：新版本的测试/探针/核对脚本写进 `D:\Roman\logs\vXX\`，`XX` 为该轮版本号
-   （与 `docs/方案_vXX_*.md`、`tools/tests/verify_vXX.py` 同号；三位数照写 `v107`，不写成 `v7`）。
-   版本夹不存在就先建。
+   （与 `docs/方案_vXX_*.md`、`tools/tests/verify_vXX.py` 同号；照抄既有写法 `v86`、`v107`，
+   不补零成 `v086`）。版本夹不存在就先建。
 2. **脚本与其输出同夹**：`vXX_probe_<主题>.py` 产出的 `.txt` / `.json` / `.tsv` / `.png`
    写回同一个 `logs\vXX\`，不落 `logs\` 根、不落 `tools\`。
 3. **文件名带版本前缀**：`vXX_probe_*.py`、`vXX_check_*.py`、`vXX_<主题>.mjs`。
