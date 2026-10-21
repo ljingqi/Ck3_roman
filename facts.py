@@ -654,7 +654,7 @@ RELATION_COUNTERPART = {
 PATH_WORDS = {"liege": "领主", "top_liege": "最高领主"}
 # Ranking of the first hop: a relation of record reads best, then the liege, then an office, then
 # plain kinship. `top_liege` sits right after `liege` so 领主 wins a tie.
-_PATH_KIND_RANK = {"relation": 0, "liege": 1, "top_liege": 2, "office": 3, "kin": 4}
+_PATH_KIND_RANK = {"relation": 0, "liege": 1, "top_liege": 2, "office": 3, "former": 4, "kin": 5}
 # Ranking of the last hop: kin, then a relation, then an office; a relation reached through another
 # relation (「仇敌的仇敌」) is last within its width.
 _PATH_HOP2_RANK = {"kin": 0, "relation": 10, "office": 20}
@@ -5677,7 +5677,7 @@ class Facts:
     # Order of the categories in a composed identity list (user 2026-10-05): the marriage first,
     # then the blood routes (three at most), then the affinal routes (two at most), then the one
     # scripted relation, then every office the person holds in the reference person's court.
-    _IDENTITY_ORDER = ("marriage", "blood", "affinal", "relation", "path", "office")
+    _IDENTITY_ORDER = ("marriage", "blood", "affinal", "former", "relation", "path", "office")
     # Affinal terms one composed identity list may carry. A budget of its own, so an in-law route
     # never eats into the blood routes' budget (user 2026-10-06: both ties must be visible on the
     # same person, 「兄弟兼堂表兄弟兼姻亲兄弟兼朋友」).
@@ -5993,6 +5993,257 @@ class Facts:
                         return words
         return words
 
+    # ---- v128: former roles (the 前 layer; docs/方案_v128_关系计算器_前与漏项.md §4.1-4.3) ----
+    # Former in-law terms one composed identity list may carry. A budget of its own: an ended
+    # marriage never eats into the blood or the affinal routes (user 2026-10-21: 前嫂 must ride
+    # along with 妻子, 「妻子兼前嫂」).
+    _KIN_CHAIN_FORMER_MAX = 2
+
+    # In-law word -> its 前 form. The base word is what the affinal routes already return, so the
+    # former layer never invents a second word for the same role.
+    _FORMER_KEY_PAIRS = (
+        ("sister_in_law_older", "former_sister_in_law_older"),
+        ("sister_in_law_younger", "former_sister_in_law_younger"),
+        ("brother_in_law_older", "former_brother_in_law_older"),
+        ("brother_in_law_younger", "former_brother_in_law_younger"),
+        ("daughter_in_law", "former_daughter_in_law"),
+        ("son_in_law", "former_son_in_law"),
+        ("step_father", "former_step_father"),
+        ("step_mother", "former_step_mother"),
+        ("concubine_mother", "former_concubine_mother"),
+        ("father_in_law", "former_father_in_law"),
+        ("mother_in_law", "former_mother_in_law"),
+        ("husband_father", "former_husband_father"),
+        ("husband_mother", "former_husband_mother"),
+        ("co_brother_in_law", "former_co_brother_in_law"),
+        ("co_sister_in_law", "former_co_sister_in_law"),
+    )
+
+    def _former_kin_word(self, base):
+        """The 前 form of one in-law word (嫂 -> 前嫂, 儿媳 -> 前儿媳); '' when none is defined."""
+        if not base:
+            return ""
+        for k, fk in self._FORMER_KEY_PAIRS:
+            if kin_text(k) == base:
+                return kin_text(fk)
+        return ""
+
+    def _former_spouse_index(self):
+        """{cid: {former spouse ids}} over every ended marriage in the cache, both directions.
+
+        Built once per Facts. The save does not reliably write the same marriage into both
+        records, so a one-sided read loses half the edges; current spouses are not removed here
+        (`_former_ids` subtracts the snapshot's own current set at lookup).
+        """
+        idx = getattr(self, "_former_idx", None)
+        if idx is not None:
+            return idx
+        idx = {}
+        for k, rec in (self.cache.get("characters") or {}).items():
+            if not str(k).isdigit() or not isinstance(rec, dict):
+                continue
+            cid = int(k)
+            fam = rec.get("family") or {}
+            for key in ("former_spouses", "former_concubines"):
+                for x in (fam.get(key) or []):
+                    if not isinstance(x, int) or x == cid:
+                        continue
+                    idx.setdefault(cid, set()).add(x)
+                    idx.setdefault(x, set()).add(cid)
+        self._former_idx = idx
+        return idx
+
+    def _current_spouse_ids(self, cid):
+        """Current spouses of `cid` (primary/spouse/concubine), reverse edges unioned."""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return set()
+        out = set(self._fam_ids(cid, "primary_spouse")) | set(self._fam_ids(cid, "spouse")) \
+            | set(self._fam_ids(cid, "concubine"))
+        out |= set(self._spouse_back_index().get(cid) or ())
+        out.discard(cid)
+        return out
+
+    def _former_ids(self, cid):
+        """Ended-marriage partners of `cid`: the former index minus the current spouse set."""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return set()
+        return set(self._former_spouse_index().get(cid) or ()) - self._current_spouse_ids(cid)
+
+    def _former_end(self, link, other, cut=None):
+        """(kind, date, who) for the marriage of `link` and `other`, or None when still open.
+
+        `kind` is 'divorce' or 'widowed'; `who` says which end closed it ('divorce', 'other' when
+        `other` died, 'link' when `link` died). The earliest of the divorce line and the two death
+        dates wins, divorce preferred on the same day (the ordering `spouse_end` uses). A marriage
+        still open at `cut` returns None, so a word never names a marriage that had not ended yet.
+        `spouse_end` is deliberately not reused: its `player_end` candidate reads the cache's
+        `reign_end`, which belongs to the protagonist and not to a third-party link.
+        """
+        try:
+            link, other = int(link), int(other)
+        except (TypeError, ValueError):
+            return None
+        if link == other:
+            return None
+        cands = []
+        for date, raw in (self._house_pair_flows().get(frozenset((link, other))) or ()):
+            if not date or "离婚" not in raw:
+                continue
+            if self.is_widow_divorce(raw, date):
+                continue
+            cands.append((cl.date_key(date), 0, "divorce", date, "divorce"))
+        for x, who in ((other, "other"), (link, "link")):
+            d = self._char_death_date(x)
+            if d:
+                cands.append((cl.date_key(d), 1, "widowed", d, who))
+        if not cands:
+            if not self._char_death_date(link) and not self._char_death_date(other):
+                return ("divorce", "", "divorce")     # both alive: the tie ended while both lived
+            return None
+        cands.sort()
+        _k, _o, kind, date, who = cands[0]
+        if cut and date and cl.date_key(date) > cl.date_key(cut):
+            return None
+        return kind, date, who
+
+    def _former_candidates(self, subject):
+        """Every cid that could carry a former-role word toward `subject`, memoised per subject.
+
+        `identity_parts` asks about many people for one reference person, and the former layer is
+        empty for almost all of them, so the cheap membership test in front of
+        `former_kin_words_for` is the whole cost that layer adds per pair."""
+        try:
+            s = int(subject)
+        except (TypeError, ValueError):
+            return set()
+        memo = getattr(self, "_former_cand_memo", None)
+        if memo is None:
+            memo = self._former_cand_memo = {}
+        if s in memo:
+            return memo[s]
+        idx = self._former_spouse_index()
+        own = self._former_ids(s)
+        cand = set(own)
+        for sp in own:                            # the former spouse's own family (f5-f7)
+            cand |= self._parent_ids(sp) | self._sibling_ids(sp)
+            for sib in self._sibling_ids(sp):
+                cand |= set(self._primary_spouse_ids(sib))
+        for ids in (self._child_ids(s), self._sibling_ids(s), self._parent_ids(s)):
+            for x in ids:
+                cand |= set(idx.get(int(x)) or ())
+        memo[s] = cand
+        return cand
+
+    def former_kin_words_for(self, cid, subject, date=None, limit=None):
+        """Former-role words of `cid` relative to `subject` (v128); [] when there is no ended tie.
+
+        One ended marriage yields a word in three states: a divorce gives 前X (前妻/前嫂/前儿媳);
+        a death the subject merely witnessed keeps the plain word (a dead brother's widow is still
+        嫂, a dead wife's father still 岳父) except for the subject's own spouse, which becomes
+        先妻/先夫; and when the subject's own side died first the marriage never ended from his
+        point of view, so no word is written. A role that the person now holds a stronger claim to
+        -- the brother's widow who became the subject's own wife -- takes 前 as well, which is what
+        makes the chain read 「妻子兼前嫂」 instead of the contradictory 「妻子兼嫂」.
+        """
+        if cid is None or subject is None:
+            return []
+        limit = self._KIN_CHAIN_FORMER_MAX if limit is None else limit
+        try:
+            s, c = int(subject), int(cid)
+        except (TypeError, ValueError):
+            return []
+        if s == c:
+            return []
+        if c not in self._former_candidates(s):
+            return []
+        cut = date or self.as_of
+        out, seen = [], set()
+
+        def _add(w):
+            """Append one word and report whether the budget is now spent."""
+            if w and w not in seen:
+                seen.add(w)
+                out.append(w)
+            return len(out) >= limit
+
+        def _inlaw(base, end, superseded):
+            """Word for one ended in-law marriage: 前X on divorce or a superseded role, the plain
+            word when the linking relative died (the widow keeps 嫂/儿媳/岳父)."""
+            if not base:
+                return ""
+            if end[0] == "divorce" or superseded:
+                return self._former_kin_word(base) or base
+            return base
+
+        idx = self._former_spouse_index()
+        own = set(idx.get(s) or ())
+        if own:
+            own -= self._current_spouse_ids(s)
+        links = []
+        for kind, ids in (("child", self._child_ids(s)),
+                          ("sibling", self._sibling_ids(s)),
+                          ("parent", self._parent_ids(s))):
+            for x in ids:
+                if c in (idx.get(int(x)) or ()) and c in self._former_ids(x):
+                    links.append((kind, int(x)))
+        if not own and not links:
+            return out
+
+        # (a) the subject's own ended marriage: 前妻/前夫, 先妻/先夫, 前妾/前男宠
+        if c in own:
+            end = self._former_end(s, c, cut)
+            fem = self._sex_of(c)
+            if end and end[2] != "link" and fem is not None:
+                if c in set(self._fam_ids(s, "former_concubines")):
+                    _add(kin_text("former_concubine" if fem else "former_consort"))
+                elif end[0] == "divorce":
+                    _add(kin_text("former_wife" if fem else "former_husband"))
+                else:
+                    _add(kin_text("departed_wife" if fem else "departed_husband"))
+                if len(out) >= limit:
+                    return out
+
+        # (b) a relative's ended marriage: a child's spouse, a sibling's spouse, a parent's spouse
+        superseded = bool(self._spouse_kind_of(c, s)) if links else False
+        for kind, link in links:
+            end = self._former_end(link, c, cut)
+            if not end:
+                continue
+            fem = self._sex_of(c)
+            if kind == "child":
+                if fem is None:
+                    continue
+                base = kin_text("daughter_in_law" if fem else "son_in_law")
+            elif kind == "sibling":
+                base = self._sibling_spouse_word(s, link, c)
+            else:
+                if fem is None or c in self._parent_ids(s):
+                    continue
+                conc = c in set(self._fam_ids(link, "former_concubines"))
+                base = kin_text("concubine_mother" if conc
+                                else ("step_mother" if fem else "step_father"))
+            if _add(_inlaw(base, end, superseded)):
+                return out
+
+        # (c) the family of the subject's own ended marriage: 岳父/岳母/公公/婆婆 and 连襟/妯娌
+        for sp in sorted(own):
+            end = self._former_end(s, sp, cut)
+            if not end or end[2] == "link":
+                continue
+            for par in sorted(self._parent_ids(sp)):
+                if par == c and _add(_inlaw(self._spouse_parent_word(s, sp, par), end, False)):
+                    return out
+            for sib in sorted(self._sibling_ids(sp)):
+                for co in sorted(self._primary_spouse_ids(sib)):
+                    if co == c and _add(_inlaw(
+                            self._co_sibling_in_law_word(s, sp, sib, co), end, False)):
+                        return out
+        return out
+
     # ---- v124: path words (see PATH_WORDS for the word forms) ----
 
     def _court_index(self):
@@ -6166,6 +6417,12 @@ class Facts:
         for x in (sorted(self._parent_ids(s)) + sorted(self._child_ids(s))
                   + sorted(self._sibling_ids(s)) + sorted(self.spouses_now(s))):
             add("kin", x, self.kin_word_for(x, s))
+        # v128: an ended marriage is still an anchor the reader knows (「前妻的哥哥」), so the
+        # former-role word gives the path search a way into that family.
+        for x in sorted(self._former_ids(s)):
+            w = self.former_kin_words_for(x, s)
+            if w:
+                add("former", x, w[0])
         out.sort(key=lambda t: (_PATH_KIND_RANK.get(t[0], 9),
                                 _REL_WORD_RANK.get(t[2], 99) if t[0] == "relation" else 0,
                                 t[1]))
@@ -6299,6 +6556,8 @@ class Facts:
                 n_blood += 1
         for a in self.affinal_kin_words_for(c, s):
             _put("affinal", a, "affinal")
+        for fw in self.former_kin_words_for(c, s, date=date):
+            _put("former", fw, "former")
         _put("relation", self.relation_word_for(c, s, date=date), "relation")
         # The offices stand after the path word in reading order, but they are collected first:
         # their presence decides whether a gap exists at all. A court artisan of the subject has a
