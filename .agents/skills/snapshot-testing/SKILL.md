@@ -59,19 +59,24 @@ Get-ChildItem output\<家族>\data | Select-Object Name,Length,LastWriteTime
    （`rebuild_folder.py`）或换一个 `--name=` 的快照，50 分钟的重新熔化换不来任何东西。
 3. **改提示词/事实层前先落一份 HEAD 对照快照**（`snap_at_head.py`），改完再落一份新的，
    用 `snapdiff.py` 确认「事实面是否有非预期变化」——比人眼比对快照可靠。
-4. **报告落文件**（本轮新证据 `logs/*.txt`，UTF-8）：`... | Out-File -Encoding UTF8 logs\x.txt`，
+4. **报告落文件**（UTF-8）：`... | Out-File -Encoding UTF8 logs\vNN\vNN_x.txt`，
    一次写入可反复 `read`，避免控制台编码问题导致「跑一遍→乱码→再跑一遍」。
-   ⚠ 目录约定（v77 起）：`logs/` 根只放程序自写的三个运行时日志
-   （`journal.log`/`prompts.log`/`loc_miss.log`）；**历轮取证**在 `logs/archive/`（文档引用
-   一律写 `logs/archive/…`），本轮新证据写 `logs/vNN_*.txt`。
-5. **测试/探针/快照脚本一律放 `tools/tests/`**（v77 起，333 个脚本已归拢；`tools/` 顶层只留
-   生产与数据工具链）。命令口径：`& tools\py.ps1 tools\tests\<脚本>.py`。
+   ⚠ 目录约定（2026-10-21 起，见 `.agents/skills/log-version-folders`）：
+   `logs/` 根只放程序自写的三个运行时日志（`journal.log`/`prompts.log`/`loc_miss.log`）；
+   **历轮取证**在 `logs/archive/`（旧文档按 `logs/archive/…` 引用，不搬）；
+   **本轮脚本与取证同放 `logs\vXX\`**，旧写法 `logs/v110_after.json` 已统一重定向为
+   `logs/v110/v110_after.json`（台账 `logs\_index\move_manifest.tsv`）。
+5. **脚本位置**：跨版本复用的基础设施（`snap*.py`、`verify_fast.py`、`check_bio_*.py`）留
+   `tools/tests/`；**一次性探针/专项核对按版本进 `logs\vXX\`**。命令口径：
+   `& tools\py.ps1 tools\tests\<脚本>.py` 或 `& tools\py.ps1 logs\vXX\vXX_probe_x.py`。
 6. **确认熔件真的是本地已有的那份**：`snap.py` 取 `data/` 里排序最后的
    `melt_*.json`，不是重新熔化。
 
 ## 与其它技能/文档的关系
 
 - 破坏性改动前的 checkpoint 提交：`.agents/skills/commit-before-destructive`。
+- **取证文件放哪、新版本脚本写哪：`.agents/skills/log-version-folders`** —— 一版一夹 `logs\vXX\`，
+  脚本与输出同夹；本技能只管「用快照不重熔」，那份管「证据落哪」。
 - 子进程 stdout 编码与包装脚本：`.agents/skills/utf8-gbk-encoding`。
 - **查游戏机制 / 本地化键 / 存档字段含义：`.agents/skills/ck3-game-source`** ——
   `All Under Heaven`（AUH / 天命 TGP）是**游戏本体 1.19 自带的 DLC 内容**（`game/common/character_interactions/10_tgp_*.txt`、
