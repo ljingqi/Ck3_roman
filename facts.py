@@ -360,6 +360,20 @@ def date_gap_days(d1, d2):
 # occurrence" is literal: a name appearing anywhere in the section consumes its slot, and the
 # reference person is the section's subject. The spouse set is primary_spouse ∪ spouse ∪
 # concubine in both directions, former spouses excluded.
+def _kin_rank_zh(n):
+    """Birth-order word for a kinship row: 4 -> 四. Plain digits, so that 2 never reads
+    "两" the way the object counter `_count_zh` spells it."""
+    digits = "零一二三四五六七八九"
+    if n < 10:
+        return digits[n]
+    if n < 20:
+        return "十" + (digits[n - 10] if n > 10 else "")
+    if n < 100:
+        t, r = divmod(n, 10)
+        return digits[t] + "十" + (digits[r] if r else "")
+    return str(n)
+
+
 KIN_WORDS = {
     "father":            ("relation_father", "父亲"),
     "mother":            ("relation_mother", "母亲"),
@@ -633,6 +647,60 @@ KIN_WORDS = {
     "former_co_brother_in_law": ("", "前连襟"),
     "former_co_sister_in_law":  ("", "前妯娌"),
 }
+
+# ---- v132: birth-order inflections (大/二/三… + 哥/弟/姐/妹/伯父/叔父/舅父/姑母/姨母) ----
+# The base keys above keep their neutral word when the rank is unknown or the series is
+# incomplete; a ranked key is emitted only from a one-layer sibling/child series.
+_KIN_ORD_MAX = 64
+_KIN_RANKABLE_BASES = frozenset({
+    "brother_older", "brother_younger", "sister_older", "sister_younger",
+    "uncle_pat_older", "uncle_pat_younger", "uncle_mat", "aunt_pat", "aunt_mat",
+})
+_KIN_ORD_SIBLING = frozenset({
+    "brother_older", "brother_younger", "sister_older", "sister_younger",
+})
+_KIN_ORD_UNCLE = _KIN_RANKABLE_BASES - _KIN_ORD_SIBLING
+
+
+def _kin_ord_prefix(n):
+    """Rank prefix used in a ranked kin word: 大 for rank 1, 二/三/… otherwise."""
+    return "大" if n == 1 else _kin_rank_zh(n)
+
+
+def _kin_ord_key(base, n):
+    """Ranked `KIN_WORDS` key for a rankable base key; the bare base when the rank is unusable."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return base
+    if base not in _KIN_RANKABLE_BASES or n < 1 or n > _KIN_ORD_MAX:
+        return base
+    return f"{base}_{n}"
+
+
+def _kin_ord_base(key):
+    """Strip the `_N` rank suffix of a ranked key; non-rankable keys pass through."""
+    m = re.match(r"^(.*)_(\d+)$", key or "")
+    if m and m.group(1) in _KIN_RANKABLE_BASES:
+        return m.group(1)
+    return key
+
+
+def _kin_ord_word(key):
+    """Chinese word of a ranked key, or '' when the key is not a generated ranked key."""
+    return KIN_WORDS.get(key, ("", ""))[1]
+
+
+for _n in range(1, _KIN_ORD_MAX + 1):
+    _p = _kin_ord_prefix(_n)
+    for _base, _tail in (("brother_older", "哥"), ("brother_younger", "弟"),
+                         ("sister_older", "姐"), ("sister_younger", "妹")):
+        KIN_WORDS[f"{_base}_{_n}"] = ("", _p + _tail)
+    for _base, _tail in (("uncle_pat_older", "伯父"), ("uncle_mat", "舅父"),
+                         ("aunt_pat", "姑母"), ("aunt_mat", "姨母")):
+        KIN_WORDS[f"{_base}_{_n}"] = ("", _p + _tail)
+    if _n >= 2:          # a 叔 is by definition younger than the father, so rank 1 cannot occur
+        KIN_WORDS[f"uncle_pat_younger_{_n}"] = ("", _p + "叔父")
 
 _KIN_TEXT_CACHE = {}
 
@@ -1027,11 +1095,16 @@ def _kin_word_coarse(term):
     return term.startswith("族") or term.startswith("同族")
 
 
-def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None):
+def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None, side=None):
     """KIN_WORDS key for one blood route: the shared ancestor A is `up_s` generations above the
     subject and `up_c` above the relative, `ms`/`mc` say the subject's/relative's hops up to A are
     all father edges, `older` reports whether the relative is the elder, and `uncle_older` (v129)
     whether the relative is older than the subject's father, which is what decides 族伯 from 族叔.
+
+    `side` (v132) is the linking parent's side for the close collateral (up_s=2, up_c=1), read
+    from the actual parent that reaches A: 'pat' for the father, 'mat' for the mother. It is more
+    exact than `ms` (all-father edges), which called a father's sister by her mother 姨母; the
+    `ms` fallback stays for malformed rows where no single linking parent can be found.
 
     Same decision table as `_deep_kin_key`, without its guards: those hold the *closest* route back
     so it cannot override the cascade, while a route reaching here is known to be a second,
@@ -1061,22 +1134,30 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None):
     gap = up_s - up_c                            # >0: the relative is senior
     if gap > 0:
         if gap == 1:
-            # One generation above the subject and a sibling of the subject's own parent (`up_c == 1`
-            # with `up_s == 2`): this is the close collateral where the Chinese terms name the side.
-            # The game's own word is 姑姨 (English logic: "aunt" tells 姑 from 姨 no more than it
-            # tells 伯 from 舅), so the route decides instead — a sister of the father is 姑母, a
-            # sister of the mother 姨母 (user 2026-10-06). A deeper route keeps the clan word, and a
-            # route mixing father and mother hops stays undecided and keeps it too. The male arm
-            # keeps the same rule (v129): 族伯/族叔 need the father's birth year, which the caller
-            # passes as `uncle_older`, and stay 族伯叔 when it is missing or the route lands on the
-            # father himself.
-            if up_c == 1 and c_female:
-                if ms is True:
-                    return "aunt_pat"
-                if ms is False:
-                    return "aunt_mat"
-            if not c_female and uncle_older is not None:
-                return "clan_uncle_older" if uncle_older else "clan_uncle_younger"
+            # One generation above the subject and a sibling of the subject's own parent
+            # (`up_c == 1` with `up_s == 2`): the close collateral where Chinese names the side.
+            # `side` comes from the actual linking parent; `ms` is the older fallback.
+            if up_c == 1:
+                if c_female:
+                    if side == "pat":
+                        return "aunt_pat"
+                    if side == "mat":
+                        return "aunt_mat"
+                    if ms is True:
+                        return "aunt_pat"
+                    if ms is False:
+                        return "aunt_mat"
+                else:
+                    if side == "pat":
+                        if uncle_older is None:
+                            return "uncle"      # rank later decides 伯/叔 when the series is complete
+                        return "uncle_pat_older" if uncle_older else "uncle_pat_younger"
+                    if side == "mat":
+                        return "uncle_mat"
+                    if ms is True and uncle_older is not None:
+                        return "uncle_pat_older" if uncle_older else "uncle_pat_younger"
+                    if ms is False:
+                        return "uncle_mat"
             return "clan_aunt" if c_female else "clan_uncle"
         if gap == 2:
             return "clan_grandmother" if c_female else "clan_grandfather"
@@ -1094,6 +1175,212 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None):
         # would otherwise be labelled with the male word (v124 matrix run found one in 田所2).
         return "clan_granddaughter" if c_female else "clan_grandson"
     return "clan_descendant"
+
+
+def _kin_family(chars, cid):
+    """The `family` row of one character ({} when absent)."""
+    return ((chars or {}).get(str(cid)) or {}).get("family") or {}
+
+
+def _kin_int_ids(fam, key):
+    """Integer ids stored under one family row, dropping anything malformed."""
+    return [k for k in (fam.get(key) or []) if isinstance(k, int)]
+
+
+def _kin_series_records(chars, ids):
+    """[(date_key, cid, female)] for one candidate series, or None when the series is incomplete.
+
+    A missing record, a missing birth date or an unrecorded sex makes the whole series unusable:
+    the rank would silently skip a member, which is exactly the wrong ordinal this version fixes.
+    """
+    out = []
+    for x in ids:
+        rec = (chars or {}).get(str(x))
+        if not isinstance(rec, dict):
+            return None
+        b = rec.get("birth")
+        if not b:
+            return None
+        fem = _female_rec(rec)
+        if fem is None:
+            return None
+        try:
+            k = cl.date_key(b)
+        except Exception:
+            return None
+        out.append((k, int(x), fem))
+    return out
+
+
+def _kin_rank_in(series, cid):
+    """1-based position of `cid` in a rank series; 0 when it is not a member."""
+    if not series:
+        return 0
+    try:
+        return series.index(int(cid)) + 1
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sex_child_order(chars, rev, p, female, as_of=None):
+    """`p`'s children of one recorded sex, in birth order (`(birth, cid)`), or None.
+
+    One layer only (`family.child` ∪ reverse `kid`), never recursive. `None` means "do not rank":
+    an incomplete child row, a missing birth date, an unknown sex, or no children of that sex.
+    `as_of` drops children born after the sentence's day; the kin word itself passes no date and
+    ranks the full recorded row (the cache is the run's own snapshot).
+    """
+    if p is None or female is None:
+        return None
+    try:
+        p = int(p)
+    except (TypeError, ValueError):
+        return None
+    if str(p) not in (chars or {}):
+        return None
+    memo = rev.setdefault("_sex_series", {}) if isinstance(rev, dict) else None
+    mkey = ("child", p, female, as_of)
+    if memo is not None and mkey in memo:
+        return memo[mkey]
+    ids = set(_kin_int_ids(_kin_family(chars, p), "child"))
+    for x in ((rev or {}).get("kid") or {}).get(p) or ():
+        try:
+            ids.add(int(x))
+        except (TypeError, ValueError):
+            pass
+    recs = _kin_series_records(chars, ids)
+    if recs is None:
+        if memo is not None:
+            memo[mkey] = None
+        return None
+    if as_of:
+        try:
+            ao = cl.date_key(as_of)
+        except Exception:
+            ao = None
+        if ao is not None:
+            recs = [r for r in recs if r[0] <= ao]
+    out = [x for _k, x, f in sorted(recs) if f == female]
+    out = out or None
+    if memo is not None:
+        memo[mkey] = out
+    return out
+
+
+def _sex_sib_order(chars, rev, p, female):
+    """`p`'s blood siblings of one recorded sex **including p itself**, in birth order, or None.
+
+    The series is every child of p's recorded parents (a half-sibling keeps the place: the user's
+    过继 case is a later marriage's child, which shares one parent), or p's own sibling row when
+    no parent is recorded. One layer only: p's parents → their children. Never calls `kin_key`.
+    """
+    if p is None or female is None:
+        return None
+    try:
+        p = int(p)
+    except (TypeError, ValueError):
+        return None
+    if str(p) not in (chars or {}):
+        return None
+    memo = rev.setdefault("_sex_series", {}) if isinstance(rev, dict) else None
+    mkey = ("sib", p, female)
+    if memo is not None and mkey in memo:
+        return memo[mkey]
+    fam = _kin_family(chars, p)
+    parents = set(_kin_int_ids(fam, "father")) | set(_kin_int_ids(fam, "real_father")) \
+        | set(_kin_int_ids(fam, "mother"))
+    ids = {p}
+    if parents:
+        for g in parents:
+            if str(g) not in (chars or {}):
+                if memo is not None:
+                    memo[mkey] = None
+                return None
+            ids |= set(_kin_int_ids(_kin_family(chars, g), "child"))
+            for x in ((rev or {}).get("kid") or {}).get(g) or ():
+                try:
+                    ids.add(int(x))
+                except (TypeError, ValueError):
+                    pass
+    else:
+        ids |= set(_kin_int_ids(fam, "siblings"))
+        for x in ((rev or {}).get("sib") or {}).get(p) or ():
+            try:
+                ids.add(int(x))
+            except (TypeError, ValueError):
+                pass
+    recs = _kin_series_records(chars, ids)
+    if recs is None:
+        if memo is not None:
+            memo[mkey] = None
+        return None
+    out = [x for _k, x, f in sorted(recs) if f == female]
+    out = out or None
+    if memo is not None:
+        memo[mkey] = out
+    return out
+
+
+def _shared_parent_for_rank(chars, s, c, matri=None):
+    """The parent whose child row ranks s and c, or None when they share no recorded parent.
+
+    Father first, mother when the pair is a matrilineal marriage (the game assigns those children
+    to the mother's house, the same rule `_kin_counts_line` follows). A half-sibling pair has only
+    one common parent and uses it; a true step-sibling pair has none and is not ranked.
+    """
+    fs, fc = _kin_family(chars, s), _kin_family(chars, c)
+    sf = set(_kin_int_ids(fs, "father")) | set(_kin_int_ids(fs, "real_father"))
+    cf = set(_kin_int_ids(fc, "father")) | set(_kin_int_ids(fc, "real_father"))
+    sm = set(_kin_int_ids(fs, "mother"))
+    cm = set(_kin_int_ids(fc, "mother"))
+    common_f, common_m = sf & cf, sm & cm
+    if common_f and common_m:
+        for a in sorted(common_f):
+            for b in sorted(common_m):
+                try:
+                    if cl.matrilineal_pair_key(a, b) in (matri or {}):
+                        return b
+                except Exception:
+                    pass
+        return sorted(common_f)[0] if len(common_f) == 1 else None
+    if common_f:
+        return sorted(common_f)[0] if len(common_f) == 1 else None
+    if common_m:
+        return sorted(common_m)[0] if len(common_m) == 1 else None
+    return None
+
+
+def _ranked_sib_key(chars, rev, shared, c, female, base):
+    """Base sibling key + rank when `c` sits in `shared`'s one-layer same-sex child series."""
+    if shared is None:
+        return base
+    series = _sex_child_order(chars, rev, shared, female)
+    rank = _kin_rank_in(series, c)
+    return _kin_ord_key(base, rank) if rank else base
+
+
+def _ranked_route_key(chars, rev, base, side, p, c, c_female):
+    """Rank a close-collateral route word from the actual linking parent `p`, or return `base`.
+
+    Only the five uncle/aunt keys are rankable, and only when the route lands one generation above
+    the subject (up_s=2, up_c=1). The series is the linking parent's same-sex sibling row including
+    the parent; 伯/叔 are re-decided by the parent's own rank, so a route can never say 四伯 when
+    that father is rank 3. A missing rank leaves the base word untouched.
+    """
+    if side not in ("pat", "mat") or p is None:
+        return base
+    if base not in _KIN_ORD_UNCLE and base != "uncle":
+        return base
+    series = _sex_sib_order(chars, rev, p, c_female)
+    rank = _kin_rank_in(series, c)
+    if not rank:
+        return base
+    if base == "uncle" or base in ("uncle_pat_older", "uncle_pat_younger"):
+        frank = _kin_rank_in(series, p)
+        if not frank:
+            return base
+        base = "uncle_pat_older" if rank < frank else "uncle_pat_younger"
+    return _kin_ord_key(base, rank)
 
 
 def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_memo=None):
@@ -1201,14 +1488,16 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_mem
         if c_female is None:
             return ""            # sex unknown -> no label (son/daughter would be a coin flip)
         return "daughter" if c_female else "son"
-    # 3) sibling with seniority (missing birth years fall back to the game words 兄弟/姊妹)
+    # 3) sibling with seniority (missing birth years fall back to the game words 兄弟/姊妹).
+    #    v132: the word carries the same-sex birth rank (大姐/二姐/三妹…); a true step-sibling has
+    #    no shared parent, so it keeps the bare word.
     if c in _sibs(s):
         older = _older(c, s)                # is c older than the subject
         if older is None:
             return "sister" if c_female else "brother"
-        if c_female:
-            return "sister_older" if older else "sister_younger"
-        return "brother_older" if older else "brother_younger"
+        base = ("sister" if c_female else "brother") + ("_older" if older else "_younger")
+        shared = _shared_parent_for_rank(chars, s, c, cache.get("matrilineal_pairs") or {})
+        return _ranked_sib_key(chars, rev, shared, c, c_female, base)
     sp_s = _sp(s)
     # 4) spouse (unknown sex -> 配偶); checked both ways, former spouses excluded
     if _married(fs, s, c, chars):
@@ -1283,13 +1572,22 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_mem
                 return "great_grandfather_mat"
             if c in _moth(g):
                 return "great_grandmother_mat"
-    # 6) Parent's siblings: paternal -> 伯父/叔父 (vs the father's birth year) or 姑母; maternal -> 舅父/姨母
+    # 6) Parent's siblings: paternal -> 伯父/叔父 (vs the father's own rank) or 姑母; maternal -> 舅父/姨母.
+    #    v132: each word carries the rank in the parent's same-sex sibling series, the parent
+    #    included (大伯父/二伯父/四叔父/六舅父/三姑母/四姨母).
     for p in sorted(_fath(s)):
         if c in _sibs(p):
             if c_female is None:
                 return ""
+            series = _sex_sib_order(chars, rev, p, c_female)
+            rank = _kin_rank_in(series, c)
             if c_female:
-                return "aunt_pat"
+                return _kin_ord_key("aunt_pat", rank) if rank else "aunt_pat"
+            if rank:
+                frank = _kin_rank_in(series, p)
+                if frank:
+                    base = "uncle_pat_older" if rank < frank else "uncle_pat_younger"
+                    return _kin_ord_key(base, rank)
             older = _older(c, p)            # older than the father -> 伯父
             if older is None:
                 return "uncle"              # seniority unknown -> 叔舅
@@ -1298,7 +1596,10 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_mem
         if c in _sibs(p):
             if c_female is None:
                 return ""
-            return "aunt_mat" if c_female else "uncle_mat"
+            base = "aunt_mat" if c_female else "uncle_mat"
+            series = _sex_sib_order(chars, rev, p, c_female)
+            rank = _kin_rank_in(series, c)
+            return _kin_ord_key(base, rank) if rank else base
     # 6b) Parents' cousins: children of a grandparent's blood siblings (my 堂伯/堂叔/堂姑/表伯/
     #     表叔/表姑/表舅/表姨). 堂 needs a paternal grandfather whose sibling is male, every other
     #     branch is 表; seniority is compared against the father for paternal lines only, and reads
@@ -5682,17 +5983,21 @@ class Facts:
             return []
         if s == c:
             return []
-        words, seen = [], set()
-        primary = self.blood_kin_word_for(c, s)
+        words, seen, seen_bases = [], set(), set()
+        chars = self.cache.get("characters") or {}
+        rev = self._kin_rev_index()
+        masked = mask_spouse_edges(chars, (s, c))
+        pkey = kin_key(self.cache, s, c, chars=masked, spouse_back={}, rev=rev)
+        primary = kin_text(pkey) if kin_key_is_blood(pkey) else ""
         if primary:
             words.append(primary)
             seen.add(primary)
+            seen_bases.add(_kin_ord_base(pkey))
         if len(words) >= limit:
             return words
         fath, moth = self._parent_maps()
         routes = self._ancestor_routes(s, fath, moth, {c})
         croutes = self._ancestor_routes(c, fath, moth, {s})
-        chars = self.cache.get("characters") or {}
         cfemale = self._is_female(c)
         older = _older_rec(chars.get(str(c)) or {}, chars.get(str(s)) or {}, c, s)
         # 族伯/族叔 are judged against the subject's father; a route that lands on the father himself
@@ -5702,6 +6007,29 @@ class Facts:
         if _faths and c not in _faths:
             uncle_older = _older_rec(chars.get(str(c)) or {},
                                      chars.get(str(_faths[0])) or {}, c, _faths[0])
+
+        def _side_for(anc, ds, ms):
+            """(side, linking parent) for the parent linking s up to `anc` at depth 2, else (None, None).
+
+            A consanguineous marriage can make both parents children of the same `anc` (the user's
+            「四叔兼六舅」 case). Then `ms` — whether s's whole path is father edges — still says
+            which of the two routes this is, so the father route stays paternal and the mother
+            route maternal instead of both collapsing to the clan fallback.
+            """
+            if ds != 2:
+                return None, None
+            ps = [p for p in (set(fath.get(s) or ()) | set(moth.get(s) or ()))
+                  if anc in (set(fath.get(p) or ()) | set(moth.get(p) or ())) ]
+            if len(ps) != 1:
+                if ms is True:
+                    ps = [p for p in ps if p in (fath.get(s) or ())]
+                elif ms is False:
+                    ps = [p for p in ps if p in (moth.get(s) or ())]
+            if len(ps) != 1:
+                return None, None
+            p = ps[0]
+            return ("pat" if p in (fath.get(s) or ()) else "mat"), p
+
         sigs = set()
         for anc, sroutes in routes.items():
             c_routes = croutes.get(anc)
@@ -5714,16 +6042,38 @@ class Facts:
                 for dc, mc in c_routes:
                     if ds == 0 and dc == 0:
                         continue
-                    if (ds, ms) in smin and dc == dc_min:
-                        sigs.add((ds + dc, ds, dc, ms, mc))
+                    side, linkp = _side_for(anc, ds, ms)
+                    uolder = uncle_older
+                    if side == "pat" and linkp is not None:
+                        uolder = _older_rec(chars.get(str(c)) or {},
+                                            chars.get(str(linkp)) or {}, c, linkp)
+                    base = _kin_key_of_route(ds, dc, ms, mc, cfemale, older, uolder, side)
+                    if _kin_ord_base(base) in seen_bases:
                         continue
-                    term = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older, uncle_older))
+                    if (ds, ms) in smin and dc == dc_min:
+                        sigs.add((ds + dc, ds, dc, ms, mc, anc))
+                        continue
+                    term = kin_text(_ranked_route_key(
+                        chars, rev, base, side, linkp, c, cfemale))
                     if term and not _kin_word_coarse(term):
-                        sigs.add((ds + dc, ds, dc, ms, mc))
-        for _tot, ds, dc, ms, mc in sorted(sigs):
-            w = kin_text(_kin_key_of_route(ds, dc, ms, mc, cfemale, older, uncle_older))
+                        sigs.add((ds + dc, ds, dc, ms, mc, anc))
+        # A tangled pedigree can still generate many route shapes; the kinship chain is three words
+        # wide, so only the closest K shapes can ever reach it. The cap is a hard bound on time and
+        # memory in addition to `_ancestor_routes`' (node, depth, all_male) state space.
+        cap = max(24, limit * 8)
+        if len(sigs) > cap:
+            sigs = set(sorted(sigs)[:cap])
+        for _tot, ds, dc, ms, mc, anc in sorted(sigs):
+            side, linkp = _side_for(anc, ds, ms)
+            uolder = uncle_older
+            if side == "pat" and linkp is not None:
+                uolder = _older_rec(chars.get(str(c)) or {},
+                                    chars.get(str(linkp)) or {}, c, linkp)
+            base = _kin_key_of_route(ds, dc, ms, mc, cfemale, older, uolder, side)
+            w = kin_text(_ranked_route_key(chars, rev, base, side, linkp, c, cfemale))
             if w and w not in seen:
                 seen.add(w)
+                seen_bases.add(_kin_ord_base(base))
                 words.append(w)
                 if len(words) >= limit:
                     break
@@ -6702,7 +7052,12 @@ class Facts:
 
     def sibling_entries(self, subject, fam, as_of=None):
         """`sibling_list`'s entries as (text, cid) pairs, so the household block can keep only the
-        siblings a section actually names (v109 §2.2). `sibling_list` is this list joined."""
+        siblings a section actually names (v109 §2.2). `sibling_list` is this list joined.
+
+        v132: each blood sibling carries its same-sex rank (大姐/二弟/三妹), and the row is written
+        in birth order rather than the save's own list order. A step-sibling (no shared parent) has
+        no rank and keeps the bare name; the spouse note still follows the name.
+        """
         as_of = as_of or self.as_of
         out = []
         for x in (fam.get("siblings") or []):
@@ -6711,7 +7066,21 @@ class Facts:
             nm = self.kin_label(x)
             if not nm:
                 continue
+            w = self.blood_kin_word_for(x, subject)
+            if w and w[-1:] in "哥弟姐妹" and w[:1] not in "堂表族继" \
+                    and w not in ("兄弟", "姊妹"):
+                nm = w + nm
             out.append((nm + self._sibling_spouse_note(subject, x, as_of), x))
+
+        def _birth(x):
+            rec = (self.cache.get("characters") or {}).get(str(x)) or {}
+            try:
+                k = cl.date_key(rec.get("birth"))
+            except Exception:
+                k = 99999999
+            return (k, int(x))
+
+        out.sort(key=lambda t: _birth(t[1]))
         return out
 
 
@@ -23644,42 +24013,30 @@ def _mark_lone_name(nm):
     return nm + "氏" if nm and len(nm) == 1 else nm
 
 
-def _kin_rank_zh(n):
-    """Birth-order word for a kinship row: 4 -> 四. Plain digits, so that 2 never reads
-    "两" the way the object counter `_count_zh` spells it."""
-    digits = "零一二三四五六七八九"
-    if n < 10:
-        return digits[n]
-    if n < 20:
-        return "十" + (digits[n - 10] if n > 10 else "")
-    if n < 100:
-        t, r = divmod(n, 10)
-        return digits[t] + "十" + (digits[r] if r else "")
-    return str(n)
-
-
 def _kin_rank_word(rank, total):
     """Familial ordinal for a birth rank: 老大 for the eldest, 老幺 for the youngest, 老二…老九
     in between, and 老十/老十一… for a rank past nine that is still not the youngest."""
-    if rank == total:
-        return "老幺"
     if rank == 1:
         return "老大"
+    if rank == total:
+        return "老幺"
     return "老" + _kin_rank_zh(rank)
 
 
 def _kin_counts_line(f, pid, fam, father_id, father_fam):
     """Birth-rank sentence printed beside the protagonist's kinship row: which parent's children
-    he ranks among, and where in that order.
+    he ranks among, and where **among that parent's children of the same sex**.
 
-    The sentence names one parent noun and one rank and no group size. A count written beside the
-    parent's name is re-read by the model as that parent's own parentage ("父亲X共十一子女，分属五母"
-    comes out as "母亲是X的五名父亲之一"), and a bare sibling list leaves the totals to be summed
-    by the reader. A matrilineal (uxorilocal) marriage ranks the subject among the MOTHER's
-    children, since the game assigns those children to her house; every other marriage ranks him
-    among the father's. Returns (line, parent_word); the line is '' when the parent, his children
-    or the subject's own rank is unknown, and '' also leaves only one child, whose rank states
-    nothing beyond the parentage rows already given."""
+    v132: the rank is per sex (布莱尔 is the first son, not the third child). The old all-children
+    sentence 「在父亲子女中排老三」 was read by the model as 「第三子」 even though two of the three
+    elder children were daughters. The sentence names one parent noun and one rank and no group
+    size: a count beside the parent's name gets re-read as that parent's own parentage, and a bare
+    sibling list leaves the totals to be summed by the reader. A matrilineal (uxorilocal) marriage
+    ranks the subject among the MOTHER's children, since the game assigns those children to her
+    house; every other marriage ranks him among the father's. Returns (line, parent_word); the line
+    is '' when the parent, the subject's sex, the same-sex series or the subject's own rank is
+    unknown. A single-child family still gets 「老大」, because the point is 长子 rather than 老三.
+    """
     mother_id = (fam.get("mother") or [None])[0]
     parent_id, parent_fam, parent_word = father_id, father_fam, "父亲"
     if father_id is not None and mother_id is not None \
@@ -23692,17 +24049,17 @@ def _kin_counts_line(f, pid, fam, father_id, father_fam):
     kids = [c for c in _asof_ids(f, (parent_fam or {}).get("child") or []) if f.name(c)]
     if len(kids) < 2:
         return "", ""
-
-    def _crec(c):
-        return chars.get(str(c)) or {}
-
-    order = sorted(kids, key=lambda c: cl.date_key(_crec(c).get("birth") or "9999.1.1"))
-    rank = (order.index(pid) + 1) if pid in order else 0
-    if not rank:
+    female = f._is_female(pid)
+    if female is None:
         return "", ""
+    series = _sex_child_order(chars, f._kin_rev_index(), parent_id, female, as_of=f.as_of)
+    if not series or pid not in series:
+        return "", ""
+    rank = series.index(pid) + 1
     # no subject in this sentence: the row sits inside the subject's own archive, whose first line
     # already carries his full appellation, and a second copy only pulls the model's attention there
-    return (f"在{parent_word}子女中排{_kin_rank_word(rank, len(order))}。"), parent_word
+    group = "女" if female else "子"
+    return (f"在{parent_word}诸{group}中排{_kin_rank_word(rank, len(series))}。"), parent_word
 
 
 # Marriage words of the four marital rows (`biography._profile_lines`) and of the cache's own
