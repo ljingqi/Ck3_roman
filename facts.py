@@ -24982,13 +24982,14 @@ def _character_profiles(f):
             ds = _death_sentence(f, cid)
             if ds:
                 prof["death"] = ds
-            # A death place is written for the protagonist's kin only: other people's
-            # death places are already carried by `victim_place` in 刺客列传, so the
-            # profile rows need not repeat them.
-            if _is_kin:
-                _dp = f.death_place(cid)
-                if _dp:
-                    prof["death_place"] = _dp
+                # A death place belongs to a death sentence. `death_place` falls through to
+                # `victim_place`, whose first source is the living character's current province,
+                # so computing it for a live kinsman printed "死于<his home>" beside his deeds.
+                # Kin only: other people's places already ride `victim_place` in 刺客列传.
+                if _is_kin:
+                    _dp = f.death_place(cid)
+                    if _dp:
+                        prof["death_place"] = _dp
         # the birth place is also written for kin only, taken from the person's
         # first-seen snapshot (see `birth_place`)
         if _is_kin:
