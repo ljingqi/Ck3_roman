@@ -850,7 +850,7 @@ def group_v41(snap_path):
          且不再出现「年末档日期」而非事件日 (1086 而非 1087);
       2. `secrets.carnal_opinions` 默认不下发 (config `carnal_opinions` 关闭);
       3. `secrets` 的牵制块**无**「…的牵制如下：」标题行 (v41 问题8);
-      4. 血统类隐事主题点名实父 (「实父为…」), 不再是裸「血统有争」;
+      4. 血统类隐事主题点名实父 (「亲生父亲为…」), 不再是裸「血统有争」;
       5. 宗支句不写「主支」;
       6. 共治者身份句 (有 diarchy 记录时) 含「共治」;
       7. 政体词随时点变: 同一人物在封建期档不得出现行政制专有词
@@ -893,7 +893,7 @@ def group_v41(snap_path):
           "牵制如下" not in sec_txt,
           [ln for ln in sec_txt.splitlines() if "牵制如下" in ln][:2])
     check("[4] 血统类隐事点名实父",
-          ("血统有争" not in sec_txt) or ("实父为" in sec_txt),
+          ("血统有争" not in sec_txt) or ("亲生父亲为" in sec_txt),
           [ln for ln in sec_txt.splitlines() if "血统有争" in ln][:2])
     check("[5] 宗支句不写主支", "主支" not in sec_txt,
           [ln for ln in sec_txt.splitlines() if "主支" in ln][:2])
@@ -1737,7 +1737,13 @@ def group_v45(snap_path):
                 bad_rep.append((key, cid, out, w))
             if not w:
                 continue
-            if out not in text:
+            # The marked label can carry the scripted relation between the inserted chain and
+            # the name (「堂妹夫兼表妹夫兼仇敌X」), so split at the **whole** chain and allow a
+            # short identity chain in between instead of requiring a contiguous substring.
+            chain = "兼".join(p[1] for p in parts)
+            label = out[len(chain):] if chain and out.startswith(chain) else out[len(w):]
+            if not re.search(re.escape(chain or w) + r"[^，。；、\n]{0,20}"
+                             + re.escape(label), text):
                 bad_in.append((key, out))
             if text.count(out) > 1:
                 bad_dup.append((key, out, text.count(out)))
@@ -2233,8 +2239,10 @@ def group_v56(snap_path):
 
     # ---- [4] 战末俘获行 ----
     cap = [e for e in tl if e.get("type") == "war_capture"]
-    check("[4] 俘获行句面为「战胜X，俘之」",
-          all("战胜" in e["text"] and "俘之" in e["text"] for e in cap),
+    # v63-1 unified the war-end capture wording with the battlefield-capture form
+    # (style.prison_captured_battle: 「于战阵俘获X」 / 「于战阵被俘」).
+    check("[4] 俘获行句面为「于战阵俘获」",
+          all(("于战阵俘获" in e["text"] or "于战阵被俘" in e["text"]) for e in cap),
           [e["text"][:40] for e in cap[:2]])
     same_day = {e["date"] for e in tl if "当日获释" in (e.get("text") or "")}
     clash = [e["date"] for e in cap if e["date"] in same_day]
