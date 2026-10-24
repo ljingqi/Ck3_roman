@@ -20753,7 +20753,9 @@ def audit_kin_lines(facts, limit=60):
                 if not isinstance(v, int) or v == cid:
                     continue
                 gy = _audit_year(f, v)
-                if gy is not None and gy >= cy:
+                # Year precision only: a guardian born in the same year is not "later born",
+                # and same-year tutelage pairs are common in the save.
+                if gy is not None and gy > cy:
                     _push("K2", f"业师{_audit_name(f, v)} ({gy} 年生) → "
                                 f"{_audit_name(f, cid)} ({cy} 年生): 业师晚出生")
                 break
