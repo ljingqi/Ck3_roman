@@ -151,6 +151,23 @@ def _paren_violations(text):
     return sorted(set(bad))
 
 
+_SUCC_LINE_RE = re.compile(r"^\s*(?:承继|后任)：")
+
+
+def _fact_paren_violations(text):
+    """`_paren_violations` over the fact surface, minus the succession clause's parenthesis.
+
+    「承继：<date>，<name>（<protagonist>的<兼 chain>）…」 is program-built (v126) and the
+    parenthesis is what fixes a long chain's direction, so it is not the model-written
+    「名词（名词）」 apposition this check looks for. The whole line is program text anyway."""
+    kept = []
+    for ln in (text or "").split("\n"):
+        if _SUCC_LINE_RE.match(ln):
+            ln = re.sub(r"（[^（）]*）", "", ln)
+        kept.append(ln)
+    return _paren_violations("\n".join(kept))
+
+
 _FACTS_CACHE = {}
 
 
@@ -379,7 +396,7 @@ def group_b(snap_path):
     check("传输面无裸键 token", not _KEY_RE.search(surface),
           _KEY_RE.findall(surface)[:3])
     check("传输面无 MAX_RECURSIVE_DEPTH", "MAX_RECURSIVE_DEPTH" not in surface)
-    badp = _paren_violations(fact_surface)
+    badp = _fact_paren_violations(fact_surface)
     check("事实面无「名词（名词）」括注同位语", not badp, badp[:8])
     check("无「言语相通」", "言语相通" not in surface)
     check("无「国库金/月入」", "国库金" not in surface and "月入" not in surface)
@@ -1518,7 +1535,7 @@ class _KinRecScope(F.KinScope):
     def __init__(self, subject=None):
         super().__init__(subject)
         self.tags = []          # 档 A: [(cid, 加定语后的整称谓)]
-        self.words = []         # 档 B: [(cid, 定语词, 算词基准人)]
+        self.words = []         # 档 B: [(cid, 定语词, 算词基准人, 句内日期)]
         _SCOPES.append(self)
 
     def mark(self, cid, base, facts, date=None):
@@ -1530,7 +1547,10 @@ class _KinRecScope(F.KinScope):
     def word_for(self, cid, facts, subject=None, date=None):
         w = super().word_for(cid, facts, subject=subject, date=date)
         if w:
-            self.words.append((cid, w, self.subject if subject is None else subject))
+            # v134: keep the sentence's own date — a former-role word (「姐夫」) belongs to a
+            # marriage that ended before that day, so recomputing without the date pulls in a
+            # relation the sentence could not yet have had.
+            self.words.append((cid, w, self.subject if subject is None else subject, date))
         return w
 
 
@@ -1721,7 +1741,7 @@ def group_v45(snap_path):
         if sc is None:
             continue
         # 档 A (点位) + 档 B (行内) 合起来看「同一人每板块至多一次」
-        cids = [cid for cid, _t in sc.tags] + [cid for cid, _w, _s in sc.words]
+        cids = [cid for cid, _t in sc.tags] + [cid for cid, _w, _s, _d in sc.words]
         if len(set(cids)) != len(cids):
             bad_dup.append((key, "同一人两次", sorted(cids)))
         for cid, out in sc.tags:
@@ -1749,13 +1769,13 @@ def group_v45(snap_path):
                 bad_dup.append((key, out, text.count(out)))
             words[w] = words.get(w, 0) + 1
             n_chars += len(w)
-        for cid, w, _subj in sc.words:
+        for cid, w, _subj, _date in sc.words:
             n_word += 1
             # issue 3: word_for may return 「亲属词兼关系词」; the basis-selection invariant is on the
             # first word of the chain, so compare that against the list recomputed on the basis the
             # sentence actually has.
             wkin = w.split("兼", 1)[0] if w else w
-            parts = f.identity_parts(cid, _subj)
+            parts = f.identity_parts(cid, _subj, date=_date)
             want = parts[0][1] if parts else ""
             if not wkin or not _identity_word_ok(wkin, parts):
                 bad_word.append((key, cid, w))
@@ -2430,7 +2450,7 @@ def group_v62(snap_path):
 def v63_audit(facts, f, pairs):
     """v63 核心判据 (非重言式): 逐处插入复算应有的定语**词**与**算词基准**。
 
-    `pairs` = [(本篇传主 id, 未加词的行, 加词后的行, [(cid, 词, 实际基准), …]), …]
+    `pairs` = [(本篇传主 id, 未加词的行, 加词后的行, [(cid, 词, 实际基准, 句内日期), …]), …]
     —— 由 [V63] 拦 `biography._kin_tag_line` + `KinScope.word_for` 收集; 单元回归
     也用本函数 (见 `tools/tests/verify_kin_owner_unit.py`)。
 
@@ -2439,20 +2459,22 @@ def v63_audit(facts, f, pairs):
       · 该人是**本行主语** → 基准 = 本篇传主 (正史旁称「姻亲姊妹X」即此档)
       · 该人是**句中第三方** → 基准 = 本行主语
     基准或词不符即违规 (「于尔莎受业于**岳父**乱发哈拉尔」即此类 —— 乱发哈拉尔是
-    传主的岳父、于尔莎的生父, 应出「父亲」)。返回 [(行, cid, 实际词, 应有词, 基准)]。
+    传主的岳父、于尔莎的生父, 应出「父亲」)。词按该句**自己的日期**复算 (v134:
+    前姐夫这类已结束的姻亲只在结束之后才成立, 拿终局日期复算会把当时不该有的词
+    算出来)。返回 [(行, cid, 实际词, 应有词, 基准)]。
     """
     import biography as bio
     bad = []
     for subj, before, after, got in pairs:
         names, _off, key = bio._names_for_line(facts, before)
         owner = (facts.get("line_owner") or {}).get(key) if key else None
-        for cid, w, base in got:
+        for cid, w, base, date in got:
             want_base = subj if (owner is None or int(cid) == owner) else owner
             # v124: the in-line attributive is the first word of `identity_parts` (direct word,
             # then path, then offices), so recompute from that single outlet. `kin_word_for`
             # knows only direct kin and reports every path/office chain as a mismatch (v134:
             # 34 such false violations in the 达尔文 decade).
-            _parts = f.identity_parts(cid, want_base)
+            _parts = f.identity_parts(cid, want_base, date=date)
             want = _parts[0][1] if _parts else ""
             # issue 3: w may carry a 「兼关系词」 suffix; the basis invariant is on the kinship part.
             wkin = w.split("兼", 1)[0] if w else w
@@ -2505,7 +2527,7 @@ def group_v63(snap_path):
         def word_for(self, cid, fa, subject=None, date=None):
             w = real_scope.word_for(self, cid, fa, subject=subject, date=date)
             if w:
-                cur.append((cid, w, self.subject if subject is None else subject))
+                cur.append((cid, w, self.subject if subject is None else subject, date))
             return w
 
     def _spy(fa, scope, line, _real=real_line):
@@ -2527,7 +2549,7 @@ def group_v63(snap_path):
     bad = v63_audit(facts, f, pairs)
     check("[V63] 行内定语按句内主语算词 (不把岳父插进讲妻子的句子)", not bad, bad[:3])
     n_all = sum(len(g) for *_x, g in pairs)
-    n_own = sum(1 for subj, _b, _a, g in pairs for _c, _w, b in g if b != subj)
+    n_own = sum(1 for subj, _b, _a, g in pairs for _c, _w, b, _d in g if b != subj)
     print(f"  INFO 实查插入 {n_all} 处 (其中 {n_own} 处按句内主语算词), "
           f"涉及行 {len(pairs)} 行, 违规 {len(bad)} 处")
     print("[V63] 完成")
@@ -2620,15 +2642,22 @@ def group_v63b(snap_path):
     # (「弟媳」这类由**正妻**之婚产生的词不受影响, 故只禁这两个被实证误出的词。)
     # Bare 妹夫 / 姻亲 only: 表妹夫 and 堂妹夫 are legitimate cousin-husband words (v134; the
     # old substring test flagged every 兼表妹夫/兼堂妹夫 chain).
+    # The ban is a property of that save (the concubine union); a 妹夫 that comes from a
+    # primary-spouse marriage is correct even in incest data (达尔文 final: the protagonist's
+    # father is also his 妹夫 because the father's primary spouse is the protagonist's sister),
+    # so the text scan runs only where the 埃德伯 pair exists (v134).
     _kin_pat = _re.compile(r"(?<![表堂亲])妹夫|姻亲")
-    _kin_bad = []
-    for key, blk in blocks.items():
-        txt = "\n".join(f"{k}\n{v}" for k, v in (blk or {}).items())
-        m = _kin_pat.search(txt)
-        if m:
-            _kin_bad.append((key, m.group(0)))
-    check("[V63b] 妾婚不产生姻亲称谓 (问题7: 无妹夫/姻亲)",
-          not _kin_bad, _kin_bad[:4])
+    if _has_ed:
+        _kin_bad = []
+        for key, blk in blocks.items():
+            txt = "\n".join(f"{k}\n{v}" for k, v in (blk or {}).items())
+            m = _kin_pat.search(txt)
+            if m:
+                _kin_bad.append((key, m.group(0)))
+        check("[V63b] 妾婚不产生姻亲称谓 (问题7: 无妹夫/姻亲)",
+              not _kin_bad, _kin_bad[:4])
+    else:
+        print("  SKIP [V63b] 妾婚姻亲断言 (本档无埃德伯数据)")
     # 程序口径: 以埃德伯为基准看主角的定语必须为空 (妾婚不产生妹夫)
     if _has_ed:
         fk = _facts_from_snap(snap)
