@@ -135,6 +135,11 @@ def _paren_violations(text):
         c = m.group(1)
         if _NOTE_OK_RE.search(c):
             continue
+        # v130: 「患<当代疫名>（<病名>）而亡」—— the inner word is the game's trait display
+        # name and the outer word the epidemic's contemporary name, so this clause keeps both
+        # names the player sees; it is program-built, not a model-written appositive.
+        if re.search(r"患[^，。！？；\n]{1,16}（" + re.escape(c) + r"）而亡", text or ""):
+            continue
         # v69: 《XX历代记》的朝代年代区间与即位缘由 (程序按 history.type 生成)
         if _V69_SPAN_PARA_RE.match(c) or _V69_SUCC_PARA_RE.match(c):
             continue
@@ -1100,15 +1105,19 @@ def group_v42(snap_path):
     def _has_record(dead_x):
         return any(dead_x == nm or dead_x.endswith(nm) for nm in dead_names)
 
-    erad = [c for c, r in pchars.items()
-            if ((r.get("death") or {}).get("reason") == "death_eradicated"
-                and _in_win((r.get("death") or {}).get("date")))]
+    # Only characters the fact set actually carries: `pchars` is the whole player cache, and a
+    # death_eradicated outsider is never rendered, so asserting its wording in the timeline is
+    # meaningless (v134: 8 cache-only cases made this fail with an empty timeline hit list).
+    related = {str(k) for k in (facts.get("characters") or {})}
+    erad = [c for c, r in pchars.items() if str(c) in related
+            and ((r.get("death") or {}).get("reason") == "death_eradicated"
+                 and _in_win((r.get("death") or {}).get("date")))]
     if erad:
         check("[6] 灭门死因「连同全族被处决」见于年表",
               "连同全族被处决" in tl_all,
               [ln for ln in tl_lines if "连同全族被处决" in ln][:2])
     else:
-        print("  SKIP [6] 本篇窗口内无 death_eradicated 死者")
+        print("  SKIP [6] 本篇相关集内无 death_eradicated 死者")
     gen = []
     for ln in tl_lines:
         m = re.search(r"的(?:仇人|死敌|友人|挚友|亲属|情人|灵魂伴侣)"
@@ -1157,34 +1166,6 @@ def group_v42(snap_path):
     if not meta.get("as_of"):
         check("[8] 终传主角档案有职衔", bool(office), repr(prot.get("label")))
     print(f"[V42] 完成 ({os.path.basename(snap_path)})")
-
-
-def _cjk_proj(s):
-    """只留汉字与间隔号 —— 「同句重名」判据的投影。"""
-    return "".join(ch for ch in str(s)
-                   if "\u4e00" <= ch <= "\u9fff" or ch == "·")
-
-
-def _longest_repeat(s, min_len=8, ratio=0.3):
-    """一句话里出现两次的最长汉字串 (长度 ≥ min_len 且占全句汉字数 ≥ ratio)。
-
-    用于捕捉「A试图谋杀A」「A给A戴了绿帽子」这类施受同名的退化句 —— 游戏侧
-    `murder_attempt`/`cuckoldry` 两个 reason 把 TARGET_CHAR 传成 root, root 恰是
-    施事者本人时两端就烘焙成同一角色 (见 Facts._rerender_feud_event 的 v43 注释)。
-    普通句里 8 字以上的重复串极罕见, 再加占比门槛即不会误报。"""
-    t = _cjk_proj(s)
-    n = len(t)
-    if n < min_len * 2:
-        return ""
-    best = ""
-    for i in range(n):
-        for j in range(i + min_len, n + 1):
-            sub = t[i:j]
-            if len(sub) > len(best) and sub in t[j:]:
-                best = sub
-    if best and len(best) >= min_len and len(best) / n >= ratio:
-        return best
-    return ""
 
 
 def group_v43(snap_path):
@@ -1315,7 +1296,16 @@ def group_v43(snap_path):
     events = []
     for h in facts.get("house_feuds") or []:
         events += list(h.get("events") or [])
-    dupes = [(ln, _longest_repeat(ln)) for ln in events if _longest_repeat(ln)]
+    # v134: explicit self-referential shapes for the verbs the feud register renders. The old
+    # generic longest-repeat heuristic flagged「囚禁X，23日后X获释」, where the prisoner's full
+    # title+name necessarily repeats even though actor and patient differ.
+    self_ref = [
+        re.compile(r"(.{4,}?)(?:囚禁|折磨了?|处决了?|劫掠了?|战胜|毒打|阉割|弄瞎)\1"),
+        re.compile(r"(.{4,}?)向\1发动"),
+        re.compile(r"(.{4,}?)(?:与|和)\1(?:结仇|断绝交谊|成为好友)"),
+        re.compile(r"(.{4,}?)成为\1的?(?:朋友|仇人|情人|挚友)"),
+    ]
+    dupes = [ln for ln in events if any(p.search(ln) for p in self_ref)]
     check("[3] 恩怨录无施受同名句", not dupes, dupes[:2])
     pat = re.compile(r"(.{4,}?)试图谋杀\1")
     pat2 = re.compile(r"(.{4,}?)给\1戴了绿帽子")
