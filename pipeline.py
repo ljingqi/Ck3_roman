@@ -3009,6 +3009,18 @@ def _draft_epilogue_parts(msgs_list, cfg, min_chars_list, labels):
     return out
 
 
+def _refresh_reading_page(cfg, folder):
+    """Rebuild the folder's reading page so it carries the epilogue on disk, whether this run
+    wrote it or found it already existing."""
+    try:
+        import htmlview
+        page = htmlview.rebuild_folder(cfg.get("output_dir", ""), folder)
+        if page:
+            print("阅读页已更新:", page)
+    except Exception as e:
+        llm.log(f"更新阅读页失败: {e}")
+
+
 def step_epilogue(cfg, folder=None, force=False):
     """Write the campaign epilogue of one folder: part 1 over the 终传 first chapters, part 2 over the
     same-dynasty rulers of the newest save. Returns the written path, None when cancelled or skipped,
@@ -3048,8 +3060,18 @@ def step_epilogue(cfg, folder=None, force=False):
         _merge_tail_title_flags(melt, _tail_melt)
     out_name = E.output_name(row["folder"], cache.get("last_date"))
     out_path = os.path.join(row["path"], out_name)
+    # Older builds left a sub-1000 year unpadded (`990_1_1`); reuse that file when it describes
+    # the same save so the widened naming does not create a second epilogue for one archive.
+    try:
+        save_slug = cl.date_filekey(cache.get("last_date") or "")
+    except (TypeError, ValueError):
+        save_slug = ""
+    existing_path, existing_slug = E.epilogue_file(row["path"])
+    if existing_path and save_slug and existing_slug == save_slug:
+        out_path = existing_path
     if os.path.exists(out_path) and not force:
         print(f"已存在, 跳过 (加 --force 重新撰写): {out_path}")
+        _refresh_reading_page(cfg, row["folder"])
         return out_path
     print(f"战役 {row['folder']}：{len(ch['rows'])} 篇终传, {ch['chars']} 字首章材料, "
           f"最新存档 {cache.get('last_date')}", flush=True)
@@ -3097,13 +3119,7 @@ def step_epilogue(cfg, folder=None, force=False):
     llm.log(f"封档总评已写出: {out_path} (第一部分 {len(part1)} 字, 第二部分 {len(part2)} 字, "
             f"同宗有地者 {len(rep['rows'])} 人)")
     print(f"第一部分 {len(part1)} 字, 第二部分 {len(part2)} 字")
-    try:
-        import htmlview
-        page = htmlview.rebuild_folder(cfg.get("output_dir", ""), row["folder"])
-        if page:
-            print("阅读页已更新:", page)
-    except Exception as e:
-        llm.log(f"更新阅读页失败: {e}")
+    _refresh_reading_page(cfg, row["folder"])
     print("已写出:", out_path)
     return out_path
 
