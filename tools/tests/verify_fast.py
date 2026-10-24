@@ -1537,17 +1537,20 @@ class _KinRecScope(F.KinScope):
 _REL_WORD_SET = frozenset(F.RELATION_WORDS.values())
 
 
-def _identity_word_ok(word):
+def _identity_word_ok(word, parts=None):
     """v124: True when the identity layer may emit `word` as the first word of a chain.
 
     That is a kin word from the whitelist (single definition site: `F.kin_texts`), a scripted
-    relation word, or a path word 「X的Y」 / 「X的Y的Z」 (see `Facts.path_word_for`). A path word's last
-    segment is always a kin or relation word, its earlier segments are kin words, relation words,
-    领主/最高领主 or a court office word -- the office vocabulary is the game's own localization, so
-    it is only checked for length."""
+    relation word, a court office the same pair's `identity_parts` lists (v124 emits offices on
+    their own when no tie precedes them), or a path word 「X的Y」 / 「X的Y的Z」 (see
+    `Facts.path_word_for`). A path word's last segment is always a kin or relation word, its
+    earlier segments are kin words, relation words, 领主/最高领主 or a court office word -- the
+    office vocabulary is the game's own localization, so it is only checked for length."""
     if not word:
         return False
     if word in F.kin_texts() or word in _REL_WORD_SET:
+        return True
+    if parts and any(cat == "office" and w == word for cat, w, _src in parts):
         return True
     segs = word.split("的")
     if not 2 <= len(segs) <= 3 or not all(segs):
@@ -1728,7 +1731,7 @@ def group_v45(snap_path):
             # word (「领主的表姨」). Recompute the whole list so a path word is checked too.
             parts = f.identity_parts(cid, sc.subject)
             w = parts[0][1] if parts else ""
-            if not w or not _identity_word_ok(w):
+            if not w or not _identity_word_ok(w, parts):
                 bad_word.append((key, cid, out))
             if not w or not out.startswith(w) or len(out) <= len(w):
                 bad_rep.append((key, cid, out, w))
@@ -1748,7 +1751,7 @@ def group_v45(snap_path):
             wkin = w.split("兼", 1)[0] if w else w
             parts = f.identity_parts(cid, _subj)
             want = parts[0][1] if parts else ""
-            if not wkin or not _identity_word_ok(wkin):
+            if not wkin or not _identity_word_ok(wkin, parts):
                 bad_word.append((key, cid, w))
             # v63: 词必须能按**实际算词基准**复算 (句中第三方人名按本行主语算)
             elif want != wkin:
@@ -2437,7 +2440,12 @@ def v63_audit(facts, f, pairs):
         owner = (facts.get("line_owner") or {}).get(key) if key else None
         for cid, w, base in got:
             want_base = subj if (owner is None or int(cid) == owner) else owner
-            want = f.kin_word_for(cid, want_base)
+            # v124: the in-line attributive is the first word of `identity_parts` (direct word,
+            # then path, then offices), so recompute from that single outlet. `kin_word_for`
+            # knows only direct kin and reports every path/office chain as a mismatch (v134:
+            # 34 such false violations in the 达尔文 decade).
+            _parts = f.identity_parts(cid, want_base)
+            want = _parts[0][1] if _parts else ""
             # issue 3: w may carry a 「兼关系词」 suffix; the basis invariant is on the kinship part.
             wkin = w.split("兼", 1)[0] if w else w
             if base != want_base or wkin != want:
@@ -2534,6 +2542,9 @@ def group_v63b(snap_path):
     blocks = snap.get("blocks") or {}
     facts = snap.get("facts") or {}
     chars = facts.get("characters") or {}
+    # The 埃德伯 assertions below carry the 菲利普2 save's hard-coded ids; on any other campaign
+    # they assert nothing, so skip them when that pair is not in the fact set (v134).
+    _has_ed = all(str(x) in chars for x in (38665, 44335))
 
     # ---- 1) 宝物名无「称号，名字」逗号 ----
     arts = facts.get("family_artifacts") or []
@@ -2589,30 +2600,39 @@ def group_v63b(snap_path):
     check("[V63b] 性事行只出现在好友/仇人列传",
           all(k.startswith(("friend", "enemy")) for k in sx_keys),
           sorted(set(sx_keys))[:5])
-    check("[V63b] 仇人列传含「强迫性交」行 (问题3 埃德伯)",
-          bool(sx_hit), sorted(set(sx_hit))[:3] or sorted(set(sx_keys))[:5])
+    if _has_ed:
+        check("[V63b] 仇人列传含「强迫性交」行 (问题3 埃德伯)",
+              bool(sx_hit), sorted(set(sx_hit))[:3] or sorted(set(sx_keys))[:5])
+    else:
+        print("  SKIP [V63b] 仇人列传强迫性交断言 (本档无埃德伯数据)")
 
     # ---- 2b) 妾婚不产生姻亲称谓 (问题7) ----
     # 昆伯·阿尔弗雷德斯多赫托尔是主角的**妾** (907.11.5 强纳), 故主角不是
     # 埃德伯的「妹夫」、伯特诺思也不是他的「姻亲兄弟」—— 姻亲只由正妻之婚产生。
     # (「弟媳」这类由**正妻**之婚产生的词不受影响, 故只禁这两个被实证误出的词。)
+    # Bare 妹夫 / 姻亲 only: 表妹夫 and 堂妹夫 are legitimate cousin-husband words (v134; the
+    # old substring test flagged every 兼表妹夫/兼堂妹夫 chain).
+    _kin_pat = _re.compile(r"(?<![表堂亲])妹夫|姻亲")
     _kin_bad = []
     for key, blk in blocks.items():
         txt = "\n".join(f"{k}\n{v}" for k, v in (blk or {}).items())
-        for w in ("妹夫", "姻亲"):
-            if w in txt:
-                _kin_bad.append((key, w))
+        m = _kin_pat.search(txt)
+        if m:
+            _kin_bad.append((key, m.group(0)))
     check("[V63b] 妾婚不产生姻亲称谓 (问题7: 无妹夫/姻亲)",
           not _kin_bad, _kin_bad[:4])
     # 程序口径: 以埃德伯为基准看主角的定语必须为空 (妾婚不产生妹夫)
-    fk = _facts_from_snap(snap)
-    if fk is not None:
-        try:
-            _w = fk.kin_word_for(38665, 44335)
-        except Exception as exc:                          # noqa: BLE001
-            _w = f"<ERR {exc!r}>"
-        check("[V63b] kin_word_for(主角, 埃德伯) 为空 (问题7)",
-              _w == "", _w)
+    if _has_ed:
+        fk = _facts_from_snap(snap)
+        if fk is not None:
+            try:
+                _w = fk.kin_word_for(38665, 44335)
+            except Exception as exc:                      # noqa: BLE001
+                _w = f"<ERR {exc!r}>"
+            check("[V63b] kin_word_for(主角, 埃德伯) 为空 (问题7)",
+                  _w == "", _w)
+    else:
+        print("  SKIP [V63b] kin_word_for(主角, 埃德伯) 断言 (本档无埃德伯数据)")
 
     # ---- 3) 亲缘自检为 0 ----
     f = _facts_from_snap(snap)
@@ -2622,8 +2642,14 @@ def group_v63b(snap_path):
         facts2 = dict(facts)
         facts2["_facts"] = f
         issues = F.audit_kin_lines(facts2)
-        check("[V63b] 亲缘自检 0 命中 (长辈晚出生/单边亲缘/亲属当配偶)",
-              not issues, issues[:3])
+        # K4 (a spouse who is also a parent/child) is real save data: by the 2026-10-05 ruling
+        # the identity layer writes 「妻子兼女儿」, so report the count instead of failing.
+        # K1/K2/K3 remain hard errors.
+        k4 = [x for x in issues if x.startswith("K4")]
+        hard = [x for x in issues if not x.startswith("K4")]
+        if k4:
+            print(f"  INFO 直系亲属兼配偶 {len(k4)} 对 (按「妻子兼女儿」口径输出, 不计 FAIL)")
+        check("[V63b] 亲缘自检 0 命中 (长辈晚出生/单边亲缘)", not hard, hard[:3])
     print("[V63b] 完成")
 
 
