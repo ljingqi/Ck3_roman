@@ -28834,14 +28834,17 @@ def genealogy_subject_lines(f):
     return parts[1]
 
 
-def _secrets_facts(f):
+def _secrets_facts(f, timeline=None):
     """Secrets of the player, family and close servants: the secrets themselves, who knows them,
     leverage held, and secrets first recorded in this decade.
 
     Returns keys {held, held_murder, held_unrevealed, kinsmen, known, events, any}, or {} when
     nothing relevant exists (then no 《阴私录》 is generated). Several secrets of one holder share
     a line so the holder is named once, knowers join the same sentence, a first-seen year equal
-    to the knowing year is written once, and leverage is grouped by whom it is held over."""
+    to the knowing year is written once, and leverage is grouped by whom it is held over.
+
+    `timeline` is the finalized, capped timeline; when given, disease lines are read from it so
+    《阴私录》 can never carry a disease row the chronicle dropped (v40 same-source invariant)."""
     cache = f.cache
     pid = cache.get("player_id")
     if pid is None:
@@ -28992,8 +28995,14 @@ def _secrets_facts(f):
         out["harm"] = hl
     # Venereal-disease transmission facts (the wording falls back to "染上" when there is no
     # source). The former outlet that could attach these to sexual matters is gone, leaving this
-    # the only one.
-    dl = f.std_lines()
+    # the only one. With the finalized timeline in hand, take its surviving rows rather than
+    # rebuilding every related edge: the cap may have dropped some, and 《阴私录》 must not state
+    # a disease the chronicle does not (v40).
+    if timeline is not None:
+        dl = [str(e.get("text") or "") for e in timeline
+              if e.get("type") == "std_transmission" and e.get("text")]
+    else:
+        dl = f.std_lines()
     if dl:
         out["disease"] = dl
     out["any"] = bool(out.get("held") or out.get("kinsmen") or out.get("known")
@@ -29255,6 +29264,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     # the 家谱 tree is built once: the appendix caption, the reading page's embedded data and the
     # saints list below all read the same object
     _tree = genealogy_tree(f)
+    # One finalized timeline for both the chronicle and the secret records: the disease rows in
+    # 《阴私录》 are read back from it, so the cap cannot leave a disease line there alone (v40).
+    _tl = _timeline(f)
     facts = {
         # dynasty name (the surname under eastern name order) plus house/branch for flavour
         "house": _dynasty_display(_pdn or cache.get("dynasty_name"),
@@ -29274,7 +29286,7 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "period": period,
         "sources": sources,
         "protagonist": f._protagonist_cache,
-        "timeline": _timeline(f),
+        "timeline": _tl,
         "characters": _character_profiles(f),
         # line text -> [[cid, appellation], ...]: a register of the names emitted inside event
         # and secret lines (the same object as f's, which later builders keep filling). The
@@ -29307,7 +29319,7 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "family_purges": f.family_purge_summaries(cache.get("player_id")),
         "wandering": _wandering_trail(f),
         # secrets (player/family/close servants, knowers, leverage) -- the source of 《阴私录》
-        "secrets": _secrets_facts(f),
+        "secrets": _secrets_facts(f, _tl),
         # chronology of the player's status and station changes (source of the shared-prefix
         # 【主角处境】)
         "protagonist_stations": _protagonist_stations(f),
