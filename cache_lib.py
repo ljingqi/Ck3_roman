@@ -420,6 +420,43 @@ def dynasty_id_of(melt, house_id):
         return None
 
 
+def _house_field_default(melt, chars, house_id, field, memo=None):
+    """The game's default for `field` ('culture' / 'faith') in a house: the first explicit value
+    along the house leader chain, recent first (`historical` plus `head_of_house`).
+
+    The save omits the key on a member who carries the house default, so a first sighting
+    without it means "the house's value", not "unknown". None when unavailable. `memo` is an
+    optional per-snapshot cache keyed by (field, house_id)."""
+    if melt is None or house_id is None:
+        return None
+    key = (field, house_id)
+    if memo is not None and key in memo:
+        return memo[key]
+    houses = (melt.get("dynasties") or {}).get("dynasty_house") or {}
+    h = houses.get(str(house_id)) or {}
+    leaders = []
+    for x in (h.get("historical") or []):
+        try:
+            leaders.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    try:
+        head = int(h["head_of_house"]) if h.get("head_of_house") is not None else None
+    except (TypeError, ValueError):
+        head = None
+    if head is not None and head not in leaders:
+        leaders.append(head)
+    val = None
+    for lid in reversed(leaders):
+        v = (chars.get(str(lid)) or {}).get(field)
+        if v is not None:
+            val = v
+            break
+    if memo is not None:
+        memo[key] = val
+    return val
+
+
 # Per-melt memo slot for the dynasty/house name lookup chains: thread-local and
 # single-slot, so it is dropped as soon as the melt changes (see _dyn_caches).
 _TL = threading.local()
@@ -2930,6 +2967,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # House and dynasty names use separate memos, since their ids come from different pools
     _hname_memo = {}
     _dname_memo = {}
+    # House default culture per house, needed by first sightings whose save key is omitted
+    _hcul_memo = {}
 
     def _house_now(hid):
         if hid not in _hname_memo:
@@ -3373,6 +3412,17 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             rec["regnal_name"] = (str(c["regnal_name"]) if c.get("regnal_name")
                                   else None)
             rec["culture"] = c.get("culture")
+            # The save omits `culture` on a member who carries the house default, so a first
+            # sighting without the key means "the house's value", not "unknown". Leaving it
+            # None made the history start at the later conversion, and the mother tongue then
+            # fell back to the new culture (an Irish-born convert was described as always
+            # speaking Arabic).
+            if rec["culture"] is None and rec["dynasty_house"] is not None:
+                _hcul = _house_field_default(melt, chars, rec["dynasty_house"],
+                                             "culture", memo=_hcul_memo)
+                _cultures = (melt.get("culture_manager") or {}).get("cultures") or {}
+                if _hcul is not None and str(_hcul) in _cultures:
+                    rec["culture"] = _hcul
             rec["faith"] = c.get("faith")
             if rec["culture"] is not None:
                 rec["culture_history"] = [{"from": date_label,
