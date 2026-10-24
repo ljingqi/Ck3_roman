@@ -26,7 +26,9 @@ H_REIGN = re.compile(r"执政:\s*([\d.]+)")
 H_PIECE = re.compile(r"篇目:\s*([^|]+)")
 FIRST_RE = re.compile(r"^## 1、《(.+?)》\s*\n(.+?)(?=\n## |\Z)", re.M | re.S)
 PIECE_RE = re.compile(r"^## \d+、《(.+?)》", re.M)
-EPILOGUE_RE = re.compile(r"^(.+)_封档总评_(\d{4}_\d{2}_\d{2})\.md$")
+# The year may be shorter than four digits (CK3 chronologies start in the 800s), so the date
+# components are matched by width range rather than a fixed width.
+EPILOGUE_RE = re.compile(r"^(.+)_封档总评_(\d{1,4})_(\d{1,2})_(\d{1,2})\.md$")
 
 
 def _cn(date_str):
@@ -84,9 +86,15 @@ def epilogue_file(folder_dir):
     best = None
     for fn in os.listdir(folder_dir):
         m = EPILOGUE_RE.match(fn)
-        if m and (best is None or m.group(2) > best[1]):
-            best = (os.path.join(folder_dir, fn), m.group(2))
-    return best if best else (None, None)
+        if not m:
+            continue
+        key = tuple(int(x) for x in m.group(2, 3, 4))
+        if best is None or key > best[0]:
+            best = (key, os.path.join(folder_dir, fn))
+    if best is None:
+        return (None, None)
+    y, mo, d = best[0]
+    return (best[1], f"{y}_{mo:02d}_{d:02d}")
 
 
 # ---------------------------------------------------------------------------
@@ -504,9 +512,12 @@ def assemble(folder, ch, rep, part1, part2, pid):
 
 
 def output_name(folder, as_of):
-    """output/<家族>/<家族>_封档总评_<存档 Y_MM_DD>.md"""
-    slug = str(as_of or "").replace(".", "_")
-    m = re.match(r"^(\d{4})_(\d{1,2})_(\d{1,2})$", slug)
-    if m:
-        slug = f"{m.group(1)}_{int(m.group(2)):02d}_{int(m.group(3)):02d}"
+    """output/<家族>/<家族>_封档总评_<存档 Y_MM_DD>.md (the year keeps its game width, month and
+    day are zero-padded, matching the 终传 and melt file naming)."""
+    slug = ""
+    if as_of:
+        try:
+            slug = cl.date_filekey(as_of)
+        except (TypeError, ValueError):
+            slug = str(as_of).replace(".", "_")
     return f"{folder}_封档总评_{slug}.md"

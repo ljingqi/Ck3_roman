@@ -1176,7 +1176,9 @@ def _load_tree(base):
 
 # 封档总评 (campaign epilogue): a family-level article with its own toolbar button, so it stays out of
 # the per-character menu. Written by `pipeline.py epilogue`.
-_EPILOGUE_RE = re.compile(r"^(.+)_封档总评_(\d{4})_(\d{2})_(\d{2})\.md$")
+# The year may be shorter than four digits (CK3 chronologies start in the 800s), so the date
+# components are matched by width range rather than a fixed width.
+_EPILOGUE_RE = re.compile(r"^(.+)_封档总评_(\d{1,4})_(\d{1,2})_(\d{1,2})\.md$")
 
 
 def _load_epilogue(base):
@@ -1189,11 +1191,12 @@ def _load_epilogue(base):
         m = _EPILOGUE_RE.match(fn)
         if not m:
             continue
-        date = f"{m.group(2)}.{int(m.group(3))}.{int(m.group(4))}"
-        if best is None or date > best[0]:
-            best = (date, os.path.join(base, fn))
+        key = tuple(int(x) for x in m.group(2, 3, 4))
+        if best is None or key > best[0]:
+            best = (key, os.path.join(base, fn))
     if best is None:
         return None
+    date = ".".join(str(x) for x in best[0])
     try:
         with open(best[1], encoding="utf-8") as fp:
             text = fp.read()
@@ -1201,7 +1204,7 @@ def _load_epilogue(base):
         return None
     html_str, toc = md_to_html(text)
     return {"html": html_str, "toc": toc, "file": os.path.basename(best[1]),
-            "meta": f"封档总评 ｜ 存档 {llm.fmt_cn_date(best[0])} ｜ {os.path.basename(base)}"}
+            "meta": f"封档总评 ｜ 存档 {llm.fmt_cn_date(date)} ｜ {os.path.basename(base)}"}
 
 
 def rebuild_folder(output_dir, folder):
