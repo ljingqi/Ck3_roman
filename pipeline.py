@@ -1197,6 +1197,46 @@ def _merge_tail_title_flags(melt, tail):
     return n
 
 
+def _merge_tail_title_history(melt, tail, until):
+    """Merge title-history entries before `until` from the melt after the end date.
+
+    The final biography's as_of is the death date while the rendered melt is the one of
+    cache["last_date"]; a title taken in the last months (e.g. an empire conquered four days
+    before death) exists only in the following melt. Only titles present in both melts are
+    touched, only dates strictly before `until` are merged, and `title_name_data` is left
+    alone. Same-day succession entries are excluded on purpose: `holder_at(tid, as_of)` must
+    still name the protagonist, not the heir who took over on the death day.
+    """
+    if not isinstance(melt, dict) or not isinstance(tail, dict) or not until:
+        return 0
+    lt = _landed_titles_of(melt)
+    tlt = _landed_titles_of(tail)
+    uk = cl.date_key(until)
+    n = 0
+    for tid, t in tlt.items():
+        if not isinstance(t, dict):
+            continue
+        cur = lt.get(tid)
+        if not isinstance(cur, dict):
+            continue
+        ch, th = cur.get("history"), t.get("history")
+        if not isinstance(ch, dict) or not isinstance(th, dict):
+            continue
+        for d, ev in th.items():
+            try:
+                if cl.date_key(d) >= uk:
+                    continue
+            except Exception:
+                continue
+            if d in ch:
+                continue
+            ch[d] = ev
+            n += 1
+    if n:
+        llm.log(f"  [终了状态] 头衔历史 {n} 条按死后那一档 ({tail.get('date')}) 并入，截至 {until}")
+    return n
+
+
 def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
     """Generate a biography (final, living or the decade-th decade one) for a player and refresh the
     family's index.html; returns (output path, facts) or None. The background biography thread passes
@@ -1231,6 +1271,9 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
         _n_tail, _tail_melt = _backfill_tail_deaths(cfg, cache)
         # The melt after the end date carries flags that exist only there (shogun_flag, joko_flag).
         _merge_tail_title_flags(melt, _tail_melt)
+        # It also carries title changes between the last save and the end date (an empire taken days
+        # before death), which the rendered melt cannot know yet.
+        _merge_tail_title_history(melt, _tail_melt, _end_date)
     # A decade biography uses the nickname of its own era, so the era-end melt overrides it (an empty
     # nickname included) and a nickname earned later cannot leak into an early decade. The cache's
     # nickname_history is preferred, since reading one string from the melt meant loading the whole

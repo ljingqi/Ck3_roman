@@ -1249,7 +1249,10 @@ def _assassin_kill_lines(facts, cache, k, scope=None):
     nm = k["name"]
     off = k.get("office") or ""
     plain = k.get("label") or (f"{off}{nm}" if off else nm)
-    disp = _kin_tag(facts, scope, k.get("id"), plain)
+    # A victim with an identity word is merged with `plain` (the identity already states the tie),
+    # so claiming a kin label here would consume the section quota without ever reaching the text.
+    ident = (k.get("identity") or "").strip()
+    disp = plain if (ident and not grp) else _kin_tag(facts, scope, k.get("id"), plain)
     if grp:
         disps = [disp] + [g.get("label") or g.get("name") or "" for g in grp]
         disps = [d for d in disps if d]
@@ -1632,7 +1635,10 @@ def _article_facts(facts, cache, key, section=None):
                 blocks["传主档案"] = "\n".join(lines)
             else:
                 _prof = facts.get("characters", {}).get(str(cid)) or {}
-                ev = _prof.get("events_subjectless") or events
+                ev = list(_prof.get("events_subjectless") or events)
+                _death = (_prof.get("death") or "").strip()
+                if _death and _death not in ev:
+                    ev.append(_death)
                 _set_block(blocks, "传主行迹", "\n".join(ev))
                 # the only outlet for sexual matter, which the profile and public timeline blocks exclude
                 _gi = facts.get("_facts")
@@ -3946,7 +3952,10 @@ def build_articles(facts, cache, cfg):
         _final = bool(F._is_final_bio_spec(facts))
     except Exception:
         _final = False
-    if _final and (_ttn or _dc):
+    # Nomadic titles follow the following and its vassals, so a "dynasty chronicle" over them would
+    # rename past reigns; the final biography under nomad_government skips the whole article.
+    _nomad = ((facts.get("protagonist") or {}).get("government_key") or "") == "nomad_government"
+    if _final and (_ttn or _dc) and not _nomad:
         _fam = bool(_dc.get("family"))
         _ttl = (_dc.get("name") or _ttn) if _fam else _ttn
         _t_fam = "家族历代" if _fam else "王朝的世代更替与改朝换代"

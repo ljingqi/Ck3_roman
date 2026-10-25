@@ -4025,6 +4025,36 @@ class Facts:
         self._dyn_hist_cache[tid] = out
         return out
 
+    def _next_snapshot_after(self, dk, cap=None):
+        """First save date of this campaign strictly after `dk` and not after `cap`, else ''.
+
+        Used to bound mid-tenure rename lookups: a rename can only show up in the first save
+        after the tenure start, so later saves belong to another reign or another era.
+        """
+        best = None
+        _pt = self.cache.get("playthrough_id")
+        for src in list((self.campaign or {}).values()) + [self.cache]:
+            if not isinstance(src, dict):
+                continue
+            if _pt and src.get("playthrough_id") \
+                    and str(src.get("playthrough_id")) != str(_pt):
+                continue
+            ds = list(src.get("sources") or [])
+            if isinstance(src.get("last_date"), str):
+                ds.append(src["last_date"])
+            for s in ds:
+                if not isinstance(s, str) or not s:
+                    continue
+                try:
+                    sk = cl.date_key(s)
+                except Exception:
+                    continue
+                if sk <= dk or (cap is not None and sk > cap):
+                    continue
+                if best is None or sk < best[0]:
+                    best = (sk, s)
+        return best[1] if best else ""
+
     def _dyn_reign_name(self, tid, date):
         """Dated dynamic name, tenure-aware (step 1 of `_name_at_date`).
 
@@ -4065,18 +4095,24 @@ class Facts:
         if not gain or cl.date_key(pick_d) >= cl.date_key(gain):
             return pick
         gk = cl.date_key(gain)
-        for h in hist:                      # first non-empty rename after the tenure start
-            d = h.get("from")
-            if not d:
-                continue
-            try:
-                if cl.date_key(d) <= gk:
+        _cut = self.as_of or self.cache.get("last_date")
+        cap = cl.date_key(_cut) if _cut else None
+        snap = self._next_snapshot_after(gk, cap=cap)
+        if snap and self.holder_at(tid, snap) == hid:
+            sk = cl.date_key(snap)
+            for h in hist:                  # first non-empty rename within the first save window
+                d = h.get("from")
+                if not d:
                     continue
-            except Exception:
-                continue
-            nm = (h.get("name") or "").strip()
-            if nm:
-                return nm
+                try:
+                    hk = cl.date_key(d)
+                except Exception:
+                    continue
+                if hk <= gk or hk > sk:
+                    continue
+                nm = (h.get("name") or "").strip()
+                if nm:
+                    return nm
         return pick
 
     def _dyn_name_at(self, tid, date):
@@ -5689,7 +5725,7 @@ class Facts:
         for p in self._court_roster(subject, date):
             if p.get("employee") != want:
                 continue
-            zh = self.court_position_word(p.get("type")) or ""
+            zh = self.court_position_word(p.get("type"), date=date) or ""
             if not zh or zh == p.get("type") or zh in seen:
                 continue
             seen.add(zh)
@@ -5785,7 +5821,7 @@ class Facts:
         act = (self.melt.get("council_task_manager") or {}).get("active") or {}
         if not act:
             return []
-        gov, imperial = self._council_scope(cid=sub)
+        gov, imperial = self._council_scope(cid=sub, date=date)
         out, seen = [], set()
         for e in act.values():
             if not isinstance(e, dict):
@@ -6986,8 +7022,10 @@ class Facts:
         # (v109 §2.1).
         if self.regent_of(s, date=self.as_of) == c:
             offices.append(("office", self.regency_of(c, date=self.as_of), "regency"))
-        offices.extend(("office", off, "court") for off in self._court_positions_of(c, subject=s))
-        offices.extend(("office", seat, "council") for seat in self._council_seats_of(c, subject=s))
+        offices.extend(("office", off, "court")
+                       for off in self._court_positions_of(c, subject=s, date=date))
+        offices.extend(("office", seat, "council")
+                       for seat in self._council_seats_of(c, subject=s, date=date))
         if paths and not out and not offices:
             # Only where nothing else names the pair, so a direct word is never replaced and every
             # label the earlier versions produced stays byte-identical.
@@ -14021,6 +14059,14 @@ class Facts:
     # masterwork / everyone else common (`workshop/<CK3_appid>/3802979803/common/scripted_effects/
     # devour_effects.txt`) — so this threshold equals "bones of dukes and above".
     ARTIFACT_PART_RARITY = ("masterwork", "famed", "illustrious")
+    # A severed-head trophy names the beheaded character, and its grade follows that victim's rank,
+    # so a common-grade head (a knight, not a duke) is still a story-bearing trophy. Only these
+    # models/templates get the common grade; ordinary common bones (devour bones, milk teeth) keep
+    # the green-or-above threshold above.
+    ARTIFACT_SEVERED_HEAD_TEMPLATES = {"mpo_severed_head_template",
+                                       "tgp_severed_head_template"}
+    ARTIFACT_SEVERED_HEAD_VISUALS = {"pocket_severed_head", "head"}
+    ARTIFACT_SEVERED_HEAD_RARITY = ("common", "masterwork", "famed", "illustrious")
     ARTIFACT_FILLER_TYPES = {
         "animal_hide", "animal_hide_big", "animal_trinket",
         "animal_skull", "VIET_clutter",
@@ -14236,6 +14282,12 @@ class Facts:
             if tpl == self.ARTIFACT_SAINT_RELIC_TEMPLATE else self.ARTIFACT_PART_WORDS
         return any(w in blob for w in words)
 
+    def _is_severed_head(self, a):
+        """Whether the artifact is a named severed-head trophy (MPO / TGP)."""
+        return ((a.get("template") or "") in self.ARTIFACT_SEVERED_HEAD_TEMPLATES
+                or ((a.get("visuals") or {}).get("type") or "")
+                in self.ARTIFACT_SEVERED_HEAD_VISUALS)
+
     def _artifact_ever_own_player(self, hist):
         """Whether the transfer history *ever* put the artifact in the protagonist's own hands.
 
@@ -14370,9 +14422,10 @@ class Facts:
 
         Two kinds: "relic" — a top-grade treasure that was once held outside the dynasty; "part" — an
         artifact made from a body part and held by our line, at green or above
-        (`ARTIFACT_PART_RARITY`), and not required to have left the family (a self-made skull goblet
-        is a trophy). Ownership is judged as of `as_of` so a decade volume cannot look ahead, and it
-        is judged for the protagonist themself rather than the dynasty."""
+        (`ARTIFACT_PART_RARITY`; severed-head trophies also at common), and not required to have
+        left the family (a self-made skull goblet is a trophy). Ownership is judged as of `as_of`
+        so a decade volume cannot look ahead, and it is judged for the protagonist themself rather
+        than the dynasty."""
 
         my_dyn = self.cache.get("dynasty_id")
         my_pid = self.cache.get("player_id")
@@ -14418,11 +14471,15 @@ class Facts:
                     kind = "relic"
             # part artifacts pass the rarity gate first and only then the part test; the gate first
             # also avoids the description-cleaning cost for common bones
-            if not kind and a.get("rarity") in self.ARTIFACT_PART_RARITY:
-                desc = self._artifact_material(a.get("description"), as_of
-                                               or self.as_of)
-                if self._is_part_artifact(a, desc):
-                    kind = "part"
+            if not kind:
+                _part_ok = a.get("rarity") in self.ARTIFACT_PART_RARITY
+                if not _part_ok and self._is_severed_head(a):
+                    _part_ok = a.get("rarity") in self.ARTIFACT_SEVERED_HEAD_RARITY
+                if _part_ok:
+                    desc = self._artifact_material(a.get("description"), as_of
+                                                   or self.as_of)
+                    if self._is_part_artifact(a, desc):
+                        kind = "part"
             if kind:
                 out.append((aid, kind, a, hist))
         return out
@@ -18381,21 +18438,23 @@ class Facts:
         """Office plus name, e.g. 「交州刺史应偁」 — the office entry point of person_label."""
         return self.person_label(cid, date=self.as_of, style="office")
 
-    def _council_scope(self, cid=None):
+    def _council_scope(self, cid=None, date=None):
         """(Government, is-empire) for picking council seat words; empire = independent and top
         title ≥ e_. `cid` is the court's owner (the protagonist when omitted), so a seat can also be
-        worded for a third party's court."""
+        worded for a third party's court. `date` is the sentence's own day: a historical line must
+        not borrow the empire tier gained later (v136: 1110 spymaster stayed 间谍首脑)."""
         pid = self.cache.get("player_id") if cid is None else cid
-        # The paragraph is dated, so the subject's government at `as_of` decides the seat wording;
+        d = date or self.as_of
+        # The paragraph is dated, so the subject's government at `date` decides the seat wording;
         # the cache's landed block holds the LAST save's government and only serves as a fallback
         # (a realm that turned administrative later used to word an early paragraph with the
         # later government's seats).
-        gov = self._character_government(pid, self.as_of)
+        gov = self._character_government(pid, d)
         if not gov:
             rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
             gov = (rec.get("landed") or {}).get("government") or ""
-        return gov, (self._top_rank_now(pid) >= 5
-                     and bool(self._is_independent(pid, self.as_of)))
+        return gov, (self._top_rank_now(pid, d) >= 5
+                     and bool(self._is_independent(pid, d)))
 
     def _top_rank_now(self, cid, date=None):
         """Highest tier among the titles held now (or at `date`) (barony=1…empire=5).
@@ -18820,17 +18879,18 @@ class Facts:
             return ""
         return f"{place}{word}"
 
-    def court_position_scope(self, cid=None):
+    def court_position_scope(self, cid=None, date=None):
         """Evaluation scope for court position variants: the employer's government, independence, top
         tier and cultural heritage.
 
         Those are the only triggers the court_position_asset variants use (the variants carrying a
         localization_key rely on government_has_flag, is_independent_ruler, highest_held_title_tier and
-        has_cultural_pillar)."""
+        has_cultural_pillar). `date` keeps historical sentences from borrowing a later tier (an
+        empire gained days before death must not rename the 1093 spymaster)."""
         pid = self.cache.get("player_id") if cid is None else cid
         rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
         gov = (rec.get("landed") or {}).get("government") or ""
-        rank = self._top_rank_now(pid)
+        rank = self._top_rank_now(pid, date)
         cul = rec.get("culture")
         if cul is None:
             cul = (self._chars.get(str(pid)) or {}).get("culture")
@@ -18841,10 +18901,10 @@ class Facts:
             if isinstance(e, dict):
                 heritage = str(e.get("heritage") or "")
         return {"gov_flag": L.government_prefix(gov), "tier": rank,
-                "independent": bool(self._is_independent(pid, self.as_of)),
+                "independent": bool(self._is_independent(pid, date or self.as_of)),
                 "heritage": heritage, "culture": heritage or None}
 
-    def court_position_word(self, type_key, cid=None):
+    def court_position_word(self, type_key, cid=None, date=None):
         """Court position type key → the game's display name.
 
         The save stores the type key (`court_physician_court_position`) while the game picks a
@@ -18854,7 +18914,7 @@ class Facts:
         if not type_key:
             return ""
         word = L.pick_court_position(self.table, self._cp_variants, type_key,
-                                     self.court_position_scope(cid))
+                                     self.court_position_scope(cid, date))
         if word:
             return word
         v = L.loc(self.table, type_key) or ""
