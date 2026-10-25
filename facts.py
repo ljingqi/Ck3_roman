@@ -2605,6 +2605,11 @@ class Facts:
         # and is kept separately for the snapshot's own date (see `_is_independent`).
         self._vassal_ids = set()
         self._melt_tributary = set()
+        # Contract obligation flags of this snapshot. The cache records vassal history only
+        # for characters it already watches, so a title's writing-time holder may have no
+        # entry there (陈轸 held 河南 from 1083 but entered the cache later); this map is the
+        # fallback for exactly that gap, see `_obligation_flags_at`.
+        self._melt_vassal_flags = {}
         self._melt_contract_date = str((melt.get("meta_data") or {}).get("meta_date")
                                        or melt.get("date") or "")
         for _k, _c in ((melt.get("vassal_contracts") or {}).get("database") or {}).items():
@@ -2617,6 +2622,9 @@ class Facts:
                     self._melt_tributary.add(_vid)
                     continue
                 self._vassal_ids.add(_vid)
+                _flags = cl.vassal_obligation_flags(_c)
+                if _flags:
+                    self._melt_vassal_flags[_vid] = _flags
         self._indep_cache = {}
         # Per-executioner criterion {executioner: {date: frozenset(purged houses)}},
         # see `purged_houses`.
@@ -7895,6 +7903,20 @@ class Facts:
                         return list(h.get("flags") or [])
                     break
         if not ent or ent.get("liege") is None:
+            # The cache records vassal history only for watched characters (see
+            # cache_lib._record_vassal_and_cycle), so a title's writing-time holder may have
+            # no entry here while the snapshot's contract database still carries his flags
+            # (陈轸 held 河南 from 1083 yet had no cache record). Read that snapshot only
+            # inside the same ±400-day window as `_is_independent`, where it is the day's
+            # truth; an actual cache entry always wins.
+            if ent is None and date and self._melt_contract_date:
+                try:
+                    _cid = int(cid)
+                except (TypeError, ValueError):
+                    _cid = None
+                if _cid is not None and _cid in self._melt_vassal_flags \
+                        and abs(_date_ord(date) - _date_ord(self._melt_contract_date)) <= 400:
+                    return list(self._melt_vassal_flags[_cid])
             return []
         return list(ent.get("flags") or [])
 
@@ -9488,6 +9510,19 @@ class Facts:
                 return h
         return None
 
+    def _is_spouse_arm(self, key):
+        """Whether a flavorization key is a spouse word, not a holder word.
+
+        The celestial `..._governess` arms carry no rule that says "spouse"; only their raw
+        localization (`$spouse_celestial_governor_male$` = 乡绅) does. `_title_writing_word`
+        must not take such a word for the holder's office (v122 新罗乡绅, v135 河南乡绅)."""
+        if not key:
+            return False
+        if str(key).startswith("spouse_"):
+            return True
+        raw = str((self.table or {}).get(key) or "").strip()
+        return raw.startswith("$spouse_")
+
     def _title_writing_word(self, tid, subject_cid=None):
         """Tier word the title carries at this biography's writing time, or ''.
 
@@ -9530,7 +9565,8 @@ class Facts:
         fk = self._flavor_key("character", tier, subject, tid=tid, gov=gov, date=Tq,
                               context_cid=holder)
         word = ""
-        if fk and not (not gov and FZ.is_unconditional(fk)):
+        if fk and not self._is_spouse_arm(fk) \
+                and not (not gov and FZ.is_unconditional(fk)):
             v = self._loc_or_custom_word(fk, cid=subject, tid=tid, date=Tq)
             if v and not v.startswith(("$", "[")):
                 word = v
@@ -11409,6 +11445,65 @@ class Facts:
     # Court identity / consort affairs / hooks / domain-title folding
     # ------------------------------------------------------------------
 
+    # Game `KnightCulture` arms (game/common/customizable_localization/00_knight_culture.txt),
+    # in the file's evaluation order. Only the language-pillar arms are data; the government,
+    # faith and trait arms are evaluated in `knight_word`.
+    _KNIGHT_LANGUAGE_ARMS = {
+        "language_japonic": "bushi",
+        "language_greek": "hetaeria",
+        "language_mongolic": "baghatur",
+        "language_turkic": "baghatur",
+        "language_sauraseni": "shoorveer",
+        "language_marathi": "shoorveer",
+        "language_magadhan": "shoorveer",
+        "language_pahari": "shoorveer",
+        "language_vrachada": "shoorveer",
+        "language_rajasthani": "shoorveer",
+        "language_sinhalese": "shoorveer",
+        "language_kashmiri": "shoorveer",
+        "language_tamil": "shoorveer",
+        "language_telugu": "shoorveer",
+        "language_kannada": "shoorveer",
+        "language_north_dravidian": "shoorveer",
+    }
+    # `government_has_flag = government_is_tribal` is set on exactly these two government types
+    # (game/common/governments/00_government_types.txt:229, :306).
+    _KNIGHT_TRIBAL_GOVERNMENTS = frozenset({"tribal_government", "wanua_government"})
+
+    def knight_word(self, cid, date=None):
+        """Game word for a court knight, from `KnightCulture` (no-tooltip variant).
+
+        Arms follow the game's order: landless adventurer (not errant, not Christian, not
+        Frankish), language pillars, Zoroastrian/Iranian, Islamic/Arabic, tribal or
+        non-Christian/non-Frankish, then the default. Culture, faith and government are the
+        knight's own, matching the custom localization's character scope; ''-government falls
+        through to the last two arms as in the game."""
+        fallback = L.loc(self.table, "knight_default_no_tooltip") or "骑士"
+        if cid is None:
+            return fallback
+        gov = self._gov_for_word(cid, None, date) or ""
+        lang = self._culture_language_id(cid, date) or ""
+        _ftag, rel = self._faith_tags(cid, date)
+        christian = rel == "christianity_religion"
+        frankish = lang == "language_frankish"
+        arm = ""
+        if gov == "landless_adventurer_government" \
+                and not self._has_trait_at(cid, "knight_errant", date) \
+                and not christian and not frankish:
+            arm = "champion"
+        elif lang in self._KNIGHT_LANGUAGE_ARMS:
+            arm = self._KNIGHT_LANGUAGE_ARMS[lang]
+        elif rel == "zoroastrianism_religion" or lang == "language_iranian":
+            arm = "aswaran"
+        elif rel == "islam_religion" or lang == "language_arabic":
+            arm = "faris"
+        elif gov in self._KNIGHT_TRIBAL_GOVERNMENTS or (not christian and not frankish):
+            arm = "champion"
+        word = L.loc(self.table, f"knight_{arm}_no_tooltip") if arm else ""
+        if not word or word.startswith(("$", "[")):
+            word = fallback
+        return word
+
     def court_service_phrase(self, cid, actor_label=None):
         """Court identity phrase: "主角廷中骑士，自869年6月4日在廷".
 
@@ -11420,7 +11515,8 @@ class Facts:
             return ""
         who = actor_label or "主角"
         key = "court_knight" if ct.get("knight") else "court_member"
-        word = _FACT_WORDING[key].format(actor=who)
+        word = _FACT_WORDING[key].format(
+            actor=who, word=self.knight_word(cid) if ct.get("knight") else "")
         jd = ct.get("join_court_date")
         if jd:
             since = _FACT_WORDING["affair_joined_court"].format(date=self.date(jd))

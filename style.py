@@ -540,7 +540,7 @@ FACT_WORDING = {
     "affair_lover_died": "{date}去世",
     "affair_repeat": "其后{years}屡续私通",
     "affair_joined_court": "自{date}在主角廷中",
-    "court_knight": "{actor}廷中骑士",
+    "court_knight": "{actor}廷中{word}",
     "court_member": "{actor}廷臣",
     # Court offices granted to the protagonist (employee = the protagonist): used both
     # in the subject dossier and in the court board. The loss date is an inferred
