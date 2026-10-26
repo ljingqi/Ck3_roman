@@ -978,14 +978,16 @@ def output_paths(cfg, cache, continue_mode=False, decade=None):
 
 
 def _decade_cutoff(cache, decade):
-    """Data cutoff of the decade-th decade: start year + decade*10, January 1st, capped at last_date."""
+    """Data cutoff of the decade-th decade: start year + decade*10 - 1, December 31st, capped at
+    last_date. The first decade covers the full ten years from the campaign start (1122.1.1 –
+    1131.12.31); January 1st of the next year belongs to the next decade."""
     srcs = cache.get("sources") or []
     last = cache.get("last_date")
     if not srcs:
         return last
     try:
         sy = int(str(srcs[0]).split(".")[0])
-        end = f"{sy + decade * 10}.1.1"
+        end = f"{sy + decade * 10 - 1}.12.31"
     except Exception:
         return last
     if last and cl.date_key(last) < cl.date_key(end):
@@ -1003,10 +1005,14 @@ def _bio_as_of(cache, decade=None):
     return _decade_cutoff(cache, decade)
 
 
-def tail_melt_candidate(cfg, cache):
-    """Path of the earliest melt after the end date, or None. The end of reign falls between two yearly
-    autosaves, so that melt is the only one recording the end-of-reign state (death date, cause, place,
-    flags). _backfill_tail_deaths and tools/tests/snap.py share it, so snapshots and runs agree."""
+def tail_melt_candidate(cfg, cache, after=None):
+    """Path of the earliest melt strictly after `after` (default: cache["last_date"]), or None.
+
+    For a final biography the end of reign falls between two yearly autosaves, so the melt after
+    last_date is the only one recording the end-of-reign state (death date, cause, place, flags).
+    A decade read uses its cutoff as `after`: the cutoff melt itself is a yearly save, and state
+    acquired between that save and the cutoff exists only in the next melt. _backfill_tail_deaths
+    and tools/tests/snap.py share it, so snapshots and runs agree."""
     folder = cache.get("output_folder") or ""
     d = os.path.join(cfg.get("output_dir", ""), folder, "data")
     pat = re.compile(r"^melt_(\d+_\d{2}_\d{2})\.json(?:\.gz|\.xz)?$")
@@ -1017,7 +1023,7 @@ def tail_melt_candidate(cfg, cache):
             if m:
                 date = ".".join(str(int(x)) for x in m.group(1).split("_"))
                 cands.append((cl.date_key(date), os.path.join(d, fn)))
-    last = cl.date_key(cache.get("last_date") or "0.0.0")
+    last = cl.date_key(after or cache.get("last_date") or "0.0.0")
     cands = sorted((k, p) for k, p in cands if k > last)
     return cands[0][1] if cands else None
 
@@ -1197,6 +1203,111 @@ def _merge_tail_title_flags(melt, tail):
     return n
 
 
+def _import_title_state(melt, donor, until, inclusive, tag, src=""):
+    """Import title state up to `until` from a later melt into the melt being rendered.
+
+    A decade renders the yearly save at or before its cutoff (era_melt), and a final biography
+    renders cache["last_date"]; titles created or taken between that save and `until` exist only
+    in the next melt. Two boundaries, one implementation:
+
+    - decade: inclusive=True, dates <= cutoff (the cutoff day's own events belong to the decade);
+    - final: inclusive=False, dates < death/abdication (the same-day succession must keep the
+      protagonist as holder, see `_merge_tail_title_history`).
+
+    Existing titles only gain history entries they lack; their top-level `holder` is untouched
+    (`holder_at` reads history). A title absent from the rendered melt is added with its structure
+    fields and only the history entries inside the boundary; future-only `heir`, `variables` and
+    `treasury` stay behind. Its `dynamic_templates` entry is copied so `Facts` can rank it.
+
+    `donor` may be a full melt or a landed_titles section (load_melt_section). Returns
+    (new titles, history entries, templates).
+    """
+    if not isinstance(melt, dict) or not isinstance(donor, dict) or not until:
+        return 0, 0, 0
+    lt = _landed_titles_of(melt)
+    dlt = _landed_titles_of(donor)
+    if not isinstance(lt, dict) or not isinstance(dlt, dict):
+        return 0, 0, 0
+    uk = cl.date_key(until)
+
+    def _in_range(d):
+        try:
+            k = cl.date_key(d)
+        except Exception:
+            return False
+        return k <= uk if inclusive else k < uk
+
+    def _holder_of(ev):
+        for e in (ev if isinstance(ev, list) else [ev]):
+            if isinstance(e, dict) and isinstance(e.get("holder"), int):
+                return e["holder"]
+        return None
+
+    n_new = n_hist = 0
+    new_keys = set()
+    for tid, t in dlt.items():
+        if not isinstance(t, dict):
+            continue
+        cur = lt.get(tid)
+        th = t.get("history") if isinstance(t.get("history"), dict) else {}
+        if isinstance(cur, dict):
+            ch = cur.get("history")
+            if not isinstance(ch, dict):
+                continue
+            for d, ev in th.items():
+                if d in ch or not _in_range(d):
+                    continue
+                ch[d] = ev
+                n_hist += 1
+            continue
+        keep = {d: ev for d, ev in th.items() if _in_range(d)}
+        if not keep:
+            # No dated history inside the boundary: a title whose own creation date qualifies is
+            # still real (a static creation), but its future holder must not be copied.
+            if not (t.get("date") and _in_range(t.get("date"))):
+                continue
+        nt = {k: t.get(k) for k in (
+            "key", "date", "title_name_data", "capital", "de_jure_liege",
+            "de_jure_vassals", "landless", "color", "coat_of_arms_id",
+            "default_coa", "nomad_name_type", "clerical_region") if k in t}
+        if keep:
+            nt["history"] = keep
+            holder = None
+            for d in sorted(keep, key=cl.date_key):
+                h = _holder_of(keep[d])
+                if h is not None:
+                    holder = h
+            if holder is not None:
+                nt["holder"] = holder
+        lt[tid] = nt
+        new_keys.add(nt.get("key") or "")
+        n_new += 1
+    # The template tier is the only tier a landed x_script title carries (see
+    # Facts._script_title_rank); copy it for the titles just added.
+    n_tpl = 0
+    dtpl = donor.get("dynamic_templates")
+    if not isinstance(dtpl, list) and isinstance(donor.get("landed_titles"), dict):
+        dtpl = donor["landed_titles"].get("dynamic_templates")
+    seg = melt.get("landed_titles")
+    if new_keys and isinstance(dtpl, list) and isinstance(seg, dict) \
+            and isinstance(seg.get("landed_titles"), dict):
+        cur_tpl = seg.get("dynamic_templates")
+        if not isinstance(cur_tpl, list):
+            cur_tpl = []
+            seg["dynamic_templates"] = cur_tpl
+        have = {x.get("key") for x in cur_tpl if isinstance(x, dict)}
+        for x in dtpl:
+            if isinstance(x, dict) and x.get("key") in new_keys and x.get("key") not in have:
+                cur_tpl.append(dict(x))
+                have.add(x.get("key"))
+                n_tpl += 1
+    if n_new or n_hist:
+        llm.log(f"  [{tag}] 新增头衔 {n_new}、并入历史 {n_hist} 条、模板 {n_tpl} 条"
+                f"（{'截至' if inclusive else '早于'} {until}"
+                f"{f'，取自 {src}' if src else ''}）")
+    return n_new, n_hist, n_tpl
+
+
 def _merge_tail_title_history(melt, tail, until):
     """Merge title-history entries before `until` from the melt after the end date.
 
@@ -1255,6 +1366,18 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
             if p_era:
                 melt = _load_melt_of_cache(cache, p_era, d_era)
                 if melt is not None:
+                    # The era melt is the yearly save at or before the cutoff; state acquired
+                    # between that save and the cutoff exists only in the next melt.
+                    p_next = tail_melt_candidate(cfg, cache, after=as_of)
+                    if p_next:
+                        try:
+                            next_lt = cl.load_melt_section(p_next, "landed_titles")
+                            _import_title_state(melt, next_lt, as_of, True, "十年截点",
+                                                os.path.basename(p_next))
+                        except Exception as e:
+                            llm.log(f"  十年截点并入失败: {e}")
+                    else:
+                        llm.log(f"  [十年截点] {as_of} 之后无熔件，跳过补头衔")
                     render_cache = cl.era_view(cache, melt, d_era)
                     llm.log(f"  第{decade}个十年按时代渲染: {os.path.basename(p_era)} ({d_era})"
                             f"; 直辖、政体与教名按该日")

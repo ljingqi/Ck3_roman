@@ -145,6 +145,20 @@ def main():
     print(f"载入熔件 {melt_name} …" + (f" (时代渲染 {era_used})" if era_used else ""),
           flush=True)
     melt = cl.load_melt(melt_path)
+    if era_used and decade:
+        # 与 pipeline.generate_bio 的十年路径同口径：截点前、下一份熔件里才有的新建头衔与
+        # 头衔史并进来（含截点当日）。
+        try:
+            import pipeline as _pl
+            _pn = _pl.tail_melt_candidate(llm.load_config(), cache, after=as_of)
+            if _pn:
+                _nlt = cl.load_melt_section(_pn, "landed_titles")
+                _pl._import_title_state(melt, _nlt, as_of, True, "十年截点",
+                                        os.path.basename(_pn))
+            else:
+                print(f"  [十年截点] {as_of} 之后无熔件，跳过补头衔", flush=True)
+        except Exception as e:
+            print(f"  十年截点并入失败: {e}", flush=True)
     if era_used:
         cache = cl.era_view(cache, melt, era_used)
     # v82: 与 pipeline.generate_bio 同口径 —— 终了日之后那一档的头衔旗标并进来

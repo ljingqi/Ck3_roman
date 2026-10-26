@@ -14495,15 +14495,16 @@ class Facts:
         return out
 
     def _decade_cutoff(self, decade):
-        """Data cutoff date of decade number `decade` — the start of year (start + decade×10), capped at
-        the last save; same formula as `pipeline._decade_cutoff`, reused for cross-volume dedup."""
+        """Data cutoff date of decade number `decade` — December 31st of year (start + decade×10 − 1),
+        capped at the last save; same formula as `pipeline._decade_cutoff`, reused for cross-volume
+        dedup. January 1st of the next year belongs to the next decade."""
         srcs = self.cache.get("sources") or []
         last = self.cache.get("last_date")
         if not srcs:
             return last
         try:
             sy = int(str(srcs[0]).split(".")[0])
-            end = f"{sy + decade * 10}.1.1"
+            end = f"{sy + decade * 10 - 1}.12.31"
         except Exception:
             return last
         if last and cl.date_key(last) < cl.date_key(end):
