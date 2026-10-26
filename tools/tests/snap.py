@@ -173,16 +173,16 @@ def main():
                 # 只取头衔段 (cl.load_melt_landed_titles ≈ 段级读取), 不必整载那一档
                 _tp_titles = cl.load_melt_landed_titles(_tp)
                 _merged = _pl._merge_tail_title_flags(melt, _tp_titles)
-                _n_hist = 0
+                _n_imp = (0, 0, 0)
                 if not decade:
-                    # v136: 终传与实跑同口径 —— 死期之前的头衔历史也并进来
+                    # v136/v137: 终传与实跑同口径 —— 死期之前的头衔历史与本档没有的新建头衔
+                    # 都并进来（严格早于死期，当日承继仍归后任）
                     _until = _pl._bio_as_of(cache, None)
-                    _mh = getattr(_pl, "_merge_tail_title_history", None)
-                    if _mh:
-                        _n_hist = _mh(melt, _tp_titles, _until)
-                if _merged or _n_hist:
+                    _n_imp = _pl._import_title_state(melt, _tp_titles, _until, False,
+                                                     "终了状态", os.path.basename(_tp))
+                if _merged or any(_n_imp):
                     tail_used = os.path.basename(_tp)
-                    print(f"  终了状态: 头衔旗标/历史按 {tail_used} 并入", flush=True)
+                    print(f"  终了状态: 头衔旗标/历史/新建头衔按 {tail_used} 并入", flush=True)
     except Exception as e:
         print(f"  终了状态并入失败: {e}", flush=True)
     # v44 (问题2): 同战役全部传主缓存 (传主链事实源) —— 与 pipeline.generate_bio
