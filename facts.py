@@ -3335,7 +3335,7 @@ class Facts:
         no history, then — for the Japanese top titles only — the title's own government
         record. '' makes the caller fall back to the generic tier word.
         """
-        gov = self._character_government(cid, date) if cid is not None else ""
+        gov = self._effective_government(cid, date) if cid is not None else ""
         if gov:
             return gov
         hist = self._gov_history(cid)
@@ -3430,6 +3430,45 @@ class Facts:
                 return ""
         c = self._chars.get(str(cid)) or {}
         return (c.get("landed_data") or {}).get("government") or ""
+
+    def _effective_government(self, cid, date=None):
+        """Government shown on a date, correcting the save's yearly sampling lag once.
+
+        A ruler who takes land late in the year still carries `landless_adventurer_government`
+        in that year's sample. When the day's primary title is already landed (rank >= 2), the
+        next sampled non-landless government within 400 days is the state the game shows; a
+        landed sample never turns landless, and without a later sample the sample stands.
+        """
+        key = (str(cid), str(date or ""))
+        memo = getattr(self, "_eff_gov_memo", None)
+        if memo is None:
+            memo = self._eff_gov_memo = {}
+        if key in memo:
+            return memo[key]
+        gov = self._character_government(cid, date)
+        res = gov
+        if gov == "landless_adventurer_government" and date and cid is not None:
+            try:
+                _tier, _tid = self._primary_title_at(cid, as_of=date)
+            except Exception:
+                _tier = None
+            _rank = next((r for r, t in self._RANK_TIER.items() if t == _tier), 0)
+            if _rank >= 2:
+                for h in self._gov_history(cid):
+                    hd = h.get("date")
+                    if not hd:
+                        continue
+                    gap = _date_ord(hd) - _date_ord(date)
+                    if gap <= 0:
+                        continue
+                    if gap > 400:
+                        break
+                    nxt = h.get("government") or ""
+                    if nxt and nxt != "landless_adventurer_government":
+                        res = nxt
+                        break
+        memo[key] = res
+        return res
 
     def _prev_holder_government(self, cid, date, _depth=0):
         """Government of the previous holder of the subject's primary title at date.
@@ -24405,7 +24444,7 @@ def _protagonist(f):
     # `ld` is last-snapshot cache data, so a government read from it is wrong for the early
     # years of a decade biography: read the government as of as_of (per-snapshot history) and
     # fall back to the last snapshot only when nothing is found.
-    gov_asof = f._character_government(pid, f.as_of) or gov or ""
+    gov_asof = f._effective_government(pid, f.as_of) or gov or ""
     # raw government key, used by the prompt side to vary the wording
     # (天朝制 / 行政制 = office rotation)
     p["government_key"] = gov_asof
