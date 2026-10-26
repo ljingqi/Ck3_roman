@@ -953,10 +953,14 @@ def _reign_end(cache):
     return {}
 
 
-def output_paths(cfg, cache, continue_mode=False, decade=None):
+def output_paths(cfg, cache, continue_mode=False, decade=None, cutoff=None):
     """(folder, output file name) of a biography: the session folder plus the file name. A non-empty
     decade names the decade biography on its own, so it cannot clash with a living biography of the
-    same date and be skipped; end of reign is reign_end (abdication) first, then player_death."""
+    same date and be skipped; end of reign is reign_end (abdication) first, then player_death.
+
+    `cutoff` is the decade's true data cutoff. A decade renders through `cl.era_view`, whose
+    `last_date` is the era melt's own date (1131.1.1), so reading the cutoff from that view would
+    cap it down and name the file after the melt instead of the decade end (1131.12.31)."""
     folder = resolve_output_folder(cfg, cache, continue_mode)
     pname = _bio_pname(cache)
     re_end = _reign_end(cache)
@@ -970,7 +974,8 @@ def output_paths(cfg, cache, continue_mode=False, decade=None):
         dkey = cl.date_filekey(cache.get("last_date") or "")
     if decade:
         # A decade biography is dated by its data cutoff (the decade end), not by last_date.
-        dkey = cl.date_filekey(_decade_cutoff(cache, decade) or cache.get("last_date") or "")
+        dkey = cl.date_filekey(cutoff or _decade_cutoff(cache, decade)
+                               or cache.get("last_date") or "")
         fname = f"{pname}_传记_第{decade}个十年_{dkey}.md"
     else:
         fname = f"{pname}_{kind}_{dkey}.md"
@@ -1385,7 +1390,8 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
             if nick is not None:
                 nickname_override = {pid: str(nick).strip()}
                 llm.log(f"  按时代取绰号 ({as_of}, {src}): {nick!r}")
-    house, fname = output_paths(cfg, render_cache, continue_mode=continue_mode, decade=decade)
+    house, fname = output_paths(cfg, render_cache, continue_mode=continue_mode, decade=decade,
+                                cutoff=as_of)
     out_dir = os.path.join(cfg.get("output_dir", ""), house)
     out_path = os.path.join(out_dir, fname)
     if not force:
