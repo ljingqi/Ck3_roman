@@ -753,6 +753,18 @@ _PATH_MAX_COURT = 12
 _REL_WORD_RANK = {RELATION_WORDS[k]: i for i, k in enumerate(RELATION_PRIORITY)}
 
 
+def _bare_anchor_word(word):
+    """The relation word at the start of a path anchor word, with the anchor name it appends
+    removed (「朋友某某的姐夫」 → 「朋友」), so ranking keeps reading the relation word.
+
+    The longest matching word wins, since a personal name may itself begin with a shorter word
+    (「爱人某某某」 vs 「爱人」)."""
+    for w in sorted(_REL_WORD_RANK, key=len, reverse=True):
+        if word.startswith(w):
+            return w
+    return word
+
+
 # Non-blood keys (affinal, step, spouse); negating this set yields the blood tier, which wins for a
 # person related both by blood and by marriage.
 _KIN_NONBLOOD_KEYS = frozenset({
@@ -6914,7 +6926,9 @@ class Facts:
             out.append((kind, cid, word))
 
         for x in self._relation_partners(s):
-            add("relation", x, self.relation_word_for(x, s))
+            w = self.relation_word_for(x, s)
+            nm = self.name_or(x, fallback="") if w else ""
+            add("relation", x, f"{w}{nm}" if nm else w)
         liege = self._liege_cid(s)
         if liege is not None:
             add("liege", liege, PATH_WORDS["liege"])
@@ -6922,7 +6936,9 @@ class Facts:
             if top is not None and top != liege:
                 add("top_liege", top, PATH_WORDS["top_liege"])
         for emp, typ, _hire in self._court_rows_at(s):
-            add("office", emp, self._office_anchor_word(typ, s))
+            w = self._office_anchor_word(typ, s)
+            nm = self.name_or(emp, fallback="") if w else ""
+            add("office", emp, f"{w}{nm}" if nm else w)
         for x in (sorted(self._parent_ids(s)) + sorted(self._child_ids(s))
                   + sorted(self._sibling_ids(s)) + sorted(self.spouses_now(s))):
             add("kin", x, self.kin_word_for(x, s))
@@ -6933,7 +6949,8 @@ class Facts:
             if w:
                 add("former", x, w[0])
         out.sort(key=lambda t: (_PATH_KIND_RANK.get(t[0], 9),
-                                _REL_WORD_RANK.get(t[2], 99) if t[0] == "relation" else 0,
+                                _REL_WORD_RANK.get(_bare_anchor_word(t[2]), 99)
+                                if t[0] == "relation" else 0,
                                 t[1]))
         memo[s] = out
         return out
@@ -6984,7 +7001,7 @@ class Facts:
             if a == c or a == s:
                 continue
             kr = _PATH_KIND_RANK.get(kind, 9)
-            rr = _REL_WORD_RANK.get(w1, 99) if kind == "relation" else 0
+            rr = _REL_WORD_RANK.get(_bare_anchor_word(w1), 99) if kind == "relation" else 0
             if kind != "kin":
                 k2 = self.kin_word_for(c, a)
                 if k2:
