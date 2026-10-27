@@ -5363,7 +5363,9 @@ class Facts:
             reason = self.gain_reason(cid, top, d)
             if gain and reason == "created":
                 tname = self._title_name_at(top, d, cid) or parts[0]
-                line = f"{self.date(d)}{gain}{tname}"
+                _disp = self._house_realm_display(top, d, cid)
+                line = f"{self.date(d)}{gain}{tname}，是为{_disp}" if _disp \
+                    else f"{self.date(d)}{gain}{tname}"
             elif gain:
                 line = f"{self.date(d)}{gain}{'／'.join(parts)}"
             else:
@@ -17663,6 +17665,91 @@ class Facts:
             return f"{house}哈里发国"
         return f"{house}帝国"
 
+    def _house_at(self, cid, date=None):
+        """House id of `cid` on a date, from the cache's `house_history` (latest entry at or before
+        the date), else his current house."""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        hid = None
+        if date:
+            try:
+                dk = cl.date_key(date)
+            except Exception:                                # noqa: BLE001
+                dk = None
+            if dk is not None:
+                for e in rec.get("house_history") or []:
+                    f = e.get("from")
+                    if not f:
+                        continue
+                    try:
+                        if cl.date_key(f) <= dk:
+                            hid = e.get("house_id")
+                        else:
+                            break
+                    except Exception:                        # noqa: BLE001
+                        break
+        if hid is None:
+            hid = rec.get("dynasty_house")
+        if hid is None:
+            hid = (self._chars.get(str(cid)) or {}).get("dynasty_house")
+        return hid
+
+    def _house_realm_display(self, tid, date, cid=None):
+        """Realm name the engine displays for a house-named title on a date; '' when the title is
+        not house-named.
+
+        The game names a realm after its holder's house only when all of the engine's gates hold:
+        duchy rank or above, the holder's chief title that day, a government carrying
+        `dynasty_named_realms = yes`, a title not exempted by `can_be_named_after_dynasty = no`,
+        and a dynasty flagged `good_for_realm_name` (whose flag the save records, but the dated
+        `title_dyn_names` cache is polluted by stale nomadic `specific_title_name`s and is not
+        read). The house name prefers the save's `localized_name` (the label the engine shows,
+        e.g. 雅有维奇) and otherwise uses the engine's gameplay chain through the parent house to
+        the dynasty (`cl.house_realm_name_zh`). The tier word is the one `_title_name_at` appended,
+        so 「梁赞大公国」 contributes 「大公国」."""
+        if tid is None:
+            return ""
+        try:
+            tid = int(tid)
+        except (TypeError, ValueError):
+            return ""
+        if not date or self._eff_rank(tid) < 3:
+            return ""
+        if cid is None:
+            cid = self.holder_at(tid, date)
+        if not isinstance(cid, int):
+            return ""
+        t = self._lt.get(str(tid)) or {}
+        key = t.get("key") or ""
+        if not key.startswith(("d_", "k_", "e_", "h_")):
+            return ""
+        _tier, ptid = self._primary_title_at(cid, as_of=date, held_through=date)
+        if ptid is None or int(ptid) != tid:
+            return ""
+        if not L.dynasty_named_government(self._title_government(tid, date)):
+            return ""
+        if L.title_name_locked(key):
+            return ""
+        hid = self._house_at(cid, date)
+        if hid is None:
+            return ""
+        did = cl.dynasty_id_of(self.melt, hid)
+        if not cl.dynasty_good_for_realm_name(self.melt, did):
+            return ""
+        _hp = ((self.melt.get("dynasties") or {}).get("dynasty_house") or {}) \
+            .get(str(hid)) or {}
+        has_loc = bool(str(_hp.get("localized_name") or "").strip())
+        house = cl.house_name_zh(self.melt, hid) if has_loc \
+            else cl.house_realm_name_zh(self.melt, hid)
+        if not house:
+            return ""
+        full = self._title_name_at(tid, date, cid)
+        base = self.title_base_name(tid)
+        word = full[len(base):] if base and full.startswith(base) else ""
+        if not word:
+            word = {3: "公国", 4: "王国", 5: "帝国"}.get(self._eff_rank(tid), "")
+        disp = f"{house}{word}" if word else ""
+        return disp if disp and disp != full else ""
+
     # ---- culture / faith / traits / government ----
     def culture_template(self, cid):
         """The character's culture template name (norse/han/balhae…): cached culture id → melt
@@ -20782,7 +20869,12 @@ def _mem_sentence_body(f, owner_id, mem):
                         office = f.title_office_text(
                             owner_id, title_tid, mem.get("creation_date")) or title
                         return f"{owner}受{gl}{f.grant_verb(gcid, mem.get('creation_date'))}为{office}。"
-                return f"{owner}{verb}{title}。"
+                _disp = ""
+                if reason == "created" and title_tid is not None:
+                    _disp = f._house_realm_display(
+                        title_tid, _td or mem.get("creation_date"), owner_id)
+                return f"{owner}{verb}{title}，是为{_disp}。" if _disp \
+                    else f"{owner}{verb}{title}。"
         else:
             verb = TITLE_LOSS_VERBS.get(reason)
             if verb:

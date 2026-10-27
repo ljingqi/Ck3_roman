@@ -420,6 +420,19 @@ def dynasty_id_of(melt, house_id):
         return None
 
 
+def dynasty_good_for_realm_name(melt, dynasty_id):
+    """Whether the game may name a realm after this dynasty: the save's own
+    `good_for_realm_name` flag on the dynasty record. False when absent."""
+    if dynasty_id is None:
+        return False
+    try:
+        dyn = (melt.get("dynasties") or {}).get("dynasties") or {}
+        e = dyn.get(str(dynasty_id)) or {}
+        return bool(e.get("good_for_realm_name"))
+    except Exception:
+        return False
+
+
 def _house_field_default(melt, chars, house_id, field, memo=None):
     """The game's default for `field` ('culture' / 'faith') in a house: the first explicit value
     along the house leader chain, recent first (`historical` plus `head_of_house`).
