@@ -16402,26 +16402,65 @@ class Facts:
             prev = cur
         return rows
 
-    def church_chronicle_lines(self, cid=None, date=None):
-        """Fact lines for the third 《礼仪志》 block: the church's own record of this reign.
+    def _church_main_power_faith(self):
+        """Faith id the church situation names as its main power (`tcc_main_power_faith`), the
+        faith whose head holds the papacy; None when the save carries no such situation."""
+        db = (self.melt.get("situation_manager") or {}).get("database") or {}
+        for s in db.values():
+            if not isinstance(s, dict) or str(s.get("type") or "") != self._CHURCH_SITUATION:
+                continue
+            for v in (s.get("variables") or {}).get("data") or []:
+                if isinstance(v, dict) and v.get("flag") == "tcc_main_power_faith":
+                    fid = (v.get("data") or {}).get("identity")
+                    return fid if isinstance(fid, int) else None
+        return None
 
-        Only a Christian subject gets lines — the log is that church's, and a ruler outside it has
-        no part in its councils and bulls. Rows: the phase the church stands in, then the church's
-        councils, bulls, schism, antipopes, heresies and new rites up to `date` — each carrying the
-        rulings that belong to it (every rite the subject has been in, plus his faith's mainline
-        rite) — then the rulings no event claims and the loss of the faith's ecumenical standing.
-        A council line also names the cleric a secular ruler held it through and the place the
-        snapshot caught it in, when the save has them."""
+    def _church_chronicle_mode(self, cid, rtag, date=None):
+        """Which record the subject's reign belongs to: 'papal' or 'rite'.
+
+        The church situation logs the councils, bulls, schism and antipopes of its main-power
+        faith — the one whose head holds the papacy. A subject of that faith reads that log;
+        every other ruler's rite head can still rule on rites through the same mechanics
+        (`head_of_faith_change_core_tenet_effect` / `change_rite_doctrine` are not limited to one
+        religion), so his own rite's rulings are written instead. With no main-power faith in the
+        save the old reading (any Christian religion takes the papal record) stays as the
+        fallback."""
+        mfid = self._church_main_power_faith()
+        if mfid is not None:
+            fid = self._faith_id(cid, date)
+            return "papal" if fid is not None and int(fid) == int(mfid) else "rite"
+        if rtag in self._CHRISTIAN_RELIGIONS:
+            return "papal"
+        return "rite" if rtag else ""
+
+    def church_chronicle_lines(self, cid=None, date=None):
+        """Fact lines for the third 《礼仪志》 block: the religious record of this reign.
+
+        Two modes (see `_church_chronicle_mode`). A subject of the church situation's main-power
+        faith reads that church's own log: the phase it stands in, its councils, bulls, schism,
+        antipopes, heresies and new rites up to `date`, each carrying the rulings of every rite
+        the subject has been in plus his faith's mainline rite, then the rulings no event claims
+        and the loss of the faith's ecumenical standing; a council line also names the cleric a
+        secular ruler held it through and the place the snapshot caught it in, when the save has
+        them. Every other subject reads his own rite's rulings from the same tracking
+        (`rite_tenets_history` / `rite_doctrine_history`), each line led by the rite head of that
+        year, plus the loss of his faith's ecumenical standing.
+        `_church_chronicle_kind` records the mode actually used ('' when no lines)."""
         pid = int(cid) if isinstance(cid, int) else self.cache.get("player_id")
         if pid is None:
             return []
         _ftag, rtag = self._faith_tags(pid, date)
-        if rtag not in self._CHRISTIAN_RELIGIONS:
-            return []
+        kind = self._church_chronicle_mode(pid, rtag, date)
         rows = []
-        rows += self.church_phase_line(date)
-        rows += self._merge_rulings(self.church_events(date), self._rite_ruling_rows(pid, date))
-        rows += self._faith_doctrine_lines(pid, date)
+        if kind == "papal":
+            rows += self.church_phase_line(date)
+            rows += self._merge_rulings(self.church_events(date),
+                                        self._rite_ruling_rows(pid, date))
+        elif kind == "rite":
+            rows += self._merge_rulings([], self._rite_ruling_rows(pid, date))
+        if kind:
+            rows += self._faith_doctrine_lines(pid, date)
+        self._church_chronicle_kind = kind if rows else ""
         return rows
     # ---- execution method (approximates the send_option list of execute_prisoner_interaction) ----
 
@@ -29812,16 +29851,20 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # snapshot; the key is deliberately distinct from the removed `rite_tenets` allow/forbid
         # list). v101 moved the subject's core-tenet history into the church block, where each
         # change is attached to the council, bull or declared core tenet that caused it, so this
-        # key is empty whenever that block carries the subject (the church log exists); a subject
-        # outside the Christian church keeps it as his only channel.
+        # key is empty whenever that block carries the subject; a subject the block leaves empty
+        # keeps it as his only channel.
         "rite_tenet_changes": ([] if _church else
                                f.rite_tenet_changes(cache.get("player_id"), as_of)),
         # the church's own record of this reign -- material for 《礼仪志》's third section: the
         # phase the church stands in, its councils, bulls, schism, antipopes, heresies and new
         # rites, each carrying the rulings of the subject's own rite, and the loss of the faith's
-        # ecumenical standing. Empty for a non-Christian subject (an empty list means the section
-        # is omitted entirely).
+        # ecumenical standing. A subject of another faith reads his own rite head's rulings in the
+        # same key (see `church_chronicle_lines`). An empty list means the section is omitted.
         "church_chronicle": _church,
+        # which record the block above carries: "papal" (the church situation's main-power faith)
+        # or "rite" (the subject's own rite head), '' when there are no lines. The wording of the
+        # block's heading and requirement follows it.
+        "church_chronicle_kind": getattr(f, "_church_chronicle_kind", ""),
         # the Facts instance (biography needs its methods, e.g. to render relation causes)
         "_facts": f,
     }

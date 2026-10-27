@@ -1878,8 +1878,9 @@ def _article_facts(facts, cache, key, section=None):
         _set_block(blocks, "传家重宝", "\n\n".join(arts))
     elif key == "liyi":
         # rite chronicle: lead = rite profile, chronicles = tenets / holy orders / rite history,
-        # tail = the church's councils and papal bulls; a block without material is skipped whole,
-        # and a dry chronicle leaves the lead alone.
+        # tail = the church's councils and papal bulls, or the subject's own rite head's rulings
+        # when he is outside that church (facts.church_chronicle_kind); a block without material
+        # is skipped whole, and a dry chronicle leaves the lead alone.
         # the clan's own canonized members, with the year the campaign dates them (v114): the rite
         # article is where a canonization belongs, so every section may name them
         _set_block(blocks, "封圣", "\n".join(facts.get("saints") or []))
@@ -1892,7 +1893,10 @@ def _article_facts(facts, cache, key, section=None):
             _set_block(blocks, "礼仪档案", "\n".join(prof) if prof else "")
         elif _sec_key(section) == "tail":
             cc = list(facts.get("church_chronicle") or [])
-            _set_block(blocks, "大公会议与教宗诏书", "\n".join(cc) if cc else "")
+            _cc_label = "礼仪领袖的定夺" \
+                if facts.get("church_chronicle_kind") == "rite" \
+                else "大公会议与教宗诏书"
+            _set_block(blocks, _cc_label, "\n".join(cc) if cc else "")
         else:
             # `rite_tenet_changes` lists changes among the rite's own core tenets; v101 moved them
             # into the church tail block, so the key is empty for a subject that block covers
@@ -3635,8 +3639,9 @@ def _liyi_has_mid(facts):
 
 
 def _liyi_has_tail(facts):
-    """True when the third rites section (councils and papal bulls) has material:
-    facts.church_chronicle, empty for a subject outside the Christian church."""
+    """True when the third rites section has material: facts.church_chronicle, which both
+    modes fill (the church's councils for its own faith, the subject's rite head's rulings
+    otherwise)."""
     return bool(facts.get("church_chronicle"))
 
 
@@ -3684,9 +3689,10 @@ def _liyi_req(facts):
         mid_bits.append("他建立或庇护的修会，逐所写出立会年份、会规、"
                         "所领教堂领地与现任首领")
     src = style.SECTION_REQ.get("liyi", {})
-    # ---- tail: the church's councils and papal bulls ----
+    # ---- tail: the church's councils and papal bulls, or the rite head's rulings ----
     # Only the lines actually sent are requested, matched against facts.church_chronicle.
     cc = [str(x) for x in (facts.get("church_chronicle") or [])]
+    _cc_rite = facts.get("church_chronicle_kind") == "rite"
 
     def _cc_hit(*needles):
         return any(n in x for x in cc for n in needles)
@@ -3707,8 +3713,11 @@ def _liyi_req(facts):
         if _cc_hit("异端爆发", "异端礼仪", "异端复兴", "新礼仪", "分歧礼仪"):
             tail_bits.append("异端之兴与新礼之立")
         if _cc_hit("将原先", "将「", "列为", "改为"):
-            tail_bits.append("会议与诏书定夺的教义条目、旧新之别与定夺的年月")
-            tail_focus.append("会议与诏书所定夺的教义")
+            tail_bits.append("礼仪领袖定夺的教义条目、旧新之别与定夺的年月"
+                             if _cc_rite else
+                             "会议与诏书定夺的教义条目、旧新之别与定夺的年月")
+            tail_focus.append("定夺的教义条目、旧新之别与年月" if _cc_rite
+                              else "会议与诏书所定夺的教义")
         if _cc_hit("改本礼信条", "主流礼仪信条", "本礼信条更改"):
             tail_bits.append("主流礼仪信条与禁忌的更替")
             tail_focus.append("主流礼仪信条之更替")
@@ -3720,19 +3729,25 @@ def _liyi_req(facts):
         if _cc_hit("大公教会地位"):
             tail_bits.append("失去大公教会地位之事")
         if not tail_focus:
-            tail_focus.append("教会局面")
+            tail_focus.append("定夺之事与年月" if _cc_rite else "教会局面")
     return {
         "lead": lead or (src.get("lead") or ""),
         "mid": (("写礼仪与教义的沿革、传主在教门中的作为：" + "；".join(mid_bits) + "。")
                 if mid_bits else (src.get("mid") or "")),
-        "tail": (("写本朝教会的大公会议与教宗诏书：" + "；".join(tail_bits) + "。"
+        "tail": ((("写本朝礼仪领袖对礼仪的定夺：" if _cc_rite
+                   else "写本朝教会的大公会议与教宗诏书：")
+                  + "；".join(tail_bits) + "。"
                   "年月与人名一律照本篇给出的事实写出。")
-                 if tail_bits else (src.get("tail") or "")),
+                 if tail_bits else
+                 ((src.get("tail_rite") or "") if _cc_rite else (src.get("tail") or ""))),
         "focus": ("写礼仪的沿革与教门中的作为：" + "、".join(focus_bits)
-                  + ("；并写大公会议与教宗诏书：" + "、".join(tail_focus)
+                  + (("；并写礼仪领袖的定夺：" if _cc_rite
+                      else "；并写大公会议与教宗诏书：")
+                     + "、".join(tail_focus)
                      if tail_bits else "")
                   if focus_bits else
-                  ("写传主所受之礼、本朝教会的大公会议与教宗诏书"
+                  (("写传主所受之礼、本朝礼仪领袖对礼仪的定夺" if _cc_rite
+                    else "写传主所受之礼、本朝教会的大公会议与教宗诏书")
                    if tail_bits else "写传主所受之礼与其教门中的作为")),
     }
 
@@ -3896,8 +3911,11 @@ def build_articles(facts, cache, cfg):
                              "req": _section_req(_dyn.get("mid") or _src.get("mid")
                                                  or "按传记笔法写作。", facts)})
             if _liyi_has_tail(facts):
+                _rite_tail = facts.get("church_chronicle_kind") == "rite"
+                _tail_title = (titles.get("tail_rite") or "纪事·礼仪领袖的定夺") \
+                    if _rite_tail else (titles.get("tail") or "纪事·大公会议与教宗诏书")
                 secs.append({"key": "tail",
-                             "title": titles.get("tail") or "纪事·大公会议与教宗诏书",
+                             "title": _tail_title,
                              "req": _section_req(_dyn.get("tail") or _src.get("tail")
                                                  or "按传记笔法写作。", facts)})
             return secs
@@ -4026,7 +4044,9 @@ def build_articles(facts, cache, cfg):
         articles.insert(_anchor, {"key": "liyi", "title": "礼仪志·礼仪与教义",
                                   "subject": None,
                                   "theme": "传主所受之礼与个人教义的演变"
-                                           + ("、本朝教会的大公会议与教宗诏书"
+                                           + (("、本朝礼仪领袖对礼仪的定夺"
+                                               if facts.get("church_chronicle_kind") == "rite"
+                                               else "、本朝教会的大公会议与教宗诏书")
                                               if _lq.get("tail") else ""),
                                   "focus": _lq["focus"],
                                   "sections": _secs})

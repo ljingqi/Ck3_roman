@@ -98,7 +98,8 @@ SECTION_TITLES = {
     "artifacts": {"lead": "开篇·传家重宝", "mid": "纪事·流转始末", "tail": None},
     "secrets": {"lead": "开篇·隐事之始",   "mid": "纪事·阴私秘辛", "tail": None},
     "liyi":    {"lead": "开篇·所奉礼仪", "mid": "纪事·礼仪与教义沿革",
-                "tail": "纪事·大公会议与教宗诏书"},
+                "tail": "纪事·大公会议与教宗诏书",
+                "tail_rite": "纪事·礼仪领袖的定夺"},
 }
 
 # Household wording follows the material available: asked for marriage, divorce and
@@ -247,6 +248,11 @@ SECTION_REQ = {
         "tail": "写本朝教会的大公会议与教宗诏书：教会当下的局面、会议的日期与主持者、"
                 "诏书的颁布者、本礼教义定夺的年份与定夺者、本礼信条与禁忌的更替，"
                 "皆照本篇给出的事实写出。",
+        # The same board for a subject outside the church situation's main-power faith: his own
+        # rite head rules on rites through the same mechanics, and the log above belongs to
+        # another church.
+        "tail_rite": "写本朝礼仪领袖对礼仪的定夺：礼仪领袖定夺的信条条目、旧新之别与定夺的年月，"
+                     "皆照本篇给出的事实写出。",
     },
 }
 
