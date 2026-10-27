@@ -53,6 +53,7 @@ def stub(cache=None, as_of="1075.9.8"):
     o._regencies = []              # v109: regency records live in the melt's diarchies table
     for name in ("_rite_chain_rids", "_one_rite_ruling_rows", "_rite_ruling_rows",
                  "_parent_maps", "_ancestor_routes", "blood_kin_words_for",
+                 "_parent_edges", "_child_map",
                  "blood_kin_word_for", "kin_word_for", "kin_chain_words_for", "identity_parts",
                  "affinal_kin_words_for", "_sex_of", "_fam_ids", "_sibling_ids", "_child_ids",
                  "_parent_ids", "_primary_spouse_ids", "_older_ids", "_spouse_sibling_word",
@@ -73,6 +74,9 @@ def stub(cache=None, as_of="1075.9.8"):
             setattr(o, name, types.MethodType(fn, o))
     o._church_window = lambda: (None, None)
     o._KIN_CHAIN_BLOOD_MAX = F.Facts._KIN_CHAIN_BLOOD_MAX
+    o._KIN_CHAIN_FORMER_MAX = F.Facts._KIN_CHAIN_FORMER_MAX
+    # v128 的前层不在 v104 的断言范围内：本桩把它当空实现，免得为它拖进整条 former 依赖链。
+    o.former_kin_words_for = lambda cid, subject, date=None, limit=None: []
     o._KIN_CHAIN_AFFINAL_MAX = F.Facts._KIN_CHAIN_AFFINAL_MAX
     o._PUPPET_LOOKAHEAD_DAYS = F.Facts._PUPPET_LOOKAHEAD_DAYS
     o._COUNCIL_MATCH_DAYS = F.Facts._COUNCIL_MATCH_DAYS
@@ -123,7 +127,7 @@ def group_a():
                    "female": False}
     st2 = stub({"characters": chars2, "player_id": 4})
     st2._is_female = lambda cid: bool((chars2.get(str(cid)) or {}).get("female"))
-    st2.relation_word_for = lambda cid, subject: ""
+    st2.relation_word_for = lambda cid, subject, date=None: ""
     chain = st2.kin_chain_words_for(8, 4)
     check("[6] wife+blood chain reads 妻子 then 女儿", chain[:2] == ["妻子", "女儿"], chain)
 
@@ -133,13 +137,13 @@ def group_a():
             {"type": "councillor_marshal", "employee": 6, "hire_date": "1060.1.1"},
             {"type": "court_physician", "employee": 6, "hire_date": "1061.1.1"},
             {"type": "councillor_steward", "employee": 9, "hire_date": "1062.1.1"}]}]})
-    st3.court_position_word = lambda t, cid=None: {
+    st3.court_position_word = lambda t, cid=None, date=None: {
         "councillor_marshal": "军事总管", "court_physician": "私人医生"}.get(t, "")
     check("[6] the person's own court offices, in roster order",
           st3._court_positions_of(6) == ["军事总管", "私人医生"], st3._court_positions_of(6))
     st4 = stub({"characters": chars2, "player_id": 4})
     st4._is_female = lambda cid: bool((chars2.get(str(cid)) or {}).get("female"))
-    st4.relation_word_for = lambda cid, subject: "仇敌"
+    st4.relation_word_for = lambda cid, subject, date=None: "仇敌"
     st4._court_positions_of = lambda cid, date=None, subject=None: ["乳母", "处刑人"]
     chain4 = st4.kin_chain_words_for(8, 4)
     check("[6] order = kin, blood, relation, offices",

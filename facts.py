@@ -1107,7 +1107,41 @@ def _kin_word_coarse(term):
     return term.startswith("族") or term.startswith("同族")
 
 
-def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None, side=None):
+def _parent_cousin_kind(chars, s, c, anc, fath, moth):
+    """'tang' / 'biao_f' / 'biao_m' / None for a (up_s=3, up_c=2) route, i.e. which kind of
+    parent's cousin the relative is, by the same test `kin_key` step 6b applies.
+
+    堂 needs the subject's *paternal grandfather* to be the grandparent on the route and the
+    relative's parent (the grandfather's sibling) to be male; a paternal grandmother's sibling and
+    a paternal grandfather's sister's child are 表姑/表伯 side (`biao_f`); a maternal grandparent's
+    sibling's child is 表舅/表姨 side (`biao_m`). The kind is read from the graph, not from the
+    route's all-father flags: a man's line to his paternal grandfather's mother also breaks the
+    all-father flag, and that must not turn a 堂伯 into a 表伯 (v139). `min(kinds)` mirrors the
+    cascade's `sorted(_cands)` pick when one relative is reachable by several kinds."""
+    def _female(x):
+        return _female_rec((chars or {}).get(str(x)) or {})
+
+    us = [u for u in sorted(set(fath.get(c) or ()) | set(moth.get(c) or ()))
+          if anc in (fath.get(u) or ()) or anc in (moth.get(u) or ())]
+    if not us:
+        return None
+    kinds = set()
+    for p in sorted(fath.get(s) or ()):
+        for g in sorted(fath.get(p) or ()):
+            if anc in (fath.get(g) or ()) or anc in (moth.get(g) or ()):
+                kinds.add("tang" if any(_female(u) is False for u in us) else "biao_f")
+        for g in sorted(moth.get(p) or ()):
+            if anc in (fath.get(g) or ()) or anc in (moth.get(g) or ()):
+                kinds.add("biao_f")
+    for m in sorted(moth.get(s) or ()):
+        for g in sorted(set(fath.get(m) or ()) | set(moth.get(m) or ())):
+            if anc in (fath.get(g) or ()) or anc in (moth.get(g) or ()):
+                kinds.add("biao_m")
+    return min(kinds) if kinds else None
+
+
+def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None, side=None,
+                      kind=None):
     """KIN_WORDS key for one blood route: the shared ancestor A is `up_s` generations above the
     subject and `up_c` above the relative, `ms`/`mc` say the subject's/relative's hops up to A are
     all father edges, `older` reports whether the relative is the elder, and `uncle_older` (v129)
@@ -1117,6 +1151,9 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None, sid
     from the actual parent that reaches A: 'pat' for the father, 'mat' for the mother. It is more
     exact than `ms` (all-father edges), which called a father's sister by her mother 姨母; the
     `ms` fallback stays for malformed rows where no single linking parent can be found.
+
+    `kind` (v139) is `_parent_cousin_kind`'s verdict for the parent's-cousin route (3,2), which
+    decides 堂伯/堂叔/堂姑, 表伯/表叔/表姑 and 表舅/表姨 the way the cascade does.
 
     Same decision table as `_deep_kin_key`, without its guards: those hold the *closest* route back
     so it cannot override the cascade, while a route reaching here is known to be a second,
@@ -1146,6 +1183,22 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None, sid
     gap = up_s - up_c                            # >0: the relative is senior
     if gap > 0:
         if gap == 1:
+            # v139: a parent's cousin -- the relation the cascade names in step 6b. This route
+            # used to fall through to 族伯叔 and restate the primary's own line with a coarse
+            # word (田所3 阿拔斯/有行 read 「堂叔兼族伯叔」).
+            if up_s == 3 and up_c == 2:
+                if kind == "tang":
+                    if c_female:
+                        return "aunt_pat_cousin"
+                    return "uncle_pat_cousin_younger" if uncle_older is False \
+                        else "uncle_pat_cousin_older"
+                if kind == "biao_f":
+                    if c_female:
+                        return "aunt_mat_cousin"
+                    return "uncle_side_younger" if uncle_older is False else "uncle_side_older"
+                if kind == "biao_m":
+                    return "aunt_mat_cousin2" if c_female else "uncle_mat_cousin"
+                return "clan_aunt" if c_female else "clan_uncle"
             # One generation above the subject and a sibling of the subject's own parent
             # (`up_c == 1` with `up_s == 2`): the close collateral where Chinese names the side.
             # `side` comes from the actual linking parent; `ms` is the older fallback.
@@ -1170,7 +1223,14 @@ def _kin_key_of_route(up_s, up_c, ms, mc, c_female, older, uncle_older=None, sid
                         return "uncle_pat_older" if uncle_older else "uncle_pat_younger"
                     if ms is False:
                         return "uncle_mat"
-            return "clan_aunt" if c_female else "clan_uncle"
+            # Far uncles keep the 伯/叔 split the cascade's fallback uses, so the route word
+            # matches the primary instead of restating it as the merged 族伯叔 (v139:
+            # 「族叔兼族伯叔」).
+            if c_female:
+                return "clan_aunt"
+            if uncle_older is not None:
+                return "clan_uncle_older" if uncle_older else "clan_uncle_younger"
+            return "clan_uncle"
         if gap == 2:
             return "clan_grandmother" if c_female else "clan_grandfather"
         return "clan_ancestor"
@@ -6016,6 +6076,19 @@ class Facts:
             self._pedges = par
         return self._pedges
 
+    def _child_map(self):
+        """{cid: {child ids}} -- `_parent_edges` inverted. Built once per run.
+
+        `blood_kin_words_for` asks it which common ancestors are *lowest*: an ancestor whose own
+        child is also a common ancestor only restates that child's line one generation higher."""
+        if getattr(self, "_cedges", None) is None:
+            kids = {}
+            for c, parents in self._parent_edges().items():
+                for p in parents:
+                    kids.setdefault(p, set()).add(c)
+            self._cedges = kids
+        return self._cedges
+
     def _up_routes(self, cid, maxd=_DEEP_MAXD):
         """{ancestor: fewest generations up} from one character, over `_parent_edges`."""
         par = self._parent_edges()
@@ -6088,7 +6161,15 @@ class Facts:
         by contrast, names a kind of kinship the shortest route does not (measured on the 洪氏2
         family: this rule keeps every 堂/表 correction the unrestricted walk makes while adding
         specific terms only, and halves the number of pairs whose chain changes;
-        logs/v110/v110_rule_study.txt)."""
+        logs/v110/v110_rule_study.txt).
+
+        v139 closes the other half of that rule: only the **lowest** common ancestors count, since
+        every ancestor above one of them restates that line one generation higher (a pair that is
+        大哥 through their shared father is also 族兄 through their shared grandfather), and a
+        shortest route that lands on the primary's own relation with a clan fallback word is
+        dropped (「侄子兼族侄」, 「堂叔兼族伯叔」). An independent second line still needs more
+        generations than the closest one, so the words that made the chain informative --
+        「母亲兼姑母兼表姐」 -- are untouched."""
         if cid is None or subject is None:
             return []
         limit = self._KIN_CHAIN_BLOOD_MAX if limit is None else limit
@@ -6124,17 +6205,28 @@ class Facts:
                                      chars.get(str(_faths[0])) or {}, c, _faths[0])
 
         def _side_for(anc, ds, ms):
-            """(side, linking parent) for the parent linking s up to `anc` at depth 2, else (None, None).
+            """(side, linking parent) for the subject's parent leading up to `anc`, else (None, None).
 
-            A consanguineous marriage can make both parents children of the same `anc` (the user's
-            「四叔兼六舅」 case). Then `ms` — whether s's whole path is father edges — still says
-            which of the two routes this is, so the father route stays paternal and the mother
-            route maternal instead of both collapsing to the clan fallback.
+            At depth 2 the ancestor is the parent's own parent; at depth 3 it is the grandparent's
+            parent, and the same question -- through the father or through the mother -- decides
+            the 堂/表 side of a parent's cousin (v139). A consanguineous marriage can make both
+            parents lead to the same `anc` (the user's 「四叔兼六舅」 case). Then `ms` — whether
+            the whole path is father edges — still says which of the two routes this is, so the
+            father route stays paternal and the mother route maternal instead of both collapsing
+            to the clan fallback.
             """
-            if ds != 2:
+            if ds not in (2, 3):
                 return None, None
-            ps = [p for p in (set(fath.get(s) or ()) | set(moth.get(s) or ()))
-                  if anc in (set(fath.get(p) or ()) | set(moth.get(p) or ())) ]
+            if ds == 2:
+                ps = [p for p in (set(fath.get(s) or ()) | set(moth.get(s) or ()))
+                      if anc in (set(fath.get(p) or ()) | set(moth.get(p) or ()))]
+            else:
+                ps = []
+                for p in sorted(set(fath.get(s) or ()) | set(moth.get(s) or ())):
+                    for g in sorted(set(fath.get(p) or ()) | set(moth.get(p) or ())):
+                        if anc in (set(fath.get(g) or ()) | set(moth.get(g) or ())):
+                            ps.append(p)
+                            break
             if len(ps) != 1:
                 if ms is True:
                     ps = [p for p in ps if p in (fath.get(s) or ())]
@@ -6146,10 +6238,22 @@ class Facts:
             return ("pat" if p in (fath.get(s) or ()) else "mat"), p
 
         sigs = set()
-        for anc, sroutes in routes.items():
-            c_routes = croutes.get(anc)
-            if not c_routes:
-                continue
+        # Only the *lowest* common ancestors name a line of their own (v139): every common
+        # ancestor above one of them restates that line one generation higher -- a pair that is
+        # 堂兄弟 through their grandfathers is also 族兄弟 through their great-grandfathers, and
+        # the old walk added that second, coarser word to every chain (「大姐兼族姐」,
+        # 「侄女兼族侄女」). Two independent lines keep both lowest ancestors.
+        common = set(routes) & set(croutes)
+        kids = self._child_map()
+        lcas = {a for a in common if not ((kids.get(a) or set()) & common)}
+        min_total = None
+        for anc in lcas:
+            total = min(d for d, _m in routes[anc]) + min(d for d, _m in croutes[anc])
+            if min_total is None or total < min_total:
+                min_total = total
+        for anc in lcas:
+            sroutes = routes[anc]
+            c_routes = croutes[anc]
             ds_min = min(d for d, _m in sroutes)
             dc_min = min(d for d, _m in c_routes)
             smin = {(d, m) for d, m in sroutes if d == ds_min}
@@ -6162,11 +6266,25 @@ class Facts:
                     if side == "pat" and linkp is not None:
                         uolder = _older_rec(chars.get(str(c)) or {},
                                             chars.get(str(linkp)) or {}, c, linkp)
-                    base = _kin_key_of_route(ds, dc, ms, mc, cfemale, older, uolder, side)
+                    kind = None
+                    if ds == 3 and dc == 2:
+                        kind = _parent_cousin_kind(chars, s, c, anc, fath, moth)
+                    base = _kin_key_of_route(ds, dc, ms, mc, cfemale, older, uolder, side, kind)
                     if _kin_ord_base(base) in seen_bases:
                         continue
                     if (ds, ms) in smin and dc == dc_min:
-                        sigs.add((ds + dc, ds, dc, ms, mc, anc))
+                        term = kin_text(_ranked_route_key(
+                            chars, rev, base, side, linkp, c, cfemale))
+                        # The shortest route of each lowest ancestor is admitted even when it is
+                        # a clan fallback, unless it is the primary's own line: when the primary
+                        # is a specific word and this route reaches it in the same number of
+                        # generations, the coarse word adds nothing the primary did not already
+                        # say (「侄子兼族侄」, 「堂叔兼族伯叔」). An independent line still needs
+                        # more generations than the primary's, so it is kept.
+                        if term and not (ds + dc == min_total and primary
+                                         and not _kin_word_coarse(primary)
+                                         and _kin_word_coarse(term)):
+                            sigs.add((ds + dc, ds, dc, ms, mc, anc))
                         continue
                     term = kin_text(_ranked_route_key(
                         chars, rev, base, side, linkp, c, cfemale))
@@ -6184,7 +6302,9 @@ class Facts:
             if side == "pat" and linkp is not None:
                 uolder = _older_rec(chars.get(str(c)) or {},
                                     chars.get(str(linkp)) or {}, c, linkp)
-            base = _kin_key_of_route(ds, dc, ms, mc, cfemale, older, uolder, side)
+            kind = _parent_cousin_kind(chars, s, c, anc, fath, moth) \
+                if (ds == 3 and dc == 2) else None
+            base = _kin_key_of_route(ds, dc, ms, mc, cfemale, older, uolder, side, kind)
             w = kin_text(_ranked_route_key(chars, rev, base, side, linkp, c, cfemale))
             if w and w not in seen:
                 seen.add(w)
