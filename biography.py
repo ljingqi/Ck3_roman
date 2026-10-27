@@ -1218,7 +1218,7 @@ def _victim_death_when(e):
 
 
 def _victim_merged_line(k, facts, disp, plain=None):
-    """`死者：{主角}的{身份}{死者}，{死日}在{地点}{死法}，享年{N}岁。`
+    """`死者：{身份}{死者}，{死日}在{地点}{死法}，享年{N}岁。`
     One merged sentence (user 2026-10-06): the identity word, the place and the age ride along the
     death date instead of filling separate lines. A piece the save does not record is omitted
     whole, and a victim with no death date keeps the fact layer's own sentence.
@@ -1226,11 +1226,13 @@ def _victim_merged_line(k, facts, disp, plain=None):
     The identity word and the kin-tagged label draw on the same relation source, so carrying both
     repeats it (「…的同族兄弟兼仇敌同族兄弟兼仇敌户部尚书石从古」, user 2026-10-08): with an
     identity the plain label `plain` follows it, and the kin-tagged `disp` stands in only when no
-    identity was resolved."""
-    pname = ((facts or {}).get("protagonist") or {}).get("name") or ""
+    identity was resolved.
+
+    Every victim here was killed by the subject and the line already speaks of him, so the
+    identity is written without a 「{主角}的」 prefix (user 2026-10-27)."""
     ident = (k.get("identity") or "").strip()
     who = (plain or disp) if ident else disp
-    subject = f"{pname}的{ident}{who}" if (pname and ident) else who
+    subject = f"{ident}{who}" if ident else who
     body = _victim_death_when(k)
     if not body:
         bd = k.get("birth") or ""

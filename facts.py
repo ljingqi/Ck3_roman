@@ -7396,6 +7396,76 @@ class Facts:
             line = f"{word}，传位于{nm}" if nm else word
         return line.rstrip("。")
 
+    def _pronoun(self, cid):
+        """Third-person pronoun for the subject, so a clear referent is not renamed by a long
+        title chain (user 2026-10-27)."""
+        return "她" if self._is_female(cid) else "他"
+
+    def _succession_heir(self, pcid, ncid, start):
+        """Whether the next subject took over the predecessor's main title -> (inherited, heir).
+
+        The predecessor's main landed title on his last day (`held_through` keeps a title lost
+        exactly on it) is read from the subject caches' `realm_history` snapshots first: the
+        final volume truncates title history at the last death (`pipeline._import_title_state`
+        with `inclusive=False`), so `holder_at` alone would read the same-day accession as the
+        predecessor still holding. A snapshot at or after the accession day that puts another
+        character on the title proves the player switched characters; no counter-evidence keeps
+        the old wording (the player did inherit)."""
+        if not start:
+            return True, None
+        try:
+            pcid, ncid = int(pcid), int(ncid)
+        except (TypeError, ValueError):
+            return True, None
+        pv = (self.campaign or {}).get(pcid)
+        death = ((pv.get("player_death") or {}).get("date")
+                 if isinstance(pv, dict) else "") or ""
+        ref = death or start
+        try:
+            _tier, ptid = self._primary_title_at(pcid, as_of=ref, held_through=ref)
+        except Exception:                                     # noqa: BLE001
+            return True, None
+        if ptid is None or self._eff_rank(ptid) <= 0 or self._is_landless_title(ptid):
+            return True, None
+        want = cl.date_key(start)
+        keys = (str(ptid), ptid)
+
+        def _snap_holder(cache_obj):
+            """Holder on the first realm snapshot at/after the accession day."""
+            for ent in (cache_obj or {}).get("realm_history") or []:
+                d = ent.get("date") if isinstance(ent, dict) else None
+                if not d or cl.date_key(d) < want:
+                    continue
+                holders = ent.get("holders") or {}
+                for k in keys:
+                    h = holders.get(k)
+                    if h is not None:
+                        try:
+                            return int(h)
+                        except (TypeError, ValueError):
+                            return None
+                return None
+            return None
+
+        def _judge(h):
+            """(False, heir) for a stranger on the title, (True, None) for the next subject."""
+            if h is None or h == pcid:
+                return None
+            if h == ncid:
+                return True, None
+            return False, h
+
+        caches = [self.cache] + [c for c in (self.campaign or {}).values()
+                                 if isinstance(c, dict) and c is not self.cache]
+        for c in caches:
+            got = _judge(_snap_holder(c))
+            if got:
+                return got
+        got = _judge(self.holder_at(ptid, start))
+        if got:
+            return got
+        return True, None
+
     def succession_lines(self):
         """Subject-chain facts: previous and next subject with the succession dates.
 
@@ -7471,9 +7541,30 @@ class Facts:
             else:
                 fate = ""
             if nm and start:
+                pr = self._pronoun(pid)
+                _kin_part = f"{pr}的{kin_chain}，" if kin_chain else ""
+                _heir_txt = ""
                 if fate:
-                    out.append(f"承继：{self.date(start)}，{who}{fate}，"
-                               f"{subj}从此作为命运的主角。")
+                    _inherited, heir = self._succession_heir(pcid, pid, start)
+                    if not _inherited and heir is not None:
+                        hl = self.person_label(heir, date=start, style="brief",
+                                               dead_flavor=False) \
+                            or self.name(heir, date=start) or ""
+                        if hl:
+                            hr = self._chain_kin_word(pid, heir)
+                            hr = hr[1:] if hr.startswith("其") else hr
+                            _hr_part = f"{pr}的{hr}，" if hr else ""
+                            subj_lbl = self.person_label(pid, date=start, style="brief",
+                                                         dead_flavor=False) \
+                                or subj
+                            _heir_txt = (f"{_hr_part}{hl}继位，"
+                                         f"而命运的注视则降临在了{subj_lbl}身上")
+                if _heir_txt:
+                    out.append(f"承继：{self.date(start)}，{_kin_part}{nm}{fate}，"
+                               f"{_heir_txt}。")
+                elif fate:
+                    out.append(f"承继：{self.date(start)}，{_kin_part}{nm}{fate}，"
+                               f"{pr}从此作为命运的主角。")
                 else:
                     out.append(f"承继：{self.date(start)}，{subj}继{who}之位。")
             elif nm:
@@ -7488,9 +7579,25 @@ class Facts:
             kin_chain = kin[1:] if kin.startswith("其") else kin
             who = f"{nm}（{subj}的{kin_chain}）" if kin_chain else nm
             if nm:
-                body = f"{who}继为传主。" if kin else f"传主之位归于{nm}。"
-                out.append(f"后任：{self.date(start)}，{body}" if start
-                           else f"后任：其后{body}")
+                pr = self._pronoun(pid)
+                _kin_part = f"{pr}的{kin_chain}，" if kin_chain else ""
+                _inherited, heir = self._succession_heir(pid, ncid, start)
+                _heir_txt = ""
+                if not _inherited and heir is not None and start:
+                    hl = self.person_label(heir, date=start, style="brief",
+                                           dead_flavor=False) \
+                        or self.name(heir, date=start) or ""
+                    if hl:
+                        _heir_txt = f"{hl}继位，而命运的注视则降临在了{_kin_part}{nm}身上"
+                if _heir_txt:
+                    out.append(f"后任：{self.date(start)}，{_heir_txt}。")
+                elif kin:
+                    out.append(f"后任：{self.date(start)}，{_kin_part}{nm}继为传主。"
+                               if start else f"后任：其后{_kin_part}{nm}继为传主。")
+                else:
+                    body = f"传主之位归于{nm}。"
+                    out.append(f"后任：{self.date(start)}，{body}" if start
+                               else f"后任：其后{body}")
         return out
 
     def protagonist_era(self):
@@ -9660,11 +9767,16 @@ class Facts:
         memo[key] = word
         return word
 
-    def official_title(self, cid, date=None):
+    def official_title(self, cid, date=None, same_day=False, dead_flavor=True):
         """Role office name, "<title name><office word>".
 
         Dead characters read the save's baked `dead_data.flavor` word; `date` anchors the lookup
-        (death date by default, `as_of` for the living) so a dynamic realm name lands right."""
+        (death date by default, `as_of` for the living) so a dynamic realm name lands right.
+        `same_day=True` keeps a title lost exactly on `date` (a conquest strips the victim's
+        land on the feud day, and that day's title is the one the line must name).
+        `dead_flavor=False` ignores the baked death-time style and reads the title held on
+        `date` itself (a dead subject's accession-day identity, which the baked word would
+        replace with his final, later title)."""
         rhw = self.religious_head_word(cid)
         if rhw:
             return rhw
@@ -9695,8 +9807,10 @@ class Facts:
             if mo:
                 return mo
         c = self._chars.get(str(cid)) or {}
-        tier, tid = self._primary_title_at(cid, as_of=anchor)
-        fkey = (c.get("dead_data") or {}).get("flavor")
+        tier, tid = self._primary_title_at(
+            cid, as_of=anchor, held_through=anchor if same_day else None)
+        # `dead_flavor=False` reads the title held on `date` instead of the baked death-time style
+        fkey = (c.get("dead_data") or {}).get("flavor") if dead_flavor else None
         # A dead holder's baked tier flavor was computed at death, when a march contract may not
         # have existed yet. The title's writing-time word is the later, uniform word (v131: a
         # 1044 biography names 杨景之's d_languedoc 侯爵 even though he died in 1035). Only the
@@ -10594,7 +10708,7 @@ class Facts:
                 return f"{py}年至{year}年间"
         return f"{year}年"
 
-    def person_label(self, cid, date=None, style="full"):
+    def person_label(self, cid, date=None, style="full", same_day=False, dead_flavor=True):
         """Single entry point for person labels. `style`:
         - "full": household/lineage — "[former X,] current title Y name";
         - "brief": secrets/hooks/timeline — "current title Y name", no former title;
@@ -10602,15 +10716,19 @@ class Facts:
         - "office": court rows, as brief (Eastern name order keeps the clan surname).
 
         A religious head gets "教宗X"; a landless uprising leader "农民起义领袖X"; an unrecorded
-        name returns '' so the caller drops the line; an accolade precedes the name."""
+        name returns '' so the caller drops the line; an accolade precedes the name.
+        `same_day=True` keeps a title lost exactly on `date` (see `official_title`);
+        `dead_flavor=False` reads that day's title instead of the baked death-time style.
+        """
         if cid is None:
             return ""
-        key = (int(cid), date or "", style)
+        key = (int(cid), date or "", style, bool(same_day), bool(dead_flavor))
         if key in self._label_cache:
             out = self._label_cache[key]
             self._log_label(cid, out)
             return out
-        out = self._person_label_uncached(cid, date, style)
+        out = self._person_label_uncached(cid, date, style,
+                                          same_day=same_day, dead_flavor=dead_flavor)
         self._label_cache[key] = out
         self._log_label(cid, out)
         return out
@@ -10651,7 +10769,7 @@ class Facts:
             out.append(w)
         return out
 
-    def _person_label_uncached(self, cid, date, style):
+    def _person_label_uncached(self, cid, date, style, same_day=False, dead_flavor=True):
         nm = self.name_with_regnal(cid, date)
         if not nm or nm in self._PLACEHOLDER_NAMES:
             return ""
@@ -10675,7 +10793,8 @@ class Facts:
         if rhw:
             return self._join_office(rhw, pn)
         off = self._event_office(cid, date) if style == "event" \
-            else self.official_title(cid, date)
+            else self.official_title(cid, date, same_day=same_day,
+                                     dead_flavor=dead_flavor)
         if not off:
             # No landed title: take a prince/princess word from the father's or
             # mother's title, as the profile section does
@@ -10695,14 +10814,15 @@ class Facts:
             return self._full_label(cid, date, off, pn)
         return self._join_office(off, pn)
 
-    def event_name(self, cid, date=None):
+    def event_name(self, cid, date=None, same_day=False):
         """Subject name for timeline/fact lines: the name only for the player, a brief label
         for everyone else.
 
-        The single exit for every name entering the timeline or the secret/feud streams."""
+        The single exit for every name entering the timeline or the secret/feud streams.
+        `same_day=True` keeps a title lost exactly on `date` (see `official_title`)."""
         if cid is None:
             return ""
-        return self.person_label(cid, date, style="timeline") \
+        return self.person_label(cid, date, style="timeline", same_day=same_day) \
             or self.name_with_regnal(cid, date)
 
     def _event_office(self, cid, date):
@@ -17381,7 +17501,7 @@ class Facts:
         return out
 
     def relation_reason_for_pair(self, a, b, kinds, styled=False, keys=False,
-                                 with_subject=False):
+                                 with_subject=False, same_day=False):
         """Game reason sentences for any pair — same conventions as `relation_reasons` but with a
         reference person other than the subject, for pairs where neither side is the subject.
 
@@ -17393,7 +17513,11 @@ class Facts:
         which lets a caller tell WHICH occasion a reason describes (a coronation feud names the
         ceremony the witness memory also reports). With `with_subject=True` each item is
         `(sentence, subject_cid)`: the cid of the template's first role tag, i.e. who the sentence
-        is grammatically about (see `_sub_relation_loc`)."""
+        is grammatically about (see `_sub_relation_loc`).
+
+        With `same_day=True` the styled appellations are read at the relation's own date and keep
+        a title lost exactly that day: a conquest strips the victim's land on the feud day, so
+        the day's title is the one to name. The default keeps the old as-of rendering."""
         if not isinstance(a, int) or not isinstance(b, int) or a == b:
             return []
         melt_idx = self._any_opinion_index()
@@ -17423,10 +17547,14 @@ class Facts:
                     extra = None
                 _names = None
                 if styled:
+                    _nd = (rel_d or self.as_of) if same_day else self.as_of
                     _names = [
-                        self.event_name(pair[0], date=self.as_of) or self.name_or(pair[0]),
-                        self.event_name(pair[1], date=self.as_of) or self.name_or(pair[1]),
-                        (self.event_name(extra, date=self.as_of) or self.name_or(extra))
+                        self.event_name(pair[0], date=_nd, same_day=same_day)
+                        or self.name_or(pair[0]),
+                        self.event_name(pair[1], date=_nd, same_day=same_day)
+                        or self.name_or(pair[1]),
+                        (self.event_name(extra, date=_nd, same_day=same_day)
+                         or self.name_or(extra))
                         if isinstance(extra, int) else "",
                     ]
                 s = self.murder_relation_sentence(
@@ -23366,7 +23494,8 @@ def _timeline(f):
                 for _o in _others[:1]:
                     try:
                         _rs = f.relation_reason_for_pair(
-                            _o, pid, _FEUD_RIVAL_KINDS, styled=True, keys=True)
+                            _o, pid, _FEUD_RIVAL_KINDS, styled=True, keys=True,
+                            same_day=True)
                     except Exception:                       # noqa: BLE001
                         _rs = []
                     if _rs:

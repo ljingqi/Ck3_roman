@@ -187,8 +187,9 @@ def group_snapshot(snap):
           bool(succ) and not any("当日" in x for x in succ), succ[:1])
     check("V112-3b 承继句不含「传主之位自此归本传主」",
           not any("传主之位自此归本传主" in x for x in succ), succ[:1])
-    check("V112-3c 承继句句尾写本传主名",
-          bool(succ) and all(x.endswith("从此作为命运的主角。") for x in succ), succ[:1])
+    check("V112-3c 承继句句尾写承继结局",
+          bool(succ) and all(x.endswith("从此作为命运的主角。") or x.endswith("身上。")
+                             for x in succ), succ[:1])
     check("V112-3d 承继句仍含前任死法",
           any(re.search(r"(死于|而亡|被|崩)", x) for x in succ), succ[:1])
     check("V112-3e 无「、前代传主」", not any("前代传主" in x for x in succ), succ[:1])
