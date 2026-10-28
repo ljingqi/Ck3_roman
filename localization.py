@@ -760,22 +760,29 @@ def _iter_top_block_flags(txt, flag_re):
         depth = max(0, depth + opens - closes)
 
 
-def _parse_governments(path, out):
-    """Collect the government keys carrying `dynasty_named_realms = yes` from one governments file."""
+def _parse_governments(path, dynasty, patronym):
+    """Collect the two flags from one governments file into their sets:
+    `dynasty_named_realms = yes` and `always_use_patronym = yes`."""
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as fp:
             txt = fp.read()
     except Exception:
         return
-    flag_re = re.compile(r"dynasty_named_realms\s*=\s*(\w+)")
-    for key, val in _iter_top_block_flags(txt, flag_re):
+    for key, val in _iter_top_block_flags(
+            txt, re.compile(r"dynasty_named_realms\s*=\s*(\w+)")):
         if val.lower() in ("yes", "true"):
-            out.add(key)
+            dynasty.add(key)
+    for key, val in _iter_top_block_flags(
+            txt, re.compile(r"always_use_patronym\s*=\s*(\w+)")):
+        if val.lower() in ("yes", "true"):
+            patronym.add(key)
 
 
 def build_governments(cfg):
-    """Game + enabled mods' common/governments/*.txt -> the set of dynasty-named governments."""
-    out = set()
+    """Game + enabled mods' common/governments/*.txt -> both flag sets (schema 2):
+    `dynasty_named` (realms named after the holder's house) and `always_patronym`
+    (patronyms displayed for every character under that government)."""
+    dynasty, patronym = set(), set()
     roots = []
     g = game_dir(cfg)
     if g:
@@ -787,36 +794,60 @@ def build_governments(cfg):
                 continue
             for fn in sorted(fns):
                 if fn.endswith(".txt"):
-                    _parse_governments(os.path.join(dp, fn), out)
-    return out
+                    _parse_governments(os.path.join(dp, fn), dynasty, patronym)
+    return {"entries": len(dynasty), "dynasty_named": dynasty,
+            "always_patronym": patronym}
 
 
-def save_governments(cfg, keys, path=None):
+def save_governments(cfg, data, path=None):
     path = path or _governments_path(cfg)
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if isinstance(data, set):
+        data = {"dynasty_named": data, "always_patronym": set()}
+    dynasty = data.get("dynasty_named") or set()
+    patronym = data.get("always_patronym") or set()
     with open(path, "w", encoding="utf-8") as fp:
-        json.dump({"schema": 1, "entries": len(keys),
-                   "dynasty_named": sorted(keys)}, fp, ensure_ascii=False)
+        json.dump({"schema": 2, "entries": len(dynasty),
+                   "dynasty_named": sorted(dynasty),
+                   "always_patronym": sorted(patronym)}, fp, ensure_ascii=False)
     return path
 
 
-def load_governments(cfg=None, force=False):
+def _governments_data(cfg=None, force=False):
+    """Schema-2 table {'dynasty_named': set, 'always_patronym': set}; a schema-1 file is
+    rebuilt from the game once. If the game files are unavailable the old dynasty set is
+    kept and the patronym set stays empty rather than overwriting a good table with nothing."""
     cfg = cfg or llm.load_config()
     path = _governments_path(cfg)
     if not force and os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
+            if data.get("schema") == 2:
+                return {"dynasty_named": set(data.get("dynasty_named") or []),
+                        "always_patronym": set(data.get("always_patronym") or [])}
             if data.get("schema") == 1:
-                return set(data.get("dynasty_named") or [])
+                dyn = set(data.get("dynasty_named") or [])
+                fresh = build_governments(cfg)
+                if fresh["dynasty_named"]:
+                    save_governments(cfg, fresh, path)
+                    return fresh
+                return {"dynasty_named": dyn, "always_patronym": set()}
         except Exception:
             pass
-    keys = build_governments(cfg)
-    save_governments(cfg, keys, path)
-    return keys
+    fresh = build_governments(cfg)
+    save_governments(cfg, fresh, path)
+    return fresh
+
+
+def load_governments(cfg=None, force=False):
+    """Set of dynasty-named government keys (the schema-1 return value, kept for callers
+    that only need that rule)."""
+    return _governments_data(cfg, force=force)["dynasty_named"]
 
 
 _GOVERNMENTS = None
+_GOVERNMENT_PATRONYMS = None
 
 
 def governments(cfg=None):
@@ -824,13 +855,27 @@ def governments(cfg=None):
     (module-level singleton; the first call builds and writes data/governments.json)."""
     global _GOVERNMENTS
     if _GOVERNMENTS is None:
-        _GOVERNMENTS = load_governments(cfg or llm.load_config())
+        _GOVERNMENTS = _governments_data(cfg)["dynasty_named"]
     return _GOVERNMENTS
+
+
+def patronym_governments(cfg=None):
+    """Set of government keys carrying `always_use_patronym = yes`: characters under them
+    display a patronym even when their culture does not declare it."""
+    global _GOVERNMENT_PATRONYMS
+    if _GOVERNMENT_PATRONYMS is None:
+        _GOVERNMENT_PATRONYMS = _governments_data(cfg)["always_patronym"]
+    return _GOVERNMENT_PATRONYMS
 
 
 def dynasty_named_government(gov, cfg=None):
     """Whether this government key follows the dynasty-named-realms rule."""
     return bool(gov) and str(gov) in governments(cfg)
+
+
+def always_patronym_government(gov, cfg=None):
+    """Whether this government key follows the always-use-patronym rule."""
+    return bool(gov) and str(gov) in patronym_governments(cfg)
 
 
 def _title_name_flags_path(cfg):

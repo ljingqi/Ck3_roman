@@ -1807,15 +1807,27 @@ def _as_name_list(v):
     return []
 
 
-def _patronymic_template(tpl):
-    """True when a culture template actually composes a patronymic in Chinese.
+def _always_patronym_template(tpl):
+    """True when the culture template itself declares `always_use_patronym = yes`.
 
-    The rules table carries templates whose Chinese affixes are all empty (catalan declares
-    `always_use_patronym` alone; albanian's suffix is the empty article), and `_patronym_of` emits
-    nothing for those. They are kept out of the name-list table so that a runtime culture whose own
-    name list resolves to such a template keeps the old behaviour (the paternal/house chain decides)
-    instead of losing a patronymic it already had."""
+    Entries written before the `always` flag existed were all culture-level, so a missing
+    flag reads as True: an old data table keeps its current behaviour until regenerated."""
     rules = _patronym_rules_table().get(tpl or "") or {}
+    return bool(rules) and rules.get("always", True) is True
+
+
+def _patronymic_template(tpl):
+    """True when a culture template composes a patronymic in Chinese on its own.
+
+    The rules table also carries templates whose Chinese affixes are all empty (catalan
+    declares `always_use_patronym` alone; albanian's suffix is the empty article) and the
+    government-gated templates (`always=False`), which `_patronym_of` emits nothing for
+    unless the government also gates. They are kept out of the name-list table so that a
+    runtime culture whose own name list resolves to such a template keeps the old behaviour
+    (the paternal/house chain decides) instead of losing a patronymic it already had."""
+    rules = _patronym_rules_table().get(tpl or "") or {}
+    if not _always_patronym_template(tpl):
+        return False
     return any(rules.get(k) for k in ("pm_zh", "pf_zh", "sm_zh", "sf_zh"))
 
 
@@ -2107,11 +2119,64 @@ def _father_name_of(cache, cid, melt, names_path, chars=None):
     return fn
 
 
-def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None):
+def _landed_now(rec, c):
+    """Whether the character holds land now (the fallback gate for dates before the history)."""
+    if rec.get("landed"):
+        return True
+    ld = (c or {}).get("landed_data") or {}
+    return bool(ld.get("domain") or ld.get("government"))
+
+
+def _government_at(cache, cid, melt, chars=None, date=None):
+    """Government of the character on `date`, for the patronym gate.
+
+    The per-save change points in cache["char_government_history"] decide. A date before the
+    history's start has no observation of its own: a landed character falls back to the
+    earliest known government (the same "take the first point" convention as the wording
+    path), a landless one stays unknown so no patronymic is invented. Without a date the last
+    known government wins, then the cache's landed block and the melt's landed/dead data --
+    the only government surfaces visible while a cache is being built."""
+    key = str(cid)
+    rec = (cache.get("characters") or {}).get(key) or {}
+    c = (chars or {}).get(key) or _melt_char(melt, cid) or {}
+    hist = [h for h in ((cache.get("char_government_history") or {}).get(key) or [])
+            if isinstance(h, dict) and h.get("date") and h.get("government")]
+    if hist:
+        hist.sort(key=lambda h: date_key(h["date"]))
+        if date:
+            dk = date_key(date)
+            hit = ""
+            for h in hist:
+                if date_key(h["date"]) <= dk:
+                    hit = h["government"]
+                else:
+                    break
+            if hit:
+                return hit
+            if _landed_now(rec, c):
+                return hist[0]["government"]
+            return ""
+        return hist[-1]["government"]
+    gov = (rec.get("landed") or {}).get("government") or ""
+    if gov:
+        return gov
+    ld = c.get("landed_data") or {}
+    gov = ld.get("government") or ""
+    if gov:
+        return gov
+    return (c.get("dead_data") or {}).get("government") or ""
+
+
+def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None, date=None):
     """Patronymic middle name: prefix + father's name + suffix for patronymic cultures
     (a distinct form for sons and for daughters); the culture template comes from the
     kinship chain. '' for a culture without Chinese affixes, which the game uses no
-    patronymic for on the display name."""
+    patronymic for on the display name.
+
+    The game displays a patronymic when either the culture or the character's government
+    declares `always_use_patronym` (common/governments/_governments.info). A template with
+    `always=False` is government-gated, so its patronymic is emitted only when the character's
+    government on `date` is one of clan/tribal/wanua; culture-level templates ignore both."""
     if melt is None:
         return ""
     key = str(cid)
@@ -2139,6 +2204,10 @@ def _patronym_of(cache, cid, melt, names_path, chars=None, memo=None):
     # father's name, so nothing is emitted here.
     if not any(rules.get(k) for k in ("pm_zh", "pf_zh", "sm_zh", "sf_zh")):
         return ""
+    if not rules.get("always", True):
+        gov = _government_at(cache, cid, melt, chars=chars, date=date)
+        if not localization.always_patronym_government(gov):
+            return ""
     fname = _father_name_of(cache, cid, melt, names_path, chars=chars)
     if not fname:
         return ""
@@ -2268,7 +2337,7 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
             return _rz
     memo = memo if memo is not None else {}
     # 1) patronymic culture: given·patronymic, written once when it equals the given name
-    ptn = _patronym_of(cache, cid, melt, names_path, chars=chars, memo=memo)
+    ptn = _patronym_of(cache, cid, melt, names_path, chars=chars, memo=memo, date=date)
     if ptn:
         return nm if ptn == nm else f"{nm}·{ptn}"
     # 2) name order through the single resolved_name_order chain (own culture,

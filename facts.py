@@ -295,24 +295,6 @@ def _kill_keep_ids(cache, pid):
     return keep
 
 
-# Patronymy rule table, generated from the game name_lists by experiments/patronym_scan.py:
-# {culture template: {pm/pf/sm/sf keys, pm_zh/pf_zh/sm_zh/sf_zh Chinese words}}
-_PATRONYM_RULES = None
-
-
-def _patronym_rules():
-    global _PATRONYM_RULES
-    if _PATRONYM_RULES is None:
-        try:
-            p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "data", "patronym_rules.json")
-            with open(p, encoding="utf-8") as fp:
-                _PATRONYM_RULES = json.load(fp)
-        except Exception:
-            _PATRONYM_RULES = {}
-    return _PATRONYM_RULES
-
-
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
@@ -17946,7 +17928,7 @@ class Facts:
             if not cands:
                 continue
             for tpl in cands:
-                if tpl in _patronym_rules():
+                if cl._always_patronym_template(tpl):
                     return tpl
             return cands[0]
         return None
@@ -18166,15 +18148,16 @@ class Facts:
                 parents = v if isinstance(v, list) else [v]
         return int(parents[0]) if parents else None
 
-    def patronym(self, cid):
+    def patronym(self, cid, date=None):
         """Patronymic (middle name): for patronymic cultures with a known father, prefix + father's
         name + suffix (Norse -son/-dóttir, Welsh ap-, Irish mac-/nic-, Iberian -ez, Slavic -ovich,
         English -son …). Empty when the father is unknown or the culture has no patronym rules.
 
         Resolution goes through `cache_lib._patronym_of`, which infers the culture template from the
-        kinship chain and so also covers the player and the dead."""
+        kinship chain and so also covers the player and the dead. `date` selects the government
+        that gates a culture without `always_use_patronym` (clan/tribal/wanua display one anyway)."""
         return cl._patronym_of(self.cache, cid, self.melt, self.names_path,
-                               chars=self._chars)
+                               chars=self._chars, date=date)
 
     def _culture_id_at(self, cid, date=None):
         """Culture id of the character at `date`: the history point wins, else the last tier's value.
@@ -24783,7 +24766,7 @@ def _protagonist(f):
     # biography does not have to join office + name
     p["label"] = f.person_label(pid, date=f.as_of, style="brief") or p["name"]
     # patronymic; absent when the ancestry is unknown
-    pptn = f.patronym(pid)
+    pptn = f.patronym(pid, f.as_of)
     if pptn:
         p["patronym"] = pptn
     thl = f.trait_history_lines(pid)
@@ -25360,7 +25343,7 @@ def _character_profiles(f):
         if _cor:
             prof["co_ruler"] = _cor
         # patronymic byname (patronymic cultures, e.g. Norse "Xson" / "Xdottir" forms)
-        ptn = f.patronym(cid)
+        ptn = f.patronym(cid, f.as_of)
         if ptn:
             prof["patronym"] = ptn
         thl = f.trait_history_lines(cid)
