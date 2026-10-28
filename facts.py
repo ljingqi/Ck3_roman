@@ -8248,6 +8248,11 @@ class Facts:
             return []
         return list(ent.get("flags") or [])
 
+    def _primary_rank_at(self, cid, date):
+        """Effective rank of the primary title on `date`; 0 when he holds none (baronies excluded)."""
+        _tier, tid = self._primary_title_at(cid, as_of=date, held_through=date)
+        return self._eff_rank(tid) if tid is not None else 0
+
     def _is_independent(self, cid, date=None):
         """Independence (not someone's vassal): with a date, from char_vassal_history; a date before
         the history starts returns None so the caller uses a generic word; without history the final
@@ -8290,15 +8295,26 @@ class Facts:
                     nxt = h
                     break
             # Ennobled mid-year: this save has no contract yet but the next one (within about a year)
-            # shows vassalage, so the vassal word is used for that day.
+            # shows vassalage, so the vassal word is used for that day. A later demotion is not an
+            # ennoblement: a king who loses his kingdom and becomes a vassal duke within the window
+            # was still independent on the earlier day, so a falling primary rank disables the
+            # backdating and counts as independent (0 -> landed, same rank and upgrades keep the
+            # old behaviour).
             nxt_gap = (_date_ord(nxt.get("date")) - _date_ord(date)) if nxt else None
-            if (ent is None or _liege(ent) is None) \
-                    and nxt is not None and _liege(nxt) is not None \
-                    and nxt_gap is not None and 0 < nxt_gap <= 400:
+            future_vassal = nxt is not None and _liege(nxt) is not None \
+                and nxt_gap is not None and 0 < nxt_gap <= 400
+            demoted = False
+            if future_vassal:
+                _cur_rank = self._primary_rank_at(cid, date)
+                demoted = _cur_rank > 0 \
+                    and self._primary_rank_at(cid, nxt.get("date")) < _cur_rank
+            backdate = (ent is None or _liege(ent) is None) \
+                and future_vassal and not demoted
+            if backdate:
                 v = False
             elif hist[0].get("date") and cl.date_key(hist[0]["date"]) > dk \
                     and ent is None:
-                v = None
+                v = True if demoted else None
             else:
                 v = True if (ent is None or _liege(ent) is None) else False
         elif hist and not date:
