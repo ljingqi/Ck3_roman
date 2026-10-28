@@ -17755,7 +17755,7 @@ class Facts:
             return cl.house_name_zh(self.melt, hid)
         return ""
 
-    def _realm_house_name(self, cid):
+    def _realm_house_name(self, cid, date=None):
         """House name of a dynasty-named realm, through the engine's own fallback chain: the
         holder's house, else the house it descends from, else the dynasty (see
         `cl.house_realm_name_zh`).
@@ -17764,17 +17764,26 @@ class Facts:
         (`landed_titles[*].title_name_data.title_history_names`) writes dynn_Seljuk for k_daylam
         while that holder's dynasty is Oghuz, dynn_Samanid for d_ferghana whose dynasty is Mihran,
         and dynn_Zaydid for d_tabaristan whose dynasty is Hashimid; 168 of the 198 resolvable log
-        rows follow the house and the rest differ by a holder the title has since changed."""
-        hid = ((self.cache.get("characters") or {}).get(str(cid)) or {}).get("dynasty_house")
-        if hid is None:
-            hid = (self._chars.get(str(cid)) or {}).get("dynasty_house")
+        rows follow the house and the rest differ by a holder the title has since changed.
+
+        The save's `localized_name` wins when it is Chinese: it is the label the engine actually
+        shows for that house (巴努·田所 for the cadet house 16798106), and
+        `house_realm_name_zh` deliberately skips it because ordinary houses fall back to the
+        parent house or dynasty there. The date selects the house from `house_history`; without
+        one the current house is used."""
+        hid = self._house_at(cid, date)
         if isinstance(hid, int):
-            nm = cl.house_realm_name_zh(self.melt, hid)
+            _hp = ((self.melt.get("dynasties") or {}).get("dynasty_house") or {}) \
+                .get(str(hid)) or {}
+            if str(_hp.get("localized_name") or "").strip():
+                nm = cl.house_name_zh(self.melt, hid)
+            else:
+                nm = cl.house_realm_name_zh(self.melt, hid)
             if nm:
                 return nm
         return self.dynasty_name(cid)
 
-    def realm_name(self, tid):
+    def realm_name(self, tid, date=None):
         """Realm name of a house-named ruler: k_ → {house}苏丹国; e_/h_ → {house}哈里发国 when he is
         also caliph, else {house}帝国.
 
@@ -17785,7 +17794,10 @@ class Facts:
         meritocratic and tribal governments write `no` or carry no key), and the title itself must
         not be exempted by `can_be_named_after_dynasty = no` (h_dar_al_islam, d_sunni, the Mongol
         khanates). An administrative e_arabia therefore keeps its own name 阿拉伯帝国 instead of
-        taking a house name."""
+        taking a house name.
+
+        `date` selects the house of that day; the holder, government and faith stay on the
+        writing-time values until C4 passes them through as well."""
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
         holder = t.get("holder")
@@ -17797,7 +17809,7 @@ class Facts:
             return ""
         if not self.is_islamic(holder):
             return ""
-        house = self._realm_house_name(holder)
+        house = self._realm_house_name(holder, date)
         if not house:
             return ""
         if key.startswith("k_"):
