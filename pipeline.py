@@ -1745,6 +1745,7 @@ _REIGN_END_WORD = {
     "tonsured": "剃发退位",      # Buddhist "seek the pure land": add_trait = devoted + give up the estate
     "abdicated": "退隐让位",     # generic "renounce head of house": only adds ep3_renounced_estate
     "landless": "去位转无地",    # lost all land
+    # 失去所有土地在RtP以后并不意味着游戏结束，这里换人不合理
     "unknown": "让位",           # abdication without an attributed cause
 }
 

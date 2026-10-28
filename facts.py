@@ -55,11 +55,11 @@ _CULTURE_TITLE_FAMILY = {"han": "chinese"}
 FAITH_TYPE_ZH = {"jingxue": "经学"}
 
 GOVERNMENT_ZH = {
-    "celestial_government": "天朝官制", "feudal_government": "封建采邑制",
-    "clan_government": "部族宗法制", "tribal_government": "部落制",
+    "celestial_government": "天朝制", "feudal_government": "封建制",
+    "clan_government": "氏族制", "tribal_government": "部落制",
     "republic_government": "共和制", "theocracy_government": "教权制",
     "landless_adventurer_government": "冒险者",
-    "administrative_government": "行政官制",
+    "administrative_government": "行政制",
 }
 
 
@@ -5170,7 +5170,7 @@ class Facts:
             tname = "、".join(titles[:3]) + f"等{len(titles)}处领地"
         else:
             tname = "、".join(titles)
-        return f"{dead}去世，{heir_lbl}从其手中承袭{tname}。"
+        return f"{dead}去世，{heir_lbl}从其手中继承{tname}。"
 
     def inherit_pairs(self, cid):
         """Pair the character's death memories with his inheritance memories (memoized per cid).
@@ -5517,7 +5517,7 @@ class Facts:
             ph = self.prev_holder(tid, date, exclude=cid)
             pn = self.person_label(ph, date=date, style="brief") \
                 if isinstance(ph, int) else ""
-            return f"承袭自{pn}" if (pn and reason == "inheritance") else verb
+            return f"继承自{pn}" if (pn and reason == "inheritance") else verb
         return verb
 
     def government_changes(self, cid=None):
@@ -5667,7 +5667,7 @@ class Facts:
             clan = f"，属{dn}宗族" if dn and hn and dn != hn and not _east \
                 and (new_house or dyn_changed) else ""
             if new_house:
-                segs.append(f"{dm}起别立{nm}{clan}")
+                segs.append(f"{dm}起另立{nm}{clan}")
             elif house_changed and dyn_changed:
                 segs.append(f"{dm}起家族与宗族并称{_house_shi(dn or hn)}")
             elif house_changed:
@@ -12410,7 +12410,7 @@ class Facts:
                 if not tname:
                     continue  # with no title name available, never emit the raw key
                 verb = "被毁" if ltype == "destroyed" else "失去"
-                out.append(f"{self.date(gain)}承袭{tname}，"
+                out.append(f"{self.date(gain)}继承{tname}，"
                            f"{self.date(loss)}{verb}，在位仅{span}日")
         return out
 
@@ -16517,8 +16517,8 @@ class Facts:
                     and self._in_church_window(d, win):
                 yr = str(d).split(".")[0]
                 nm = cl.faith_name_of(self.melt, fid)
-                rows.append(f"{yr}年起，{nm}失去大公教会地位，别立新信仰。" if nm
-                            else f"{yr}年起，本礼失去大公教会地位，别立新信仰。")
+                rows.append(f"{yr}年起，{nm}失去大公教会地位，成为新信仰。" if nm
+                            else f"{yr}年起，本礼失去大公教会地位，成为新信仰。")
             prev = cur
         return rows
 
@@ -23995,7 +23995,7 @@ def _house_founding_events(f):
         _east = f.name_order(pid) in cl.EASTERN_NAME_ORDERS
         clan = f"，属{dn_raw}宗族" if dn_raw and hn and dn != hn and not _east else ""
         if new_house:
-            body = f"{nm}别立{hn or dn}{clan}。"
+            body = f"{nm}另立{hn or dn}{clan}。"
         elif house_changed and dyn_changed:
             body = f"{nm}家族与宗族并称{hn or dn}。"
         elif house_changed:
