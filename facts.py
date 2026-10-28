@@ -3760,7 +3760,7 @@ class Facts:
             specific = self._specific_name(tid)
             if specific:
                 return specific
-        rn = self.realm_name(tid)  # Islamic rulers' dynamic realm name takes priority
+        rn = self.realm_name(tid, date)  # Islamic rulers' dynamic realm name takes priority
         if rn and not site:
             return rn
         tier = ""
@@ -10022,7 +10022,7 @@ class Facts:
         mo = self._minister_office(tid)
         if mo:
             return mo
-        rn = self.realm_name(tid)
+        rn = self.realm_name(tid, anchor)
         if rn:
             return rn
         # 惣領制 titles carry "武士团" in the display name (see `_title_display_name`)
@@ -15613,10 +15613,10 @@ class Facts:
             return False
         return bool(set(docs) & self._sacrifice_doctrines)
 
-    def is_islamic(self, cid):
-        """Whether the character is an Islamic ruler: faith → religion → religion_type in the
-        Islamic set."""
-        fid = self._faith_id(cid)
+    def is_islamic(self, cid, date=None):
+        """Whether the character is an Islamic ruler on `date`: faith → religion →
+        religion_type in the Islamic set. Without a date the current faith is read."""
+        fid = self._faith_id(cid, date)
         if fid is None:
             return False
         fe = cl.faith_entry(self.melt, fid)
@@ -15630,25 +15630,27 @@ class Facts:
         return (isinstance(re, dict)
                 and (re.get("religion_type") or "") in self._ISLAM_RELIGIONS)
 
-    def is_caliph(self, cid):
-        """Whether the character is also caliph: current holder of the faith's religious head
+    def is_caliph(self, cid, date=None):
+        """Whether the character is also caliph on `date`: holder of the faith's religious head
         title (faith.religious_head, e.g. d_sunni) is the character himself.
 
         In 1.20 `faith.religious_head` is empty and the leader is recorded in
         `rites.database[rite].head_of_rite`, so a fallback also accepts "head of own rite" while
-        additionally requiring an Islamic religion (this keeps the pope out)."""
-        fid = self._faith_id(cid)
+        additionally requiring an Islamic religion (this keeps the pope out). The faith, the rite
+        and the office holder are read on `date`; without one the current values are used."""
+        fid = self._faith_id(cid, date)
         if fid is None:
             return False
         fe = cl.faith_entry(self.melt, fid)
         rh = fe.get("religious_head")
         if isinstance(rh, int) and rh != self._NO_RELIGIOUS_HEAD:
             t = self._lt.get(str(rh)) or {}
-            if isinstance(t, dict) and t.get("holder") == cid:
+            if isinstance(t, dict) \
+                    and self._holder_at_or_now(t, rh, date) == cid:
                 return True
-        rid = self._rite_id(cid)
+        rid = self._rite_id(cid, date)
         if rid is not None and cl.head_of_rite(self.melt, rid) == cid:
-            return self.is_islamic(cid)
+            return self.is_islamic(cid, date)
         return False
 
     def _holds_head_seat(self, cid):
@@ -17812,25 +17814,27 @@ class Facts:
         khanates). An administrative e_arabia therefore keeps its own name 阿拉伯帝国 instead of
         taking a house name.
 
-        `date` selects the house of that day; the holder, government and faith stay on the
-        writing-time values until C4 passes them through as well."""
+        `date` selects the holder, his government, his house and his faith of that day, so a
+        title held by a clan ruler in 1217 keeps 美索不达米亚王国 instead of taking the house
+        name current when the article is written. Without a date the writing-time values are
+        used."""
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
-        holder = t.get("holder")
+        holder = self._holder_at_or_now(t, tid, date)
         if not key.startswith(("k_", "e_", "h_")) or not isinstance(holder, int):
             return ""
-        if not L.dynasty_named_government(self._title_government(tid, self.as_of)):
+        if not L.dynasty_named_government(self._title_government(tid, date or self.as_of)):
             return ""
         if L.title_name_locked(key):
             return ""
-        if not self.is_islamic(holder):
+        if not self.is_islamic(holder, date):
             return ""
         house = self._realm_house_name(holder, date)
         if not house:
             return ""
         if key.startswith("k_"):
             return f"{house}苏丹国"
-        if self.is_caliph(holder):
+        if self.is_caliph(holder, date):
             return f"{house}哈里发国"
         return f"{house}帝国"
 
@@ -20768,6 +20772,12 @@ class _NameLog:
         return False
 
 
+# Probe: title memories whose event day cannot be resolved (neither title history nor
+# creation_date), so the title name falls back to the undated writing-time read. Exported for
+# verification; an entry means a title sentence may name a later realm.
+_MEM_TITLE_UNDATED = []
+
+
 def _mem_sentence_body(f, owner_id, mem):
     mtype = mem.get("type")
     # ---- Hostage family: one sentence per viewpoint (merge: `_pair_hostages`) ----
@@ -20988,6 +20998,10 @@ def _mem_sentence_body(f, owner_id, mem):
                 # Site anchor: the protagonist whenever he held the title.
                 _scid = f._site_cid_for(title_tid, owner_id)
                 _site = (_reason == "migration")
+                # mem_date already falls back to creation_date; both absent leaves no event day,
+                # and only then does the undated name apply (recorded in the probe list).
+                if not _td:
+                    _MEM_TITLE_UNDATED.append((owner_id, title_tid))
                 title = f.title(title_tid, date=_td, site=_site, site_cid=_scid) \
                     or f.title(title_tid, site=_site, site_cid=_scid)
                 break
@@ -22369,7 +22383,7 @@ def _war_title_gain(f, winner, loser, d0, d1):
             continue
         tid = next((v.get("identity") for v in (m.get("vars") or [])
                     if v.get("flag") == "landed_title" and v.get("identity")), None)
-        nm = f.title(tid) if tid else ""
+        nm = f.title(tid, date=d) if tid else ""
         if nm and nm not in out:
             out.append(nm)
     return out
@@ -22403,7 +22417,7 @@ def _war_start_clause(f, ev, sl):
         cb = "挑战信仰领袖" if _mine is not None else "扶立对立教宗"
         _manner = "为名"
     me = f.event_name(owner, date=d) or ""
-    tname = f.title(sl.get("title")) if sl.get("title") else ""
+    tname = f.title(sl.get("title"), date=d) if sl.get("title") else ""
 
     def _cb_phrase(subject):
         """The "{subject} over {cb}..." clause; a "in the name of" casus belli closes with a comma."""

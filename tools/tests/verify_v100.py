@@ -72,9 +72,9 @@ def _realm_stub(gov, key, **flags):
     f.as_of = "999.7.7"
     f._lt = {"1": {"key": key, "holder": 42}}
     f._title_government = lambda tid, date=None: gov
-    f.is_islamic = lambda cid: flags.get("islamic", True)
-    f.is_caliph = lambda cid: flags.get("caliph", True)
-    f._realm_house_name = lambda cid: flags.get("house", "阿拔斯")
+    f.is_islamic = lambda cid, date=None: flags.get("islamic", True)
+    f.is_caliph = lambda cid, date=None: flags.get("caliph", True)
+    f._realm_house_name = lambda cid, date=None: flags.get("house", "阿拔斯")
     return f
 
 
