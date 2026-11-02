@@ -8,6 +8,9 @@ docs/
 Changelog.txt
 changelog.txt
 
+# 本机更新日志（README 只写使用方法；版本沿革只留本机，不随 GitHub 上传）
+CHANGELOG.md
+
 # 旧版对照表的本机归档（1.19 基线，只留本机）
 data/Archive/
 data/.tmp_*
