@@ -22,6 +22,9 @@ CK3 yearly autosave (.ck3)
 The program **only reads save files and writes to its own output directory**; it never
 modifies game files or saves.
 
+> Batch files and output folders use Chinese names; copy them exactly as shown in the
+> commands below.
+
 ---
 
 ## 1. Prerequisites
