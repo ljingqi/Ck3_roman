@@ -84,8 +84,8 @@ contains your API key and is excluded by `.gitignore`, so it will not be committ
 
 **The first run requires building the lookup tables once (manual, one time).**
 Double-click `重建对照表.bat` in the project root: the program scans the game and enabled
-mods and generates all Chinese lookup tables (`data\*.json`, about 30 MB). On this machine
-it takes about 11 seconds (depending on disk and mod count).
+mods and generates all Chinese lookup tables (`data\*.json`, about 30 MB). The time depends
+on disk and mod count.
 
 **Subsequent starts do not rebuild tables automatically.** Rerun `重建对照表.bat` only in
 these two cases:
@@ -303,9 +303,8 @@ the next yearly autosave).
 A: Put `rakaly.exe` in `tools\`, or set the full path via `rakaly_path` in `config.json`.
 
 **Q: The first run is very slow?**
-A: Double-click `重建对照表.bat` once to build the tables (about 11 seconds on this machine,
-depending on disk and mod count); after that, startup only reads the tables and does not
-rebuild.
+A: Double-click `重建对照表.bat` once to build the tables (the time depends on disk and mod
+count); after that, startup only reads the tables and does not rebuild.
 
 **Q: Names are wrong after a game update or mod change?**
 A: Double-click `重建对照表.bat` to rerun it; to check status only, use
