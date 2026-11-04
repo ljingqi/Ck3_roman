@@ -451,7 +451,7 @@ FACT_WORDING = {
     "hook_group_held": "{actor}握有对{names}共{n}人的{strength}牵制{name}。",
     "hook_group_over": "{names}共{n}人握有对{actor}的{strength}牵制{name}。",
     "hook_strong_word": "强",
-    "hook_since": "，自{year}年起",
+    "hook_since": "，自{year}起",
     "hook_expires": "，{date}届满",
     # Hook whitelist criterion: only hooks with a concrete event behind them reach
     # the fact layer, while generic favors and identity hooks do not. The test runs
@@ -536,7 +536,7 @@ FACT_WORDING = {
     "concubine_divorced":
         "{date}，{name}原为{ex}之妻，因{actor}纳之为妾而离异。",
     # Spouse records merge the same-month bedchamber and love memories into one line.
-    "affair_pair_spouse": "{y}年{m}月，{a}与{b}夫妻情笃。",
+    "affair_pair_spouse": "{y}{m}月，{a}与{b}夫妻情笃。",
     # Affair arc: one sentence per lover. The arc already names the partner, so the
     # segments do not repeat it.
     "affair_entry": "{date}私通",

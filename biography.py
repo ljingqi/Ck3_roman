@@ -3185,7 +3185,9 @@ def _appendix_text(facts):
     # `_pair_war_events` writes the outcome's own date into the declaring row's body
     # ("…应战；962年7月6日，…战胜…。"), which under a day grid makes the row contradict its own cell.
     # Such a body becomes two dated events (方案 v121 §2.4(4)).
-    _EMB_DATE_RE = re.compile(r"^([^；;]+)[；;](\d+)年(?:(\d+)月(?:(\d+)日)?)?[，,](.+)$")
+    _EMB_DATE_RE = re.compile(
+        r"^([^；;]+)[；;]((?:公元前|公元|前)?\d+年)"
+        r"(?:(\d+)月(?:(\d+)日)?)?[，,](.+)$")
 
     def _split_embedded(y, mo, d, body):
         """[(y, mo, d, text)] — one entry, or two when the body embeds a second date."""
@@ -3194,11 +3196,13 @@ def _appendix_text(facts):
             return [(y, mo, d, body)]
         head = m.group(1).rstrip("。 \u3000") + "。"
         out = [(y, mo, d, head)]
+        ey = llm.parse_cn_year(m.group(2))
+        ey = int(ey) if ey is not None else int(m.group(2))
         if m.group(3):
-            out.append((int(m.group(2)), int(m.group(3)),
+            out.append((ey, int(m.group(3)),
                         int(m.group(4)) if m.group(4) else 0, m.group(5)))
         else:
-            out.append((int(m.group(2)), 1, 1, m.group(5)))
+            out.append((ey, 1, 1, m.group(5)))
         return out
 
     for e in events:
@@ -3212,9 +3216,9 @@ def _appendix_text(facts):
             d = _parts[2] if len(_parts) > 2 else 0
         except Exception:
             continue
-        body = re.sub(r"^\d+年\d+月\d+日，?", "", e["text"])
-        body = re.sub(r"^\d+年\d+月，?", "", body)
-        body = re.sub(r"^\d+年，?", "", body)
+        body = re.sub(r"^(?:公元前|公元|前)?\d+年\d+月\d+日，?", "", e["text"])
+        body = re.sub(r"^(?:公元前|公元|前)?\d+年\d+月，?", "", body)
+        body = re.sub(r"^(?:公元前|公元|前)?\d+年，?", "", body)
         for (yy, mm, dd, part) in _split_embedded(y, mo, d, body):
             _add(yy, mm, dd, part)
     if by_day:
@@ -3233,14 +3237,14 @@ def _appendix_text(facts):
             if n_year[y] == 1:
                 for body in bodies:
                     if year_only:
-                        lines.append(f"- {y}年 {body}")
+                        lines.append(f"- {llm.fmt_cn_year(y)} {body}")
                     elif d == 0:
-                        lines.append(f"- {y}年{mo}月 {body}")
+                        lines.append(f"- {llm.fmt_cn_year(y)}{mo}月 {body}")
                     else:
-                        lines.append(f"- {y}年{mo}月{d}日 {body}")
+                        lines.append(f"- {llm.fmt_cn_year(y)}{mo}月{d}日 {body}")
                 continue
             if y != last_y:
-                lines.append(f"- {y}年")
+                lines.append(f"- {llm.fmt_cn_year(y)}")
                 last_y = y
                 last_mo = None
             if year_only:
@@ -3273,7 +3277,7 @@ def _timeline_event_key(body):
     m = re.match(r"^.+?的仇人(.+去世。)$", body)
     if m:
         return ("亡", m.group(1))
-    m = re.match(r"^(.+?)死于(?:\d+年\d+月\d+日|\d+年)", body)
+    m = re.match(r"^(.+?)死于(?:(?:公元前|公元|前)?\d+年\d+月\d+日|(?:公元前|公元|前)?\d+年)", body)
     if m:
         return ("亡", m.group(1) + "去世。")
     m = re.match(r"^.+?(?:得长子|得长女|添子|添女)(.+。)$", body)
@@ -3295,7 +3299,7 @@ def _timeline_event_key(body):
 def _timeline_event_priority(body, pname):
     """Ranking when several viewpoints of one event compete: death record (fullest) >
     death memory > rest; within a tier, text opening with the protagonist's name wins."""
-    if re.search(r"死于(?:\d+年\d+月\d+日|\d+年)", body):
+    if re.search(r"死于(?:(?:公元前|公元|前)?\d+年\d+月\d+日|(?:公元前|公元|前)?\d+年)", body):
         tier = 2
     elif re.search(r"的(?:亲属|友人|仇人).+?去世。$", body):
         tier = 1
@@ -3347,7 +3351,8 @@ def _chrono_mid_req(base_req, idx, total, periods, last=False, family=False):
             _s = str(p.get("start") or "").split(".", 1)[0]
             _e = str(p.get("end") or "").split(".", 1)[0] if p.get("end") else ""
             if _s:
-                spans.append(f"{p.get('name') or ''}（{_s}年至{_e or '今'}）")
+                spans.append(f"{p.get('name') or ''}（{llm.fmt_cn_year(_s)}至"
+                             f"{llm.fmt_cn_year(_e) if _e else '今'}）")
         head += "本板块写这几朝：" + "、".join(names) + "。"
         if spans:
             head += "年代区间：" + "、".join(spans) + "。"
@@ -4215,7 +4220,9 @@ def generate_biography(cache, melt, cfg, out_path=None, decade=None, as_of=None,
     # the reading page can still sort and label the character.
     pp = facts["protagonist"] or {}
     person = pp.get("name") or facts.get("player_name") or ""
-    birth = pp.get("birth") or ""
+    # the header stays on the raw game year: htmlview parses and sorts on it
+    birth_raw = pp.get("birth_raw")
+    birth = f"{birth_raw}年" if birth_raw else (pp.get("birth") or "")
     reign = reign_start(cache)
     if decade:
         piece = f"第{decade}个十年传记"
