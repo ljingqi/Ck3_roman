@@ -50,7 +50,7 @@ pip install -r requirements.txt
 ```json
 {
   "deepseek_api_key": "sk-你的密钥",
-  "deepseek_model": "deepseek-chat",
+  "deepseek_model": "deepseek-flash",
   "ck3_game_dir": "",
   "rakaly_path": "tools/rakaly.exe"
 }
@@ -59,7 +59,7 @@ pip install -r requirements.txt
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `deepseek_api_key` | 空 | **必填**，DeepSeek 密钥。 |
-| `deepseek_model` | `deepseek-chat` | 使用的模型名。 |
+| `deepseek_model` | `deepseek-flash` | 使用的模型名。 |
 | `deepseek_base_url` | 官方 chat/completions | 换用兼容接口时才改。 |
 | `ck3_user_dir` | 自动取当前用户的 `Documents\Paradox Interactive\Crusader Kings III` | 存档所在目录。 |
 | `save_dir` | `ck3_user_dir\save games` | 具体存档目录。 |

@@ -59,7 +59,7 @@ contains your API key and is excluded by `.gitignore`, so it will not be committ
 ```json
 {
   "deepseek_api_key": "sk-your-key",
-  "deepseek_model": "deepseek-chat",
+  "deepseek_model": "deepseek-flash",
   "ck3_game_dir": "",
   "rakaly_path": "tools/rakaly.exe"
 }
@@ -68,7 +68,7 @@ contains your API key and is excluded by `.gitignore`, so it will not be committ
 | Field | Default | Notes |
 | --- | --- | --- |
 | `deepseek_api_key` | empty | **Required**, your DeepSeek key. |
-| `deepseek_model` | `deepseek-chat` | Model name. |
+| `deepseek_model` | `deepseek-flash` | Model name. |
 | `deepseek_base_url` | official chat/completions | Change only when using a compatible endpoint. |
 | `ck3_user_dir` | current user's `Documents\Paradox Interactive\Crusader Kings III` | Save directory root. |
 | `save_dir` | `ck3_user_dir\save games` | Specific save folder. |
