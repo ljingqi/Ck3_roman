@@ -3798,8 +3798,8 @@ class Facts:
             # stays as it is; western place names still take the tier word.
             if key.startswith("c_") and word and _CN_PLACE_SUFFIX_RE.search(name):
                 return name
-            # no tier word when the name already carries a state suffix, or the word is empty
-            if word and not _STATE_SUFFIX_RE.search(name):
+            # no tier word when the name already carries a state suffix or this very word
+            if word and not name.endswith(word) and not _STATE_SUFFIX_RE.search(name):
                 return f"{name}{word}"
         return name
 
@@ -3856,10 +3856,11 @@ class Facts:
                          independent=None):
         """Single outlet for a title's tier word.
 
-        Order: the holder-specific flavorization entry with a `governments` condition, otherwise the
-        celestial chain word for a chain government (`_celestial_chain_word`), otherwise the
-        localization tier word. The barony level never emits one, because the game's barony words are
-        either a rank noun or holding-gated land types, neither of which belongs in a place name.
+        Order: the flavorization `type = title` entry resolved for the holder (whatever conditions
+        that entry carries), otherwise the celestial chain word for a chain government
+        (`_celestial_chain_word`), otherwise the localization tier word. The barony level never
+        emits one, because the game's barony words are either a rank noun or holding-gated land
+        types, neither of which belongs in a place name.
         """
         if tier == "barony" or self._is_cardinal_title(tid):
             # Barony level emits no tier word (see the docstring); cardinal titles
@@ -3873,11 +3874,9 @@ class Facts:
             fk = self._flavor_key("title", tier, cid, tid=tid, gov=government,
                                   date=date)
             if fk:
-                e = (FZ.table().get("entries") or {}).get(fk) or {}
-                if e.get("governments"):
-                    v = L.loc(self.table, fk)
-                    if v and not v.startswith("$") and not v.startswith("["):
-                        return v
+                v = L.loc(self.table, fk)
+                if v and not v.startswith("$") and not v.startswith("["):
+                    return v
         w = self._celestial_chain_word(tier, government, bool(independent))
         if w:
             return w
@@ -4500,7 +4499,8 @@ class Facts:
         # avoids duplicated forms
         if key.startswith("c_") and word and _CN_PLACE_SUFFIX_RE.search(nm):
             return nm
-        if word and not any(nm.endswith(w) for w in self._rank_words):
+        if word and not nm.endswith(word) \
+                and not any(nm.endswith(w) for w in self._rank_words):
             return f"{nm}{word}"
         return nm
 

@@ -2725,12 +2725,15 @@ def government_prefix(government):
 
 
 def tier_word(table, government, tier):
-    """Tier word under a government: the DLC landed-tier words first (culture_titles keys for the
-    celestial government), falling back to the generic table.
+    """Tier word under a government: the game's `<tier>_<government>` culture_titles key first
+    (e.g. `county_feudal`, `duchy_feudal`, or a total-conversion mod's own values), then the DLC
+    celestial landed-tier keys, then the generic table.
 
-    The `<government>_salary_rank_*` keys are deliberately ignored because they label subject
-    contract salary ranks, not tier levels. Correct administrative tier words come from
-    common/flavorization entries with `type = title`, which facts._tier_word_at queries first."""
+    Barony is deliberately skipped: its words are holding-gated land types (田/社), not the
+    title-name suffix `facts._title_tier_word` appends. The `<government>_salary_rank_*` keys are
+    deliberately ignored because they label subject contract salary ranks, not tier levels.
+    Correct administrative tier words come from common/flavorization entries with `type = title`,
+    which facts._tier_word_at queries first."""
     prefix = government_prefix(government)
     # DLC "All Under Heaven" landed-tier keys for the celestial government: the five landed
     # tiers use `<tier>_celestial_chinese_vassal`, while hegemon uses
@@ -2739,6 +2742,12 @@ def tier_word(table, government, tier):
         key = ("hegemony_celestial_chinese" if tier == "hegemon"
                else f"{tier}_celestial_chinese_vassal")
         v = table.get(key)
+        if v:
+            c = clean_loc_value(v, table)
+            if c and not c.startswith("$") and not c.startswith("["):
+                return c
+    if prefix and tier != "barony":
+        v = table.get(f"{tier}_{prefix}")
         if v:
             c = clean_loc_value(v, table)
             if c and not c.startswith("$") and not c.startswith("["):
