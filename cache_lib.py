@@ -2276,16 +2276,54 @@ def _culture_id_at_rec(rec, date):
     return None
 
 
+def _surname_kind(order, memo=None):
+    """Which name an Eastern order puts first: "house" or "dynasty".
+
+    The game renders from the character's name-format localization key, and a total
+    conversion mod may change that key (大梦春秋 rewrites $DYNASTY$ to $HOUSE$). Read the
+    same key the game uses so the choice follows the installed mods, and fall back to
+    the dynasty name — vanilla's wording — when neither token is readable."""
+    mkey = f"__surname_kind_{order}__"
+    if memo is not None and mkey in memo:
+        return memo[mkey]
+    table = localization.table()
+    kind = None
+    for key in (f"CHARACTER_FIRST_NAME_{order}", f"FORMAT_CHARACTER_NAME_{order}"):
+        if key not in table:
+            continue
+        v = localization.loc(table, key) or ""
+        head = v.split("$NAME$", 1)[0] if "$NAME$" in v else v
+        if "$HOUSE$" in head:
+            kind = "house"
+            break
+        if "$DYNASTY$" in head:
+            kind = "dynasty"
+            break
+    if kind is None:
+        kind = "dynasty"
+    if memo is not None:
+        memo[mkey] = kind
+    return kind
+
+
+def _house_or_dynasty_surname(kind, h, dn):
+    """The surname the game's template asks for, with the other name as fallback (a house
+    founded after the date, or a cache without one of the two names)."""
+    if kind == "house":
+        return h or dn
+    return dn or h
+
+
 def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
                  date=None, ignore_regnal=False):
     """The game-rule display name used project-wide.
 
     A patronymic culture gives "given·patronymic", which replaces the house name;
-    otherwise the name order applies, where an Eastern order takes the DYNASTY name as
-    surname (the game's $DYNASTY$ template) and a Western order the HOUSE name
-    ($HOUSE$). Inference runs along the paternal line, the siblings, the house, the
-    mother and the language table, and when it fails only the given name is returned,
-    never a wrongly ordered "surname+given".
+    otherwise the name order applies, where an Eastern order takes the surname named by
+    the game's own name-format localization key ($HOUSE$ in 大梦春秋, $DYNASTY$ in
+    vanilla) and a Western order the HOUSE name. Inference runs along the paternal line,
+    the siblings, the house, the mother and the language table, and when it fails only
+    the given name is returned, never a wrongly ordered "surname+given".
 
     Name lookup chain: cache, then the melt character, then names.json (dropped when the
     playthrough differs). date selects the house name of that day and, through the culture
@@ -2345,9 +2383,9 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
     order = resolved_name_order(cache, cid, melt=melt, chars=chars,
                                 memo=memo, date=date)
     if order in EASTERN_NAME_ORDERS:
-        # Eastern order: the surname is the dynasty name; older caches lacking it resolve
-        # it lazily from the melt. A surname equal to the given name is written once. If
-        # there is no dynasty name, the house name is used.
+        # Eastern order: house or dynasty, whichever the game's name-format key names.
+        # Older caches lacking the dynasty name resolve it lazily from the melt; a
+        # surname equal to the given name is written once.
         if not dn and melt is not None:
             hid = rec.get("dynasty_house")
             if hid is not None:
@@ -2358,8 +2396,7 @@ def display_name(cache, cid, melt=None, names_path=None, chars=None, memo=None,
                     dn = dynasty_name_zh(melt, did) if did is not None else ""
                     if memo is not None:
                         memo[mkey] = dn
-        # no dynasty name: fall back to the house name
-        surname = dn or h
+        surname = _house_or_dynasty_surname(_surname_kind(order, memo=memo), h, dn)
         if surname == nm:
             return nm
         return surname + nm if surname else nm
