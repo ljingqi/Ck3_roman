@@ -3188,6 +3188,107 @@ def loc(table, key, default=""):
     return clean_loc_value(v, table)
 
 
+# -- Custom era (a total-conversion mod rewrites RIGHT_YEAR, e.g. 大梦春秋III) --
+
+_ERA_CACHE = (None, None)
+_ERA_TEXT_RE = re.compile(r"(公元前|公元|西元|前)\s*(\d+)\s*年")
+_ERA_YEAR_RE = re.compile(
+    r"LessThan_int32\(\s*'\(int32\)\$YEAR\|q\$'\s*,\s*'\(int32\)(\d+)'\s*\)")
+
+
+def _detect_era(t):
+    """The game's custom era as {"first_ad_year", "bc", "ad", "source"}, or None.
+
+    A mod that displays BC years rewrites RIGHT_YEAR into an offset formula whose threshold
+    is the first AD year (4620 in 大梦春秋: 3850 -> 公元前770年). Vanilla's RIGHT_YEAR is the
+    identity, so this stays off there. A bookmark anchor start_year_<y>_<m>_<d> has to agree
+    with the formula, which keeps an unrelated 前/BC marker from switching the era on."""
+    if not t:
+        return None
+    raw = t.get("RIGHT_YEAR") or t.get("RIGHT_DATE_YEAR") or ""
+    raw = raw if isinstance(raw, str) else str(raw)
+    if "前" not in raw and "BC" not in raw.upper():
+        return None
+    m = _ERA_YEAR_RE.search(raw)
+    if not m:
+        return None
+    first_ad = int(m.group(1))
+    if first_ad == 1:
+        return None
+    bc_label, ad_label = "公元前", "公元"
+    anchor_ok = False
+    for key, val in t.items():
+        km = re.match(r"^start_year_(\d+)_\d+_\d+$", str(key))
+        if not km or not isinstance(val, str):
+            continue
+        y = int(km.group(1))
+        am = _ERA_TEXT_RE.match(clean_loc_value(val, t))
+        if not am:
+            continue
+        n = int(am.group(2))
+        if am.group(1) in ("公元前", "前"):
+            anchor = y + n
+            label = "公元前" if am.group(1) == "公元前" else "前"
+        else:
+            anchor = y - n + 1
+            label = "公元" if am.group(1) == "公元" else "西元"
+        if anchor == first_ad:
+            if am.group(1) in ("公元前", "前"):
+                bc_label = label
+            else:
+                ad_label = label
+            anchor_ok = True
+            break
+    if not anchor_ok:
+        return None
+    return {"first_ad_year": first_ad, "bc": bc_label, "ad": ad_label,
+            "source": "RIGHT_YEAR"}
+
+
+def era(cfg=None):
+    """The active custom era, or None when the game shows raw years. Cached per table object
+    so replacing localization._TABLE (tests) re-detects."""
+    global _ERA_CACHE
+    t = table(cfg)
+    if _ERA_CACHE[0] is t:
+        return _ERA_CACHE[1]
+    val = _detect_era(t)
+    _ERA_CACHE = (t, val)
+    return val
+
+
+def fmt_year(year):
+    """Game year as the game displays it: 公元前/公元 with a custom era, raw otherwise."""
+    try:
+        y = int(year)
+    except Exception:
+        return f"{year}年"
+    e = era()
+    if not e:
+        return f"{y}年"
+    first_ad = e["first_ad_year"]
+    if y < first_ad:
+        return f"{e['bc']}{first_ad - y}年"
+    return f"{e['ad']}{y - first_ad + 1}年"
+
+
+def parse_cn_year(text):
+    """Inverse of fmt_year for timeline text: 公元前/前/公元/西元 or a bare raw year to the game
+    year; None when no year is found."""
+    s = str(text or "")
+    m = _ERA_TEXT_RE.search(s)
+    if m:
+        e = era()
+        if not e:
+            return None
+        n = int(m.group(2))
+        if m.group(1) in ("公元前", "前"):
+            return e["first_ad_year"] - n
+        return e["first_ad_year"] + n - 1
+    m = re.match(r"^\s*(\d{1,4})\s*年", s)
+    return int(m.group(1)) if m else None
+
+
 def miss_report(top=40):
     """Miss counts by key, highest first, limited to `top` entries; used for localization
     coverage audits."""

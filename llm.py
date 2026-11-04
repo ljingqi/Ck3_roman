@@ -232,6 +232,25 @@ def clean_prompt_messages(messages):
     return cleaned
 
 
+def fmt_cn_year(year):
+    """Game year in the game's own calendar (公元前/公元 under a custom-era mod); a lazy
+    import keeps localization -> llm from cycling."""
+    try:
+        import localization
+        return localization.fmt_year(year)
+    except Exception:
+        return f"{year}年"
+
+
+def parse_cn_year(text):
+    """Inverse of fmt_cn_year, for reading rendered years back to game years."""
+    try:
+        import localization
+        return localization.parse_cn_year(text)
+    except Exception:
+        return None
+
+
 def fmt_cn_date(date_str):
     """Render a CK3 date such as '869.2.22' as a Chinese date string; illegal input is
     returned as-is. January 1 renders as the year alone: the game writes unknown dates
@@ -244,8 +263,8 @@ def fmt_cn_date(date_str):
         try:
             y, mo, d = (int(x) for x in parts[:3])
             if mo == 1 and d == 1:
-                return f"{y}年"
-            return f"{y}年{mo}月{d}日"
+                return fmt_cn_year(y)
+            return f"{fmt_cn_year(y)}{mo}月{d}日"
         except Exception:
             return s
     return s
