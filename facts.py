@@ -8324,6 +8324,23 @@ class Facts:
         self._indep_cache[key] = v
         return v
 
+    def _is_tributary(self, cid, date=None):
+        """Whether the character is a tributary ruler on `date` (a tie between realms, not
+        vassalage). Read from the dated vassal history entry's `trib` flag; inside the melt's
+        own ±400-day window the snapshot's contract group decides too, as in `_is_independent`.
+        False when no record exists."""
+        if cid is None:
+            return False
+        try:
+            _cid = int(cid)
+        except (TypeError, ValueError):
+            return False
+        if _cid in self._melt_tributary and date and self._melt_contract_date \
+                and abs(_date_ord(date) - _date_ord(self._melt_contract_date)) <= 400:
+            return True
+        ent = self._vassal_entry_at(cid, date) if date else None
+        return bool(ent.get("trib")) if ent is not None else False
+
     def _is_female(self, cid):
         """Sex: the cache's persisted `female` flag wins (it survives melt pruning), with the melt's
         character index as fallback for older caches. False for an invalid cid."""
@@ -9854,6 +9871,21 @@ class Facts:
         raw = str((self.table or {}).get(key) or "").strip()
         return raw.startswith("$spouse_")
 
+    def _dated_custom_word(self, key):
+        """Whether the localization value delegates to a person-level custom-loc block.
+
+        The writing-time word is a title-level convention (one word for every holder of the
+        title). A block whose arms test the character's independence, culture or traits — the
+        mod's kingdom address, for instance — yields a different word per holder and date, so
+        it must be evaluated at each date by `_office_word` instead of once at `as_of`."""
+        raw = str((self.table or {}).get(key) or "")
+        meta = (self._theocracy_titles or {}).get("meta") or {}
+        for m in _CUSTOM_REF_RE.finditer(raw):
+            info = meta.get(m.group(1)) or {}
+            if info and not info.get("legacy"):
+                return True
+        return False
+
     def _title_writing_word(self, tid, subject_cid=None):
         """Tier word the title carries at this biography's writing time, or ''.
 
@@ -9897,8 +9929,10 @@ class Facts:
                               context_cid=holder)
         word = ""
         if fk and not self._is_spouse_arm(fk) \
-                and not (not gov and FZ.is_unconditional(fk)):
-            v = self._loc_or_custom_word(fk, cid=subject, tid=tid, date=Tq)
+                and not (not gov and FZ.is_unconditional(fk)) \
+                and not self._dated_custom_word(fk):
+            v = self._loc_or_custom_word(fk, cid=subject, tid=tid, date=Tq,
+                                         context_cid=holder)
             if v and not v.startswith(("$", "[")):
                 word = v
         memo[key] = word
@@ -17404,6 +17438,30 @@ class Facts:
                 return True
         return False
 
+    def _trait_keys_at(self, cid, date=None):
+        """Trait keys held on a date, from the cached `trait_history` intervals
+        (`from ≤ date < to`); with no history (older caches) the current traits are used."""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        th = rec.get("trait_history") or {}
+        dk = cl.date_key(date) if date else \
+            (cl.date_key(self.as_of) if self.as_of else None)
+        out = set()
+        if th:
+            for key, ivs in th.items():
+                for iv in (ivs or []):
+                    frm, to = iv.get("from"), iv.get("to")
+                    if frm and dk is not None and cl.date_key(frm) > dk:
+                        continue
+                    if to and dk is not None and cl.date_key(to) <= dk:
+                        continue
+                    out.add(str(key))
+                    break
+            return out
+        for t in rec.get("traits") or []:
+            if isinstance(t, int) and 0 <= t < len(self._tl):
+                out.add(str(self._tl[t]))
+        return out
+
     def _has_secret(self, cid, secret_type):
         """Whether the character holds this secret (e.g. `secret_cannibal`): an owner match in
         `melt.secrets.secrets`."""
@@ -19266,20 +19324,32 @@ class Facts:
             return 3
         return self._eff_rank(tid)
 
-    def _theocracy_scope(self, cid, tid=None, date=None):
-        """Evaluation scope for the theocratic office arm table, matching the trigger slots of
-        `GetActualDukeTheocracyTitle` / `GetActualCountTheocracyTitle`: sex, faith key, religion key and
-        family, rite and its doctrines, the doctrine set, held titles (tier / province / cardinal), and this
-        title's own tier and province membership.
+    def _theocracy_scope(self, cid, tid=None, date=None, context_cid=None):
+        """Evaluation scope for the custom-localization arm tables, matching the trigger slots of
+        `GetActualDukeTheocracyTitle` / `GetActualCountTheocracyTitle` and the mod's kingdom
+        address (`LOC_Dm_flavor_kingdom_zhuxia`): sex, faith key, religion key and family, rite and
+        its doctrines, the doctrine set, held titles (tier / province / cardinal), this title's own
+        tier and province membership, and the dated culture / traits / tributary / independence.
 
         `clerical_elector_title` is a special game scope (the title where a cardinal elector sits), satisfied
         by holding any title with a non-empty `clerical_elector` (the Cardinal Titles family in
-        `07_pam_ecclesiastical_titles.txt`); its first available arm is 「枢机」."""
+        `07_pam_ecclesiastical_titles.txt`); its first available arm is 「枢机」.
+
+        `context_cid` is the character whose independence decides a title word (the writing-time
+        holder); it defaults to `cid`, which is the person being named."""
         s = {}
         if cid is None:
             return s
         d = date or self.as_of
         s["female"] = bool(self._is_female(cid))
+        s["culture"] = str(self._culture_entry(cid, d).get("culture_template")
+                           or self.culture_template(cid) or "")
+        s["traits"] = self._trait_keys_at(cid, d)
+        ctx = context_cid if context_cid is not None else cid
+        indep = self._is_independent(ctx, d)
+        # An undeterminable independence matches neither arm (see localization.cond_match).
+        s["independent"] = indep
+        s["tributary"] = bool(self._is_tributary(ctx, d))
         ftag, rtag = self._faith_tags(cid, d)
         s["faith"] = ftag
         s["religion"] = rtag
@@ -19310,42 +19380,62 @@ class Facts:
                                    if rank and t["tier"] == rank)
         return s
 
-    def _custom_loc_key(self, name, cid=None, tid=None, date=None, scope=None):
+    def _custom_loc_key(self, name, cid=None, tid=None, date=None, scope=None,
+                        context_cid=None):
         """Custom-localization block name → localization key of the first matching arm ('' when the
         table is missing or nothing matches).
 
         `GetActualBishopTitle` uses the existing bishop arm table (`L.bishop_titles`, shared with the
-        court chaplain); the rest (duke/count theocratic office words) use the newer table."""
+        court chaplain); the rest use the generalized arm table. The two theocracy blocks keep
+        their old permissive evaluation; any other block is skipped when it carries a trigger the
+        builder cannot model (see `localization.build_theocracy_titles`)."""
         if not name:
             return ""
-        sc = scope if scope is not None else self._theocracy_scope(cid, tid, date)
+        sc = scope if scope is not None else self._theocracy_scope(
+            cid, tid, date, context_cid=context_cid)
         if name == "GetActualBishopTitle":
             return L.pick_bishop_title(self._bishop_titles, sc)
-        return L.pick_custom_loc(self._theocracy_titles, name, sc)
+        return L.pick_custom_loc(self._theocracy_titles, name, sc,
+                                 allow_incomplete=name in L._THEOCRACY_CUSTOM_BLOCKS)
 
-    def _loc_or_custom_word(self, key, cid=None, tid=None, date=None, scope=None):
-        """Localization key → Chinese word; when the value is `[CHARACTER.Custom('X')]` the arm table is
-        evaluated first.
+    def _loc_or_custom_word(self, key, cid=None, tid=None, date=None, scope=None,
+                            context_cid=None):
+        """Localization key → Chinese word; every `[CHARACTER.Custom('X')]` inside the value is
+        replaced by that block's first matching arm.
 
-        The game delegates Christian theocratic office words wholly to a custom localization
+        The game delegates office words to a custom localization
         (`duke_theocracy_male_christianity_religion =
-        "[CHARACTER.Custom('GetActualDukeTheocracyTitle')]"`), which `localization.loc` strips as a whole
-        `[...]` segment, leaving the generic 「公爵」. This resolves the delegation. Unresolved strings
-        starting with `$` or `[` are filtered out."""
+        "[CHARACTER.Custom('GetActualDukeTheocracyTitle')]"`, and the mod's
+        `DM_zhuxia_kingdom_female = "女[Character.Custom('LOC_Dm_flavor_kingdom_zhuxia')]"`),
+        which `localization.loc` strips as a whole `[...]` segment, leaving the generic word.
+        This resolves the delegation. Unresolved strings starting with `$` or `[` are filtered
+        out, and a string containing a reference that resolves to nothing returns '' so the
+        caller can use its next word source."""
         raw = ""
         try:
             raw = str((self.table or {}).get(key) or "")
         except Exception:
             raw = ""
-        m = _CUSTOM_REF_RE.match(raw.strip())
-        if not m:
+        refs = list(_CUSTOM_REF_RE.finditer(raw))
+        if not refs:
             v = L.loc(self.table, key)
             return v if v and not v.startswith(("$", "[")) else ""
-        k2 = self._custom_loc_key(m.group(1), cid, tid, date, scope=scope)
-        if not k2:
-            return ""
-        v = L.loc(self.table, k2)
-        return v if v and not v.startswith(("$", "[")) else ""
+        parts = []
+        last = 0
+        for m in refs:
+            k2 = self._custom_loc_key(m.group(1), cid, tid, date, scope=scope,
+                                      context_cid=context_cid)
+            if not k2:
+                return ""
+            v = L.loc(self.table, k2)
+            if not v or v.startswith(("$", "[")):
+                return ""
+            parts.append(raw[last:m.start()])
+            parts.append(v)
+            last = m.end()
+        parts.append(raw[last:])
+        out = L.clean_loc_value("".join(parts), self.table)
+        return out if out and not out.startswith(("$", "[")) else ""
 
     def _is_chaplain_seat(self, task_type):
         """Whether a council seat is the court-chaplain one.
@@ -21499,10 +21589,12 @@ _FEUD_ROLE_RE = re.compile(
 _FEUD_CHAR_RE = re.compile(r"ONCLICK:CHARACTER,(\d+)")
 
 # Shape of a localization value delegating to custom localization, e.g.
-# `[CHARACTER.Custom('GetActualDukeTheocracyTitle')]` for Christian theocratic office names.
+# `[CHARACTER.Custom('GetActualDukeTheocracyTitle')]` for Christian theocratic office names or
+# `女[Character.Custom('LOC_Dm_flavor_kingdom_zhuxia')]` for the mod's female kingdom address.
+# The reference may sit inside other text, and a value may carry several.
 _CUSTOM_REF_RE = re.compile(
-    r"^\[(?:CHARACTER|ROOT\.Char|ROOT\.Character|"
-    r"councillor|second|bishop)\.Custom\('([A-Za-z0-9_]+)'\)\]$")
+    r"\[(?:CHARACTER|Character|ROOT\.Char|ROOT\.Character|"
+    r"councillor|second|bishop)\.Custom\('([A-Za-z0-9_]+)'\)\]")
 
 # Raid wording in the family-relation log: the localization keys
 # `house_relation_reason_raid_desc`, `_raided_estate_desc` and `_raided_estate_attempt_desc`
@@ -26061,6 +26153,25 @@ def _chrono_loss_date(f, cid, tid, next_date):
     return None
 
 
+def _chrono_depose_tail(f, tid, loss_date):
+    """Deposition clause for a tenure ended by a faction demand at `loss_date`:
+    "{date}被派系要求禅让给{successor}" (the successor name is dropped when unknown).
+
+    `_chrono_loss_date` only honours `lost_title_memory`, so this reads the title history's
+    own event at that date; without the clause a ruler deposed years before his death reads
+    as if he had died in office."""
+    if not loss_date:
+        return ""
+    dk = cl.date_key(loss_date)
+    for d, holder, ty in _title_hist_events(f, tid):
+        if ty != "faction_demand" or cl.date_key(d) != dk:
+            continue
+        head = f.date(d)
+        nm = _chrono_nm(f, holder, d) if isinstance(holder, int) else ""
+        return f"{head}被派系要求禅让给{nm}" if nm else f"{head}被派系要求禅让"
+    return ""
+
+
 def _chrono_reign_end(f, cid):
     """The ruler's abdication record: the `reign_end` written into the cache in which he was the
     biographee (via `pipeline._cross_check_reign_ends`, with the kind and the heir). Needed because
@@ -26250,6 +26361,13 @@ def _chrono_ruler_line(f, tid, date, cid, hist_type, prev, loss_date,
     elif _real_loss and not (death and cl.date_key(death) == cl.date_key(_real_loss)):
         # died in office (loss date == death date): no tail, the death item already says it
         tail = "，随后于" + f.date(_real_loss) + ("失去天命" if is_h else "失去头衔")
+    elif loss_date and not (death and cl.date_key(death) == cl.date_key(loss_date)):
+        # A deposition the save records only in the title history's successor event (a
+        # faction demand): name the day and the successor, so a ruler who lived on after
+        # losing the seat is not read as having died in office.
+        _dep = _chrono_depose_tail(f, tid, loss_date)
+        if _dep:
+            tail = "，" + _dep
     if _o2 and _o2 != office and _o2 != f._JAPAN_OFFICE_JOKO:
         # A title change during the reign (惣領制 plus the `shogun_flag` on the title =
         # 开府): the title slot holds only the last word, so the change is added inside
