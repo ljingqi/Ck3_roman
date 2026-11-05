@@ -1437,6 +1437,18 @@ def _ranked_route_key(chars, rev, base, side, p, c, c_female):
     return _kin_ord_key(base, rank)
 
 
+def _dynasty_of_rec(rec):
+    """Dynasty id of a cached character: latest house_history entry, else the record field.
+
+    `dynasty_name` is a display name shared by unrelated branches of the same surname, so clan
+    identity has to come from this id."""
+    rec = rec or {}
+    for entry in reversed(rec.get("house_history") or []):
+        if isinstance(entry, dict) and entry.get("dynasty_id") is not None:
+            return entry.get("dynasty_id")
+    return rec.get("dynasty_id")
+
+
 def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_memo=None):
     """Kinship key of cid relative to subject ('father', 'cousin_pat_brother_older', ...).
 
@@ -1814,13 +1826,13 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_mem
             return "step_daughter" if c_female else "step_son"
     # 13) Deep-blood fallback (issue 5): relations the fixed cascade above cannot reach —
     #     玄孙/五代 direct lines, 再从/三从 cousins, and 五服 collateral. Common-ancestor BFS,
-    #     gated to the same clan (dynasty_name, or the same dynasty_house) so the
+    #     gated to the same clan (dynasty_id, or the same dynasty_house) so the
     #     overwhelmingly-unrelated pairs never pay for the search. Runs only on a cascade miss,
     #     so it only ever ADDS a label.
     dh_s = rs.get("dynasty_house")
-    dn_s = rs.get("dynasty_name")
+    ds_dyn = _dynasty_of_rec(rs)
     same_clan = (dh_s is not None and dh_s == rc.get("dynasty_house")) \
-        or (dn_s and dn_s == rc.get("dynasty_name"))
+        or (ds_dyn is not None and ds_dyn == _dynasty_of_rec(rc))
     if same_clan:
         deep = _deep_kin_key(s, c, _fath, _moth,
                              {} if anc_memo is None else anc_memo, c_female, _older)
