@@ -1342,7 +1342,14 @@ def _cond_block(items, groups, op="all", religions=None, split_inline=False):
             continue
         if key == "faith.religion":
             rk = _faith_religion_key(val, religions)
-            children.append({"religion": rk} if rk else {"unknown": key})
+            if not rk:
+                children.append({"unknown": key})
+            elif kop == "!=":
+                # `faith.religion != religion:lijiao_religion` in the mod's kingdom address:
+                # the character's faith must belong to a religion other than the named one.
+                children.append({"religion_not": rk})
+            else:
+                children.append({"religion": rk})
             continue
         elif key == "has_doctrine":
             children.append({"doctrine": str(val)})
@@ -1372,6 +1379,33 @@ def _cond_block(items, groups, op="all", religions=None, split_inline=False):
         # any_held_title (tier + has_clerical_region) / has_clerical_region.
         if key == "is_female":
             children.append({"female": str(val).strip().lower() in ("yes", "true")})
+            continue
+        # Leaves used by the mod's kingdom address block
+        # (LOC_Dm_flavor_kingdom_zhuxia): culture membership, tributary status and the
+        # awarded noble-rank traits.
+        if key == "culture":
+            if kop == "block":
+                # block form `culture = { has_heritage_pillar = ... }` stays an AND group
+                children.append(_cond_block(_items(val), groups, "all", religions,
+                                            split_inline))
+                continue
+            ck = str(val or "").strip()
+            if ck.startswith("culture:"):
+                ck = ck[len("culture:"):]
+            children.append({"culture": ck} if ck else {"unknown": key})
+            continue
+        if key == "is_tributary":
+            children.append({"tributary":
+                             str(val).strip().lower() in ("yes", "true")})
+            continue
+        if key == "has_trait":
+            tk = str(val or "").strip()
+            if not tk:
+                children.append({"unknown": key})
+            elif kop == "!=":
+                children.append({"trait_not": tk})
+            else:
+                children.append({"trait": tk})
             continue
         if key == "faith":
             fk = str(val or "").strip()
@@ -1482,9 +1516,15 @@ def _religion_key(val, religions=None):
 
 
 def _faith_religion_key(val, religions=None):
-    """`faith.religion = ...` -> that faith's religion key, '' when unparsable; the map comes from
-    _religion_maps (common/religion/religion_types/*.txt) and without it the leaf never matches."""
+    """`faith.religion` right-hand side -> religion key, '' when unparsable.
+
+    Two forms occur: `religion:X` names the religion directly (the mod's
+    `faith.religion != religion:lijiao_religion`), while `faith:X.religion` names a faith whose
+    religion is looked up in _religion_maps (common/religion/religion_types/*.txt); without
+    that map the latter never matches."""
     s = str(val or "").strip()
+    if s.startswith("religion:"):
+        return s[len("religion:"):]
     tail = ".religion"
     if s.startswith("faith:") and s.endswith(tail):
         fk = s[len("faith:"):-len(tail)]
@@ -1520,7 +1560,22 @@ def cond_match(cond, scope):
     if "gov_flag" in cond:
         return scope.get("gov_flag") == cond["gov_flag"]
     if "independent" in cond:
-        return bool(scope.get("independent")) == bool(cond["independent"])
+        # An undeterminable independence (a date before the vassal record starts) matches
+        # neither the independent nor the vassal arm.
+        if scope.get("independent") is None:
+            return False
+        return bool(scope["independent"]) == bool(cond["independent"])
+    if "tributary" in cond:
+        return bool(scope.get("tributary")) == bool(cond["tributary"])
+    if "culture" in cond:
+        return str(scope.get("culture") or "").lower() == \
+            str(cond["culture"] or "").lower()
+    if "trait" in cond:
+        want = str(cond["trait"]).lower()
+        return any(str(t).lower() == want for t in (scope.get("traits") or ()))
+    if "trait_not" in cond:
+        want = str(cond["trait_not"]).lower()
+        return not any(str(t).lower() == want for t in (scope.get("traits") or ()))
     if "tier_min" in cond:
         return (scope.get("tier") or 0) >= cond["tier_min"]
     if "tier_max" in cond:
@@ -1545,6 +1600,10 @@ def cond_match(cond, scope):
     # ---- condition leaves of the bishop-title / council-seat name chains
     if "religion" in cond:
         return scope.get("religion") == cond["religion"]
+    if "religion_not" in cond:
+        # An unknown faith cannot decide a negative religion test.
+        r = scope.get("religion")
+        return bool(r) and r != cond["religion_not"]
     if "religion_family" in cond:
         return scope.get("religion_family") == cond["religion_family"]
     if "doctrine" in cond:
@@ -2071,12 +2130,16 @@ def sf_level_index(levels, value):
     return idx
 
 
-# Custom-localization arm tables for theocratic office titles
-# The game delegates a Christian theocratic ruler's office title to custom localization (keys in
+# Custom-localization arm tables for office titles
+# The game delegates an office title to custom localization (keys in
 # culture_titles_l_simp_chinese.yml such as duke_theocracy_male_christianity_religion, defined in
 # common/customizable_localization/00_divinity_custom_loc.txt). localization.loc strips a whole
-# `[...]` reference, so those titles come from the arms: the two Theocracy blocks are parsed here and
-# evaluated against Facts._theocracy_scope.
+# `[...]` reference, so those titles come from the arms: the blocks are parsed here and evaluated
+# against Facts._theocracy_scope. The mod's kingdom address block
+# (LOC_Dm_flavor_kingdom_zhuxia) is the same mechanism, so every `type = character` block is
+# parsed; legacy blocks keep their old permissive evaluation, and a block still carrying a
+# trigger this builder cannot model is marked incomplete and skipped, which leaves the caller's
+# other word sources in charge.
 
 _THEOCRACY_CUSTOM_BLOCKS = ("GetActualDukeTheocracyTitle",
                             "GetActualCountTheocracyTitle")
@@ -2086,13 +2149,23 @@ def _custom_loc_path(cfg):
     return os.path.join(cfg.get("data_dir", ""), "theocracy_titles.json")
 
 
+def _cond_complete(cond):
+    """Whether every leaf of the tree is modelled (no `unknown` / `unknown_not`)."""
+    if not isinstance(cond, dict):
+        return True
+    if "unknown" in cond or "unknown_not" in cond:
+        return False
+    return all(_cond_complete(c) for c in (cond.get("children") or []))
+
+
 def build_theocracy_titles(cfg):
-    """The two theocracy title blocks -> {"blocks": {block name: [arms...]},
-    "religions"/"faiths": maps}."""
+    """Every `type = character` block -> {"blocks": {name: [arms...]},
+    "meta": {name: {"type", "complete", "legacy"}}, "religions"/"faiths": maps}."""
     groups = _heritage_groups(cfg)
     roots = _data_roots(cfg)
     rel = _religion_maps(cfg, roots)
     blocks = {}
+    meta = {}
     for root in roots:
         d = os.path.join(root, "common", "customizable_localization")
         if not os.path.isdir(d):
@@ -2107,23 +2180,30 @@ def build_theocracy_titles(cfg):
             except OSError:
                 continue
             for key, body in _top_blocks(txt):
-                if key not in _THEOCRACY_CUSTOM_BLOCKS:
+                tm = re.search(r"(?<![A-Za-z0-9_])type\s*=\s*([A-Za-z0-9_]+)",
+                               body)
+                if not tm or tm.group(1) != "character":
                     continue
                 arms = []          # a same-named mod block replaces the whole arm list
+                complete = True
                 for blk in _blocks_of(body, "text"):
                     lk = re.search(r"localization_key\s*=\s*([A-Za-z0-9_]+)", blk)
                     tr = _blocks_of(blk, "trigger")
                     cond = _cond_block(_script_items(_split_inline_items(tr[0])),
                                        groups, religions=rel, split_inline=True) \
                         if tr else {}
+                    if not _cond_complete(cond):
+                        complete = False
                     arms.append({"loc_key": lk.group(1) if lk else "",
                                  "when": cond})
                 if arms:
                     blocks[key] = arms
-    # schema 2: as in bishop_titles, the arm conditions use the `tier` and
-    # `is_landless_type_title` leaves and truthiness for `exists`, so earlier tables must
-    # be rebuilt.
-    return {"schema": 2, "blocks": blocks,
+                    meta[key] = {"type": tm.group(1), "complete": complete,
+                                 "legacy": key in _THEOCRACY_CUSTOM_BLOCKS}
+    # schema 3: every type = character block is parsed, new leaves (culture / tributary /
+    # trait / religion_not) are understood, and each block carries a completeness mark;
+    # earlier tables only held the two theocracy blocks and must be rebuilt.
+    return {"schema": 3, "blocks": blocks, "meta": meta,
             "religions": rel.get("religions") or {},
             "faiths": rel.get("faiths") or {}}
 
@@ -2145,7 +2225,7 @@ def load_theocracy_titles(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 2 and data.get("blocks"):
+            if data.get("schema") == 3 and data.get("blocks"):
                 return data
         except Exception:
             pass
@@ -2154,9 +2234,13 @@ def load_theocracy_titles(cfg=None, force=False):
     return data
 
 
-def pick_custom_loc(table, key, scope):
+def pick_custom_loc(table, key, scope, allow_incomplete=False):
     """Localization key of the first matching arm in that block ('' when the table or the
-    block is missing, or when nothing matches)."""
+    block is missing, when the block carries an unmodelled trigger and `allow_incomplete` is
+    false, or when nothing matches)."""
+    m = ((table or {}).get("meta") or {}).get(key) or {}
+    if not allow_incomplete and m and not m.get("legacy") and not m.get("complete"):
+        return ""
     return pick_arm(((table or {}).get("blocks") or {}).get(key) or [], scope)
 
 
