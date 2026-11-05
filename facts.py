@@ -28654,7 +28654,9 @@ def _killed_by_player(f):
         ao = cl.date_key(f.as_of)
         out = [e for e in out
                if e["death_date"] == "9999.9.9" or cl.date_key(e["death_date"]) <= ao]
-        if f.decade:
+        # The first decade's volume keeps the campaign's pre-start deaths (周幽王 and the
+        # 3849 purge): the biography opens there, and the lower bound would cut them off.
+        if f.decade and int(f.decade) > 1:
             lo = _decade_lower_bound(f)
             if lo:
                 lok = cl.date_key(lo)
