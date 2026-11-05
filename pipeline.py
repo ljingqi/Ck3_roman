@@ -471,6 +471,19 @@ def save_cache_now(path, cache):
     return path
 
 
+def update_cache_now(path, mutate):
+    """Read-modify-write a cache on the calling thread, after any pending write of this file.
+
+    `mutate(cache)` receives the newest on-disk cache and returns its result; None means it
+    changed nothing, so the file and its index entry are left alone. Returns that result."""
+    path = os.path.abspath(path)
+    flush_saves(path)
+    cache, result = cl.update_cache(path, mutate)
+    if result is not None:
+        update_cache_index(path, cache)
+    return result
+
+
 atexit.register(flush_saves)   # a clean exit never drops a cache write in flight
 
 
@@ -1417,7 +1430,19 @@ def generate_bio(cfg, cache, force=False, decade=None, continue_mode=False):
         cache["output_folder"] = house
         path = find_cache_path(cfg, cache.get("player_id"), cache.get("playthrough_id"))
         if path:
-            save_cache_now(path, cache)
+            # Binding only, onto the newest file: this cache was read when the task started,
+            # and a whole-cache write from it would erase a death recorded meanwhile (the
+            # lost update that kept a final biography from ever queuing).
+            def _bind(cur):
+                cur_bind = cur.get("output_folder")
+                if cur_bind and os.path.isdir(
+                        os.path.join(cfg.get("output_dir", ""), cur_bind)):
+                    return None
+                if cur.get("output_folder") == house:
+                    return None
+                cur["output_folder"] = house
+                return True
+            update_cache_now(path, _bind)
     try:
         import htmlview
         page = htmlview.rebuild_folder(cfg.get("output_dir", ""), house)
@@ -1694,20 +1719,6 @@ def _cross_check_deaths(cfg, melt, current_player):
             # the death date must be later than that character's last living save
             if cl.date_key(dd.get("date")) <= cl.date_key(meta.get("last_date") or "0.0.0"):
                 continue
-            # everything above came from the index; the identity test needs the record itself
-            flush_saves(path)
-            prev = cl.load_cache(path)
-            rec = (prev.get("characters") or {}).get(str(cid)) or {}
-            cached_name = rec.get("name_zh") or rec.get("name_full") or ""
-            dead_name = cl.name_zh(c)
-            if cached_name and dead_name and cl.zh(cached_name) != cl.zh(dead_name):
-                continue  # colliding id, not the same person
-            prev["player_death"] = {
-                "date": dd.get("date"),
-                "reason": dd.get("reason"),
-                "killer": dd.get("killer"),
-                "kills": dd.get("kills") or [],  # one data source of the assassin chapter
-            }
             # A final biography triggers only once the newest save's played character is no longer the
             # previous subject, so this save's legacy chain must already hold the successor; copying it
             # into the previous cache is what lets that final biography name the successor.
@@ -1715,9 +1726,31 @@ def _cross_check_deaths(cfg, melt, current_player):
             _chain = [{"cid": e.get("character"), "date": e.get("date")}
                       for e in _lg
                       if isinstance(e, dict) and isinstance(e.get("character"), int)]
-            if _chain:
-                prev["played_legacy"] = _chain
-            save_cache_now(path, prev)
+
+            # everything above came from the index; the identity test and the write need the
+            # record itself, taken from the file as it is now (a biography worker may have
+            # written its flags since that read, and an older copy would erase them).
+            def _record_death(prev):
+                if prev.get("player_death"):
+                    return None
+                rec = (prev.get("characters") or {}).get(str(cid)) or {}
+                cached_name = rec.get("name_zh") or rec.get("name_full") or ""
+                dead_name = cl.name_zh(c)
+                if cached_name and dead_name and cl.zh(cached_name) != cl.zh(dead_name):
+                    return None  # colliding id, not the same person
+                prev["player_death"] = {
+                    "date": dd.get("date"),
+                    "reason": dd.get("reason"),
+                    "killer": dd.get("killer"),
+                    "kills": dd.get("kills") or [],  # one data source of the assassin chapter
+                }
+                if _chain:
+                    prev["played_legacy"] = _chain
+                return cached_name
+
+            cached_name = update_cache_now(path, _record_death)
+            if cached_name is None:
+                continue
             llm.log(f"  [检测] 前代玩家 {cid} ({cached_name}) 死于 {dd.get('date')}, "
                     f"原因 {dd.get('reason')} — 待生成终传")
             break
@@ -1830,26 +1863,36 @@ def _cross_check_reign_ends(cfg, melt, current_player):
                 continue
             if cl.date_key(succ_date) <= cl.date_key(meta.get("last_date") or "0.0.0"):
                 continue
-            flush_saves(path)
-            prev = cl.load_cache(path)
-            rec = (prev.get("characters") or {}).get(str(cid)) or {}
-            cached_name = rec.get("name_zh") or rec.get("name_full") or ""
-            now_name = cl.name_zh(c)
-            if cached_name and now_name and cl.zh(cached_name) != cl.zh(now_name):
-                continue                 # colliding id, not the same person
             kind = _reign_end_kind(melt, c)
             succ_c = living.get(str(succ_cid)) or dead_un.get(str(succ_cid)) or {}
-            prev["reign_end"] = {
-                "date": succ_date,       # successor's date = former subject's end of reign
-                "kind": kind,            # tonsured / abdicated / landless / unknown
-                "alive": True,           # still in this save's living section, so no death
-                "successor": int(succ_cid),
-                "successor_name": cl.name_zh(succ_c) or "",
-                "evidence": "played_character.legacy",
-            }
-            # copy the succession chain into the previous cache, as on the death path
-            prev["played_legacy"] = [{"cid": c_, "date": d_} for c_, d_ in rows]
-            save_cache_now(path, prev)
+            _chain = [{"cid": c_, "date": d_} for c_, d_ in rows]
+
+            # The identity test and the write need the file as it is now: a biography worker
+            # may have written its flags since the index was read, and an older copy would
+            # erase them (the lost update behind a final biography that never queued).
+            def _record_reign_end(prev):
+                if prev.get("reign_end") or prev.get("player_death"):
+                    return None
+                rec = (prev.get("characters") or {}).get(str(cid)) or {}
+                cached_name = rec.get("name_zh") or rec.get("name_full") or ""
+                now_name = cl.name_zh(c)
+                if cached_name and now_name and cl.zh(cached_name) != cl.zh(now_name):
+                    return None              # colliding id, not the same person
+                prev["reign_end"] = {
+                    "date": succ_date,       # successor's date = former subject's end of reign
+                    "kind": kind,            # tonsured / abdicated / landless / unknown
+                    "alive": True,           # still in this save's living section, so no death
+                    "successor": int(succ_cid),
+                    "successor_name": cl.name_zh(succ_c) or "",
+                    "evidence": "played_character.legacy",
+                }
+                # copy the succession chain into the previous cache, as on the death path
+                prev["played_legacy"] = _chain
+                return cached_name
+
+            cached_name = update_cache_now(path, _record_reign_end)
+            if cached_name is None:
+                continue
             llm.log(f"  [更替] 前代玩家 {cid} ({cached_name}) 在位终于 {succ_date}，"
                     f"非死亡（{_REIGN_END_WORD.get(kind, '让位')}），"
                     f"后任 {succ_cid} — 待生成终传")
@@ -2042,49 +2085,72 @@ def _bio_worker_loop(cfg):
     while True:
         key = None
         with _BIO_LOCK:
-            for k in _BIO_PENDING:
-                key = k
-                break
-            if key is not None:
+            # A death task goes first: its cache is the one most likely to be rewritten
+            # meanwhile (a decade task finishing now would delay the final biography), and
+            # the queue is a set, so the order would otherwise be arbitrary.
+            pending = sorted(_BIO_PENDING, key=lambda k: 0 if k[1] == "death" else 1)
+            if pending:
+                key = pending[0]
                 _BIO_PENDING.discard(key)
         if key is None:
             time.sleep(2)
             continue
         pkey, kind, decade = key
         pid, pt = pkey
+        failed = False
         try:
             path = find_cache_path(cfg, pid, pt)
             if not path:
+                llm.log(f"  [传记] 跳过 {kind} 任务 (id={pid}): 找不到该战役的缓存文件")
                 continue
             cache = cl.load_cache(path)
             if kind == "death":
                 death = cache.get("player_death")
                 re_end = _reign_end(cache)
-                if not (death or re_end) or cache.get("bio_generated"):
+                if not (death or re_end):
+                    llm.log(f"  [传记] 跳过终传 (id={pid}): 缓存里没有 player_death / reign_end")
+                    continue
+                if cache.get("bio_generated"):
+                    llm.log(f"  [传记] 跳过终传 (id={pid}): 终传已生成")
                     continue
                 out = generate_bio(cfg, cache, continue_mode=True)  # background resolves by binding
                 if out:
                     out_path, _ = out
-                    flush_saves(path)
-                    cur = cl.load_cache(path, fresh=True)  # an independent copy for the write
-                    cur["bio_generated"] = True
-                    save_cache_now(path, cur)
+                    # The flag is written onto the newest file, never onto the copy this
+                    # worker read: a death or reign-end recorded meanwhile must survive.
+                    def _mark_final(cur):
+                        if cur.get("bio_generated"):
+                            return None
+                        cur["bio_generated"] = True
+                        return True
+                    update_cache_now(path, _mark_final)
                     llm.log(f"终传已生成: {out_path}")
+                else:
+                    failed = True        # no melt to render: wait out the retry backoff
             elif kind == "decade":
                 if cache.get("player_death") or _reign_end(cache):
+                    llm.log(f"  [传记] 跳过第{decade}个十年 (id={pid}): 传主已终了，终传覆盖一生")
                     continue  # tenure ended (death or abdication): the final biography covers it
                 if (decade in (cache.get("bio_decades") or [])
                         or decade in _generated_decades_on_disk(cfg, cache)):
+                    llm.log(f"  [传记] 跳过第{decade}个十年 (id={pid}): 该十年已生成")
                     continue  # the decade file or flag already exists, so do not generate again
                 out = generate_bio(cfg, cache, decade=decade, continue_mode=True)  # by binding
                 if out:
                     out_path, _ = out
-                    flush_saves(path)
-                    cur = cl.load_cache(path, fresh=True)
-                    cur.setdefault("bio_decades", []).append(decade)
-                    save_cache_now(path, cur)
+
+                    def _mark_decade(cur):
+                        done = cur.setdefault("bio_decades", [])
+                        if decade in done:
+                            return None
+                        done.append(decade)
+                        return True
+                    update_cache_now(path, _mark_decade)
                     llm.log(f"十年传记已生成 (第{decade}个十年): {out_path}")
+                else:
+                    failed = True        # no melt to render: wait out the retry backoff
         except Exception as e:
+            failed = True
             # The catch-all also logs the last traceback frames: `str(e)` alone leaves an
             # IndexError such as "string index out of range" with no location at all.
             _tb = traceback.format_exc().strip().split("\n")
@@ -2092,8 +2158,12 @@ def _bio_worker_loop(cfg):
                     + (f" | {_tb[-2].strip()} @ {_tb[-3].strip()}"
                        if len(_tb) >= 3 else ""))
         finally:
-            with _BIO_LOCK:
-                _BIO_LAST_TRY[key] = time.monotonic()
+            # Only a failed generation waits out the retry backoff. A benign skip (no death
+            # record yet, already generated, no cache) otherwise armed 300 s of silence, so a
+            # death that landed a moment later looked like it had never been detected.
+            if failed:
+                with _BIO_LOCK:
+                    _BIO_LAST_TRY[key] = time.monotonic()
 
 
 # --- watch / continue / scan ---------------------------------------------------

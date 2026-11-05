@@ -1445,9 +1445,11 @@ def load_cache(path, fresh=False):
     try:
         with open(path, encoding="utf-8") as fp:
             cache = json.load(fp)
-        # older schemas: fill in the fields they lack
+        # older schemas: fill in the fields they lack (deep copy, since EMPTY_CACHE's
+        # containers would otherwise be shared by every cache that misses that key)
         for k, v in EMPTY_CACHE.items():
-            cache.setdefault(k, v)
+            if k not in cache:
+                cache[k] = copy.deepcopy(v)
         if not fresh:
             try:
                 _CACHE_LOAD_MEMO[path] = (os.path.getmtime(path), cache)
@@ -1468,15 +1470,39 @@ def load_cache(path, fresh=False):
     return new_cache()
 
 
-def save_cache(cache, path):
-    """Write a player cache atomically, with compact separators (readers all use
-    json.load and do not depend on indentation)."""
+def _write_cache_locked(cache, path):
+    """Atomic write of one cache; the caller already holds `_save_lock(path)`.
+
+    Compact separators, since every reader uses json.load and nothing depends on indentation."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fp:
+        json.dump(cache, fp, ensure_ascii=False, separators=(",", ":"))
+    os.replace(tmp, path)  # atomic replace, prevents torn concurrent reads
+
+
+def save_cache(cache, path):
+    """Write a player cache atomically, under the per-path write mutex."""
     with _save_lock(path):
-        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fp:
-            json.dump(cache, fp, ensure_ascii=False, separators=(",", ":"))
-        os.replace(tmp, path)  # atomic replace, prevents torn concurrent reads
+        _write_cache_locked(cache, path)
+
+
+def update_cache(path, mutate):
+    """Read-modify-write one cache file under its path mutex; returns (cache, mutate(cache)).
+
+    An in-memory copy read before another writer saved the file drops that writer's fields when
+    written back: a decade-biography worker read its cache, the succession cross-check recorded
+    `player_death` in the meantime, and the worker's write erased the death, so the final
+    biography never queued. Writers that start from a read copy must therefore mutate the file
+    as it is now: `mutate` receives the newest on-disk cache, changes it in place and returns a
+    result; returning None means nothing changed and leaves the file untouched."""
+    with _save_lock(path):
+        cache = load_cache(path, fresh=True)
+        result = mutate(cache)
+        if result is not None:
+            _write_cache_locked(cache, path)
+            _CACHE_LOAD_MEMO.pop(path, None)
+        return cache, result
 
 
 def char_record(cache, cid):
