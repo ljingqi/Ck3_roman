@@ -3844,6 +3844,8 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             ever.update(int(x) for x in (fam.get(_k) or []))
         if ever:
             rec["family"]["ever_spouses"] = sorted(ever)
+        # Betrothal/marriage spans, so the reader can tell the two "…结婚" relation rows apart
+        _latch_marital_of(rec, c, date_label)
         # Court affiliation (court_data), stored on the character by the save
         cd = c.get("court_data") or {}
         if isinstance(cd, dict) and cd:
@@ -4174,6 +4176,64 @@ def _latch_spouses_of(char_obj, cid, latch, pid, date_label):
                     < _SPOUSE_KIND_RANK.get(rec.get("kind") or "", 9):
                 rec["kind"] = kind
                 rec["source"] = key
+
+
+# Betrothal and marriage are two different states of one pair, but the engine writes the same
+# house-relations row text ("[ACTOR]与[RECIPIENT]结婚", house_relations_l_simp_chinese.yml:31)
+# when the betrothal is made and when the wedding happens. The state fields alone tell the two
+# apart, so each snapshot latches a span per character and state (see _latch_marital_of).
+_MARITAL_OPEN_KEYS = (
+    ("betrothal", ("betrothed",)),
+    # `primary_spouse` and `spouse` both appear at the wedding; either one marks the marriage
+    ("marriage", ("spouse", "primary_spouse")),
+)
+
+
+def _family_id_set(fd, key):
+    """One family_data field as a set of character ids (a list in 1.20 save doubles)."""
+    v = fd.get(key)
+    if v is None:
+        return set()
+    out = set()
+    for x in (v if isinstance(v, list) else [v]):
+        try:
+            out.add(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _latch_marital_of(rec, c, date_label):
+    """Betrothal/marriage spans for one tracked character, from this snapshot's family_data.
+
+    A span opens on the first snapshot that shows the state and closes on the first one where
+    it is gone, so `from` is at most one save interval after the actual event. facts.house_feuds
+    uses that `from` to attribute a "…结婚" relation row to the betrothal or to the wedding it
+    produced; keeping `to` preserves when the state ended (a broken betrothal, a divorce or a
+    death). Stored on the character record, since both sides of a pair carry their own view."""
+    fd = c.get("family_data") or {}
+    if not isinstance(fd, dict):
+        return
+    hist = rec.get("marital_history")
+    if not isinstance(hist, list):
+        hist = None
+    for kind, keys in _MARITAL_OPEN_KEYS:
+        cur = set()
+        for key in keys:
+            cur |= _family_id_set(fd, key)
+        if hist:
+            for e in hist:
+                if (e.get("kind") == kind and e.get("to") is None
+                        and e.get("other") not in cur):
+                    e["to"] = date_label
+            opened = {e.get("other") for e in hist
+                      if e.get("kind") == kind and e.get("to") is None}
+        else:
+            opened = set()
+        for other in sorted(cur - opened):
+            if hist is None:
+                hist = rec["marital_history"] = []
+            hist.append({"kind": kind, "other": other, "from": date_label, "to": None})
 
 
 def relation_reason_key(owner, target, kind):

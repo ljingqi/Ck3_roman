@@ -10151,6 +10151,70 @@ class Facts:
         label = self._house_label(others[0]) or fallback_label or ""
         return f"{label}族人" if label else ""
 
+    # A yearly save puts the next snapshot at most one 360-day year after an event, so the
+    # state first seen within this many days of a row is the state that row produced.
+    _MARITAL_ROW_SLACK_DAYS = 400
+
+    def _marital_spans(self, cid, other):
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        return [e for e in (rec.get("marital_history") or [])
+                if isinstance(e, dict) and e.get("other") == other]
+
+    def _pair_marital_now(self, ids):
+        """'betrothal' / 'marriage' from the render melt's family_data, '' when neither holds.
+
+        Read twice (both directions), since only one side of a pair may still carry the field."""
+        for x in ids:
+            for y in ids:
+                if x == y:
+                    continue
+                fd = (self._chars.get(str(x)) or {}).get("family_data") or {}
+                spouse = fd.get("spouse")
+                if fd.get("primary_spouse") == y or (
+                        y in spouse if isinstance(spouse, list) else spouse == y):
+                    return "marriage"
+        for x in ids:
+            for y in ids:
+                if x == y:
+                    continue
+                fd = (self._chars.get(str(x)) or {}).get("family_data") or {}
+                betrothed = fd.get("betrothed")
+                if (y in betrothed if isinstance(betrothed, list) else betrothed == y):
+                    return "betrothal"
+        return ""
+
+    def marriage_row_kind(self, ids, date):
+        """'betrothal', 'marriage' or '' for a house-relations "…结婚" row between `ids`.
+
+        The engine writes the same row when a betrothal is made and when the wedding happens
+        (`house_relation_reason_marriage_desc`), so reading a betrothal as a marriage made the
+        annals invent a "婚约拖到…才正式成礼". Each character's `marital_history` (latched by
+        cache_lib from family_data at every merge) opens a span at the first snapshot that shows
+        the state, at most one save interval after the event: the span first seen within a year
+        after the row is the state the row produced. A pair still betrothed in the render melt
+        has no wedding row yet, which covers a cache that started after the betrothal."""
+        if not date or len(set(ids)) < 2:
+            return ""
+        row = _day_ord(date)
+        if row is None:
+            return ""
+        best = None
+        for a in ids:
+            for b in ids:
+                if a == b:
+                    continue
+                for e in self._marital_spans(a, b):
+                    seen = _day_ord(e.get("from"))
+                    if seen is None:
+                        continue
+                    gap = seen - row
+                    if 0 <= gap <= self._MARITAL_ROW_SLACK_DAYS:
+                        if best is None or gap < best[0]:
+                            best = (gap, e.get("kind"))
+        if best and best[1] in ("betrothal", "marriage"):
+            return best[1]
+        return self._pair_marital_now(ids)
+
     def _rerender_feud_event(self, raw, date, houses=None, other_label=""):
         """change_reason raw text → clean sentence with both sides re-rendered; '' when the
         result stays unreadable (rakaly sentinels, unresolved keys).
@@ -14161,6 +14225,7 @@ class Facts:
             _hlabel = self._house_label(other[0]) or _hlabel_raw
             events = []
             _raw_ids = {}      # (date, sentence) -> character ids in that log row (both ends)
+            _raw_of = {}       # (date, sentence) -> raw change_reason, for the duplicate fold
             _raw_prison = []   # log rows containing a prison word {date, ids, text}, node fallback
             for e in (r.get("history") or []):
                 d = str(e.get("date") or "")
@@ -14200,11 +14265,21 @@ class Facts:
                     # reads "[actor]囚禁了[target]", i.e. (jailer, victim) — sorting would destroy it.
                     if self._house_of_cid(_ic) is not None and _ic not in _ids:
                         _ids.append(_ic)
+                # The game writes the same "…结婚" row for the betrothal and for the wedding;
+                # without this the pair reads as one event twice and the annals invent a
+                # "婚约拖到…才正式成礼". The betrothal row keeps its own word.
+                if len(_ids) >= 2 and "结婚" in txt \
+                        and self.marriage_row_kind(_ids, d) == "betrothal":
+                    txt = re.sub(r"结婚$", "订婚", txt)
                 _raw_ids[(d, txt)] = set(_ids)
+                _raw_of[(d, txt)] = _raw
                 if any(_k in txt for _k in _PRISON_KIND_WORDS):
                     _raw_prison.append({"date": d, "ids": list(_ids),
                                         "text": txt, "raw": _raw})
                 events.append((d, txt))
+            # The game writes some rows twice a day or two apart (education is the measured
+            # case): an identical sentence for the same pair inside a few days is one event.
+            events = _fold_adjacent_duplicate_rows(events, _raw_of, _raw_ids)
             # War causality nodes supplement the flow: the flow's "向X宣战" carries no war type and
             # "成为X的仇敌" only the outcome, so a same-day war sentence from the flow is replaced by
             # the more informative node. Nodes added by this loop coexist on the same day (a victory
@@ -27660,6 +27735,32 @@ _PRISON_KIND_WORDS = ("囚禁了", "囚禁")
 # Execution wording: an original execution sentence duplicating a same-day, same-person
 # imprisonment node is replaced by that node, whose wording covers both ends.
 _EXEC_KIND_WORDS = ("处决了",)
+
+# The game writes a few relation rows twice within 0-2 days: the education row comes from
+# `coming_of_age.0001-.0005`'s immediate effect and from `childhood_education.0006`'s delayed
+# repeat (`00_education_effects.txt:1981-1986`, measured gap 1 day), the same pattern the
+# education memories have. One day of slack, as in `_dedupe_education_memories`.
+_EVENT_DUP_MAX_DAYS = 3
+
+
+def _fold_adjacent_duplicate_rows(events, raw_of, ids_of):
+    """Fold a house-relations row whose raw game sentence repeats within `_EVENT_DUP_MAX_DAYS`.
+
+    Same pair + identical raw sentence + a few days is one event written twice; without the fold
+    the duplicate reads as a second happening. Marriage rows are years apart and stay: their two
+    spellings are a betrothal and its wedding (see Facts.marriage_row_kind)."""
+    keep, seen = [], {}
+    for d, txt in events:
+        raw = raw_of.get((d, txt)) or txt
+        key = (raw, frozenset(ids_of.get((d, txt)) or ()))
+        o = _day_ord(d)
+        if o is not None:
+            days = seen.setdefault(key, [])
+            if any(abs(o - p) <= _EVENT_DUP_MAX_DAYS for p in days):
+                continue
+            days.append(o)
+        keep.append((d, txt))
+    return keep
 
 # 《家族恩怨录》 and the villain biographies read the raw house_relations flow, where the
 # same event appears in two sentence forms with reversed id order and the reason form
