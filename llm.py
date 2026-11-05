@@ -270,6 +270,102 @@ def fmt_cn_date(date_str):
     return s
 
 
+# A date as the fact layer writes it: the legacy numeric form, or the mod's annalistic form
+# whose parenthesis carries the raw game year. Shared by every parser of our own fact text.
+CN_DATE_PATTERN = (
+    r"(?:(?:公元前|公元|前)?\d+年(?:\d+月\d+日)?"
+    r"|黄帝纪年\d{1,4}年(?:\d+月(?:\d+日)?)?"
+    r"|[^\s，。；：]{0,12}?（黄帝纪年\d{1,4}年）)")
+_CN_DATE_HEAD_RE = re.compile("^" + CN_DATE_PATTERN)
+_PAREN_YEAR_RE = re.compile(r"（黄帝纪年\s*(\d{1,4})\s*年）")
+_RAW_ERA_RE = re.compile(r"^黄帝纪年\s*(\d{1,4})\s*年(?:(\d+)月)?(?:(\d+)日)?")
+_LEGACY_DATE_RE = re.compile(r"^(?:公元前|公元|前)?(\d+)年(?:(\d+)月)?(?:(\d+)日)?")
+
+
+def fmt_raw_year(year):
+    """Raw game year for spans and timelines: 黄帝纪年3855年 under the custom-era mod, the
+    usual display year otherwise."""
+    try:
+        y = int(str(year).split(".")[0])
+    except Exception:
+        return fmt_cn_year(year)
+    if mod_calendar():
+        return f"黄帝纪年{y}年"
+    return fmt_cn_year(y)
+
+
+def mod_calendar():
+    """The mod's date words, or None outside the custom-era mod (a lazy import keeps
+    localization -> llm from cycling)."""
+    try:
+        import localization
+        return localization.mod_calendar()
+    except Exception:
+        return None
+
+
+def cn_date_prefix(text):
+    """The date prefix of a rendered fact line ('' when there is none)."""
+    m = _CN_DATE_HEAD_RE.match(str(text or ""))
+    return m.group(0) if m else ""
+
+
+def strip_cn_date_prefix(text):
+    """Drop a leading rendered date and its following comma; unchanged when there is none."""
+    s = str(text or "")
+    m = _CN_DATE_HEAD_RE.match(s)
+    if not m:
+        return s
+    rest = s[m.end():]
+    return rest[1:] if rest.startswith(("，", ",")) else rest
+
+
+def parse_cn_date_text(text):
+    """Read a rendered date back to 'Y.M.D' (month/day default to 1); None when none.
+
+    The annalistic form carries the raw year in its parenthesis, so the era label itself
+    never has to be understood."""
+    s = str(text or "")
+    m = _PAREN_YEAR_RE.search(s)
+    if m:
+        y = int(m.group(1))
+        mo, d = 1, 1
+        cal = mod_calendar()
+        if cal:
+            tail = s[:m.start()]
+            for word, n in sorted(cal["day_of"].items(), key=lambda kv: -len(kv[0])):
+                if tail.endswith(word):
+                    d, tail = n, tail[:-len(word)]
+                    break
+            for word, n in sorted(cal["month_of"].items(), key=lambda kv: -len(kv[0])):
+                if tail.endswith(word):
+                    mo = n
+                    break
+        return f"{y}.{mo}.{d}"
+    m = _RAW_ERA_RE.match(s)
+    if m:
+        return (f"{int(m.group(1))}.{int(m.group(2) or 1)}."
+                f"{int(m.group(3) or 1)}")
+    m = _LEGACY_DATE_RE.match(s)
+    if not m:
+        return None
+    y = parse_cn_year(m.group(0))
+    if y is None:
+        return None
+    return f"{y}.{int(m.group(2) or 1)}.{int(m.group(3) or 1)}"
+
+
+def year_of_text(text):
+    """Raw game year out of a rendered date or year (None when there is none)."""
+    d = parse_cn_date_text(text)
+    if d:
+        try:
+            return int(d.split(".")[0])
+        except (TypeError, ValueError):
+            return None
+    return parse_cn_year(text)
+
+
 # -------------------------------- DeepSeek call -----------------------------
 
 def _usage_line(usage, messages, finish=None):

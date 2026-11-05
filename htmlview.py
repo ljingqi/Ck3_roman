@@ -1087,7 +1087,7 @@ def _article_label(fn, text, folder=None, h=None):
             return f"{title}（终传）", (f"{d_cn}，{ending}" if d_cn else ending)
         _dead, _by = _byline_ending(text)
         if _dead:
-            m2 = re.search(r"死于((?:公元前|公元|前)?\d+年\d+月\d+日)", _by)
+            m2 = re.search("死于(%s)" % llm.CN_DATE_PATTERN, _by)
             return f"{title}（终传）", (f"死于{m2.group(1)}" if m2 else _by)
         if _by:
             return f"{title}（终传）", _by

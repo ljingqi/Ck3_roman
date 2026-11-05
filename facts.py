@@ -2052,10 +2052,10 @@ def is_unknown(word):
 
 # Leading subject designations are stripped: the subject is constant inside a block, so repeating
 # the name there carries no information.
-_SUBJ_DATE_RE = re.compile(r"^(?:公元前|公元|前)?\d+年(?:\d+月\d+日)?，")
-# Numeric date at the head of a fact line, for reading the subject's name of that day: a house
+_SUBJ_DATE_RE = re.compile("^" + llm.CN_DATE_PATTERN + "，")
+# Date at the head of a fact line, for reading the subject's name of that day: a house
 # rename or a name-order change makes an old event carry a name other than the cut-off label.
-_LINE_DATE_RE = re.compile(r"^(?:公元前|公元|前)?(\d+)年(?:(\d+)月)?(?:(\d+)日)?")
+_LINE_DATE_RE = re.compile("^" + llm.CN_DATE_PATTERN)
 
 
 def _strip_subject_prefix(text, label, alt_labels=None, own_names=None):
@@ -2709,6 +2709,7 @@ class Facts:
         # see `purged_houses`.
         self._purge_houses_map = {}
         self._hold_cache = {}  # (cid, as_of) -> holding intervals, reused by offices/nicknames
+        self._era_cache = {}   # rendered date -> (era label, reign start)
         # Precomputed title holder sequences, reused by several full-table scans.
         self._title_seqs = {}
         for _tid, _t in self._lt.items():
@@ -10950,10 +10951,10 @@ class Facts:
             except ValueError:
                 py = year
             if py == year - 1:
-                return llm.fmt_cn_year(py)
+                return llm.fmt_raw_year(py)
             if py < year - 1:
-                return f"{llm.fmt_cn_year(py)}至{llm.fmt_cn_year(year)}间"
-        return llm.fmt_cn_year(year)
+                return f"{llm.fmt_raw_year(py)}至{llm.fmt_raw_year(year)}间"
+        return llm.fmt_raw_year(year)
 
     def person_label(self, cid, date=None, style="full", same_day=False, dead_flavor=True):
         """Single entry point for person labels. `style`:
@@ -11513,7 +11514,7 @@ class Facts:
         fs = rec.get("first_seen")
         if not fs or rec.get("first"):
             return ""
-        return f"{self._year_only(fs)}为外人所知"
+        return f"{self.year_label(fs)}为外人所知"
 
     def _blood_kin(self, cid):
         """Set of cid's blood kin: parents, children and siblings.
@@ -11733,7 +11734,7 @@ class Facts:
             _p = self._secret_partner(rec)
             if isinstance(_p, int):
                 parties.add(_p)
-        seen = self._year_only(rec.get("first_seen")) if self._first_seen_note(rec) else ""
+        seen = self.year_label(rec.get("first_seen")) if self._first_seen_note(rec) else ""
         groups = []            # [(year text or '', [names…])] — grouped by year
         index = {}
         total = 0
@@ -11746,7 +11747,7 @@ class Facts:
             if not nm:
                 continue
             frm = k.get("from")
-            yr = self._year_only(frm) if (frm and not k.get("first")) else ""
+            yr = self.year_label(frm) if (frm and not k.get("first")) else ""
             g = index.get(yr)
             if g is None:
                 g = (yr, [])
@@ -11759,7 +11760,7 @@ class Facts:
         if not groups:
             return ""
         # Sort by year with undated group first (otherwise "自875年起、自873年起" appears)
-        groups.sort(key=lambda g: (1, llm.parse_cn_year(g[0]) or 0) if g[0] else (0, 0))
+        groups.sort(key=lambda g: (1, llm.year_of_text(g[0]) or 0) if g[0] else (0, 0))
         parts = []
         for yr, names in groups:
             who = "、".join(names)
@@ -12068,7 +12069,7 @@ class Facts:
                         continue
                     parts.append(_FACT_WORDING[key].format(date=self.date(d)))
                 if repeats:
-                    yrs = "、".join(llm.fmt_cn_year(y) for y in repeats[:4])
+                    yrs = "、".join(llm.fmt_raw_year(y) for y in repeats[:4])
                     parts.append(_FACT_WORDING["affair_repeat"].format(years=yrs))
                 if not parts:
                     continue
@@ -12095,7 +12096,7 @@ class Facts:
         if rec.get("first") or not rec.get("first_seen"):
             return ""
         return _FACT_WORDING["hook_since"].format(
-            year=self._year_only(rec["first_seen"]))
+            year=self.year_label(rec["first_seen"]))
 
     # House-head hooks never reach the fact layer: `house_head_hook` comes with the house-head
     # identity itself, not from a narrative deed, so it would only fill the secrets section
@@ -12255,7 +12256,7 @@ class Facts:
             extra = W["enslaved_group_extra"].format(n=len(names))
             out.append(W["enslaved_group"].format(
                 actor=plabel, names=shown, extra=extra,
-                year=self._year_only(first.get("first_seen"))))
+                year=self.year_label(first.get("first_seen"))))
         else:
             for r, nm in names:
                 fs = r.get("first_seen")
@@ -12266,15 +12267,15 @@ class Facts:
                 else:
                     out.append(W["enslaved_line_since"].format(
                         slave=nm, actor=plabel,
-                        year=self._year_only(fs)))
+                        year=self.year_label(fs)))
         fout = []
         for r, nm in fnames[:8]:
             fs, la = r.get("first_seen"), r.get("lost_at")
             # the start year is an initial adverbial ("自874年起，X没为Y的奴隶，至881年…"),
             # not a parenthetical
             since = "" if (r.get("first") or not fs) \
-                else "自{}起，".format(self._year_only(fs))
-            end_y = self._year_only(la) if la else ""
+                else "自{}起，".format(self.year_label(fs))
+            end_y = self.year_label(la) if la else ""
             buyer = r.get("end_owner")
             bname = self.person_label(buyer, date=self.as_of, style="brief") \
                 if isinstance(buyer, int) else ""
@@ -12345,7 +12346,7 @@ class Facts:
             the = self.person_label(target, date=self.as_of, style="brief") or ""
             if not she or not the:
                 continue
-            year = self._year_only(fs) if fs else ""
+            year = self.year_label(fs) if fs else ""
             # the start year is an adverbial inside the sentence ("X自874年起视Y为…")
             since = f"自{year}起" if (year and not rec.get("first")) else ""
             out.append(f"{she}{since}视{the}为{word}。")
@@ -15517,7 +15518,7 @@ class Facts:
             name = self.title(tid, date) or ""
             if not name:
                 continue
-            year = self._year_only(fdate) if fdate else ""
+            year = self.year_label(fdate) if fdate else ""
             if is_founder:
                 head = f"{year}，他立{name}" if year else f"他立{name}"
             elif patron == cid:
@@ -15553,7 +15554,7 @@ class Facts:
                 if cn:
                     # no parenthetical note here (same rule as `rite_tenet_changes`)
                     bits.append("现任之长" + cn
-                                + (f"，{self._year_only(hd)}起在任" if hd else ""))
+                                + (f"，{self.year_label(hd)}起在任" if hd else ""))
             rows.append(head + ("，" + "，".join(bits) if bits else "") + "。")
         return rows
 
@@ -15621,7 +15622,7 @@ class Facts:
             if not core:
                 continue
             names = [self.tenet_name(k, rid) or k for k in core]
-            year = self._year_only(d)
+            year = self.year_label(d)
             if prev is not None and set(core) != set(prev):
                 out = [self.tenet_name(k, rid) or k for k in prev if k not in core]
                 inn = [self.tenet_name(k, rid) or k for k in core if k not in prev]
@@ -15679,11 +15680,11 @@ class Facts:
             nxt = hist[i + 1][0] if i + 1 < len(hist) else None
             if nxt is not None and (ao is None or cl.date_key(nxt) <= ao):
                 end = int(str(nxt).split(".")[0]) - 1
-                rows.append(f"{llm.fmt_cn_year(start)}奉{nm}" if end <= start
-                            else f"{llm.fmt_cn_year(start)}至{llm.fmt_cn_year(end)}奉{nm}")
+                rows.append(f"{llm.fmt_raw_year(start)}奉{nm}" if end <= start
+                            else f"{llm.fmt_raw_year(start)}至{llm.fmt_raw_year(end)}奉{nm}")
             else:
-                rows.append(f"自{llm.fmt_cn_year(start)}起奉{nm}" if i == 0
-                            else f"自{llm.fmt_cn_year(start)}起改奉{nm}")
+                rows.append(f"自{llm.fmt_raw_year(start)}起奉{nm}" if i == 0
+                            else f"自{llm.fmt_raw_year(start)}起改奉{nm}")
         return rows
 
     def personal_tenet_lines(self, cid, date=None):
@@ -15698,7 +15699,7 @@ class Facts:
         rid = self._rite_id(cid, date)
         rows, prev = [], set()
         for d, cur in pts:
-            year = llm.fmt_cn_year(int(str(d).split(".")[0]))
+            year = llm.fmt_raw_year(int(str(d).split(".")[0]))
             add = [t for t in sorted(cur - prev) if self.tenet_name(t, rid)]
             drop = [t for t in sorted(prev - cur) if self.tenet_name(t, rid)]
             _n = lambda ks: "、".join(  # noqa: E731
@@ -16560,7 +16561,7 @@ class Facts:
                 order.append(key)
             grouped[key].append(r["text"])
         for yr, leader in order:
-            lines.append(f"{llm.fmt_cn_year(yr)}起，{leader}"
+            lines.append(f"{llm.fmt_raw_year(yr)}起，{leader}"
                          f"{self._join_ruling_texts(grouped[(yr, leader)])}。")
         return lines
 
@@ -16638,9 +16639,9 @@ class Facts:
                     and self._in_church_window(d, win):
                 yr = str(d).split(".")[0]
                 nm = cl.faith_name_of(self.melt, fid)
-                rows.append(f"{llm.fmt_cn_year(yr)}起，{nm}失去大公教会地位，成为新信仰。"
+                rows.append(f"{llm.fmt_raw_year(yr)}起，{nm}失去大公教会地位，成为新信仰。"
                             if nm else
-                            f"{llm.fmt_cn_year(yr)}起，本礼失去大公教会地位，成为新信仰。")
+                            f"{llm.fmt_raw_year(yr)}起，本礼失去大公教会地位，成为新信仰。")
             prev = cur
         return rows
 
@@ -18565,11 +18566,11 @@ class Facts:
                 end = int(str(nxt).split(".")[0]) - 1
                 # two changes in one year (day-exact memory points) collapse into a single year
                 # instead of 「894年至894年」
-                rows.append(f"{llm.fmt_cn_year(start)}信{nm}" if end <= start
-                            else f"{llm.fmt_cn_year(start)}至{llm.fmt_cn_year(end)}信{nm}")
+                rows.append(f"{llm.fmt_raw_year(start)}信{nm}" if end <= start
+                            else f"{llm.fmt_raw_year(start)}至{llm.fmt_raw_year(end)}信{nm}")
             else:
-                rows.append(f"自{llm.fmt_cn_year(start)}起改信{nm}" if i
-                            else f"自{llm.fmt_cn_year(start)}起信{nm}")
+                rows.append(f"自{llm.fmt_raw_year(start)}起改信{nm}" if i
+                            else f"自{llm.fmt_raw_year(start)}起信{nm}")
         # With only one entry (no second change before as_of) nothing is emitted: the name sentence
         # already states the current faith and a single-entry history would only repeat it.
         return rows if len(rows) >= 2 else []
@@ -18612,7 +18613,7 @@ class Facts:
             return []
         out = [f"原为{pts[0][1]}"]
         for y, nm in pts[1:]:
-            out.append(f"{llm.fmt_cn_year(y)}起为{nm}")
+            out.append(f"{llm.fmt_raw_year(y)}起为{nm}")
         return ["族属：" + "，".join(out) + "。"]
 
     def traits(self, cid):
@@ -19687,7 +19688,7 @@ class Facts:
             if hire:
                 item["hires"].append(self.date(hire))
             if loss:
-                item["last_loss"] = self._year_only(loss)
+                item["last_loss"] = self.year_label(loss)
             if hire:
                 change_lines.append(W["office_change_gain"].format(
                     date=self.date(hire), employer=elab or "朝廷",
@@ -19950,8 +19951,185 @@ class Facts:
         return "west"
 
     # ---- dates ----
+    _ZHOU_TITLE_KEYS = ("e_zhoutianzi", "e_zhoutianzi1")
+
+    def _year_zh(self, n):
+        """Reign-year numeral: 元 for the first year, then the mod's own word."""
+        cal = llm.mod_calendar() or {}
+        w = (cal.get("year") or {}).get(n) or ""
+        if w:
+            return w
+        digits = "零一二三四五六七八九"
+        if n == 1:
+            return "元"
+        if n < 10:
+            return digits[n]
+        if n < 20:
+            return "十" + (digits[n - 10] if n > 10 else "")
+        if n < 100:
+            t, r = divmod(n, 10)
+            return digits[t] + "十" + (digits[r] if r else "")
+        return str(n)
+
+    def _is_nomadic(self):
+        """Whether the protagonist's own government is nomadic: the game gives a nomad no
+        realm era of its own, so the whole biography is dated by the Zhou king."""
+        pid = self.cache.get("player_id")
+        if pid is None:
+            return False
+        gov = self._character_government(pid, self.as_of)
+        if not gov:
+            rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+            gov = (rec.get("landed") or {}).get("government") or ""
+        return gov == "nomad_government"
+
+    def _holding_start(self, cid, tid, date):
+        """Start of the holding segment of `tid` that contains `date`, else None."""
+        dk = cl.date_key(date)
+        for g, l, _t in (self._hold_intervals(cid) or {}).get(int(tid)) or []:
+            if cl.date_key(g) <= dk and (not l or cl.date_key(l) > dk):
+                return g
+        return None
+
+    def _zhou_at(self, date):
+        """(king, reign_start) of the Zhou throne at `date`; the last king carries a gap."""
+        pairs = [(self.title_by_key(k), k) for k in self._ZHOU_TITLE_KEYS]
+        for tid, _k in pairs:
+            if not tid:
+                continue
+            h = self.holder_at(tid, date)
+            if h:
+                g = self._holding_start(h, tid, date)
+                if g:
+                    return h, g
+        last, dk = None, cl.date_key(date)
+        for tid, _k in pairs:
+            if not tid:
+                continue
+            for d, ev in self._title_seqs.get(int(tid)) or []:
+                if cl.date_key(d) > dk:
+                    break
+                for e in (ev if isinstance(ev, list) else [ev]):
+                    if isinstance(e, dict) and isinstance(e.get("holder"), int):
+                        last = (e["holder"], int(tid), d)
+        if last:
+            h, tid, d = last
+            start = d
+            for g, _l, _t in (self._hold_intervals(h) or {}).get(tid) or []:
+                if cl.date_key(g) <= dk:
+                    start = g
+            return h, start
+        return None, None
+
+    def _zhou_label(self, king):
+        """惟王 while the king lives at the cut-off; his posthumous name once he is dead."""
+        if self.as_of and self._alive_at(king, self.as_of):
+            return "惟王"
+        nick = ""
+        rec = (self.cache.get("characters") or {}).get(str(king)) or {}
+        for h in reversed(rec.get("nickname_history") or []):
+            n = (h or {}).get("nickname") if isinstance(h, dict) else ""
+            if n:
+                nick = n
+                break
+        if not nick:
+            nick = self.nickname(king)
+            if nick and not nick.endswith("王"):
+                nick = ""
+        if nick:
+            return nick if nick.startswith("周") else "周" + nick
+        return "周王"
+
+    def _era_at(self, d):
+        """(era label, reign start date) for a rendered date, or (None, None).
+
+        A nomadic protagonist has no reign era of its own in the game, so the whole
+        biography is dated by the Zhou king (惟王 while he lives at the cut-off, 周幽王三年
+        once he is dead). Other protagonists use their own primary title."""
+        cal = llm.mod_calendar()
+        if not cal:
+            return None, None
+        s = str(d or "")
+        try:
+            int(s.split(".")[0])
+        except Exception:
+            return None, None
+        if s in self._era_cache:
+            return self._era_cache[s]
+        out = (None, None)
+        pid = self.cache.get("player_id")
+        if self._is_nomadic():
+            king, start = self._zhou_at(s)
+            if king and start:
+                out = (self._zhou_label(king), start)
+        elif pid is not None:
+            _tier, tid = self._primary_title_at(pid, as_of=s)
+            if tid is not None:
+                start = self._holding_start(pid, tid, s)
+                if start:
+                    label = "惟王" if self._eff_rank(tid) >= 5 else \
+                        self.title_office_text(pid, tid, s)
+                    if label:
+                        out = (label, start)
+            if out[0] is None:
+                king, start = self._zhou_at(s)
+                if king and start:
+                    out = (self._zhou_label(king), start)
+        self._era_cache[s] = out
+        return out
+
+    def _era_head(self, d, y):
+        """'周幽王三年' for a date's year; '' when no era applies."""
+        era, start = self._era_at(d)
+        if not era or not start:
+            return ""
+        try:
+            ry = y - int(str(start).split(".")[0]) + 1
+        except Exception:
+            return ""
+        return f"{era}{self._year_zh(ry)}年"
+
     def date(self, d):
-        return llm.fmt_cn_date(d)
+        """Annalistic date: 周幽王三年九月廿五（黄帝纪年3855年）; the raw year in
+        parentheses keeps the model's time axis monotonic. Legacy form outside the mod."""
+        cal = llm.mod_calendar()
+        if not cal or not d:
+            return llm.fmt_cn_date(d)
+        s = str(d).strip()
+        parts = s.split(".")
+        if len(parts) < 3:
+            return llm.fmt_cn_date(d)
+        try:
+            y, mo, day = (int(x) for x in parts[:3])
+        except Exception:
+            return llm.fmt_cn_date(d)
+        if y >= 9999:
+            return "未知"
+        head = self._era_head(s, y)
+        if mo == 1 and day == 1:
+            return f"{head}（黄帝纪年{y}年）"
+        return head + cal["month"][mo] + cal["day"][day] + f"（黄帝纪年{y}年）"
+
+    def year_label(self, d):
+        """One year with its era: 周幽王三年（黄帝纪年3855年）; '' for an empty date."""
+        if not d:
+            return ""
+        cal = llm.mod_calendar()
+        if not cal:
+            return llm.fmt_raw_year(str(d).split(".")[0])
+        s = str(d)
+        try:
+            y = int(s.split(".")[0])
+        except Exception:
+            return llm.fmt_raw_year(s.split(".")[0])
+        if y >= 9999:
+            return "未知"
+        return f"{self._era_head(s, y)}（黄帝纪年{y}年）"
+
+    @staticmethod
+    def raw_year(y):
+        """Compact raw year for spans: 黄帝纪年3855年 (legacy form outside the mod)."""
+        return llm.fmt_raw_year(y)
 
     # ---- title chain / camp ----
     def liege_chain(self, tid):
@@ -21722,7 +21900,7 @@ def _victim_marks(f, cid):
     fai = f.faith(cid)
     mark = []
     if by:
-        mark.append(f"{llm.fmt_cn_year(by)}生")
+        mark.append(f"{llm.fmt_raw_year(by)}生")
     if not is_unknown(cul):
         mark.append(cul)
     if not is_unknown(fai):
@@ -22239,7 +22417,7 @@ _IDENT_TYPES = frozenset(
        "witnessed_a_coronation_memory"}
 )
 
-_DATE_PREFIX_RE = re.compile(r"^(?:公元前|公元|前)?\d+年(?:\d+月\d+日)?，")
+_DATE_PREFIX_RE = re.compile("^" + llm.CN_DATE_PATTERN + "，")
 
 
 def _sex_mirror_partner(a, b):
@@ -24600,7 +24778,7 @@ def _agg_line(ym, names, verb, tail):
         cnt = f"等{len(names)}人"
         names = names[:3]
     joined = "、".join(names) + cnt
-    return f"{llm.fmt_cn_year(y)}{int(m)}月，{joined}{tail}{verb}。"
+    return f"{llm.fmt_raw_year(y)}{int(m)}月，{joined}{tail}{verb}。"
 
 
 def _agg_slots(entries, spec, f):
@@ -24779,10 +24957,10 @@ def _merge_affair_pairs(events, f=None):
         y, _, mm = ym.partition(".")
         if spouse:
             text = _FACT_WORDING["affair_pair_spouse"].format(
-                y=llm.fmt_cn_year(y), m=int(mm), a=m.group(1), b=m.group(2))
+                y=llm.fmt_raw_year(y), m=int(mm), a=m.group(1), b=m.group(2))
             typ_out = "became_lovers_spouse"
         else:
-            text = f"{llm.fmt_cn_year(y)}{int(mm)}月，{m.group(1)}与{m.group(2)}私通相恋。"
+            text = f"{llm.fmt_raw_year(y)}{int(mm)}月，{m.group(1)}与{m.group(2)}私通相恋。"
             typ_out = "became_lovers"
         merged.append((ym, text, typ_out))
         drop.add(hx_full)
@@ -25770,10 +25948,8 @@ def _character_profiles(f):
             _lm = _LINE_DATE_RE.match(x)
             _alt = _alts
             if _lm:
-                _ry = llm.parse_cn_year(_lm.group(0))
-                _ymd = [str(_ry if _ry is not None else _lm.group(1))]
-                _ymd += [g for g in _lm.groups()[1:] if g]
-                _nm_d = f.name(cid, date=".".join(_ymd))
+                _d = llm.parse_cn_date_text(_lm.group(0))
+                _nm_d = f.name(cid, date=_d) if _d else ""
                 if _nm_d and _nm_d not in _alt:
                     _alt = _alts + [_nm_d]
             y = _strip_subject_prefix(x, _subj, _alt, own_names=_own)
@@ -26944,11 +27120,11 @@ def _top_title_history(f):
         within one year."""
         y1, m1 = str(s).split(".")[0], str(s).split(".")[1]
         if e is None:
-            return f"{llm.fmt_cn_year(y1)}至今"
+            return f"{llm.fmt_raw_year(y1)}至今"
         y2, m2 = str(e).split(".")[0], str(e).split(".")[1]
         if y1 == y2:
-            return f"{llm.fmt_cn_year(y1)}{m1}月至{llm.fmt_cn_year(y1)}{m2}月"
-        return f"{llm.fmt_cn_year(y1)}至{llm.fmt_cn_year(y2)}"
+            return f"{llm.fmt_raw_year(y1)}{m1}月至{llm.fmt_raw_year(y1)}{m2}月"
+        return f"{llm.fmt_raw_year(y1)}至{llm.fmt_raw_year(y2)}"
 
     # Dynasty name = dynasty segment name + tier suffix, the suffix taken from the display name at the
     # narrative end date (元皇朝 -> 皇朝; 挪威王国 -> 王国) rather than per segment, since for a

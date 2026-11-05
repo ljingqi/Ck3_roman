@@ -2084,6 +2084,8 @@ def _shared_facts_block(facts, subject=None, key=None):
     p = facts["protagonist"]
     name = p.get("name") or "主角"
     house = _house_text(facts)
+    _fi = facts.get("_facts")
+    _date = _fi.date if _fi is not None else llm.fmt_cn_date
     death = facts.get("player_death")
     re_end = facts.get("reign_end")            # abdication / tonsure retirement
     if re_end and key != "assassins":
@@ -2093,12 +2095,12 @@ def _shared_facts_block(facts, subject=None, key=None):
         life_note = ""
     elif death and key != "assassins":
         rz = death.get("reason_zh") or death.get("reason") or "去世"
-        life_note = (f"【卒年】{llm.fmt_cn_date(death.get('date'))}，{rz}"
+        life_note = (f"【卒年】{_date(death.get('date'))}，{rz}"
                      "——此为终传")
     elif death:
         life_note = ""
     elif facts.get("as_of"):
-        life_note = f"【现状】在世，截至{llm.fmt_cn_date(facts['as_of'])}"
+        life_note = f"【现状】在世，截至{_date(facts['as_of'])}"
     else:
         life_note = "【现状】在世，截至最后一份存档"
     # adventurer stations: camp stages and seats for the landless-adventurer period only
@@ -2157,14 +2159,16 @@ def build_intro_messages(facts, cfg, articles=None):
     house = _house_text(facts)
     style_name = facts.get("bio_style") or "east"
     birth = p.get("birth") or ""
+    _fi = facts.get("_facts")
+    _date = _fi.date if _fi is not None else llm.fmt_cn_date
     death = facts.get("player_death")
     re_end = facts.get("reign_end")            # abdication / tonsure retirement
     if re_end:
         # an abdicated ruler is still alive, so the "life span (retirement)" form replaces a birth–death span
-        span_cn = (f"生平：{birth}–{llm.fmt_cn_date(re_end.get('date'))}"
+        span_cn = (f"生平：{birth}–{_date(re_end.get('date'))}"
                    f"（{re_end.get('word_zh') or '让位'}）" if birth else "")
     elif death:
-        span_cn = f"生卒：{birth}–{llm.fmt_cn_date(death.get('date'))}"
+        span_cn = f"生卒：{birth}–{_date(death.get('date'))}"
     else:
         span_cn = f"生于{birth}" if birth else ""
     sys_msg = style.PROMPTS["intro_system"].format(
@@ -3086,16 +3090,18 @@ def _assemble(facts, intro, leads, sections, articles):
     parts = [f"# 《{facts['protagonist']['name']}传》"]
     p = facts["protagonist"]
     house = _house_text(facts)
+    _fi = facts.get("_facts")
+    _date = _fi.date if _fi is not None else llm.fmt_cn_date
     death = facts.get("player_death")
     re_end = facts.get("reign_end")            # abdication/retirement outranks the death record
     span = ""
     if re_end:
         span = f"{re_end.get('reason_zh') or '让位'}，此为终传"
     elif death:
-        span = f"死于{llm.fmt_cn_date(death.get('date'))}，此为终传"
+        span = f"死于{_date(death.get('date'))}，此为终传"
     else:
         cutoff = facts.get("as_of") or facts.get("last_date")
-        span = f"截至{llm.fmt_cn_date(cutoff or '?')}"
+        span = f"截至{_date(cutoff or '?')}"
     parts.append(f"> 家族：{house}｜人物：{p.get('name')}｜{span}")
     parts.append("")
     # _strip_intro_head drops the model-written head, leaving the programmatic title and byline above.
@@ -3185,25 +3191,24 @@ def _appendix_text(facts):
     # `_pair_war_events` writes the outcome's own date into the declaring row's body
     # ("…应战；962年7月6日，…战胜…。"), which under a day grid makes the row contradict its own cell.
     # Such a body becomes two dated events (方案 v121 §2.4(4)).
-    _EMB_DATE_RE = re.compile(
-        r"^([^；;]+)[；;]((?:公元前|公元|前)?\d+年)"
-        r"(?:(\d+)月(?:(\d+)日)?)?[，,](.+)$")
-
     def _split_embedded(y, mo, d, body):
         """[(y, mo, d, text)] — one entry, or two when the body embeds a second date."""
-        m = _EMB_DATE_RE.match(body)
-        if not m:
+        i = body.find("；")
+        if i < 0:
+            i = body.find(";")
+        if i <= 0:
             return [(y, mo, d, body)]
-        head = m.group(1).rstrip("。 \u3000") + "。"
-        out = [(y, mo, d, head)]
-        ey = llm.parse_cn_year(m.group(2))
-        ey = int(ey) if ey is not None else int(m.group(2))
-        if m.group(3):
-            out.append((ey, int(m.group(3)),
-                        int(m.group(4)) if m.group(4) else 0, m.group(5)))
-        else:
-            out.append((ey, 1, 1, m.group(5)))
-        return out
+        tail = body[i + 1:].lstrip()
+        dm = llm.cn_date_prefix(tail)
+        eymd = llm.parse_cn_date_text(dm) if dm else None
+        rest = tail[len(dm):] if dm else ""
+        if rest.startswith(("，", ",")):
+            rest = rest[1:]
+        if not eymd or not rest:
+            return [(y, mo, d, body)]
+        head = body[:i].rstrip("。 \u3000") + "。"
+        ey, emo, ed = (int(x) for x in eymd.split("."))
+        return [(y, mo, d, head), (ey, emo, ed, rest)]
 
     for e in events:
         y, mo, d = 0, 0, 0
@@ -3216,14 +3221,14 @@ def _appendix_text(facts):
             d = _parts[2] if len(_parts) > 2 else 0
         except Exception:
             continue
-        body = re.sub(r"^(?:公元前|公元|前)?\d+年\d+月\d+日，?", "", e["text"])
-        body = re.sub(r"^(?:公元前|公元|前)?\d+年\d+月，?", "", body)
-        body = re.sub(r"^(?:公元前|公元|前)?\d+年，?", "", body)
+        body = llm.strip_cn_date_prefix(e["text"])
         for (yy, mm, dd, part) in _split_embedded(y, mo, d, body):
             _add(yy, mm, dd, part)
     if by_day:
         lines.append("")
         lines.append("### 大事年表")
+        _fi = facts.get("_facts")
+        _year = _fi.raw_year if _fi is not None else llm.fmt_cn_year
         n_year, n_month = {}, {}
         for (y, mo, d), evs in by_day.items():
             n_year[y] = n_year.get(y, 0) + len(evs)
@@ -3237,14 +3242,14 @@ def _appendix_text(facts):
             if n_year[y] == 1:
                 for body in bodies:
                     if year_only:
-                        lines.append(f"- {llm.fmt_cn_year(y)} {body}")
+                        lines.append(f"- {_year(y)} {body}")
                     elif d == 0:
-                        lines.append(f"- {llm.fmt_cn_year(y)}{mo}月 {body}")
+                        lines.append(f"- {_year(y)}{mo}月 {body}")
                     else:
-                        lines.append(f"- {llm.fmt_cn_year(y)}{mo}月{d}日 {body}")
+                        lines.append(f"- {_year(y)}{mo}月{d}日 {body}")
                 continue
             if y != last_y:
-                lines.append(f"- {llm.fmt_cn_year(y)}")
+                lines.append(f"- {_year(y)}")
                 last_y = y
                 last_mo = None
             if year_only:
@@ -3277,7 +3282,7 @@ def _timeline_event_key(body):
     m = re.match(r"^.+?的仇人(.+去世。)$", body)
     if m:
         return ("亡", m.group(1))
-    m = re.match(r"^(.+?)死于(?:(?:公元前|公元|前)?\d+年\d+月\d+日|(?:公元前|公元|前)?\d+年)", body)
+    m = re.match(r"^(.+?)死于(?:%s)" % llm.CN_DATE_PATTERN, body)
     if m:
         return ("亡", m.group(1) + "去世。")
     m = re.match(r"^.+?(?:得长子|得长女|添子|添女)(.+。)$", body)
@@ -3299,7 +3304,7 @@ def _timeline_event_key(body):
 def _timeline_event_priority(body, pname):
     """Ranking when several viewpoints of one event compete: death record (fullest) >
     death memory > rest; within a tier, text opening with the protagonist's name wins."""
-    if re.search(r"死于(?:(?:公元前|公元|前)?\d+年\d+月\d+日|(?:公元前|公元|前)?\d+年)", body):
+    if re.search(r"死于(?:%s)" % llm.CN_DATE_PATTERN, body):
         tier = 2
     elif re.search(r"的(?:亲属|友人|仇人).+?去世。$", body):
         tier = 1
@@ -3351,8 +3356,8 @@ def _chrono_mid_req(base_req, idx, total, periods, last=False, family=False):
             _s = str(p.get("start") or "").split(".", 1)[0]
             _e = str(p.get("end") or "").split(".", 1)[0] if p.get("end") else ""
             if _s:
-                spans.append(f"{p.get('name') or ''}（{llm.fmt_cn_year(_s)}至"
-                             f"{llm.fmt_cn_year(_e) if _e else '今'}）")
+                spans.append(f"{p.get('name') or ''}（{llm.fmt_raw_year(_s)}至"
+                             f"{llm.fmt_raw_year(_e) if _e else '今'}）")
         head += "本板块写这几朝：" + "、".join(names) + "。"
         if spans:
             head += "年代区间：" + "、".join(spans) + "。"

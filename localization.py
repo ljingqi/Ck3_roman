@@ -3382,6 +3382,40 @@ def parse_cn_year(text):
     return int(m.group(1)) if m else None
 
 
+# -- Mod regnal-date words (DM_JN_* in 大梦春秋III) --
+_MOD_CAL_CACHE = (None, None)
+
+
+def mod_calendar(cfg=None):
+    """The mod's annalistic date words {month, day, year, month_of, day_of, wang}, or None
+    when the active localization table does not carry them (vanilla keeps its old dates)."""
+    global _MOD_CAL_CACHE
+    t = table(cfg)
+    if _MOD_CAL_CACHE[0] is t:
+        return _MOD_CAL_CACHE[1]
+
+    def w(key):
+        v = t.get(key)
+        if not v:
+            return ""
+        v = clean_loc_value(v, t)
+        return v if v and not v.startswith(("$", "[")) else ""
+
+    month = {i: w(f"DM_JN_month_{i}") for i in range(1, 13)}
+    day = {i: w(f"DM_JN_day_{i}") for i in range(1, 32)}
+    year = {i: w(f"DM_JN_year_{i}") for i in range(1, 100)}
+    val = None
+    if month[1] and day[1] and w("DM_JN_level_wang"):
+        val = {
+            "month": month, "day": day, "year": year,
+            "month_of": {v: k for k, v in month.items() if v},
+            "day_of": {v: k for k, v in day.items() if v},
+            "wang": w("DM_JN_level_wang"),
+        }
+    _MOD_CAL_CACHE = (t, val)
+    return val
+
+
 def miss_report(top=40):
     """Miss counts by key, highest first, limited to `top` entries; used for localization
     coverage audits."""
