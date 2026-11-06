@@ -11117,6 +11117,190 @@ class Facts:
             out.append(w)
         return out
 
+    # ---- mod display names (大梦春秋III) ----
+
+    _MOD_OFFICE_PREFIXES = ("d_gz_ct_", "e_minister_")
+
+    def _council_position_at(self, cid, date):
+        """Council position suffix (chancellor / spymaster / …) of `cid` at `date`, or ''.
+
+        The cache's `council_seats` history names the seat whatever court it belongs to, which
+        `_council_seats_of` cannot do (it keeps the subject's own court only). A row of another
+        court is skipped when the character's liege of that day is known."""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return ""
+        rows = None
+        if date:
+            rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+            for pt in rec.get("council_seats") or []:
+                try:
+                    if cl.date_key(pt.get("from") or "0.0.0") <= cl.date_key(date):
+                        rows = pt.get("seats") or []
+                    else:
+                        break
+                except Exception:                                     # noqa: BLE001
+                    continue
+        if rows is None:
+            act = (self.melt.get("council_task_manager") or {}).get("active") or {}
+            rows = [e for e in act.values()
+                    if isinstance(e, dict) and e.get("owner") == cid]
+        liege = self._liege_cid(cid, date)
+        tasks = (self._council_tasks or {}).get("tasks") or {}
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            if liege is not None and r.get("court_owner") not in (None, liege):
+                continue
+            pos = tasks.get(r.get("type") or "") or ""
+            if pos:
+                return pos.rsplit("_", 1)[-1]
+        return ""
+
+    def _mod_office_title(self, cid, date):
+        """(tid, word) of the mod court office `cid` shows, or (None, '').
+
+        A minister may hold several `d_gz_ct_*` titles at once (右师 and 司徒), while the mod
+        names him by the one matching his council seat; the first held office is the fallback."""
+        if cid is None or not date:
+            return None, ""
+        try:
+            dk = cl.date_key(date)
+        except Exception:                                             # noqa: BLE001
+            return None, ""
+        held = []
+        for tid, ivs in (self._hold_intervals(cid, date) or {}).items():
+            key = (self._lt.get(str(tid)) or {}).get("key") or ""
+            if not key.startswith(self._MOD_OFFICE_PREFIXES):
+                continue
+            for (g, l, _lt) in ivs:
+                try:
+                    if g and cl.date_key(g) <= dk and (not l or cl.date_key(l) > dk):
+                        held.append((int(tid), key))
+                        break
+                except Exception:                                     # noqa: BLE001
+                    continue
+        if not held:
+            return None, ""
+        pos = self._council_position_at(cid, date)
+        pick = None
+        if pos:
+            for tid, key in held:
+                if key.endswith("_" + pos):
+                    pick = (tid, key)
+                    break
+        if pick is None:
+            pick = held[0]
+        tid, key = pick
+        word = self._name_at_date(tid, date) or self.title_base_name(tid)
+        if key.startswith("e_minister_"):
+            word = self._minister_office(tid) or word
+        return tid, word
+
+    def _mod_office_prefix(self, cid, date):
+        """「吴国大司寇兼卿大夫」 for a vassal holding a mod court office, else ''.
+
+        Independent rulers carry no office prefix (the mod shows their title + rank word), and a
+        character without a lord or realm name has nothing to attach the office to."""
+        if not llm.mod_calendar() or cid is None:
+            return ""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return ""
+        if self._is_independent(cid, date) is True:
+            return ""
+        _tid, word = self._mod_office_title(cid, date)
+        if not word:
+            return ""
+        liege = self._liege_cid(cid, date)
+        realm = ""
+        if liege is not None:
+            _t, ltid = self._primary_title_at(liege, as_of=date)
+            if ltid is None:
+                ltid = self._last_high_title_before(liege, date)
+            if ltid is not None:
+                realm = cl.zh(self.title(ltid, date) or self.title_base_name(ltid))
+        if not realm:
+            return ""
+        _tier, ptid = self._primary_title_at(cid, as_of=date)
+        rank = self._eff_rank(ptid) if ptid is not None else 0
+        return f"{realm}{word}兼{'卿大夫' if rank >= 3 else '大夫'}"
+
+    def _chixu_word(self, cid, date):
+        """The mod's 齿序 word (伯/孟/仲/叔/季), or ''.
+
+        Rules follow `DM_char_custom_loc.txt:9-97` with the default game rule `DM_chixu_below`:
+        no word without `child_rank`, under nomad/tribal/wanua/herder government, or at kingdom
+        tier and above. A first son is 伯 (孟 when 庶 or a daughter), the second 仲, and among the
+        later ones the youngest is 季 and the rest 叔 (younger same-father siblings of the same
+        sex decide, the dead included)."""
+        if not llm.mod_calendar() or cid is None:
+            return ""
+        v = self._char_var(cid, "child_rank")
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return ""
+        rank = int(round(v / 100000))
+        if rank < 1:
+            return ""
+        _tier, tid = self._primary_title_at(cid, as_of=date)
+        if self._eff_rank(tid) >= 4:
+            return ""
+        gov = self._character_government(cid, date) or ""
+        if gov in ("nomad_government", "tribal_government",
+                   "wanua_government", "herder_government"):
+            return ""
+        if rank == 1:
+            shuzi = "dm_shuzi_modifier" in json.dumps(
+                (self._chars.get(str(cid)) or {}).get("alive_data") or {},
+                ensure_ascii=False)
+            return "孟" if (self._is_female(cid) or shuzi) else "伯"
+        if rank == 2:
+            return "仲"
+        recs = self.cache.get("characters") or {}
+        fam = (recs.get(str(cid)) or {}).get("family") or {}
+        father = fam.get("father")
+        mine, fem = self._birth_of(cid), self._is_female(cid)
+        if father is not None and mine:
+            for sib in self._sibling_ids(cid):
+                srec = recs.get(str(sib)) or {}
+                sfam = srec.get("family") or {}
+                if father not in (sfam.get("father"), sfam.get("real_father")):
+                    continue
+                if bool(self._is_female(sib)) != bool(fem):
+                    continue
+                b = self._birth_of(sib)
+                if not b:
+                    continue
+                try:
+                    if cl.date_key(b) > cl.date_key(mine):
+                        return "叔"
+                except Exception:                                     # noqa: BLE001
+                    continue
+        return "季"
+
+    def _mod_chixu_name(self, cid, date, nm):
+        """Insert the 齿序 word after the house name for a titled character (常中正 → 常伯中正).
+
+        Characters without a title keep the plain name (a decision of this project: the mod UI's
+        「公子,伯某」 form is not carried into the biography), and a name that does not begin with
+        the house name is left alone. The dead keep the death display (`DM_view_name_death`
+        has no 齿序)."""
+        if not nm or not llm.mod_calendar() or self._dead_at(cid, date):
+            return nm
+        _tier, tid = self._primary_title_at(cid, as_of=date)
+        if tid is None:
+            return nm
+        chixu = self._chixu_word(cid, date)
+        if not chixu:
+            return nm
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        house = rec.get("house_name") or ""
+        if house and nm.startswith(house):
+            return f"{house}{chixu}{nm[len(house):]}"
+        return nm
+
     def _person_label_uncached(self, cid, date, style, same_day=False, dead_flavor=True,
                                title_only=False):
         nm = self.name_with_regnal(cid, date)
@@ -11126,7 +11310,7 @@ class Facts:
         # his titles, and a full label on every line only costs attention. Everyone else still
         # uses the brief form (title + name) for recognition.
         if style == "timeline" and cid == self.cache.get("player_id"):
-            return nm
+            return self._mod_chixu_name(cid, date, nm)
         # Death display in the mod: a posthumous nickname leads the name and no title word
         # follows it (DM_view_name_death → DM_view_name_zhuhou_death).
         if llm.mod_calendar() and self._dead_at(cid, date) and self.nickname(cid, date):
@@ -11145,6 +11329,18 @@ class Facts:
         rhw = self.religious_head_word(cid)
         if rhw:
             return self._join_office(rhw, pn)
+        # Mod display names (大梦春秋III): an office holder is named by his lord's realm and his
+        # court office plus 卿大夫/大夫 (吴国大司寇兼卿大夫常伯中正); a duchy ruler drops the landed
+        # title word (卿 form: house + 齿序 + name). Independent rulers keep the title + rank word.
+        if llm.mod_calendar() and not title_only and not self._dead_at(cid, date):
+            nm = self._mod_chixu_name(cid, date, nm)
+            pn = f"{acc}{nm}" if acc else nm
+            mpfx = self._mod_office_prefix(cid, date)
+            if mpfx:
+                return self._join_office(mpfx, pn)
+            _mtier, _mtid = self._primary_title_at(cid, as_of=date)
+            if _mtid is not None and self._eff_rank(_mtid) == 3:
+                return pn
         off = self._event_office(cid, date) if style == "event" \
             else self.official_title(cid, date, same_day=same_day,
                                      dead_flavor=dead_flavor)
@@ -25349,7 +25545,8 @@ def _protagonist(f):
     # sentence and the house-rank sentence must all read the same value.
     _dn, _hn = f._house_names_at(pid, f.as_of)
     p = {
-        "name": f.name_with_regnal(pid, f.as_of),  # regnal numbering, at the cut-off date
+        "name": f._mod_chixu_name(pid, f.as_of,
+                                  f.name_with_regnal(pid, f.as_of)),
         "name_zh": rec.get("name_zh") or "",
         # clan name (the surname under Eastern name order) + house/branch, given
         # only when it differs from the clan
