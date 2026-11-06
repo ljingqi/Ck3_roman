@@ -26347,8 +26347,29 @@ def _character_profiles(f):
         _iconsumed = set()
         for _line, _ids, _dd in _ipairs.values():
             _iconsumed |= _ids
+        # Imprisonment and its exit are one story: hand the holder's own prison memories to the
+        # same pairing pass the timeline uses, so the profile gets "jailed ... released/escaped
+        # N days later" instead of two bare rows.
+        _prison_types = ("imprisoned", "released_from_prison_memory",
+                         "escaped_from_prison_memory")
+        _prison_evs = []
+        _prison_skip = set()
         for mem in rec.get("memories") or []:
-            if id(mem) in _iconsumed:
+            if mem.get("type") not in _prison_types:
+                continue
+            _pd = f.mem_date(cid, mem)
+            if f.as_of and _pd and cl.date_key(_pd) > cl.date_key(f.as_of):
+                continue
+            _prison_skip.add(id(mem))
+            _prison_evs.append({"type": mem.get("type"), "date": _pd,
+                                "ident": {"owner": cid,
+                                          "parts": mem.get("participants") or {}}})
+        if _prison_evs:
+            for _pe in _pair_imprisonments(_prison_evs, f, cid, name):
+                if _pe.get("text"):
+                    _mems_dated.append((str(_pe.get("date") or ""), _pe["text"]))
+        for mem in rec.get("memories") or []:
+            if id(mem) in _iconsumed or id(mem) in _prison_skip:
                 continue
             # Sexual memories (同房 / 私通 / forced or half-willing) stay out of a character's "行迹":
             # profiles are public data shared by every chapter, so sex appears only in the 【相关年表】
