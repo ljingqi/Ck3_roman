@@ -5563,7 +5563,8 @@ class Facts:
             # ruled by (「从…统治者…处圣战征服」), which is what the game's own title history says
             # (`conquest_holy_war_history: "被圣战征服"`).
             ph = self.prev_holder(tid, date, exclude=cid)
-            pn = self.person_label(ph, date=date, style="brief") \
+            pn = self.person_label(ph, date=date, style="brief", same_day=True,
+                                   title_only=True) \
                 if isinstance(ph, int) else ""
             verb, rival = _style.TITLE_GAIN_CAUSE[reason]
             if not pn:
@@ -5576,13 +5577,15 @@ class Facts:
             return f"从{pn}处{verb}"
         if reason in _TITLE_TAKE_REASONS:
             ph = self.prev_holder(tid, date, exclude=cid)
-            pn = self.person_label(ph, date=date, style="brief") \
+            pn = self.person_label(ph, date=date, style="brief", same_day=True,
+                                   title_only=True) \
                 if isinstance(ph, int) else ""
             return f"自{pn}手中{verb}" if pn else verb
         # appointment/grant/inheritance from someone: name the source
         if reason in _TITLE_FROM_REASONS:
             ph = self.prev_holder(tid, date, exclude=cid)
-            pn = self.person_label(ph, date=date, style="brief") \
+            pn = self.person_label(ph, date=date, style="brief", same_day=True,
+                                   title_only=True) \
                 if isinstance(ph, int) else ""
             return f"继承自{pn}" if (pn and reason == "inheritance") else verb
         return verb
@@ -6017,11 +6020,31 @@ class Facts:
         except (TypeError, ValueError):
             return []
         act = (self.melt.get("council_task_manager") or {}).get("active") or {}
-        if not act:
-            return []
+        # Membership is dated when the cache has a seat history: the melt only knows the
+        # present assignment, so a seat taken years later would otherwise be projected back
+        # onto an early date (v147: 柯条's chaplaincy at his 3850 title loss).
+        rows = None
+        if date:
+            rec = (self.cache.get("characters") or {}).get(str(want)) or {}
+            hist = rec.get("council_seats") or []
+            if hist:
+                rows = []
+                for pt in hist:
+                    try:
+                        if cl.date_key(pt.get("from") or "0.0.0") <= cl.date_key(date):
+                            rows = pt.get("seats") or []
+                        else:
+                            break
+                    except Exception:                                 # noqa: BLE001
+                        continue
+                rows = [dict(r, owner=want) for r in rows if isinstance(r, dict)]
+        if rows is None:
+            if not act:
+                return []
+            rows = list(act.values())
         gov, imperial = self._council_scope(cid=sub, date=date)
         out, seen = [], set()
-        for e in act.values():
+        for e in rows:
             if not isinstance(e, dict):
                 continue
             owner = e.get("court_owner")
@@ -11028,7 +11051,8 @@ class Facts:
                 return f"{llm.fmt_raw_year(py)}至{llm.fmt_raw_year(year)}间"
         return llm.fmt_raw_year(year)
 
-    def person_label(self, cid, date=None, style="full", same_day=False, dead_flavor=True):
+    def person_label(self, cid, date=None, style="full", same_day=False, dead_flavor=True,
+                     title_only=False):
         """Single entry point for person labels. `style`:
         - "full": household/lineage — "[former X,] current title Y name";
         - "brief": secrets/hooks/timeline — "current title Y name", no former title;
@@ -11038,17 +11062,21 @@ class Facts:
         A religious head gets "教宗X"; a landless uprising leader "农民起义领袖X"; an unrecorded
         name returns '' so the caller drops the line; an accolade precedes the name.
         `same_day=True` keeps a title lost exactly on `date` (see `official_title`);
-        `dead_flavor=False` reads that day's title instead of the baked death-time style.
+        `dead_flavor=False` reads that day's title instead of the baked death-time style;
+        `title_only=True` drops the court/council office words, for sentences that state a
+        transfer of the landed title itself (v147: 「自柯卿柯条手中夺得」).
         """
         if cid is None:
             return ""
-        key = (int(cid), date or "", style, bool(same_day), bool(dead_flavor))
+        key = (int(cid), date or "", style, bool(same_day), bool(dead_flavor),
+               bool(title_only))
         if key in self._label_cache:
             out = self._label_cache[key]
             self._log_label(cid, out)
             return out
         out = self._person_label_uncached(cid, date, style,
-                                          same_day=same_day, dead_flavor=dead_flavor)
+                                          same_day=same_day, dead_flavor=dead_flavor,
+                                          title_only=title_only)
         self._label_cache[key] = out
         self._log_label(cid, out)
         return out
@@ -11089,7 +11117,8 @@ class Facts:
             out.append(w)
         return out
 
-    def _person_label_uncached(self, cid, date, style, same_day=False, dead_flavor=True):
+    def _person_label_uncached(self, cid, date, style, same_day=False, dead_flavor=True,
+                               title_only=False):
         nm = self.name_with_regnal(cid, date)
         if not nm or nm in self._PLACEHOLDER_NAMES:
             return ""
@@ -11131,7 +11160,7 @@ class Facts:
         # v122 (user): a court office rides on the holder's own name. Several offices are
         # concurrent, so they are joined with 「兼」 (「长史兼司马某人」), and a landed title stays
         # closest to the name.
-        _seats = self._subject_office_words(cid, date)
+        _seats = [] if title_only else self._subject_office_words(cid, date)
         if _seats:
             off = _join_office_words(off, _seats)
         if style == "full":

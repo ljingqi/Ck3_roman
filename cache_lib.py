@@ -1534,6 +1534,9 @@ def char_record(cache, cid):
             # [{from, nickname}] nickname change points (an empty string means none); reading
             # an era's nickname would otherwise need that era's whole melt file.
             "nickname_history": [],
+            # [{from, seats:[{court_owner, type}]}] council seats held per snapshot; the save
+            # keeps only the present assignment (v147).
+            "council_seats": [],
             "traits": [],
             "trait_history": {},    # {trait key: [{from, to, first}]} gained/lost intervals
             "trait_xp": [],         # [{from, traits, xp}] trait-track XP samples (aligned with traits)
@@ -3520,6 +3523,23 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # Vassal contracts and the Mandate phase, through the same entry point as a merge
     _record_vassal_and_cycle(cache, melt, date_label)
 
+    # Council seats per snapshot: the save keeps only the present assignment, so a dated
+    # history is the only way an earlier date sees who held a seat then (v147: a chaplaincy
+    # acquired years later was projected back onto the title-gain day).
+    _ctm = (melt.get("council_task_manager") or {}).get("active") or {}
+    _seat_rows = {}
+    for _e in _ctm.values():
+        if not isinstance(_e, dict):
+            continue
+        _owner = _e.get("owner")
+        if not isinstance(_owner, int):
+            continue
+        _seat_rows.setdefault(_owner, []).append({
+            "court_owner": _e.get("court_owner"),
+            "type": _e.get("type"),
+        })
+        targets.add(_owner)
+
     for cid in sorted(targets):
         c = chars.get(str(cid))
         if c is None:
@@ -3728,6 +3748,13 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             _nh = rec.setdefault("nickname_history", [])
             if not _nh or _nh[-1].get("nickname") != _nick:
                 _nh.append({"from": date_label, "nickname": _nick})
+        # Council seats held on this snapshot (see the pre-scan above `_seat_rows`).
+        _seats_now = _seat_rows.get(cid) or []
+        _sh = rec.get("council_seats")
+        if _seats_now or (_sh and _sh[-1].get("seats")):
+            _sh = rec.setdefault("council_seats", [])
+            if not _sh or _sh[-1].get("seats") != _seats_now:
+                _sh.append({"from": date_label, "seats": _seats_now})
         # Languages (alive_data.languages) follow the culture rule: update when present,
         # keep the last known value when the game clears them at death.
         langs = (c.get("alive_data") or {}).get("languages") or []
