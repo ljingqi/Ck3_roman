@@ -20145,12 +20145,104 @@ class Facts:
             return nick if nick.startswith("周") else "周" + nick
         return "周王"
 
+    _NIANHAO_FLAG = "DM_JN_nianhao_data"
+
+    def _nianhao_at(self, cid, date):
+        """The mod's era year counter of `cid` at `date`, or None.
+
+        The game keeps `DM_JN_nianhao_data` as a fixed-point value (×100000) and the era year is
+        the value itself, not arithmetic on the title-gain year. The per-snapshot history in the
+        cache is the source once a ruler is dead (his variables are cleared); a date before the
+        first record is extrapolated one year per calendar year, floored at 元."""
+        if cid is None:
+            return None
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        hist = []
+        for pt in rec.get("nianhao_history") or []:
+            if not isinstance(pt, dict):
+                continue
+            frm = str(pt.get("from") or "")
+            v = pt.get("value")
+            if not frm or not isinstance(v, (int, float)) or isinstance(v, bool):
+                continue
+            try:
+                hist.append((cl.date_key(frm), frm, int(v)))
+            except Exception:                                         # noqa: BLE001
+                continue
+        if not hist:
+            v = self._char_var(cid, self._NIANHAO_FLAG)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return max(1, int(round(v / 100000)))
+            return None
+        hist.sort()
+        try:
+            dk = cl.date_key(date)
+        except Exception:                                             # noqa: BLE001
+            return None
+        cur = None
+        for hk, frm, v in hist:
+            if hk <= dk:
+                cur = (frm, v)
+            else:
+                break
+        if cur is not None:
+            return max(1, int(round(cur[1] / 100000)))
+        frm, v = hist[0][1], hist[0][2]
+        try:
+            y0 = int(frm.split(".")[0])
+            y = int(str(date).split(".")[0])
+        except Exception:                                             # noqa: BLE001
+            return None
+        return max(1, int(round(v / 100000)) - max(0, y0 - y))
+
+    def _era_liege(self, cid, date):
+        """(liege, title) supplying the era of a vassal of duchy rank or below.
+
+        The liege's own primary title answers while he holds one; on a succession day the title
+        may already have passed to the heir while the vassal contract still names the
+        predecessor, so the actual holder of the liege's last high title stands in. A date before
+        the first vassal snapshot borrows the first contract within a year — the same
+        "ennobled mid-year" tolerance `_is_independent` applies — so the opening months still
+        read their lord's era."""
+        liege = self._liege_cid(cid, date)
+        if liege is None:
+            try:
+                dk = cl.date_key(date)
+            except Exception:                                     # noqa: BLE001
+                return None, None
+            for h in self._vassal_history(cid) or []:
+                hd = h.get("date")
+                if not hd or h.get("trib") or h.get("liege") is None:
+                    continue
+                hk = cl.date_key(hd)
+                if hk < dk:
+                    continue
+                if _date_ord(hd) - _date_ord(date) > 400:
+                    break
+                liege = int(h["liege"])
+                break
+        if liege is None:
+            return None, None
+        _tier, tid = self._primary_title_at(liege, as_of=date)
+        if tid is not None:
+            return liege, tid
+        tid = self._last_high_title_before(liege, date)
+        if tid is None:
+            return None, None
+        h = self._title_holder_at(tid, date)
+        if h is not None and int(h) != int(liege):
+            return int(h), tid
+        return None, None
+
     def _era_at(self, d):
         """(era label, reign start date) for a rendered date, or (None, None).
 
         A nomadic protagonist has no reign era of its own in the game, so the whole
         biography is dated by the Zhou king (惟王 while he lives at the cut-off, 周幽王三年
-        once he is dead). Other protagonists use their own primary title."""
+        once he is dead). A protagonist of duchy rank or below otherwise shows his liege's era
+        when that liege is kingdom-tier or above (`DM_JN_guis.txt:5-29`); the year is the liege's
+        `DM_JN_nianhao_data`, returned here as an anchor date so `_era_head` keeps its year
+        arithmetic."""
         cal = llm.mod_calendar()
         if not cal:
             return None, None
@@ -20169,11 +20261,35 @@ class Facts:
                 out = (self._zhou_label(king), start)
         elif pid is not None:
             _tier, tid = self._primary_title_at(pid, as_of=s)
-            if tid is not None:
+            own_rank = self._eff_rank(tid) if tid is not None else 0
+            subj, subj_tid = pid, tid
+            indep = self._is_independent(pid, s)
+            if own_rank <= 3 and indep is not True:
+                liege, ltid = self._era_liege(pid, s)
+                if liege is not None and ltid is not None and self._eff_rank(ltid) >= 4:
+                    subj, subj_tid = liege, ltid
+            if subj_tid is not None:
+                label = "惟王" if self._eff_rank(subj_tid) >= 5 else \
+                    cl.zh(self.title_office_text(subj, subj_tid, s))
+                if label:
+                    n = self._nianhao_at(subj, s)
+                    start = None
+                    if n:
+                        try:
+                            y = int(s.split(".")[0])
+                        except Exception:                             # noqa: BLE001
+                            y = None
+                        if y:
+                            start = f"{y - n + 1}.1.1"
+                    if start is None:
+                        start = self._holding_start(subj, subj_tid, s)
+                    if start:
+                        out = (label, start)
+            if out[0] is None and tid is not None:
                 start = self._holding_start(pid, tid, s)
                 if start:
-                    label = "惟王" if self._eff_rank(tid) >= 5 else \
-                        self.title_office_text(pid, tid, s)
+                    label = "惟王" if own_rank >= 5 else \
+                        cl.zh(self.title_office_text(pid, tid, s))
                     if label:
                         out = (label, start)
             if out[0] is None:

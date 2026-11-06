@@ -1537,6 +1537,10 @@ def char_record(cache, cid):
             # [{from, seats:[{court_owner, type}]}] council seats held per snapshot; the save
             # keeps only the present assignment (v147).
             "council_seats": [],
+            # [{from, value}] the mod's era counter `DM_JN_nianhao_data` per snapshot. A dead
+            # ruler's variables are cleared, so the dated history is the only source for the
+            # years of a reign that ended before the rendered melt (v147).
+            "nianhao_history": [],
             "traits": [],
             "trait_history": {},    # {trait key: [{from, to, first}]} gained/lost intervals
             "trait_xp": [],         # [{from, traits, xp}] trait-track XP samples (aligned with traits)
@@ -3755,6 +3759,19 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             _sh = rec.setdefault("council_seats", [])
             if not _sh or _sh[-1].get("seats") != _seats_now:
                 _sh.append({"from": date_label, "seats": _seats_now})
+        # Mod era counter per snapshot (fixed point ×100000): a dead ruler's variables are
+        # cleared, so only this history can give the era year of an earlier reign (v147).
+        _nhv = None
+        for _v in ((((c.get("alive_data") or {}).get("variables") or {}).get("data")) or []):
+            if not isinstance(_v, dict) or str(_v.get("flag")) != "DM_JN_nianhao_data":
+                continue
+            _d = _v.get("data")
+            _nhv = _d.get("identity") if isinstance(_d, dict) else _d
+            break
+        if isinstance(_nhv, (int, float)) and not isinstance(_nhv, bool):
+            _nhh = rec.setdefault("nianhao_history", [])
+            if not _nhh or _nhh[-1].get("value") != _nhv:
+                _nhh.append({"from": date_label, "value": int(_nhv)})
         # Languages (alive_data.languages) follow the culture rule: update when present,
         # keep the last known value when the game clears them at death.
         langs = (c.get("alive_data") or {}).get("languages") or []
