@@ -11289,6 +11289,40 @@ class Facts:
             v = (cl.name_zh(c) if c else "") or ""
         return v
 
+    _EDU_FIELD_ZH = {"diplomacy": "辞令", "intrigue": "权谋", "martial": "戎略",
+                     "stewardship": "治财", "learning": "学识"}
+
+    def education_field(self, cid, date=None):
+        """The field of a character's education trait (辞令/权谋/戎略/治财/学识), or ''.
+
+        `trait_history` keeps one key per field and level (`education_diplomacy_2`), each
+        with the dates it was gained. The completion memory can precede the trait's first
+        snapshot by a few months, so the field is read from the nearest gained level; when
+        no level falls near the completion day the highest level still names the field."""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        cands = []
+        for key, spans in (rec.get("trait_history") or {}).items():
+            m = re.match(r"^education_(diplomacy|intrigue|martial|stewardship|learning)_(\d+)$",
+                         str(key))
+            if not m:
+                continue
+            starts = [s.get("from") for s in (spans or [])
+                      if isinstance(s, dict) and s.get("from")]
+            cands.append((int(m.group(2)), m.group(1), starts))
+        if not cands:
+            return ""
+        if date:
+            try:
+                dk = _date_ord(date)
+                near = [c for c in cands
+                        if any(abs(_date_ord(s) - dk) <= 400 for s in c[2])]
+                if near:
+                    cands = near
+            except Exception:                                     # noqa: BLE001
+                pass
+        cands.sort(key=lambda c: (c[0], bool(c[2])), reverse=True)
+        return self._EDU_FIELD_ZH.get(cands[0][1], "")
+
     def _mod_chixu_name(self, cid, date, nm):
         """Insert the 齿序 word after the house name for a titled character (常中正 → 常伯中正).
 
@@ -21607,6 +21641,15 @@ def _mem_sentence_body(f, owner_id, mem):
         if not owner or not names:
             return None
         return f"{owner}与{'、'.join(names)}同宿。"
+    # Education completion belongs to the ward, not to the guardian who holds the memory, and
+    # the field is the ward's education trait (吴金瓠完成辞令教育。).
+    if mtype == "ward_education_completed":
+        ward = (mem.get("participants") or {}).get("ward")
+        if isinstance(ward, int):
+            wn = f.event_name(ward, date=mem.get("creation_date"))
+            if wn:
+                field = f.education_field(ward, mem.get("creation_date"))
+                return f"{wn}完成{field}教育。" if field else f"{wn}完成教育。"
     tpl = MEMORY_TEMPLATES.get(mtype)
     if not tpl:
         return None
