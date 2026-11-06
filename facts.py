@@ -3302,7 +3302,7 @@ class Facts:
         """Whether `cid` is dead on `date`, reading death from this cache and campaign peers."""
         if not date:
             return False
-        death = self._death_date(cid)
+        death = self.death_date(cid)
         if not death:
             return False
         try:
@@ -11280,23 +11280,48 @@ class Facts:
                     continue
         return "季"
 
+    def _char_given_name(self, cid):
+        """The character's given name, without house or dynasty."""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        v = rec.get("name_zh") or ""
+        if not v:
+            c = self._chars.get(str(cid)) or {}
+            v = (cl.name_zh(c) if c else "") or ""
+        return v
+
     def _mod_chixu_name(self, cid, date, nm):
         """Insert the 齿序 word after the house name for a titled character (常中正 → 常伯中正).
 
-        Characters without a title keep the plain name (a decision of this project: the mod UI's
-        「公子,伯某」 form is not carried into the biography), and a name that does not begin with
-        the house name is left alone. The dead keep the death display (`DM_view_name_death`
-        has no 齿序)."""
-        if not nm or not llm.mod_calendar() or self._dead_at(cid, date):
+        A dead man with a posthumous nickname follows `DM_view_name_zhuhou_death`: 谥号 + 名,
+        with no house (柯武子中正). Living children without a title follow the mod's name form:
+        a son is 齿序 + 名 (伯虏), a daughter 齿序 + 姓 + 名 (孟姜媧). A name that does not begin
+        with the house name is left alone."""
+        if not nm or not llm.mod_calendar():
+            return nm
+        if self._dead_at(cid, date):
+            nick = self.nickname(cid, date)
+            if nick and not self._is_female(cid):
+                given = self._char_given_name(cid)
+                if given:
+                    return f"{cl.zh(nick)}{given}"
             return nm
         _tier, tid = self._primary_title_at(cid, as_of=date)
-        if tid is None:
-            return nm
         chixu = self._chixu_word(cid, date)
+        if tid is None:
+            given = self._char_given_name(cid)
+            if not chixu or not given:
+                return nm
+            if self._is_female(cid):
+                rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+                clan = rec.get("dynasty_name") or self._house_names_at(cid, date)[0]
+                clan = clan[:-1] if clan.endswith("氏") else clan
+                return f"{chixu}{clan}{given}" if clan else nm
+            return f"{chixu}{given}"
         if not chixu:
             return nm
-        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-        house = rec.get("house_name") or ""
+        house = self._house_names_at(cid, date)[1]
+        if house.endswith("氏"):
+            house = house[:-1]
         if house and nm.startswith(house):
             return f"{house}{chixu}{nm[len(house):]}"
         return nm
@@ -11311,10 +11336,13 @@ class Facts:
         # uses the brief form (title + name) for recognition.
         if style == "timeline" and cid == self.cache.get("player_id"):
             return self._mod_chixu_name(cid, date, nm)
-        # Death display in the mod: a posthumous nickname leads the name and no title word
-        # follows it (DM_view_name_death → DM_view_name_zhuhou_death).
+        # Death display in the mod: the posthumous nickname leads the given name, and a court
+        # office (read the day before death, since titles pass on the death day) stands before
+        # it after a comma (DM_view_name_death → DM_view_name_zhuhou_death).
         if llm.mod_calendar() and self._dead_at(cid, date) and self.nickname(cid, date):
-            return nm
+            nm = self._mod_chixu_name(cid, date, nm)
+            mpfx = self._mod_office_prefix(cid, self._anchor_date(cid, date))
+            return f"{mpfx}，{nm}" if mpfx else nm
         if self._tenno_prince_word(cid, date):
             return nm
         # The accolade sits alongside the office/title word instead of replacing it.
