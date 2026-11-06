@@ -20444,7 +20444,14 @@ class Facts:
             else:
                 break
         if cur is not None:
-            return max(1, int(round(cur[1] / 100000)))
+            # Snapshots skip years (3863 → 3865); the counter still advances one a year.
+            frm, v = cur
+            try:
+                y0 = int(str(frm).split(".")[0])
+                y = int(str(date).split(".")[0])
+            except Exception:                                     # noqa: BLE001
+                return max(1, int(round(v / 100000)))
+            return max(1, int(round(v / 100000)) + max(0, y - y0))
         frm, v = hist[0][1], hist[0][2]
         try:
             y0 = int(frm.split(".")[0])
@@ -20492,6 +20499,24 @@ class Facts:
             return int(h), tid
         return None, None
 
+    def _era_posthumous_label(self, subj, tid, date, label):
+        """The era label of a ruler dead at the cut-off: his posthumous name.
+
+        The era year keeps its rank for the years it ran, but the annalist writes after the
+        ruler's death and names him posthumously (`吳质子十一年`), the rule `_zhou_label`
+        already applies to the Zhou king. A plain sobriquet (`武王再世`) does not carry a
+        rank ending and therefore leaves the era label untouched.
+        """
+        if not self.as_of or not self._dead_at(subj, self.as_of):
+            return label
+        nick = cl.zh(self.nickname(subj, self.as_of) or "")
+        if not nick or not re.search(r"[王公侯伯子男帝]$", nick):
+            return label
+        base = cl.zh(self._name_at_date(tid, date) or self.title_base_name(tid) or "")
+        if base and not nick.startswith(base):
+            nick = base + nick
+        return nick or label
+
     def _era_at(self, d):
         """(era label, reign start date) for a rendered date, or (None, None).
 
@@ -20529,6 +20554,7 @@ class Facts:
             if subj_tid is not None:
                 label = "惟王" if self._eff_rank(subj_tid) >= 5 else \
                     cl.zh(self.title_office_text(subj, subj_tid, s))
+                label = self._era_posthumous_label(subj, subj_tid, s, label)
                 if label:
                     n = self._nianhao_at(subj, s)
                     start = None
@@ -20548,6 +20574,7 @@ class Facts:
                 if start:
                     label = "惟王" if own_rank >= 5 else \
                         cl.zh(self.title_office_text(pid, tid, s))
+                    label = self._era_posthumous_label(pid, tid, s, label)
                     if label:
                         out = (label, start)
             if out[0] is None:
