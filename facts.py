@@ -3264,16 +3264,88 @@ class Facts:
                     best_tid, best_rank, best_gain = tid, rank, gk
         return best_tid
 
-    def nickname(self, cid):
-        """Character nickname from the melt's nickname_text (already Chinese), else ''.
+    def _death_date(self, cid):
+        """Death date recorded for `cid` in this cache or a campaign peer, else ''."""
+        recs = [(self.cache.get("characters") or {}).get(str(cid))]
+        for c in (self.campaign or {}).values():
+            if c is self.cache:
+                continue
+            recs.append((c.get("characters") or {}).get(str(cid)))
+        for rec in recs:
+            d = (rec or {}).get("death")
+            d = (d or {}).get("date") if isinstance(d, dict) else d
+            if d:
+                return str(d)
+        return ""
 
-        An era override wins, so a decade rebuild reads that decade's melt.
-        """
+    def _nickname_history(self, cid):
+        """Merged `nickname_history` of `cid` across this cache and the campaign's peers.
+
+        A terminal biography is written from the subject's own cache, which still lacks the
+        death-triggered posthumous name; a peer cache of the same playthrough has it."""
+        seen = {}
+        peers = [self.cache] + [c for c in (self.campaign or {}).values()
+                                if c is not self.cache]
+        for c in peers:
+            rec = (c.get("characters") or {}).get(str(cid)) or {}
+            for pt in rec.get("nickname_history") or []:
+                frm = str(pt.get("from") or "")
+                nick = str(pt.get("nickname") or "")
+                if not frm:
+                    continue
+                # a later cache may fill in a nickname an earlier one recorded as empty
+                if frm not in seen or (nick and not seen[frm]):
+                    seen[frm] = nick
+        return sorted(seen.items(), key=lambda kv: cl.date_key(kv[0]))
+
+    def _dead_at(self, cid, date):
+        """Whether `cid` is dead on `date`, reading death from this cache and campaign peers."""
+        if not date:
+            return False
+        death = self._death_date(cid)
+        if not death:
+            return False
+        try:
+            return cl.date_key(death) <= cl.date_key(date)
+        except Exception:                                             # noqa: BLE001
+            return False
+
+    def nickname(self, cid, date=None):
+        """Character nickname, dated when a `date` is given.
+
+        Sources, in order: the decade override, the cache's `nickname_history` merged across
+        the campaign's peer caches, and the melt's `nickname_text` as the fallback. With a
+        date, a living character reads the last change point on or before it; a dead one reads
+        the last non-empty nickname, because a posthumous name is recorded only after death."""
         ov = self._nick_override or {}
         if cid in ov:
             return ov[cid] or ""
         c = self._chars.get(str(cid)) or {}
-        return (c.get("nickname_text") or "").strip()
+        melt_nick = (c.get("nickname_text") or "").strip()
+        hist = self._nickname_history(cid)
+        if not hist:
+            return melt_nick
+        if not date:
+            return melt_nick or hist[-1][1]
+        try:
+            dk = cl.date_key(date)
+        except Exception:                                             # noqa: BLE001
+            return melt_nick
+        if self._dead_at(cid, date):
+            for _frm, nick in reversed(hist):
+                if nick:
+                    return nick
+            return ""
+        cur = ""
+        for frm, nick in hist:
+            try:
+                if cl.date_key(frm) <= dk:
+                    cur = nick
+                else:
+                    break
+            except Exception:                                         # noqa: BLE001
+                continue
+        return cur
 
     def _insert_nickname(self, nm, nick):
         """Join a nickname into a display name: the nickname leads, quotes are dropped, and
@@ -3290,7 +3362,7 @@ class Facts:
         """
         tn = self._tenno_prince_name(cid, date)
         if tn:
-            nick = self.nickname(cid)
+            nick = self.nickname(cid, date)
             sp = self._saint_prefix(cid, date)
             if nick:
                 return f"{nick}{sp}{tn}"
@@ -3301,7 +3373,7 @@ class Facts:
         # A canonized character carries the game's saint prefix on his name (「圣洪天贵福」): the
         # prefix belongs to the name, so a nickname and an office stay outside it.
         nm = f"{self._saint_prefix(cid, date)}{nm}"
-        nick = self.nickname(cid)
+        nick = self.nickname(cid, date)
         if nick:
             return self._insert_nickname(nm, nick)
         if "·" not in nm:
@@ -11025,6 +11097,10 @@ class Facts:
         # his titles, and a full label on every line only costs attention. Everyone else still
         # uses the brief form (title + name) for recognition.
         if style == "timeline" and cid == self.cache.get("player_id"):
+            return nm
+        # Death display in the mod: a posthumous nickname leads the name and no title word
+        # follows it (DM_view_name_death → DM_view_name_zhuhou_death).
+        if llm.mod_calendar() and self._dead_at(cid, date) and self.nickname(cid, date):
             return nm
         if self._tenno_prince_word(cid, date):
             return nm
@@ -25547,7 +25623,7 @@ def _protagonist(f):
     # succession line already carried it, so the same 爱尔兰国王… does not appear twice in one block
     # (`biography._profile_lines`).
     p["father_name"] = "、".join(
-        f.name(x) for x in (fam.get("father") or []) if f.name(x))
+        f.name_with_regnal(x, f.as_of) for x in (fam.get("father") or []) if f.name(x))
     p["mother_entries"] = [(_mark_lone_name(f.kin_label(x)), x)
                            for x in (fam.get("mother") or []) if f.name(x)]
     p["mother"] = "、".join(t for t, _c in p["mother_entries"])

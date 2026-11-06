@@ -1108,6 +1108,14 @@ def _backfill_tail_deaths(cfg, cache):
         }
         if (rec.get("last_location") or {}).get("province") is not None:
             rec["death"]["location_province"] = rec["last_location"]["province"]
+        # A posthumous name exists only in the save after the death, so the terminal biography
+        # would otherwise keep the last living nickname (v147: 项羽 终传仍作「吞食者」).
+        _tail_nick = str(c2.get("nickname_text") or "").strip()
+        if _tail_nick:
+            _nh = rec.setdefault("nickname_history", [])
+            if not any((p.get("nickname") or "") == _tail_nick for p in _nh):
+                _nh.append({"from": str(melt.get("date") or ddate),
+                            "nickname": _tail_nick})
         n += 1
     # (v118) A victim of the subject may never have been merged at all: the merge target set keeps
     # the subject's own kin and house (cache_lib), while a lowborn opponent killed in a duel has
@@ -1170,6 +1178,11 @@ def _backfill_tail_deaths(cfg, cache):
             "liege_title": dd.get("liege_title"),
             "named_title": dd.get("named_title"),
         }
+        _tail_nick = str(c2.get("nickname_text") or "").strip()
+        if _tail_nick:
+            _hist = rec.setdefault("nickname_history", [])
+            _hist.append({"from": str(melt.get("date") or ddate),
+                          "nickname": _tail_nick})
         created += 1
     if n or created:
         path = find_cache_path(cfg, cache.get("player_id"),
