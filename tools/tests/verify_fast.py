@@ -884,11 +884,6 @@ def group_v41(snap_path):
     pid = meta.get("player_id")
     as_of = facts.get("as_of") or meta.get("as_of")
     p = facts.get("protagonist") or {}
-    # 快照新鲜度 (v41): schema<2 的旧快照不含本轮新键, 本组对它不适用 ——
-    # 整组 SKIP (而非误报 FAIL); 需用 tools/tests/snap.py 重建该快照。
-    if int(snap.get("schema") or 1) < 2:
-        print("  SKIP 快照早于 v41 改动 (schema<2), 请用 tools/tests/snap.py 重建")
-        return
     # [1] 历任带取得方式
     th = p.get("titles_held") or ""
     if pid == 62045 and as_of and str(as_of).startswith(("1087", "1097", "1107")):
@@ -979,9 +974,6 @@ def group_v42(snap_path):
     prot = facts.get("protagonist") or {}
     pname = prot.get("name") or ""
     office = prot.get("office") or ""
-    if int(snap.get("schema") or 1) < 2:
-        print("  SKIP 快照早于 v41 改动 (schema<2), 请用 tools/tests/snap.py 重建")
-        return
 
     def _txt(v):
         return "\n".join(str(s) for s in
@@ -2212,9 +2204,6 @@ def group_v56(snap_path):
         check("快照存在", False, snap_path)
         return
     snap = json.load(open(snap_path, encoding="utf-8"))
-    if int(snap.get("schema") or 1) < 3:
-        print("  SKIP 快照早于 v56 改动 (schema<3), 请用 tools/tests/snap.py 重建")
-        return
     facts = snap.get("facts") or {}
     blocks = snap.get("blocks") or {}
     msgs = snap.get("messages") or {}
@@ -2509,9 +2498,6 @@ def group_v63(snap_path):
         return
     facts = dict(snap.get("facts") or {})
     facts["_facts"] = f
-    if not facts.get("line_owner"):
-        print("  SKIP [V63] 本快照 facts 无行主语登记 (旧版快照; 用 tools/tests/snap.py 重落一份)")
-        return
     meta = snap.get("meta") or {}
     data = os.path.join(ROOT, "output", meta.get("folder") or "", "data")
     try:

@@ -215,10 +215,9 @@ def main():
                 msgs = bio.build_section_messages(a, sec, facts, cache, intro, cfg)
             messages[key] = {"system": msgs[0]["content"], "user": msgs[1]["content"]}
     snap = {
-        # v41: schema 2 = 含 v41 传输面 (政体变更/宗支/共治者键与 secrets 新键集);
-        # verify_fast 的 [V41] 组对 schema<2 的旧快照整组 SKIP。
+        # v41: schema 2 = 含 v41 传输面 (政体变更/宗支/共治者键与 secrets 新键集)。
         # v56: schema 3 = 含 v56 传输面 (列传共享前缀改称【主角】/加冕句带 host 与头衔/
-        # 战斗俘获行/出狱缘由); 对 schema<3 的旧快照, v56 各组整组 SKIP。
+        # 战斗俘获行/出狱缘由)。
         # v88: schema 4 = 含 v88 传输面 (删「允许/禁止教义」与 rite_tenets 键, 增
         # holy_orders / forbidden_tenets / vassal_tenets, 个人教义进各角色档案行,
         # 礼仪志纪事块改「纪事·修会与教众」); verify_v87 的 [7]/[附] 两组对
