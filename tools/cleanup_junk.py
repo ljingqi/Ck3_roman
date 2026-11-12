@@ -4,10 +4,7 @@
 清什么 (全部是"改版过程遗留的副本", 与运行期数据无关):
   output/*/data/player_*.json.bak-v*   各次 refresh_* 工具写的备份
   output/*/data/*.json.corrupt.*       缓存损坏留证副本
-  cache/_bak_* , cache/v4*anc          v4 迁移前的旧缓存目录
-  cache/_auto2.json                    旧自动缓存 (已被 output/<家族>/data 取代)
   output/*/data/melt_*_idx.json[.gz]   孤儿边车 (对应熔件已不存在)
-  output/*/*_上轮_*.md                 上一轮生成废弃的旧稿
   output/*/data/.tmp_melt_*.json       异常退出的临时熔件
 
 默认 **--dry-run** (只列不删); 确认后加 --apply。删除前对每份算大小并汇总。
@@ -30,7 +27,6 @@ import llm  # noqa: E402
 BAK_RE = re.compile(r"^player_\d+\.json\.bak-v[\w.]+$")
 CORRUPT_RE = re.compile(r"\.corrupt\.\d{8}_\d{6}$")
 TMP_RE = re.compile(r"^\.tmp_melt_.*\.json$")
-UPLOAD_OLD_RE = re.compile(r"_上轮_.*\.md$")
 
 
 def _melts_in(data):
@@ -64,24 +60,6 @@ def collect(root, no_bak=False):
                         stem = fn.split("_idx.json")[0]
                         if stem not in stems:
                             out.append((p, "孤儿边车", os.path.getsize(p)))
-            for fn in sorted(os.listdir(base)) if os.path.isdir(base) else []:
-                p = os.path.join(base, fn)
-                if os.path.isfile(p) and UPLOAD_OLD_RE.search(fn):
-                    out.append((p, "旧稿", os.path.getsize(p)))
-    cache_dir = os.path.join(root, "cache")
-    if os.path.isdir(cache_dir):
-        for fn in sorted(os.listdir(cache_dir)):
-            p = os.path.join(cache_dir, fn)
-            # 只清 `_bak_*` 备份目录 (cache/v46anc 里放的是脚本, 不动)
-            if os.path.isdir(p) and fn.startswith("_bak_"):
-                n = b = 0
-                for dp, _dn, fns in os.walk(p):
-                    for f in fns:
-                        n += 1
-                        b += os.path.getsize(os.path.join(dp, f))
-                out.append((p, f"旧缓存目录 ({n} 文件)", b))
-            elif os.path.isfile(p) and fn == "_auto2.json":
-                out.append((p, "旧自动缓存", os.path.getsize(p)))
     return out
 
 
