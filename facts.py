@@ -5635,17 +5635,12 @@ class Facts:
         return "".join(lines)
 
     def _government_history(self, cid):
-        """Per-save government history [{date, government}] for the character.
-
-        The per-character table (`char_government_history`) wins; older caches only have the player
-        table (`government_history`).
-        """
+        """Per-save government history [{date, government}] for the character, from the
+        per-character table (`char_government_history`)."""
         ch = self.cache.get("char_government_history") or {}
         hist = ch.get(str(cid))
         if isinstance(hist, list) and hist:
             return hist
-        if cid == self.cache.get("player_id"):
-            return list(self.cache.get("government_history") or [])
         return []
 
     def _government_zh(self, gov):
@@ -8451,7 +8446,7 @@ class Facts:
 
     def _is_female(self, cid):
         """Sex: the cache's persisted `female` flag wins (it survives melt pruning), with the melt's
-        character index as fallback for older caches. False for an invalid cid."""
+        character index as fallback for a character not in the cache. False for an invalid cid."""
         try:
             cid = int(cid)
         except (TypeError, ValueError):
@@ -8467,8 +8462,7 @@ class Facts:
         included.
 
         The cache's accumulated `family.ever_spouses` (a cross-snapshot union that survives divorce
-        or widowhood) wins; older caches fall back to the current family spouse keys. False for an
-        invalid id.
+        or widowhood) is the spouse set. False for an invalid id.
         """
         try:
             a, b = int(a), int(b)
@@ -8478,12 +8472,7 @@ class Facts:
             return False
         rec = (self.cache.get("characters") or {}).get(str(a)) or {}
         fam = rec.get("family") or {}
-        ids = fam.get("ever_spouses")
-        if not ids:
-            ids = []
-            for k in ("primary_spouse", "spouse", "former_spouses",
-                      "concubine", "former_concubines"):
-                ids += [x for x in (fam.get(k) or []) if isinstance(x, int)]
+        ids = fam.get("ever_spouses") or []
         return b in {int(x) for x in ids if isinstance(x, int)}
 
     def kin_word_gendered(self, subject, other, kind):
@@ -12463,7 +12452,7 @@ class Facts:
 
     # House-head hooks never reach the fact layer: `house_head_hook` comes with the house-head
     # identity itself, not from a narrative deed, so it would only fill the secrets section
-    # (cache_lib skips them on ingest, see `hook_type_kept`; this also guards older caches).
+    # (cache_lib skips them on ingest, see `hook_type_kept`).
     # Only whitelisted types are emitted — see `style.hook_type_kept`.
     def _hook_kept(self, tp):
         return _style.hook_type_kept(tp)
@@ -17116,8 +17105,7 @@ class Facts:
                and e.get("court_position") == "kennelperson_camp_officer"
                for e in cpd.values()):
             avail.append("kennel")
-        # 食人: the cannibal trait (dated through trait_history, current value for older caches)
-        # or a secret
+        # 食人: the cannibal trait (dated through trait_history) or a secret
         if self._has_trait_at(killer_id, "cannibal", date) or \
                 self._has_secret(killer_id, "secret_cannibal"):
             avail.append("devour")
@@ -17793,7 +17781,7 @@ class Facts:
 
     def _has_trait_at(self, cid, trait_key, date=None):
         """Whether the character holds the trait on a date, from the cached `trait_history`
-        interval (`from ≤ date < to`); with no history (older caches) the current traits are used."""
+        interval (`from ≤ date < to`)."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
         ivs = th.get(trait_key)
@@ -17807,35 +17795,25 @@ class Facts:
                 if to and dk is not None and cl.date_key(to) <= dk:
                     continue
                 return True
-            return False
-        for t in rec.get("traits") or []:
-            if isinstance(t, int) and 0 <= t < len(self._tl) \
-                    and self._tl[t] == trait_key:
-                return True
         return False
 
     def _trait_keys_at(self, cid, date=None):
         """Trait keys held on a date, from the cached `trait_history` intervals
-        (`from ≤ date < to`); with no history (older caches) the current traits are used."""
+        (`from ≤ date < to`)."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
         dk = cl.date_key(date) if date else \
             (cl.date_key(self.as_of) if self.as_of else None)
         out = set()
-        if th:
-            for key, ivs in th.items():
-                for iv in (ivs or []):
-                    frm, to = iv.get("from"), iv.get("to")
-                    if frm and dk is not None and cl.date_key(frm) > dk:
-                        continue
-                    if to and dk is not None and cl.date_key(to) <= dk:
-                        continue
-                    out.add(str(key))
-                    break
-            return out
-        for t in rec.get("traits") or []:
-            if isinstance(t, int) and 0 <= t < len(self._tl):
-                out.add(str(self._tl[t]))
+        for key, ivs in th.items():
+            for iv in (ivs or []):
+                frm, to = iv.get("from"), iv.get("to")
+                if frm and dk is not None and cl.date_key(frm) > dk:
+                    continue
+                if to and dk is not None and cl.date_key(to) <= dk:
+                    continue
+                out.add(str(key))
+                break
         return out
 
     def _has_secret(self, cid, secret_type):
@@ -19150,8 +19128,8 @@ class Facts:
         """Traits held at as_of, as [(key, name)], from the `trait_history` intervals
         (`from ≤ as_of < to`).
 
-        Names take the tier name for that instant's track XP; older caches without XP samples fall back
-        to the base name."""
+        Names take the tier name for that instant's track XP; a trait without an XP sample uses the
+        base name."""
         rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
         th = rec.get("trait_history") or {}
         ao = cl.date_key(self.as_of)
@@ -19386,10 +19364,6 @@ class Facts:
             # The final piece has no cut-off date: it reads the last snapshot, whose `landed`
             # block IS the most recent year's government, so that is the answer (v122 — the
             # profile used to come out with an empty 政体 for a whole final biography).
-            rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
-            g = (rec.get("landed") or {}).get("government") or ""
-        if not g and int(self.cache.get("schema") or 1) < 2:
-            # older caches (schema<2) have no per-tier government history: fall back to the last tier
             rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
             g = (rec.get("landed") or {}).get("government") or ""
         return self._government_zh(g)
@@ -20714,8 +20688,8 @@ class Facts:
         """Province id of the subject's capital at `date` (None when unknown).
 
         The capital **moves**, while `cache.landed.realm_capital` holds only the last tier's value, so the
-        per-tier latched `capital_history` is read (see cache_lib), with the last tier as fallback for
-        older caches. Resolved title id → key → reverse `provmap` lookup."""
+        per-tier latched `capital_history` is read (see cache_lib), with the last tier as fallback when
+        no date is given. Resolved title id → key → reverse `provmap` lookup."""
         ch = self.cache.get("capital_history") or []
         pid = self.cache.get("player_id")
         want = None

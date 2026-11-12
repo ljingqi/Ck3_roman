@@ -3433,14 +3433,14 @@ def _same_period(a, b):
 def _chrono_keep_rows(p):
     """One reign with the rows its material gate keeps: `rows` and the three parallel arrays
     (`rows_detail` / `rows_dates` / `rows_ids`) filtered together, so a chunk is never planned around
-    a row the fact block will drop. Rows with no recorded flag (`None`, older caches) are kept.
+    a row the fact block will drop.
 
     Returns `p` itself when nothing changes, so the caller's identity checks still work."""
     rows = list(p.get("rows") or [])
     dets = list(p.get("rows_detail") or [])
-    if len(dets) < len(rows) or all(d is None for d in dets):
+    if len(dets) < len(rows):
         return p
-    keep = [i for i, d in enumerate(dets) if d is None or d]
+    keep = [i for i, d in enumerate(dets) if d]
     if len(keep) == len(rows):
         return p
     out = dict(p)

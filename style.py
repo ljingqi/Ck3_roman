@@ -455,8 +455,8 @@ FACT_WORDING = {
     "hook_expires": "，{date}届满",
     # Hook whitelist criterion: only hooks with a concrete event behind them reach
     # the fact layer, while generic favors and identity hooks do not. The test runs
-    # in cache_lib at ingest and again in facts on read (so old caches follow it too)
-    # and never appears in the prompt (prompt-last).
+    # in cache_lib at ingest and again in facts on read (so the current whitelist always
+    # applies) and never appears in the prompt (prompt-last).
     "hook_keep_exact": frozenset({
         # Blackmail: always backed by a secret (weak blackmail has its own key).
         "weak_blackmail_hook", "weak_blackmail_hook_no_secret",

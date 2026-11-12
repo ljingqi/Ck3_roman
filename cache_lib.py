@@ -1441,11 +1441,6 @@ def load_cache(path, fresh=False):
     try:
         with open(path, encoding="utf-8") as fp:
             cache = json.load(fp)
-        # older schemas: fill in the fields they lack (deep copy, since EMPTY_CACHE's
-        # containers would otherwise be shared by every cache that misses that key)
-        for k, v in EMPTY_CACHE.items():
-            if k not in cache:
-                cache[k] = copy.deepcopy(v)
         if not fresh:
             try:
                 _CACHE_LOAD_MEMO[path] = (os.path.getmtime(path), cache)
@@ -3595,9 +3590,6 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             if rec["faith"] is not None:
                 rec["faith_history"] = [{"from": date_label,
                                          "faith": rec["faith"]}]
-        # Sex self-heal: older caches lack the field, and only women carry the melt key
-        if rec.get("female") is None:
-            rec["female"] = bool(c.get("female"))
         # Regnal name sync: the current snapshot's value, since the game can also remove it
         _rn_now = str(c.get("regnal_name") or "")
         if _rn_now != (rec.get("regnal_name") or ""):
@@ -3648,13 +3640,6 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
                                            memo=_name_memo)
                     if _nm_new:
                         rec["name_full"] = _nm_new
-        # Self-heal older caches: resolve a missing dynasty_name from the current house
-        if rec.get("dynasty_name") is None and rec.get("dynasty_house") is not None:
-            _hid = rec["dynasty_house"]
-            _did = dynasty_id_of(melt, _hid)
-            _dn_fix = _dyn_now(_did)
-            if _dn_fix:
-                rec["dynasty_name"] = _dn_fix
         # Culture/faith: update when the melt has a value and keep the last known one when it
         # is missing (the game clears both at death); nothing is pre-assigned here, since that
         # would make the diff below always false.
