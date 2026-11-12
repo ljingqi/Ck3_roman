@@ -123,13 +123,12 @@ python pipeline.py status          :: 查看各玩家缓存的记录进度
 python pipeline.py bio [玩家id]    :: 手动生成传记（在世传或终传）
 python pipeline.py bio <id> --decade 3
                                    :: 手动生成第 3 个十年传记
-python pipeline.py rebuild-cache   :: 由各战役文件夹里的熔件重建缓存（修复/迁移）
+python pipeline.py rebuild-cache   :: 由各战役文件夹里的熔件重建缓存（修复）
 python pipeline.py build-tables    :: 手动重建全部游戏/Mod 对照表（= 重建对照表.bat）
 python pipeline.py build-tables --only=loc,traits
                                    :: 只重建指定表（键名见 data\<键>.json）
 python pipeline.py index-melts     :: 预建熔件的记忆索引（加快日后回溯）
 python pipeline.py compact [--gz]  :: 压缩归档冷熔件（默认 xz，体积最小）
-python pipeline.py migrate         :: 迁移旧版本目录结构
 python pipeline.py epilogue [家族]  :: 封档总评：上下键选战役文件夹，撰写全族总评
 python pipeline.py epilogue 洪氏2 --force
                                    :: 指定文件夹（--force 覆盖已有总评）

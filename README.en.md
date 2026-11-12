@@ -141,7 +141,7 @@ python pipeline.py bio [player_id]  :: manually generate a biography (living or 
 python pipeline.py bio <id> --decade 3
                                     :: manually generate the 3rd decade biography
 python pipeline.py rebuild-cache    :: rebuild caches from melts in each campaign folder
-                                    :: (repair/migration)
+                                    :: (repair)
 python pipeline.py build-tables     :: manually rebuild all game/mod lookup tables
                                     :: (= 重建对照表.bat)
 python pipeline.py build-tables --only=loc,traits
@@ -149,7 +149,6 @@ python pipeline.py build-tables --only=loc,traits
                                     :: (keys are filenames in data\<key>.json)
 python pipeline.py index-melts      :: prebuild memory indexes for melts (speeds up lookups)
 python pipeline.py compact [--gz]   :: compress archived cold melts (xz by default, smallest)
-python pipeline.py migrate          :: migrate old directory layouts
 python pipeline.py epilogue [dynasty]
                                     :: closing review: choose a campaign folder with the
                                     :: arrow keys and write a dynasty-wide review

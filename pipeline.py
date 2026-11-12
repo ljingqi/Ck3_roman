@@ -16,7 +16,6 @@ Usage:
   python pipeline.py rebuild-cache      # rebuild caches from campaign-folder melts
   python pipeline.py index-melts        # pre-build the memory archive sidecar of every melt
   python pipeline.py compact [--gz]     # archive cold melts and sidecars (default xz, ~1.4GB)
-  python pipeline.py migrate            # move legacy caches under output/<house>/data/, rebuild
   python pipeline.py epilogue [家族]     # 封档总评: choose a campaign folder, then write its epilogue
                                         #   (--folder 洪氏2 --force; the choice is a ↑/↓ menu)
 """
@@ -95,11 +94,6 @@ def scan_saves(save_dir):
     return out
 
 
-def melt_path(cfg, date):
-    """Date-keyed melt path in the root data dir (legacy layout)."""
-    return os.path.join(cfg.get("data_dir", ""), f"melt_{cl.date_filekey(date)}.json")
-
-
 def campaign_data_dir(cfg, folder):
     """Campaign folder data dir: output/<house>/data/."""
     return os.path.join(cfg.get("output_dir", ""), folder, "data")
@@ -172,25 +166,12 @@ def _move_melt_into(cfg, folder, date, player_id, tmp_path):
 
 
 def melt_path_for_cache(cfg, cache, date):
-    """Melt path inside the cache's campaign folder, falling back to the legacy root layout,
-    which validates the campaign first so a leftover root melt of another campaign is refused."""
+    """Melt path inside the cache's campaign folder ('' when the cache has no folder). The caller
+    checks existence; an archived `.json.gz`/`.json.xz` variant is returned when it exists."""
     folder = cache.get("output_folder")
     if folder:
-        p = melt_file_in(cfg, folder, date, cache.get("player_id"))
-        if os.path.isfile(p):
-            return p
-    p = melt_path(cfg, date)
-    p = cl.melt_file_exists(p) or p
-    if cache.get("playthrough_id") and os.path.isfile(p):
-        try:
-            pt = cl.load_melt(p).get("playthrough_id")
-        except Exception:
-            pt = None
-        if pt and str(pt) != str(cache["playthrough_id"]):
-            llm.log(f"  [跳过] 根目录熔件 {os.path.basename(p)} 属其它战役 "
-                    f"({pt}), 不用于本战役 ({cache['playthrough_id']})")
-            return ""
-    return p
+        return melt_file_in(cfg, folder, date, cache.get("player_id"))
+    return ""
 
 
 def _load_melt_of_cache(cache, path, label=""):
@@ -236,9 +217,9 @@ def decade_era_melt(cfg, cache, as_of):
 
 
 def load_latest_melt(cfg, cache):
-    """Melt dict of the cache's last save, or None. Prefers the campaign folder over the legacy
-    root layout and, when the last-date melt is gone, falls back to the newest surviving source
-    melt so biographies can still be produced; a melt of another campaign is discarded."""
+    """Melt dict of the cache's last save, or None. When the last-date melt is gone, falls back to
+    the newest surviving source melt so biographies can still be produced; a melt of another
+    campaign is discarded."""
     last = cache.get("last_date")
     if not last:
         return None
@@ -285,9 +266,9 @@ def _cache_pick_key(path, cache):
 
 
 def find_cache_path(cfg, player_id, playthrough_id=None):
-    """Existing cache path of a player in the output tree, then the legacy cache/; None when
-    absent. playthrough_id filters by campaign because player ids are reused across campaigns;
-    several sessions of one player and campaign resolve to the newest session."""
+    """Existing cache path of a player in the output tree; None when absent. playthrough_id
+    filters by campaign because player ids are reused across campaigns; several sessions of one
+    player and campaign resolve to the newest session."""
     base = cfg.get("output_dir", "")
     best = None
     if os.path.isdir(base):
@@ -306,12 +287,6 @@ def find_cache_path(cfg, player_id, playthrough_id=None):
                     best = (p, cache)
     if best:
         return best[0]
-    legacy = os.path.join(cfg.get("cache_dir", ""), f"player_{player_id}.json")
-    if os.path.isfile(legacy):
-        cache = cl.load_cache(legacy)
-        if cache.get("player_id") and (playthrough_id is None
-                or cache.get("playthrough_id") == playthrough_id):
-            return legacy
     return None
 
 
@@ -498,7 +473,7 @@ def all_caches(cfg, meta_only=False, playthrough_id=None):
     campaigns are never loaded. A missing, stale or unreadable entry is rebuilt from one full parse,
     which also refreshes the index: it is derived data that heals itself and may be deleted freely."""
     out = {}
-    for root in (cfg.get("output_dir", ""), cfg.get("cache_dir", "")):
+    for root in (cfg.get("output_dir", ""),):
         if not root or not os.path.isdir(root):
             continue
         for dp, _dn, fns in os.walk(root):
@@ -538,11 +513,6 @@ def all_caches(cfg, meta_only=False, playthrough_id=None):
             if dirty:
                 save_caches_index(dp, index)
     return out
-
-
-def cache_path_for(cfg, player_id, playthrough_id=None):
-    """Player cache path (legacy call site); None when it does not exist."""
-    return find_cache_path(cfg, player_id, playthrough_id)
 
 
 def folder_display(name):
@@ -2460,8 +2430,8 @@ def step_bio(cfg, player_id=None, decade=None):
 
 
 def _iter_melts(cfg):
-    """Walk every melt as (campaign folder or None, absolute path, date). Campaign folders come first,
-    the legacy root layout is still accepted, and `.json`, `.json.gz` and `.json.xz` are recognized."""
+    """Walk every melt as (campaign folder, absolute path, date), sorted by date. `.json`,
+    `.json.gz` and `.json.xz` are recognized."""
     pat = re.compile(r"melt_(\d+_\d{2}_\d{2})(?:_p\d+)?\.json(?:\.gz|\.xz)?$")
     out = []
     out_dir = cfg.get("output_dir", "")
@@ -2475,24 +2445,17 @@ def _iter_melts(cfg):
                 if m:
                     out.append((folder, os.path.join(d, fn),
                                 ".".join(str(int(x)) for x in m.group(1).split("_"))))
-    data_dir = cfg.get("data_dir", "")
-    if os.path.isdir(data_dir):
-        for fn in os.listdir(data_dir):
-            m = pat.match(fn)
-            if m:
-                out.append((None, os.path.join(data_dir, fn),
-                            ".".join(str(int(x)) for x in m.group(1).split("_"))))
     out.sort(key=lambda x: cl.date_key(x[2]))
     return out
 
 
 def step_rebuild_cache(cfg):
     """Rebuild caches from the melts in the campaign folders, one per player and session folder, into
-    output/<house>/data/. The legacy root layout is still accepted, and melts of one player in different
-    session folders are rebuilt independently, so nothing is stitched across sessions."""
+    output/<house>/data/. Melts of one player in different session folders are rebuilt independently,
+    so nothing is stitched across sessions."""
     melts = _iter_melts(cfg)
     if not melts:
-        llm.log("未找到 melt 文件 (战役文件夹 data/ 或根 data/)")
+        llm.log("未找到 melt 文件 (战役文件夹 data/)")
         return
     llm.log(f"重建缓存: {len(melts)} 份 melt")
     built = {}  # player_id -> (folder, cache); another session folder starts a new cache
@@ -2503,138 +2466,33 @@ def step_rebuild_cache(cfg):
             llm.log(f"  {date}: 无玩家, 跳过")
             continue
         ent = built.get(player_id)
-        if not folder:
-            # legacy root melt: merge into the previous root cache and resolve the session
-            # folder once the first save has been merged
-            if ent is None:
-                prev = cl.load_cache(
-                    find_cache_path(cfg, player_id, melt.get("playthrough_id")) or "")
-                cache = cl.new_cache()
-                if prev.get("player_death"):
-                    cache["player_death"] = prev["player_death"]
-                if prev.get("reign_end"):        # an abdication record must not be lost
-                    cache["reign_end"] = prev["reign_end"]
-                if prev.get("bio_generated"):
-                    cache["bio_generated"] = prev["bio_generated"]
-                if prev.get("bio_decades"):
-                    cache["bio_decades"] = prev["bio_decades"]  # keep the decade flags
-                if prev.get("playthrough_id"):
-                    cache["playthrough_id"] = prev["playthrough_id"]
-                built[player_id] = ("", cache)
-                ent = built[player_id]
-            else:
-                cache = ent[1]
-            cl.extract_snapshot(cache, melt, date)
-            if not ent[0]:
-                folder = ensure_output_folder(cfg, cache, continue_mode=True)
-                built[player_id] = (folder, cache)
-            else:
-                folder = ent[0]
+        # The melt's campaign folder decides; another folder for the same player is another
+        # session, rebuilt from that folder's melts only.
+        if ent is None or ent[0] != folder:
+            prev = cl.load_cache(os.path.join(
+                cfg.get("output_dir", ""), folder, "data",
+                f"player_{player_id}.json"))
+            cache = cl.new_cache()
+            if prev.get("player_death"):
+                cache["player_death"] = prev["player_death"]
+            if prev.get("reign_end"):        # an abdication record must not be lost
+                cache["reign_end"] = prev["reign_end"]
+            if prev.get("bio_generated"):
+                cache["bio_generated"] = prev["bio_generated"]
+            if prev.get("bio_decades"):
+                cache["bio_decades"] = prev["bio_decades"]  # keep the decade flags
+            if prev.get("playthrough_id"):
+                cache["playthrough_id"] = prev["playthrough_id"]
+            built[player_id] = (folder, cache)
         else:
-            # The melt's campaign folder decides; another folder for the same player is another
-            # session, rebuilt from that folder's melts only.
-            if ent is None or ent[0] != folder:
-                prev = cl.load_cache(os.path.join(
-                    cfg.get("output_dir", ""), folder, "data",
-                    f"player_{player_id}.json"))
-                cache = cl.new_cache()
-                if prev.get("player_death"):
-                    cache["player_death"] = prev["player_death"]
-                if prev.get("reign_end"):        # an abdication record must not be lost
-                    cache["reign_end"] = prev["reign_end"]
-                if prev.get("bio_generated"):
-                    cache["bio_generated"] = prev["bio_generated"]
-                if prev.get("bio_decades"):
-                    cache["bio_decades"] = prev["bio_decades"]  # keep the decade flags
-                if prev.get("playthrough_id"):
-                    cache["playthrough_id"] = prev["playthrough_id"]
-                built[player_id] = (folder, cache)
-            else:
-                cache = ent[1]
-            cl.extract_snapshot(cache, melt, date)
+            cache = ent[1]
+        cl.extract_snapshot(cache, melt, date)
         cache["output_folder"] = folder
         path_out = session_data_path(cfg, cache, folder)
         _recover_dead_memories(cfg, cache)
         cl.save_cache(cache, path_out)
         llm.log(f"  {date}: 玩家 {player_id} → {path_out} "
                 f"(相关人物 {len(cache['characters'])})")
-
-
-def step_migrate(cfg):
-    """Migrate to the current layout: legacy cache/*.json move to output/<house>/data/ bound to their old
-    folder name, a historical folder takes the house name as fixed later, and caches are rebuilt."""
-    out = cfg.get("output_dir", "")
-    legacy = cfg.get("cache_dir", "")
-    rename_map = {}
-    # 1) migrate the legacy caches, binding the old folder name first
-    moved = 0
-    if os.path.isdir(legacy):
-        for fn in sorted(os.listdir(legacy)):
-            m = re.match(r"player_(\d+)\.json$", fn)
-            if not m:
-                continue
-            pid = int(m.group(1))
-            src = os.path.join(legacy, fn)
-            cache = cl.load_cache(src)
-            folder = _legacy_folder_for(cfg, cache, pid)
-            cache["output_folder"] = folder
-            dst_dir = os.path.join(out, folder, "data")
-            os.makedirs(dst_dir, exist_ok=True)
-            dst = os.path.join(dst_dir, fn)
-            if os.path.abspath(src) != os.path.abspath(dst):
-                if os.path.exists(dst):
-                    os.remove(dst)
-                os.replace(src, dst)
-            cl.save_cache(cache, dst)
-            moved += 1
-            llm.log(f"  缓存迁移: {fn} → {os.path.relpath(dst, out)}")
-    llm.log(f"旧缓存迁移 {moved} 份 → output/<家族>/data/")
-    # 2) rename the historical folder, data/ included
-    old_dir = os.path.join(out, "大师巴沙尔")
-    if os.path.isdir(old_dir):
-        new_dir = os.path.join(out, "冯·大马士革")
-        if not os.path.isdir(new_dir):
-            os.rename(old_dir, new_dir)
-            rename_map["大师巴沙尔"] = "冯·大马士革"
-            llm.log("文件夹更名: 大师巴沙尔 → 冯·大马士革")
-        else:
-            llm.log("冯·大马士革 已存在, 跳过更名")
-    if rename_map:
-        for key, (_path, cache) in all_caches(cfg).items():
-            f = cache.get("output_folder")
-            if f in rename_map:
-                cache["output_folder"] = rename_map[f]
-                cl.save_cache(cache, find_cache_path(
-                    cfg, key[0], cache.get("playthrough_id")) or _path)
-    # 3) rebuild the caches
-    step_rebuild_cache(cfg)
-    llm.log("迁移完成: 缓存已按 v4 重建")
-
-
-def _legacy_folder_for(cfg, cache, pid):
-    """Session folder for a legacy cache during migration: house name (with and without the
-    clan suffix), then character name, then the same campaign, matching an existing folder at
-    each step."""
-    out = cfg.get("output_dir", "")
-    folder = cache.get("output_folder")
-    if folder and os.path.isdir(os.path.join(out, folder)):
-        return folder
-    if cache.get("house_name"):
-        cand = cache["house_name"]
-        for f in (cand, cand.rstrip("氏"), cand + "氏"):
-            if f and os.path.isdir(os.path.join(out, f)):
-                return f
-    pn = cache.get("player_name") or f"玩家{pid}"
-    f2 = sanitize_folder_name(pn)
-    if os.path.isdir(os.path.join(out, f2)):
-        return f2
-    pt = cache.get("playthrough_id")
-    if pt:
-        for _key, (_p, other) in all_caches(cfg).items():
-            if other.get("playthrough_id") == pt and other.get("output_folder") \
-                    and os.path.isdir(os.path.join(out, other["output_folder"])):
-                return other["output_folder"]
-    return session_folder_name(cache)
 
 
 def step_demo_death(cfg):
@@ -3386,8 +3244,6 @@ def main():
         codec = "gz" if "--gz" in sys.argv else None
         # a manual run confirms "nothing to do" with one line; the background thread stays silent
         step_compact(cfg, codec=codec, quiet_if_idle=False)
-    elif cmd == "migrate":
-        step_migrate(cfg)
     elif cmd == "epilogue":
         # 封档总评: pick a campaign folder (arrow keys) and write its closing assessment
         folder = None

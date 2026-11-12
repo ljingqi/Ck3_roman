@@ -1403,10 +1403,6 @@ def new_cache():
     return copy.deepcopy(EMPTY_CACHE)
 
 
-def cache_path_for(cache_dir, player_id):
-    return os.path.join(cache_dir, f"player_{player_id}.json")
-
-
 # Per-path write mutex: the main thread's merge and the background biography thread can
 # write the same cache file at once, and a shared fixed .tmp name would truncate it.
 _SAVE_LOCKS = {}

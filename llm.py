@@ -26,7 +26,6 @@ DEFAULT_CONFIG = {
     # rakaly.exe path (required to melt saves)
     "rakaly_path": os.path.join(SCRIPT_DIR, "tools", "rakaly.exe"),
     "data_dir": os.path.join(SCRIPT_DIR, "data"),
-    "cache_dir": os.path.join(SCRIPT_DIR, "cache"),
     "output_dir": os.path.join(SCRIPT_DIR, "output"),
     "log_dir": os.path.join(SCRIPT_DIR, "logs"),
     # poll interval, seconds
@@ -73,7 +72,7 @@ def load_config(path=None):
         alt = os.path.join(SCRIPT_DIR, "tools", "rakaly.exe")
         if os.path.isfile(alt):
             cfg["rakaly_path"] = alt
-    for key in ("data_dir", "cache_dir", "output_dir", "log_dir"):
+    for key in ("data_dir", "output_dir", "log_dir"):
         if not cfg.get(key):
             cfg[key] = os.path.join(SCRIPT_DIR, key)
     return cfg
