@@ -20628,14 +20628,12 @@ class Facts:
         return chain
 
     def _prov_entry(self, province):
-        """Province map entry: {"county": c_ key, "barony": b_ key} (older caches may hold a bare string)."""
+        """Province map entry: {"county": c_ key, "barony": b_ key}."""
         if province is None:
             return {}
         v = self.provmap.get(int(province))
         if isinstance(v, dict):
             return v
-        if isinstance(v, str) and v:
-            return {"county": v, "barony": ""}
         return {}
 
     def county_at_province(self, province):

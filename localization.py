@@ -600,7 +600,7 @@ def _parse_landed_titles(path, out):
 
 def build_province_map(cfg):
     """Game + mod landed_titles -> {province_id: {"barony": b_ key, "county": c_ key}}; mods override
-    the game. Old value-only files (a bare county key string) are handled by the load layer."""
+    the game."""
     out = {}
     roots = []
     g = game_dir(cfg)
@@ -962,13 +962,8 @@ def load_province_map(cfg, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") in (1, 2, 3):
-                m = {int(k): v for k, v in (data.get("map") or {}).items()}
-                if data.get("schema") == 1:
-                    # legacy value (bare county key) -> compatibility wrapper; the
-                    # barony key stays empty until the map is rebuilt
-                    m = {k: {"county": v, "barony": ""} for k, v in m.items()}
-                return m
+            if data.get("schema") == 3:
+                return {int(k): v for k, v in (data.get("map") or {}).items()}
         except Exception:
             pass
     mapping = build_province_map(cfg)
