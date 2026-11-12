@@ -77,6 +77,8 @@ Get-ChildItem output\<家族>\data | Select-Object Name,Length,LastWriteTime
 - 破坏性改动前的 checkpoint 提交：`.agents/skills/commit-before-destructive`。
 - **取证文件放哪、新版本脚本写哪：`.agents/skills/log-version-folders`** —— 一版一夹 `logs\vXX\`，
   脚本与输出同夹；本技能只管「用快照不重熔」，那份管「证据落哪」。
+- **调研结论落到哪：`.agents/skills/research-to-doc`** —— 取证完成后先把发现与方案写进
+  `docs/方案_vXXX_*.md`，对话里只留结论与路径，再按方案施工。
 - 子进程 stdout 编码与包装脚本：`.agents/skills/utf8-gbk-encoding`。
 - **查游戏机制 / 本地化键 / 存档字段含义：`.agents/skills/ck3-game-source`** ——
   `All Under Heaven`（AUH / 天命 TGP）是**游戏本体 1.19 自带的 DLC 内容**（`game/common/character_interactions/10_tgp_*.txt`、

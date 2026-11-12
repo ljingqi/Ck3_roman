@@ -25,6 +25,7 @@ description: >-
    `[简体中文](README.md) | [English](README.en.md)` 语言入口；命令、路径、配置字段名以代码为准。
 5. **开发纪律不在 README**：提示词 → `.agents/skills/no-negative-prompts`；
    测试与取证 → `.agents/skills/snapshot-testing`、`.agents/skills/log-version-folders`；
+   调研与方案落档 → `.agents/skills/research-to-doc`；
    动手前提交 → `.agents/skills/commit-before-destructive`；提示词与代码注释见附则。
 
 ## 版本条目模板

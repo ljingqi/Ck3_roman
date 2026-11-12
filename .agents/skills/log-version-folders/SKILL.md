@@ -84,6 +84,8 @@ Select-String -Path logs\v125\*.txt -Pattern '关键词'
   两份技能的路径条款已对齐：本轮证据在 `logs\vXX\`，不再写 `logs\vNN_*.txt`。
 - **动手前先提交**：`.agents/skills/commit-before-destructive`。
   批量搬动/改名/覆盖前先 `git status --short` + 提交检查点。
+- **调研与方案落档**：`.agents/skills/research-to-doc` 管 `docs/方案_vXXX_*.md` /
+  `docs/调研_vXXX_*.md` 的写法，文档号与本技能的 `logs/vXX/`、提交信息同号。
 - **编码与子进程**：`.agents/skills/utf8-gbk-encoding`；跑 Python 用 `tools\py.ps1`。
 - `logs/README.md` 是本技能的落地版目录说明，改约定时两处同步。
 
