@@ -38,8 +38,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm
 import cache_lib as cl
 import biography as bio
+import market_prices as mprices
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _ingest_market_prices(cfg, folder, melt, source=""):
+    """Mirror one melt's market prices and routes into the folder's SQLite store. A missing or
+    unreadable store must not cost the cache merge, so failures are only logged."""
+    try:
+        data_dir = os.path.join(cfg.get("output_dir", ""), folder, "data")
+        mprices.ingest_melt(melt, data_dir, cfg=cfg, source=source)
+    except Exception as e:  # noqa: BLE001
+        llm.log(f"  市场价格入库失败 (缓存不受影响): {e}")
 
 
 # --- Save reading ---------------------------------------------------------------
@@ -876,6 +887,7 @@ def _catchup(cfg, cache, continue_mode=False):
             _prebuild_melt_index(mp, melt)   # later backfills read the sidecar directly
             new_deaths = []
             if cl.extract_snapshot(cache, melt, s["date"], _new_deaths=new_deaths):
+                _ingest_market_prices(cfg, folder, melt, "catchup")
                 _recover_dead_memories(cfg, cache, new_deaths)
                 save_session_cache(cfg, cache, continue_mode)
                 processed += 1
@@ -1501,6 +1513,7 @@ def _process_save(cfg, save, continue_mode=False):
                 cache["output_folder"] = folder
                 new_deaths = []
                 cl.extract_snapshot(cache, melt, date, _new_deaths=new_deaths)
+        _ingest_market_prices(cfg, folder, melt, "watch")
         mp = _move_melt_into(cfg, folder, date, player_id, tmp)
         _prebuild_melt_index(mp, melt)   # later backfills read the sidecar directly
         _recover_dead_memories(cfg, cache, new_deaths)
@@ -2487,6 +2500,7 @@ def step_rebuild_cache(cfg):
         else:
             cache = ent[1]
         cl.extract_snapshot(cache, melt, date)
+        _ingest_market_prices(cfg, folder, melt, "merge")
         cache["output_folder"] = folder
         path_out = session_data_path(cfg, cache, folder)
         _recover_dead_memories(cfg, cache)

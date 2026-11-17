@@ -26,6 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import cache_lib as cl          # noqa: E402
 import llm                      # noqa: E402
+import market_prices as mprices  # noqa: E402
 import pipeline as pipe         # noqa: E402
 
 _MELT_RE = None
@@ -114,6 +115,10 @@ def main():
         for pid, _cp, cache in jobs:
             cl.extract_snapshot(cache, melt, date)
             bits.append(f"{pid}:{len(cache['characters'])}")
+        try:
+            mprices.ingest_melt(melt, data_dir, cfg=cfg, source="rebuild")
+        except Exception as e:  # noqa: BLE001
+            print(f"  市场价格入库失败 (缓存不受影响): {e}", flush=True)
         print(f"  {i}/{total} {date}  角色 {' / '.join(bits)}", flush=True)
         del melt
 
