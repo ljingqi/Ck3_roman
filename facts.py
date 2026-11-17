@@ -19688,6 +19688,9 @@ class Facts:
             g = row.get("gold")
             if isinstance(g, (int, float)):
                 money.append(f"月入{g:.2f}")
+            # A route is a flow: merge every transaction at the same market for the same good,
+            # so the line states the whole route's traffic rather than one arbitrary order.
+            flows = {}   # (market, 买入/卖出, good) -> Σ amount, in first-appearance order
             for t in (row.get("transactions")
                       if isinstance(row.get("transactions"), list)
                       else [row.get("transactions")]):
@@ -19695,18 +19698,23 @@ class Facts:
                     continue
                 typ = {"buy": "买入", "sell": "卖出"}.get(
                     str(t.get("type") or ""), str(t.get("type") or "交易"))
-                seg = "最近一单："
-                if t.get("trade_market") is not None:
-                    seg += f"在{self._trade_market_word(t['trade_market'])}"
-                seg += typ + self._trade_good_word(t.get("trade_good"))
+                good = t.get("trade_good")
+                goods = ([str(x) for x in good] if isinstance(good, list)
+                         else ([str(good)] if good else []))
                 amt = t.get("amount")
-                if isinstance(amt, (int, float)):
-                    seg += f"{self._trade_qty(amt)}单位"
-                price = t.get("price_per_unit")
-                if isinstance(price, (int, float)):
-                    seg += f"，单价{price:.3f}"
-                money.append(seg)
-                break
+                qty = abs(float(amt)) if isinstance(amt, (int, float)) else 0.0
+                for gk in goods:
+                    key = (t.get("trade_market"), typ, gk)
+                    flows[key] = flows.get(key, 0.0) + qty
+            segs = []
+            for (mid, typ, gk), qty in flows.items():
+                seg = (f"在{self._trade_market_word(mid)}" if mid is not None else "")
+                seg += typ + self._trade_good_word(gk)
+                if qty > 0:
+                    seg += f"{self._trade_qty(qty)}单位"
+                segs.append(seg)
+            if segs:
+                money.append("货流：" + "、".join(segs))
             if money:
                 lines.append("盈亏：" + "；".join(money))
             for c in p["changes"]:
