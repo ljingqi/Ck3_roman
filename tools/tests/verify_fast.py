@@ -136,6 +136,12 @@ def _paren_violations(text):
         c = m.group(1)
         if _NOTE_OK_RE.search(c):
             continue
+        # v151 (用户 2026-11-17 拍板): 「禁忌个人信条（买卖圣职）」—— 秘密类型名 + 程序
+        # 按礼仪禁行状态配出的具体个人信条; the inner word is the game's tenet display name,
+        # so the parenthesis carries information the prose cannot otherwise name.
+        if (text[max(0, m.start() - 6):m.start()] == "禁忌个人信条"
+                and not re.search(r"[（）\dA-Za-z_]", c)):
+            continue
         # v130: 「患<当代疫名>（<病名>）而亡」—— the inner word is the game's trait display
         # name and the outer word the epidemic's contemporary name, so this clause keeps both
         # names the player sees; it is program-built, not a model-written appositive.

@@ -12089,6 +12089,22 @@ class Facts:
                 return tpl.format(target=child, father=rn)
             # biological father unknown → short template without the father slot
             return SECRET_TOPICS_NO_FATHER.get(tp, "").format(target=child)
+        if tp == "secret_forbidden_personal_tenet":
+            # The record names no tenet: the one it concerns is the holder's personal tenet that
+            # his rite marks `prohibited` at the secret's first sighting. Without that pairing the
+            # topic can only repeat the type name.
+            when = rec.get("first_seen") or self.as_of
+            own = self._personal_tenets(owner, when)
+            rid = self._rite_id(owner, when)
+            st = (((self._rite_point_at(rid, when) or {}).get("tenets")
+                   or self.rite_tenets(rid)) if rid is not None else {}) or {}
+            banned = set(st.get("prohibited") or [])
+            names = [self.tenet_name(k, rid) or k for k in own if k in banned]
+            if names:
+                return f"{L.loc(self.table, tp) or '禁忌个人信条'}（{'、'.join(names)}）"
+            # the tenet is not recoverable (e.g. no personal-tenet history in this cache);
+            # the secret is always about its holder, so a target clause would only say "自己"
+            return L.loc(self.table, tp) or "禁忌个人信条"
         tpl = SECRET_TOPICS.get(tp)
         if tpl:
             if "{target}" in tpl:
