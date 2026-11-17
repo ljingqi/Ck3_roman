@@ -3906,6 +3906,9 @@ class Facts:
         # House estates (`c_nf_`/`d_nf_`) are landless too: name only, no tier word.
         if self._is_estate_title(tid):
             return name
+        # Merchant-family companies are family property, not counties: name only.
+        if self._is_merchant_family_title(tid):
+            return name
         # Landless adventurer camps (`d_laamp_*`) take the game's
         # `<tier>_landless_adventurer_camp` word on every date and never the generic duchy
         # word.
@@ -4942,6 +4945,19 @@ class Facts:
             return False
         return self._ESTATE_KEY_MARK in ((self._lt.get(str(tid)) or {}).get("key") or "")
 
+    def _is_merchant_family_title(self, tid):
+        """True for a merchant-family company title (CK3 1.20/1.21 `merchant_government`).
+
+        The save marks these `type = title_type_merchant_family`; `c_`-prefixed ones carry no
+        `landless` field, so the key prefix alone would read them as counties. They are family
+        property like a house estate, not land, and their holder is addressed by the game's
+        `landless_merchant_male/female` word (老板/女老板)."""
+        if tid is None:
+            return False
+        t = self._lt.get(str(tid)) or {}
+        return (t.get("type") == "title_type_merchant_family"
+                or t.get("history_government") == "merchant_government")
+
     def _script_title_rank(self, tid):
         """Rank of a script-created landed title (`x_script_*`): the save's dynamic template tier
         first, then its de jure position.
@@ -5027,7 +5043,7 @@ class Facts:
         """
         if tid is None:
             return 0
-        if self._is_estate_title(tid):
+        if self._is_estate_title(tid) or self._is_merchant_family_title(tid):
             return 0
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         if key.startswith("x_script_"):
@@ -5069,7 +5085,8 @@ class Facts:
     def _is_landless_title(self, tid):
         """True for a landless title that is neither a camp, an estate, a yurt nor a clerical
         province: mercenary companies (`x_mc_*`), holy orders (`x_ho_*`), script titles such as
-        peasant revolts and curias (`x_script_*`).
+        peasant revolts and curias (`x_script_*`), and merchant-family companies
+        (`title_type_merchant_family`, which may carry a `c_` prefix).
 
         The holder is unlanded but is not a landless adventurer: the game words him from the
         title's own government (校官 / 大团长 / 总修院长, see `_landless_holder_word`).
@@ -5081,6 +5098,8 @@ class Facts:
         """
         if tid is None:
             return False
+        if self._is_merchant_family_title(tid):
+            return True
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
         if not key.startswith("x_"):
             return False
@@ -9837,6 +9856,8 @@ class Facts:
         if cid is None or tid is None:
             return ""
         gov = self._gov_for_word(cid, tid, date) or ""
+        if gov == "merchant_government" or self._is_merchant_family_title(tid):
+            return self._merchant_holder_word(cid)
         if gov not in self._LANDLESS_WORD_GOVS:
             return ""
         fk = self._flavor_key("character", "duchy", cid, tid=tid,
@@ -9848,6 +9869,19 @@ class Facts:
         if v and not v.startswith(("$", "[")):
             return v
         return ""
+
+    def _merchant_holder_word(self, cid):
+        """Holder word of a merchant-family company: the game's 老板 / 女老板.
+
+        These words live on the tierless `special = domicile` flavorization entries
+        (`00_title_holders.txt:13627`), which the flavorization table drops, so they are read
+        from localization directly."""
+        female = self._is_female(cid)
+        v = L.loc(self.table, "landless_merchant_female" if female
+                  else "landless_merchant_male")
+        if v and not v.startswith(("$", "[")):
+            return v
+        return "女老板" if female else "老板"
 
     def _unlanded_office_text(self, cid, tid, date=None):
         """Label text of an unlanded office: the office's own name plus its holder word.
@@ -11523,6 +11557,10 @@ class Facts:
         the dead or for that point in time, while the title's government stays."""
         tier, tid = self._primary_title_at(cid, as_of=date)
         if tid is None or tier is None:
+            # Merchant-family companies are rank 0 (family property, not land), so the landed
+            # branch above cannot word them; their 老板/女老板 office still belongs in the event.
+            if tid is not None and self._is_merchant_family_title(tid):
+                return self._unlanded_office_text(cid, tid, date) or ""
             return ""
         tname = self._name_at_date(tid, date) or self.title_base_name(tid)
         if not tname:
