@@ -1118,6 +1118,10 @@ SECRET_TOPICS = {
     "secret_witch": "暗行巫术",
     "secret_embezzler": "侵吞库银",
     "secret_siphoned_treasury": "挪用国库",
+    # The game's own description (`dlc/gdp/gdp_interactions_l_simp_chinese.yml`):
+    # 以隐藏的[interest|E]借给[TARGET_CHARACTER.GetShortUIName][gold|E] — the noun type name
+    # alone ("伪装的有息贷") does not say who received the money.
+    "secret_disguised_usury": "以隐藏的利息借给了{target}金钱",
     # Lineage secrets name the child involved and the biological father, so the household
     # and secret boards can connect "the protagonist's daughter married the protagonist's
     # own illegitimate son" (facts.secret_topic passes {father}; an undetermined father
