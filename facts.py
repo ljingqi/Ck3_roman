@@ -19977,8 +19977,9 @@ class Facts:
         dates = [d for (_gk, d) in per_day]
         y0 = _y(min(dates, key=cl.date_key))
         y1 = _y(max(dates, key=cl.date_key))
+        names = "、".join(b.split("：", 1)[0] for b in blocks)
         head = (f"本地市场为{self._trade_market_word(mids[0])}，{y0}至{y1}间"
-                f"商路成交之货{len(blocks)}种，以下按成交量列出各货成交价的区间与涨跌。")
+                f"商路成交之货{len(blocks)}种：{names}。以下按成交量列出各货成交价的区间与涨跌。")
         return {"总览": head, "条陈": blocks}
 
     def _office_name(self, cid):
