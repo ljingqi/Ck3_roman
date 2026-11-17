@@ -19865,12 +19865,15 @@ class Facts:
         return "不足0.01%"
 
     def food_goods_lines(self):
-        """《食货志》 material: price-trend conclusions for the local market's active goods.
+        """《食货志》 material: observed price trends of the goods traded at the local market.
 
-        Only the conclusion reaches the model — interval first/last/high/low, the largest
-        rise and fall with their years, and one trend word per good. The per-snapshot price
-        matrix stays in market_prices.db."""
-        pid = self.cache.get("player_id")
+        Only goods with route transactions through the local market take part, and each
+        snapshot's price is the amount-weighted average of `route_transaction.price_per_unit`.
+        The computed baseline derives buy/sell from one prosperity multiplier, so every good
+        moves by the same percentage; the observed route price carries the good's own trend.
+        Only the conclusion reaches the model — the per-snapshot matrix stays in
+        market_prices.db."""
+        pid = self.cache.get("playthrough_id")
         mids = self._local_market_ids()
         if pid is None or not mids:
             return {"总览": "", "条陈": []}
@@ -19884,38 +19887,40 @@ class Facts:
         ao_k = cl.date_key(ao) if ao else None
         try:
             import market_prices as _mp
-            rows = _mp.prices(self.cache.get("playthrough_id"),
-                              market_id=int(mids[0]), data_dir=data_dir)
+            tx = _mp.route_prices(pid, market_id=int(mids[0]), data_dir=data_dir)
         except Exception:
             return {"总览": "", "条陈": []}
-        rows = [r for r in rows
-                if (lo_k is None or cl.date_key(r.get("date")) > lo_k)
-                and (ao_k is None or cl.date_key(r.get("date")) <= ao_k)]
-        if len({r.get("date") for r in rows}) < 2:
-            return {"总览": "", "条陈": []}
+        per_day = {}  # (good_key, date) -> [Σ amount×price, Σ amount]
+        for t in tx:
+            d = t.get("date")
+            dk = cl.date_key(d)
+            if (lo_k is not None and dk <= lo_k) or (ao_k is not None and dk > ao_k):
+                continue
+            gk = t.get("good_key")
+            price = t.get("price_per_unit")
+            amount = t.get("amount")
+            if not gk or not isinstance(price, (int, float)) or price <= 0:
+                continue
+            if not isinstance(amount, (int, float)) or amount == 0:
+                continue
+            qty = abs(float(amount))
+            acc = per_day.setdefault((gk, d), [0.0, 0.0])
+            acc[0] += qty * float(price)
+            acc[1] += qty
         series = {}
-        for r in rows:
-            gk = r.get("good_key")
-            if gk:
-                series.setdefault(gk, []).append(r)
+        for (gk, d), (num, qty) in per_day.items():
+            if qty > 0:
+                series.setdefault(gk, []).append((d, num / qty, qty))
         active = []
         for gk, rs in series.items():
-            vol = max((r.get("need") or 0) + (r.get("production") or 0)
-                      + abs(r.get("import") or 0) + abs(r.get("export") or 0)
-                      for r in rs)
-            if vol > 0:
-                active.append((vol, gk, rs))
+            if len(rs) < 2:
+                continue
+            rs.sort(key=lambda x: cl.date_key(x[0]))
+            active.append((sum(x[2] for x in rs), gk, rs))
         active.sort(key=lambda x: -x[0])
         blocks = []
-        for _vol, gk, rs in active[:FOOD_GOODS_MAX]:
-            rs.sort(key=lambda r: cl.date_key(r.get("date")))
-            pts = []
-            for r in rs:
-                p = r.get("sell_price") or r.get("buy_price")
-                if isinstance(p, (int, float)) and p > 0:
-                    pts.append((r.get("date"), float(p)))
-            if len(pts) < 2:
-                continue
+        for _amt, gk, rs in active[:FOOD_GOODS_MAX]:
+            pts = [(d, p) for d, p, _q in rs]
             first, last = pts[0][1], pts[-1][1]
             hi = max(pts, key=lambda x: x[1])
             low = min(pts, key=lambda x: x[1])
@@ -19943,12 +19948,13 @@ class Facts:
             blocks.append(seg)
         if not blocks:
             return {"总览": "", "条陈": []}
-        # the first/last observed price point, not the window edge: a decade can begin
+        # the first/last observed trade, not the window edge: a decade can begin
         # before the campaign's first save
-        y0 = _y(rows[0].get("date"))
-        y1 = _y(rows[-1].get("date"))
+        dates = [d for (_gk, d) in per_day]
+        y0 = _y(min(dates, key=cl.date_key))
+        y1 = _y(max(dates, key=cl.date_key))
         head = (f"本地市场为{self._trade_market_word(mids[0])}，{y0}至{y1}间"
-                f"常易之货{len(blocks)}种，以下按成交量列出各货的价势。")
+                f"商路成交之货{len(blocks)}种，以下按成交量列出各货成交价的区间与涨跌。")
         return {"总览": head, "条陈": blocks}
 
     def _office_name(self, cid):

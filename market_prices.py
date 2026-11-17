@@ -308,7 +308,8 @@ def prices(playthrough_id=None, market_id=None, good_key=None, start=None, end=N
         conn.close()
 
 
-def route_prices(playthrough_id=None, route_id=None, start=None, end=None, *, data_dir):
+def route_prices(playthrough_id=None, route_id=None, market_id=None, start=None, end=None, *,
+                 data_dir):
     """Route transactions {date, route_id, market_id, good_key, type, amount, price_per_unit}."""
     conn = _connect(data_dir)
     try:
@@ -318,6 +319,7 @@ def route_prices(playthrough_id=None, route_id=None, start=None, end=None, *, da
         args = []
         for col, val, op in (("playthrough_id", playthrough_id, "="),
                              ("route_id", route_id, "="),
+                             ("market_id", market_id, "="),
                              ("date", start, ">="),
                              ("date", end, "<=")):
             if val is not None:

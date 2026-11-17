@@ -1884,7 +1884,7 @@ def _article_facts(facts, cache, key, section=None):
             _set_block(blocks, "市廛总览", "\n\n".join(parts))
         else:
             rest = items[2:] if len(items) > 2 else items[-1:]
-            _set_block(blocks, "物价条陈", "\n\n".join(rest))
+            _set_block(blocks, "市场动态", "\n\n".join(rest))
     elif key == "feuds":
         feuds = facts.get("house_feuds") or []
         if feuds:
