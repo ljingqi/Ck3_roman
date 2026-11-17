@@ -19943,8 +19943,10 @@ class Facts:
             blocks.append(seg)
         if not blocks:
             return {"总览": "", "条陈": []}
-        y0 = _y((lo or rows[0].get("date")))
-        y1 = _y((ao or rows[-1].get("date")))
+        # the first/last observed price point, not the window edge: a decade can begin
+        # before the campaign's first save
+        y0 = _y(rows[0].get("date"))
+        y1 = _y(rows[-1].get("date"))
         head = (f"本地市场为{self._trade_market_word(mids[0])}，{y0}至{y1}间"
                 f"常易之货{len(blocks)}种，以下按成交量列出各货的价势。")
         return {"总览": head, "条陈": blocks}
