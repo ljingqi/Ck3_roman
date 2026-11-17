@@ -10481,6 +10481,12 @@ class Facts:
         s = str(raw or "")
         if "\x15" not in s or "ONCLICK" not in s:
             return _clean_ck3_loc(s)
+        # The player is rendered as `\x15V 你\x15!` (the game's second-person address), so the
+        # chronicle substitutes the subject's name before the style markup is stripped.
+        _pid = self.cache.get("player_id")
+        _pname = self.event_name(_pid, date=date) if _pid is not None else ""
+        if _pname:
+            s = re.sub(r"\x15V\s*你\x15!", lambda _m: _pname, s)
         ids = _FEUD_CHAR_RE.findall(s)
         self_ref = len(ids) >= 2 and len(set(ids)) == 1
         other_phrase = ""
@@ -22662,7 +22668,8 @@ def _clean_ck3_loc(s):
     removed as a whole, with `[A-Z_]+` so underscored keys such as LANDED_TITLE are covered,
     and the title/name comma step is `_strip_title_comma`. Unreadable results (bare key,
     sentinel, or no CJK characters) return '' so callers can build the sentence instead."""
-    s = str(s or "").replace("\x15", "")
+    s = re.sub(r"\x15[VE]\s?", "", str(s or ""))
+    s = s.replace("\x15", "")
     # Title link block (ONCLICK:TITLE,id TOOLTIP:LANDED_TITLE,id L; name) removed whole
     s = re.sub(r"ONCLICK:TITLE,\d+\s*TOOLTIP:[A-Z_]+,\d+\s*L[; ]?", "", s)
     s = re.sub(r"ONCLICK:[A-Z_]+,\d+\s*", "", s)
