@@ -19786,13 +19786,12 @@ class Facts:
             last = str(row.get("last_seen") or "")
             last_owner = hist[-1].get("owner") if hist else None
             if last_owner != pid:
-                lines.append("去向：" + "已转交"
-                             + (self.name(last_owner) if last_owner else "他人")
-                             + f"（{llm.fmt_cn_date(hist[-1].get('date'))}）")
+                lines.append(f"{llm.fmt_cn_date(hist[-1].get('date'))}转交"
+                             + (self.name(last_owner) if last_owner else "他人"))
             elif ao and last and cl.date_key(last) < cl.date_key(ao):
-                lines.append(f"现状：最后一次见于{llm.fmt_cn_date(last)}")
-            else:
-                lines.append("现状：仍在经营")
+                # A route last observed before the cutoff has ended; state the end date itself
+                # instead of a diagnostic-style "last seen" status.
+                lines.append(f"经营至{llm.fmt_cn_date(last)}")
             blocks.append("\n".join(lines))
 
         mode_n = {"profit": 0, "commission": 0, "distribution": 0}
