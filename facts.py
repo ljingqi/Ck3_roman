@@ -19961,13 +19961,13 @@ class Facts:
             def _y(d):
                 return llm.fmt_cn_year(str(d).split(".")[0])
 
-            seg = (f"{self._trade_good_word(gk)}：区间初{first:.3f}（{_y(pts[0][0])}），"
-                   f"区间末{last:.3f}（{_y(pts[-1][0])}）；"
+            seg = (f"{self._trade_good_word(gk)}：{_y(pts[0][0])}{first:.3f}，"
+                   f"{_y(pts[-1][0])}{last:.3f}；"
                    f"高{hi[1]:.3f}、低{low[1]:.3f}")
             if rise:
-                seg += f"；最大涨幅{self._price_pct(rise[0])}（{_y(rise[1])}→{_y(rise[2])}）"
+                seg += f"；最大涨幅{self._price_pct(rise[0])}"
             if fall:
-                seg += f"；最大跌幅{self._price_pct(fall[0])}（{_y(fall[1])}→{_y(fall[2])}）"
+                seg += f"；最大跌幅{self._price_pct(fall[0])}"
             seg += f"；{self._price_trend_word(pts)}。"
             blocks.append(seg)
         if not blocks:
