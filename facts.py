@@ -2500,6 +2500,43 @@ def render_motto(motto, table, *, female=False, first_name="", house_name=""):
 # Facts context
 # ---------------------------------------------------------------------------
 
+#: Laws that only state a gender preference; the game pairs each with the camp's own
+#: succession law, so the two words read as one phrase.
+_GENDER_LAWS = frozenset({
+    "male_only_law", "male_preference_law", "equal_law",
+    "female_preference_law", "female_only_law"})
+
+
+def _camp_law_names(laws, table):
+    """Camp law words. A gender-preference law and the camp's succession law are merged into
+    one phrase (男性优先商会继承制) because the game applies them as a pair."""
+    gender, succ, others = [], [], []
+    for law in laws:
+        if not law:
+            continue
+        if law in _GENDER_LAWS:
+            gender.append(law)
+        elif str(law).endswith("_succession_law"):
+            succ.append(law)
+        else:
+            others.append(law)
+    names = []
+    for law in others:
+        v = L.loc(table, law) or law
+        if v and v != law:
+            names.append(v)
+    if succ:
+        sname = L.loc(table, succ[0]) or succ[0]
+        gname = "、".join((L.loc(table, g) or g) for g in gender)
+        names.append(gname + sname if gname else sname)
+    else:
+        for law in gender:
+            v = L.loc(table, law) or law
+            if v and v != law:
+                names.append(v)
+    return names
+
+
 # A title-level word is not appended when the name already ends in a state suffix (汗国/教宗国/…).
 _STATE_SUFFIX_RE = re.compile(
     r"(帝国|王国|汗国|大公国|公国|侯国|伯国|苏丹国|哈里发国|酋长国|"
@@ -25785,14 +25822,9 @@ def _protagonist(f):
         # camp (i.e. no as_of time travel)
         if gov_asof == "landless_adventurer_government" and not skip_detail:
             laws = ld.get("laws") or []
-            if laws:
-                names = []
-                for law in laws:
-                    v = L.loc(f.table, law) or law
-                    if v and v != law:
-                        names.append(v)
-                if names:
-                    p["camp_laws"] = "、".join(names)
+            names = _camp_law_names(laws, f.table)
+            if names:
+                p["camp_laws"] = "、".join(names)
             if ld.get("strength") is not None:
                 p["camp_strength"] = str(ld.get("strength"))
             prov = f.character_location_province(pid)
