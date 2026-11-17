@@ -1375,6 +1375,9 @@ def _cond_block(items, groups, op="all", religions=None, split_inline=False):
         if key == "is_female":
             children.append({"female": str(val).strip().lower() in ("yes", "true")})
             continue
+        if key == "is_male":
+            children.append({"male": str(val).strip().lower() in ("yes", "true")})
+            continue
         # Leaves used by the mod's kingdom address block
         # (LOC_Dm_flavor_kingdom_zhuxia): culture membership, tributary status and the
         # awarded noble-rank traits.
@@ -1612,6 +1615,8 @@ def cond_match(cond, scope):
     # ---- condition leaves of the custom-localization arms ----
     if "female" in cond:
         return bool(scope.get("female")) == bool(cond["female"])
+    if "male" in cond:
+        return bool(scope.get("male")) == bool(cond["male"])
     if "faith" in cond:
         return scope.get("faith") == cond["faith"]
     if "title_in" in cond:
@@ -1672,7 +1677,7 @@ def build_court_positions(cfg):
                                      "when": cond})
                 if variants:
                     positions[key] = variants     # a same-key mod definition replaces the entry
-    return {"schema": 1, "heritage_groups": groups, "positions": positions}
+    return {"schema": 2, "heritage_groups": groups, "positions": positions}
 
 
 def save_court_positions(cfg, table):
@@ -1692,7 +1697,7 @@ def load_court_positions(cfg=None, force=False):
         try:
             with open(path, encoding="utf-8") as fp:
                 data = json.load(fp)
-            if data.get("schema") == 1 and data.get("positions"):
+            if data.get("schema") == 2 and data.get("positions"):
                 return data
         except Exception:
             pass
@@ -2250,30 +2255,51 @@ def _council_names_path(cfg):
     return os.path.join(cfg.get("data_dir", ""), "council_names.json")
 
 
-#: Bumped when the arm encoding changes, so an older file on disk is rebuilt: schema 3 keeps the
-#: truth value of an unmodelled trigger (`unknown_not`), which decides the family-head seat arm.
-_COUNCIL_NAMES_SCHEMA = 3
+#: Bumped when the arm encoding changes, so an older file on disk is rebuilt: schema 4 walks
+#: the chain's top level (nested `desc = { first_valid … }` stays inside its arm) and keeps the
+#: bare `desc` fallback arm, so sex-gated arms no longer shadow the other sex.
+_COUNCIL_NAMES_SCHEMA = 4
+
+
+def _desc_arms(desc_block, cond, groups, religions):
+    """One `desc` value -> arms. A scalar desc is the arm; a block desc recurses into its
+    `first_valid`, carrying the outer condition as `extra`."""
+    fv = list(_top_items(desc_block, "first_valid"))
+    src = fv[0][2] if fv else desc_block
+    return _name_arms(src, groups, religions, extra=cond)
+
+
+def _top_items(text, key):
+    """Top-level `key = { … }` items only (`_script_items` already stops at block boundaries)."""
+    for k, op, val in _script_items(text or ""):
+        if k == key and op == "block":
+            yield (k, op, val)
 
 
 def _name_arms(block, groups, religions, extra=None):
     """A `name` chain -> [{"desc": loc key or 'actual_bishop_title', "when": tree}...], in order.
-    `desc` may be nested (`desc = { first_valid = { ... } }`) and is ANDed with the outer trigger."""
+    Only the chain's own top-level arms are walked: an arm's `desc = { first_valid … }` keeps its
+    nested arms inside that arm, ANDed with the arm trigger, and a bare `desc` is the fallback."""
     out = []
-    for blk in _blocks_of(block, "triggered_desc"):
-        tr = _blocks_of(blk, "trigger")
-        cond = _cond_block(_script_items(_split_inline_items(tr[0])), groups,
-                           religions=religions, split_inline=True) if tr else {}
-        if extra:
-            cond = {"op": "all", "children": [extra, cond]} if cond else extra
-        m = re.search(r"desc\s*=\s*([A-Za-z0-9_]+)", blk)
-        if m:
-            out.append({"desc": m.group(1), "when": cond})
-            continue
-        db = _blocks_of(blk, "desc")
-        if db:
-            fv = _blocks_of(db[0], "first_valid")
-            src = fv[0] if fv else db[0]
-            out.extend(_name_arms(src, groups, religions, extra=cond))
+    for key, op, val in _script_items(block or ""):
+        if key == "triggered_desc" and op == "block":
+            tr = list(_top_items(val, "trigger"))
+            cond = _cond_block(_script_items(_split_inline_items(tr[0][2])), groups,
+                               religions=religions, split_inline=True) if tr else {}
+            if extra:
+                cond = {"op": "all", "children": [extra, cond]} if cond else extra
+            for k2, o2, v2 in _script_items(val):
+                if k2 == "desc":
+                    if o2 == "block":
+                        out.extend(_desc_arms(v2, cond, groups, religions))
+                    else:
+                        out.append({"desc": v2, "when": cond})
+                    break
+        elif key == "desc":
+            if op == "block":
+                out.extend(_desc_arms(val, extra, groups, religions))
+            else:
+                out.append({"desc": val, "when": extra or {}})
     return out
 
 

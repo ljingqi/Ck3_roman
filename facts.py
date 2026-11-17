@@ -6031,13 +6031,21 @@ class Facts:
         independent = bool(self._is_independent(liege, d)) if liege is not None else False
         # `is_governor_or_admin_count` (common/scripted_triggers): landed, not the top liege, and
         # holding a county or above. A house head living on his family estate therefore fails it.
-        return {"tier": tier,
-                "independent": independent,
-                "landless": not tier,
-                "gov_flag": "government_has_merit" if gov in self._MERIT_GOVS
-                else L.government_prefix(gov),
-                "is_governor_or_admin_count": bool(tier and tier >= 2 and not independent),
-                "chaplain_female": (bool(self._is_female(who)) if who is not None else False)}
+        scope = {"tier": tier,
+                 "independent": independent,
+                 "landless": not tier,
+                 "gov_flag": "government_has_merit" if gov in self._MERIT_GOVS
+                 else L.government_prefix(gov),
+                 "is_governor_or_admin_count": bool(tier and tier >= 2 and not independent),
+                 "scope:councillor": who,
+                 "chaplain_female": (bool(self._is_female(who)) if who is not None else False)}
+        # The chain's sex gate reads `scope:councillor = { is_male = yes }`; with no holder the
+        # first arm (`NOT = { exists = scope:councillor }`) already wins, so the sex slots stay
+        # unset and cannot shadow it.
+        if who is not None:
+            scope["female"] = bool(self._is_female(who))
+            scope["male"] = not scope["female"]
+        return scope
 
     def council_seat_arm_word(self, seat, liege, date=None):
         """The seat word from the game's own name chain, or '' when the chain yields nothing.
