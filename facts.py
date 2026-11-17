@@ -31618,6 +31618,11 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # after merging the special modules, cut back to the top 5
         facts["decade_modules"] = _cut_module_top(dm, top_n=5)
     stats = getattr(f, "_timeline_stats", None) or {}
+    # Which fateful phases the material actually has: board requirements ask for 战争/入狱 only
+    # when the timeline counted them for the protagonist (the "被囚" stat names only him; see
+    # Facts.timeline's owner check).
+    facts["protagonist_imprisoned"] = bool(stats.get("被囚") or stats.get("越狱"))
+    facts["protagonist_war"] = bool(stats.get("开战") or stats.get("应战"))
     if stats:
         # top 6 labels by count, descending, for the 【概览】 block ("本十年结怨9次…").
         # Only positive counts are taken: a zero entry such as "囚禁他人0次" is a program

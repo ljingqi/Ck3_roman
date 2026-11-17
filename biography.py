@@ -2062,11 +2062,20 @@ def _theme_label(name, facts):
 
 def _section_req(text, facts):
     """Board requirements are reworded under office-rotation governments (appointment / removal /
-    transfer); every other government keeps the text as written."""
-    if not text or not _celestial_like(facts):
+    transfer); every other government keeps the text as written. The "war and imprisonment"
+    clause is kept only for the phases the material actually lists."""
+    if not text:
         return text
-    for a, b in style.REQ_SWAPS:
-        text = text.replace(a, b)
+    if _celestial_like(facts):
+        for a, b in style.REQ_SWAPS:
+            text = text.replace(a, b)
+    if "战争与入狱" in text:
+        words = [w for w, ok in (("战争", facts.get("protagonist_war")),
+                                 ("入狱", facts.get("protagonist_imprisoned"))) if ok]
+        if words:
+            text = text.replace("战争与入狱", "与".join(words))
+        else:
+            text = text.replace("、战争与入狱的转折", "与家国大事的转折")
     return text
 
 
@@ -3967,10 +3976,15 @@ def build_articles(facts, cache, cfg):
                        or style.SECTION_REQ.get(key, {}).get(sk)
                        or "按传记笔法写作。", facts),
         } for sk in sec_keys]
+    _phase_words = "与".join(
+        w for w, ok in (("战争", facts.get("protagonist_war")),
+                        ("入狱", facts.get("protagonist_imprisoned"))) if ok)
     articles = [
         {"key": "benji", "title": f"本纪·{pname}", "subject": None,
          "theme": "人物生平",
-         "focus": "只写公开的行迹：家世、执掌的地方、战争与入狱、家中添丁",
+         "focus": "只写公开的行迹：家世、执掌的地方"
+                  + (f"、{_phase_words}" if _phase_words else "")
+                  + "、家中添丁",
          "sections": mk_sections("benji")},
     ]
     if friend is not None and not _subject_has_material(facts, friend):
