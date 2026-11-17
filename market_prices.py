@@ -110,6 +110,23 @@ def _good_table(cfg):
     return order, base
 
 
+_BASE_CACHE = {}
+
+
+def good_base_prices(cfg=None):
+    """{good_key: base_price} from the game/mod declarations, cached per game dir.
+
+    The declaration order is also the save's good index, so callers that only need the
+    prices (route material) share this with the ingestion path."""
+    import localization as L
+    key = (L.game_dir(cfg) or "", tuple(L.enabled_mod_dirs(cfg) or []))
+    hit = _BASE_CACHE.get(key)
+    if hit is None:
+        hit = _good_table(cfg)[1]
+        _BASE_CACHE[key] = hit
+    return hit
+
+
 def _duchy_prosperity(melt):
     """{duchy title id: average prosperity of its de jure counties} (missing -> absent)."""
     lts = ((melt.get("landed_titles") or {}).get("landed_titles") or {})

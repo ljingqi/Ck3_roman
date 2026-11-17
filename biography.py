@@ -1862,6 +1862,18 @@ def _article_facts(facts, cache, key, section=None):
         link = _murder_link_line(facts, key, sk)
         if link:
             blocks["说明"] = link
+    elif key == "shanglu":
+        # overview plus the first routes in the lead, the rest in the chronicle; a short
+        # list leaves one route to close the chronicle
+        tr = facts.get("trade_routes") or {}
+        items = list(tr.get("条陈") or [])
+        if _sec_key(section) == "lead":
+            parts = [tr.get("总览")] if tr.get("总览") else []
+            parts += items[:2] if len(items) > 2 else items
+            _set_block(blocks, "商路总览", "\n\n".join(parts))
+        else:
+            rest = items[2:] if len(items) > 2 else items[-1:]
+            _set_block(blocks, "商路条陈", "\n\n".join(rest))
     elif key == "feuds":
         feuds = facts.get("house_feuds") or []
         if feuds:
@@ -3611,6 +3623,7 @@ _ARTICLE_PRIO = {
     "friend": 80,      # friend
     "enemy": 80,       # enemy
     "feuds": 76,       # family feuds
+    "shanglu": 78,     # trade routes (CK3 1.21)
     "artifacts": 74,   # artifacts
     "liyi": 72,        # rites
     "chaoju": 70,      # dynasty chronicle (final article only)
@@ -4021,6 +4034,12 @@ def build_articles(facts, cache, cfg):
             "subject": None, "theme": "漂泊不定的行旅记录",
             "focus": "按行程次序写漂泊：每到一地的时间、驻扎的地方、与当地势力的交集",
             "sections": mk_sections("youxia")})
+    if (facts.get("trade_routes") or {}).get("总览"):
+        articles.append({
+            "key": "shanglu", "title": "商路志·舟车所至",
+            "subject": None, "theme": "主角经营的商路与沿途市场",
+            "focus": "逐条写商路的开设、承袭、货物、市场、商队与盈亏",
+            "sections": mk_sections("shanglu")})
     if facts.get("imperial_spouses"):
         articles.append({
             "key": "qizu", "title": "妻族传·帝胄姻亲",

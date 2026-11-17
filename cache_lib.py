@@ -1382,6 +1382,13 @@ EMPTY_CACHE = {
     # Player succession chain from played_character.legacy: [{cid, date}], the last entry
     # being the current subject with its accession day; kinship cannot reconstruct it.
     "played_legacy": [],
+    # Trade routes of the played chain (CK3 1.21), latched per snapshot: a closed route
+    # leaves the save and ownership changes on succession, so the snapshot is the only
+    # record of what was opened, modified or inherited in a decade.
+    "trade_routes": [],
+    # Trade market gazetteer {market id: {location, duchy, toll}}, kept in the cache so route
+    # rendering never has to re-read a melt.
+    "trade_markets": {},
     # Vassal contract change points {cid: [{date, liege, flags}]}
     "char_vassal_history": {},
     # Mandate-of-Heaven cycle phase change points [{date, phase, start}]
@@ -3979,6 +3986,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
     _latch_prison_manners(cache, melt, date_label)
     _diff_carnal_opinions(cache, melt, date_label)
     _diff_carnal_modifiers(cache, melt, date_label)
+    _latch_trade_routes(cache, melt, date_label)
     # Returns True rather than the cache, so callers' "if not ok:" holds and logs stay small
     return True
 
@@ -5333,3 +5341,124 @@ def summarize_relations(cache):
         if int(cid) != pid:
             scan(int(cid))
     return out
+
+
+# Route fields whose change is a real modification. `path` drifts between snapshots and
+# `gold` is the monthly income of that tick, so neither counts (facts reads them as current
+# state, not as history).
+_TRADE_ROUTE_CHANGE_FIELDS = ("mode", "goods", "markets", "trader", "commissioner",
+                              "commission_expiration")
+
+
+def _route_trader(t):
+    """Trimmed trader record {character, task, aptitude levels}; None without a trader."""
+    if not isinstance(t, dict):
+        return None
+    apt = []
+    for a in (t.get("aptitude") or []):
+        if isinstance(a, dict) and a.get("level"):
+            apt.append(str(a["level"]))
+    return {"character": t.get("character"), "task": t.get("task"), "aptitude": apt}
+
+
+def _route_change_values(rec):
+    """The comparable values of one route record; goods/markets compare as sorted sets."""
+    trader = _route_trader(rec.get("trader"))
+    goods = sorted(str(g) for g in (rec.get("trade_goods") or []))
+    markets = sorted(int(m) for m in (rec.get("trade_markets") or [])
+                     if isinstance(m, (int, str)) and str(m).lstrip("-").isdigit())
+    return {
+        "mode": rec.get("mode"),
+        "goods": goods,
+        "markets": markets,
+        "trader": (trader or {}).get("character"),
+        "commissioner": rec.get("commissioner"),
+        "commission_expiration": rec.get("commission_expiration"),
+    }
+
+
+def _latch_trade_routes(cache, melt, date_label):
+    """Latch the played chain's trade routes and the market gazetteer.
+
+    The save only holds the routes that exist today: a closed route disappears and an
+    inherited one keeps its id with a new owner, so a per-snapshot latch is the only way a
+    decade biography can say what was opened, modified or inherited in its ten years.
+    Identity is (route id, created); `owner_history` records every owner the latch sees and
+    `changes` every substantive edit (mode/goods/markets/trader/commissioner). `path` and
+    `gold` are refreshed silently because they fluctuate with every tick.
+    """
+    db = (melt.get("trade_routes") or {}).get("database") or {}
+    played = set()
+    for e in (cache.get("played_legacy") or []):
+        if isinstance(e, dict) and isinstance(e.get("cid"), int):
+            played.add(e["cid"])
+    if cache.get("player_id") is not None:
+        played.add(int(cache["player_id"]))
+    if not played:
+        return
+    rows = cache.setdefault("trade_routes", [])
+    by_key = {(str(r.get("id")), str(r.get("created") or "")): r for r in rows}
+    for rid, rec in db.items():
+        if not isinstance(rec, dict) or rec.get("owner") not in played:
+            continue
+        created = str(rec.get("created") or "")
+        key = (str(rid), created)
+        trader = _route_trader(rec.get("trader"))
+        cur = _route_change_values(rec)
+        row = by_key.get(key)
+        if row is None:
+            rows.append({
+                "id": str(rid),
+                "created": created or date_label,
+                "first_seen": date_label,
+                "last_seen": date_label,
+                "owner_history": [{"date": date_label, "owner": rec.get("owner")}],
+                "changes": [],
+                "mode": rec.get("mode"),
+                "goods": list(rec.get("trade_goods") or []),
+                "markets": list(rec.get("trade_markets") or []),
+                "commissioner": rec.get("commissioner"),
+                "commission_expiration": rec.get("commission_expiration"),
+                "path": list(rec.get("path") or []),
+                "gold": rec.get("gold"),
+                "trader": trader,
+                "transactions": rec.get("transactions"),
+            })
+            by_key[key] = rows[-1]
+            continue
+        hist = row.get("owner_history") or []
+        if not hist or hist[-1].get("owner") != rec.get("owner"):
+            row["owner_history"] = hist + [{"date": date_label,
+                                            "owner": rec.get("owner")}]
+        old = _route_change_values({
+            "mode": row.get("mode"),
+            "trade_goods": row.get("goods"),
+            "trade_markets": row.get("markets"),
+            "trader": row.get("trader"),
+            "commissioner": row.get("commissioner"),
+            "commission_expiration": row.get("commission_expiration"),
+        })
+        changed = {}
+        for f in _TRADE_ROUTE_CHANGE_FIELDS:
+            if old.get(f) != cur.get(f):
+                changed[f] = {"from": old.get(f), "to": cur.get(f)}
+        if changed:
+            row["changes"] = list(row.get("changes") or []) + [
+                {"date": date_label, "fields": changed}]
+        row["mode"] = rec.get("mode")
+        row["goods"] = list(rec.get("trade_goods") or [])
+        row["markets"] = list(rec.get("trade_markets") or [])
+        row["commissioner"] = rec.get("commissioner")
+        row["commission_expiration"] = rec.get("commission_expiration")
+        row["last_seen"] = date_label
+        row["path"] = list(rec.get("path") or [])
+        row["gold"] = rec.get("gold")
+        row["trader"] = trader
+        row["transactions"] = rec.get("transactions")
+    markets = cache.setdefault("trade_markets", {})
+    for mid, mrec in ((melt.get("trade_markets") or {}).get("database") or {}).items():
+        if not isinstance(mrec, dict):
+            continue
+        markets[str(mid)] = {"location": mrec.get("location"),
+                             "duchy": mrec.get("duchy"),
+                             "toll": mrec.get("toll_level")}

@@ -19467,6 +19467,290 @@ class Facts:
             house_name=self.cache.get("house_name") or "",
         )
 
+    # ---- trade routes (《商路志》, CK3 1.21) ----
+    _TRADE_MODE_LOC = {"profit": "game_concept_profit_route",
+                       "commission": "game_concept_commission_route",
+                       "distribution": "game_concept_distribution_route"}
+    _TRADE_MODE_FALLBACK = {"profit": "盈利路线", "commission": "委托路线",
+                            "distribution": "分配路线"}
+
+    def _trade_mode_word(self, mode):
+        key = self._TRADE_MODE_LOC.get(str(mode or ""))
+        if key:
+            v = L.loc(self.table, key) or ""
+            if v:
+                return v
+        return self._TRADE_MODE_FALLBACK.get(str(mode or ""), "贸易路线")
+
+    def _trade_good_word(self, gk):
+        gk = str(gk or "")
+        return L.loc(self.table, gk) or gk
+
+    @staticmethod
+    def _trade_clean_word(txt):
+        """Localization word without icon inserts such as '@aptitude:4:inherit_color!'."""
+        return re.sub(r"@[^!\s]*!", "", str(txt or "")).strip()
+
+    @staticmethod
+    def _trade_qty(amt):
+        """Trade amount as a short figure: 2.99997 -> 3, 28.5 -> 28.5."""
+        if not isinstance(amt, (int, float)):
+            return ""
+        return (f"{int(round(amt))}" if abs(amt - round(amt)) < 0.05
+                else f"{amt:.1f}")
+
+    def _trade_market_word(self, mid):
+        """Market id -> county name (the game names markets after their county)."""
+        m = (self.cache.get("trade_markets") or {}).get(str(mid)) or {}
+        tid = self.county_at_province(m.get("location"))
+        nm = self.title_base_name(tid) if tid is not None else ""
+        return nm or "某市场"
+
+    def _trade_route_window(self):
+        """(lower, upper) of a decade biography; (None, as_of) for the final biography.
+
+        The first decade starts at the campaign's own first day (the played chain's first
+        accession), since route `created` dates predate the first yearly save."""
+        ao = self.as_of or self.cache.get("last_date")
+        if not self.decade:
+            return None, ao
+        lo = self._bio_window_start()
+        try:
+            first = int(self.decade) <= 1
+        except (TypeError, ValueError):
+            first = False
+        if first:
+            leg = self.cache.get("played_legacy") or []
+            srcs = self.cache.get("sources") or []
+            start = (leg[0].get("date") if leg and isinstance(leg[0], dict) else None) \
+                or (srcs[0] if srcs else None)
+            if start:
+                lo = start
+        return lo, ao
+
+    def trade_routes_lines(self):
+        """Route material for 《商路志》: {"总览": text, "条陈": [one block per route]}.
+
+        A decade biography keeps the routes opened, modified or inherited inside its ten
+        years; the final biography lists every route the subject ever owned. All wording is
+        settled here, so the model receives dates, names and figures rather than raw route
+        records."""
+        rows = self.cache.get("trade_routes") or []
+        pid = self.cache.get("player_id")
+        if not rows or pid is None:
+            return {"总览": "", "条陈": []}
+        lo, ao = self._trade_route_window()
+        lo_k = cl.date_key(lo) if lo else None
+        ao_k = cl.date_key(ao) if ao else None
+
+        def _inside(d):
+            k = cl.date_key(str(d or ""))
+            if k[0] >= 9999:
+                return False
+            if lo_k is not None and not k > lo_k:
+                return False
+            return ao_k is None or k <= ao_k
+
+        acc = self._player_tenure_start()
+        if not acc:
+            srcs = self.cache.get("sources") or []
+            acc = str(srcs[0]) if srcs else ""
+        pred_name = ""
+        leg = self.cache.get("played_legacy") or []
+        for i, e in enumerate(leg):
+            if isinstance(e, dict) and e.get("cid") == pid and i > 0:
+                prev = leg[i - 1]
+                if isinstance(prev, dict) and isinstance(prev.get("cid"), int):
+                    pred_name = self.name(prev["cid"])
+                break
+        try:
+            import market_prices as _mp
+            base_prices = _mp.good_base_prices(self.cfg)
+        except Exception:
+            base_prices = {}
+
+        picks = []
+        for row in rows:
+            hist = [h for h in (row.get("owner_history") or [])
+                    if isinstance(h, dict)]
+            idx = next((i for i, h in enumerate(hist) if h.get("owner") == pid),
+                       None)
+            if idx is None:
+                continue
+            created = str(row.get("created") or row.get("first_seen") or "")
+            origin = "opened"
+            origin_date = created
+            src_name = ""
+            if created and acc and cl.date_key(created) < cl.date_key(acc):
+                origin = "inherited"
+                origin_date = (hist[idx].get("date") or acc) if idx > 0 else acc
+                if idx > 0 and isinstance(hist[idx - 1].get("owner"), int):
+                    src_name = self.name(hist[idx - 1]["owner"])
+                else:
+                    src_name = pred_name
+            changes = [c for c in (row.get("changes") or [])
+                       if isinstance(c, dict) and _inside(c.get("date"))]
+            if self.decade and not (_inside(origin_date) or changes):
+                continue
+            picks.append({"row": row, "hist": hist, "idx": idx,
+                          "origin": origin, "origin_date": origin_date,
+                          "src_name": src_name,
+                          "created": created,
+                          "changes": changes})
+        if not picks:
+            return {"总览": "", "条陈": []}
+        picks.sort(key=lambda p: (cl.date_key(p["origin_date"] or ""),
+                                  str(p["row"].get("id"))))
+
+        blocks = []
+        for i, p in enumerate(picks, 1):
+            row, hist, idx = p["row"], p["hist"], p["idx"]
+            mode = self._trade_mode_word(row.get("mode"))
+            if p["origin"] == "inherited":
+                src = p["src_name"] or "先代"
+                head = (f"第{i}条　{mode}，承袭自{src}，"
+                        f"{llm.fmt_cn_date(p['origin_date'])}接手")
+                if p["created"] and cl.date_key(p["created"]) != cl.date_key(p["origin_date"]):
+                    head += f"；原开设于{llm.fmt_cn_date(p['created'])}"
+            else:
+                head = f"第{i}条　{mode}"
+                if p["created"]:
+                    head += f"，开设于{llm.fmt_cn_date(p['created'])}"
+            lines = [head]
+            goods = []
+            for gk in row.get("goods") or []:
+                nm = self._trade_good_word(gk)
+                bp = base_prices.get(gk)
+                if isinstance(bp, (int, float)):
+                    nm += f"（基价{bp:g}）"
+                goods.append(nm)
+            if goods:
+                lines.append("货物：" + "、".join(goods))
+            mkts = [self._trade_market_word(mid) for mid in (row.get("markets") or [])]
+            if mkts:
+                lines.append("经过市场：" + "、".join(mkts))
+            stops, seen = [], set()
+            for prov in row.get("path") or []:
+                if not isinstance(prov, int) or prov < 0:
+                    continue
+                tid = self.county_at_province(prov)
+                nm = self.title_base_name(tid) if tid is not None else ""
+                if not nm or nm in seen:
+                    continue
+                seen.add(nm)
+                stops.append(nm)
+            if stops:
+                seg = "、".join(stops[:6])
+                if len(stops) > 6:
+                    seg += f"等{len(stops)}站"
+                lines.append("沿途：" + seg)
+            tr = row.get("trader") or {}
+            if tr.get("character"):
+                tline = "商队：" + (self.name(tr["character"]) or "某商人")
+                apt = tr.get("aptitude") or []
+                if apt:
+                    w = self._trade_clean_word(
+                        L.loc(self.table, "aptitude_" + str(apt[-1])))
+                    if w:
+                        tline += f"（称职{w}）"
+                task = L.loc(self.table, str(tr.get("task") or "")) or ""
+                if task:
+                    tline += f"，任务：{task}"
+                lines.append(tline)
+            if row.get("commissioner"):
+                cline = "委托：" + (self.name(row["commissioner"]) or "某君主") + "出资"
+                if row.get("commission_expiration"):
+                    cline += f"，{llm.fmt_cn_date(row['commission_expiration'])}到期"
+                lines.append(cline)
+            money = []
+            g = row.get("gold")
+            if isinstance(g, (int, float)):
+                money.append(f"月入{g:.2f}")
+            for t in (row.get("transactions")
+                      if isinstance(row.get("transactions"), list)
+                      else [row.get("transactions")]):
+                if not isinstance(t, dict):
+                    continue
+                typ = {"buy": "买入", "sell": "卖出"}.get(
+                    str(t.get("type") or ""), str(t.get("type") or "交易"))
+                seg = "最近一单："
+                if t.get("trade_market") is not None:
+                    seg += f"在{self._trade_market_word(t['trade_market'])}"
+                seg += typ + self._trade_good_word(t.get("trade_good"))
+                amt = t.get("amount")
+                if isinstance(amt, (int, float)):
+                    seg += f"{self._trade_qty(amt)}单位"
+                price = t.get("price_per_unit")
+                if isinstance(price, (int, float)):
+                    seg += f"，单价{price:.3f}"
+                money.append(seg)
+                break
+            if money:
+                lines.append("盈亏：" + "；".join(money))
+            for c in p["changes"]:
+                fields = c.get("fields") or {}
+                segs = []
+                if "mode" in fields:
+                    segs.append("改营" + self._trade_mode_word(
+                        (fields["mode"] or {}).get("to")))
+                if "goods" in fields:
+                    segs.append("货物改为" + "、".join(
+                        self._trade_good_word(x)
+                        for x in ((fields["goods"] or {}).get("to") or [])))
+                if "markets" in fields:
+                    segs.append("市场改为" + "、".join(
+                        self._trade_market_word(x)
+                        for x in ((fields["markets"] or {}).get("to") or [])))
+                if "trader" in fields:
+                    nid = (fields["trader"] or {}).get("to")
+                    segs.append("商队改为" + (self.name(nid) if nid else "无"))
+                if "commissioner" in fields and (fields["commissioner"] or {}).get("to"):
+                    segs.append("委托人改为" + self.name(
+                        (fields["commissioner"] or {})["to"]))
+                if segs:
+                    lines.append(f"{llm.fmt_cn_date(c.get('date'))}：" + "，".join(segs))
+            last = str(row.get("last_seen") or "")
+            last_owner = hist[-1].get("owner") if hist else None
+            if last_owner != pid:
+                lines.append("去向：" + "已转交"
+                             + (self.name(last_owner) if last_owner else "他人")
+                             + f"（{llm.fmt_cn_date(hist[-1].get('date'))}）")
+            elif ao and last and cl.date_key(last) < cl.date_key(ao):
+                lines.append(f"现状：最后一次见于{llm.fmt_cn_date(last)}")
+            else:
+                lines.append("现状：仍在经营")
+            blocks.append("\n".join(lines))
+
+        mode_n = {"profit": 0, "commission": 0, "distribution": 0}
+        markets = set()
+        gold_sum = 0.0
+        for p in picks:
+            row = p["row"]
+            if row.get("mode") in mode_n:
+                mode_n[row["mode"]] += 1
+            for mid in row.get("markets") or []:
+                markets.add(mid)
+            if p["hist"] and p["hist"][-1].get("owner") == pid:
+                g = row.get("gold")
+                if isinstance(g, (int, float)):
+                    gold_sum += g
+        if self.decade:
+            opened = sum(1 for p in picks
+                         if p["origin"] == "opened" and _inside(p["origin_date"]))
+            inherited = sum(1 for p in picks
+                            if p["origin"] == "inherited" and _inside(p["origin_date"]))
+            changed = sum(1 for p in picks if p["changes"])
+            head = (f"本十年涉及商路{len(picks)}条：新开{opened}条、"
+                    f"承袭{inherited}条、改易{changed}条")
+        else:
+            head = (f"一生共经营商路{len(picks)}条：盈利路线{mode_n['profit']}条、"
+                    f"委托路线{mode_n['commission']}条、"
+                    f"分配路线{mode_n['distribution']}条")
+        head += f"；行经市场{len(markets)}座"
+        if gold_sum:
+            head += f"，月入合计{gold_sum:.2f}"
+        return {"总览": head + "。", "条陈": blocks}
+
     def _office_name(self, cid):
         """Office plus name, e.g. 「交州刺史应偁」 — the office entry point of person_label."""
         return self.person_label(cid, date=self.as_of, style="office")
@@ -30985,6 +31269,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         "court_office": col,
         "court_office_changes": coch,
         "house_motto": f.motto(),
+        # 《商路志》 material: routes the played chain opened/modified/inherited, with the
+        # decade window already applied (see Facts.trade_routes_lines).
+        "trade_routes": f.trade_routes_lines(),
         # data source of 《家族恩怨录》 and 《宝物志》
         "house_feuds": f.house_feuds(),
         "family_artifacts": f.family_artifacts(),
