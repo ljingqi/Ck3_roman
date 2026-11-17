@@ -2422,10 +2422,39 @@ def _death_clause(table, reason_key, killer, name_of, public=False):
     return reason
 
 
-def render_motto(motto, table):
+#: Character-scope references a motto template can carry; the sex/name parts are resolvable
+#: from the save, so they are filled instead of stripped.
+_MOTTO_DYN_RE = re.compile(r"\[CHARACTER\.([^\]|]+)(?:\|[^\]]*)?\]")
+
+
+def _motto_dynamic(expr, table, female, first_name, house_name):
+    """Text for one `[CHARACTER.X]` welcome ref; '' when the cache cannot know it."""
+    expr = expr.strip()
+    m = re.fullmatch(r"Custom\('([A-Za-z0-9_]+)'\)", expr)
+    if m:
+        name = m.group(1)
+        if name == "GetDaughterSon":
+            return L.loc(table, "relation_daughter" if female else "relation_son")
+        if name == "GetDaughterSonPossessive":
+            return L.loc(table, "relation_daughter_possessive" if female else "relation_son_possessive")
+        if name in ("QueenKing", "GetQueenKing"):
+            return L.loc(table, "king_feudal_female" if female else "king_feudal_male")
+        return ""
+    if expr == "GetFirstName":
+        return first_name
+    if expr == "GetHouse.GetBaseNameNoTooltip":
+        return house_name
+    if expr == "GetSheHe":
+        return "她" if female else "他"
+    if expr == "GetWomenMen":
+        return "女人" if female else "男人"
+    return ""
+
+
+def render_motto(motto, table, *, female=False, first_name="", house_name=""):
     """House motto -> Chinese. `dynasty_house.motto` is either a string (already-rendered
-    Chinese, or a localization key) or a template dict {key, variables:[...]} whose $N$ slots
-    are filled and whose remaining dynamic references are stripped."""
+    Chinese, or a localization key) or a template dict {key, variables:[...]} whose $N$/$name$
+    slots and character-scope refs are filled from the protagonist."""
     if isinstance(motto, str):
         s = motto.strip()
         if not s:
@@ -2436,22 +2465,34 @@ def render_motto(motto, table):
         return v or s
     if isinstance(motto, dict):
         key = motto.get("key") or ""
-        tpl = L.loc(table, key)
-        if not tpl:
+        # Raw table value: `L.loc` pre-strips the character refs this function fills.
+        tpl = table.get(str(key)) or ""
+        if not isinstance(tpl, str) or not tpl:
             return ""
-        slots = {}
+        positional, named = {}, {}
         for v in motto.get("variables") or []:
             if not isinstance(v, dict):
                 continue
             sv = v.get("value")
             if not sv:
                 continue
-            slots[str(v.get("key"))] = L.loc(table, sv) or sv
+            k = str(v.get("key"))
+            (positional if k.isdigit() else named)[k] = L.loc(table, sv) or sv
         text = tpl
-        for sk, sv in slots.items():
+        for sk, sv in named.items():
             text = text.replace("${" + sk + "}", sv)
-        text = re.sub(r"\$\d+\$", "", text)  # drop unfilled $N$ slots
-        return L.strip_ck3_format(text).strip()
+        for sk, sv in positional.items():
+            text = text.replace("$" + sk + "$", sv)
+        text = _MOTTO_DYN_RE.sub(
+            lambda m: _motto_dynamic(m.group(1), table, female, first_name, house_name), text)
+        text = re.sub(r"\$\d+\$", "", text)  # a slot the save did not fill
+        text = L.strip_ck3_format(text)
+        if "$" in text:
+            text = L.resolve_refs(text, table)
+        text = text.strip()
+        if not text or all(ch in "的之" for ch in text):
+            return ""
+        return text
     return ""
 
 
@@ -19373,7 +19414,13 @@ class Facts:
         mot = self.cache.get("house_motto")
         if not mot:
             return ""
-        return render_motto(mot, self.table)
+        pid = self.cache.get("player_id")
+        return render_motto(
+            mot, self.table,
+            female=self._is_female(pid),
+            first_name=self.name_zh_of(pid),
+            house_name=self.cache.get("house_name") or "",
+        )
 
     def _office_name(self, cid):
         """Office plus name, e.g. 「交州刺史应偁」 — the office entry point of person_label."""
