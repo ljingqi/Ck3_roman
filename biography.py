@@ -1875,7 +1875,8 @@ def _article_facts(facts, cache, key, section=None):
             rest = items[2:] if len(items) > 2 else items[-1:]
             _set_block(blocks, "商路条陈", "\n\n".join(rest))
     elif key == "shihuo":
-        # overview plus the two busiest goods in the lead, the rest in the chronicle
+        # overview plus the two busiest goods in the lead, the rest in the chronicle;
+        # the note names what the lead already covered so the model fills no missing slot
         fg = facts.get("food_goods") or {}
         items = list(fg.get("条陈") or [])
         if _sec_key(section) == "lead":
@@ -1884,6 +1885,9 @@ def _article_facts(facts, cache, key, section=None):
             _set_block(blocks, "市廛总览", "\n\n".join(parts))
         else:
             rest = items[2:] if len(items) > 2 else items[-1:]
+            if len(items) > 2:
+                done = "、".join(x.split("：", 1)[0] for x in items[:2])
+                rest = [f"开篇已写{done}；本篇写其余{len(rest)}货。"] + rest
             _set_block(blocks, "市场动态", "\n\n".join(rest))
     elif key == "feuds":
         feuds = facts.get("house_feuds") or []
