@@ -309,11 +309,11 @@ def house_display(h):
 
 
 def _house_shi(nm):
-    """House name for the house-rank sentence and the founding-chronology rows: names ending in
-    氏/家/家族/部 pass through, others gain 氏."""
+    """House name for the house-rank sentence and the founding-chronology rows: a single-character
+    Chinese surname gains 氏, anything else is returned as is (see `house_display`)."""
     if not nm:
         return ""
-    return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
+    return house_display(nm)
 
 
 def _year_of(d):
@@ -10589,14 +10589,14 @@ class Facts:
         return cl.dynasty_id_of(self.melt, hid)
 
     def _house_label(self, house_id):
-        """House name → chronicle-style label ("程" → "程氏")."""
+        """House name → chronicle-style label ("程" → "程氏", "埃吉诺格" → "埃吉诺格")."""
         nm = (cl.house_name_zh(self.melt, house_id) or "") if house_id is not None else ""
         if not nm:
             did = cl.dynasty_id_of(self.melt, house_id) if house_id is not None else None
             nm = (cl.dynasty_name_zh(self.melt, did) or "") if did is not None else ""
         if not nm:
             return ""
-        return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
+        return house_display(nm)
 
     def _house_label_at(self, cid, date=None):
         """House label of a character AS OF `date`: house history first, else the current
@@ -10609,7 +10609,7 @@ class Facts:
             nm = self._house_label(self._house_of_cid(cid)) if self._house_of_cid(cid) else ""
         if not nm:
             return ""
-        return nm if nm.endswith(("氏", "家", "家族", "部")) else f"{nm}氏"
+        return house_display(nm)
 
     def house_branch_label(self, cid, date=None):
         """The branch wording an "属…" clause carries: `house_label` output, and '' while the
