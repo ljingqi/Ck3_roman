@@ -2613,6 +2613,11 @@ def _adopt_campaign_cultures(cache, campaign, melt_chars=None):
             rec["culture_history"] = list(pr["culture_history"])
 
 
+# 《食货志》 lists at most this many active goods: a local market carries dozens of
+# goods, and a longer table would turn the section into a price list.
+FOOD_GOODS_MAX = 6
+
+
 class Facts:
     """Context of one build_facts run: cache + melt + name/title/localization resolution.
 
@@ -19500,10 +19505,11 @@ class Facts:
                 else f"{amt:.1f}")
 
     def _trade_market_word(self, mid):
-        """Market id -> county name (the game names markets after their county)."""
+        """Market id -> county name (a market's `location` is a barony title id)."""
         m = (self.cache.get("trade_markets") or {}).get(str(mid)) or {}
-        tid = self.county_at_province(m.get("location"))
-        nm = self.title_base_name(tid) if tid is not None else ""
+        tid = m.get("location")
+        cid = self._trade_county_of(tid) if isinstance(tid, int) else None
+        nm = self.title_base_name(cid) if cid is not None else ""
         return nm or "某市场"
 
     def _trade_route_window(self):
@@ -19750,6 +19756,198 @@ class Facts:
         if gold_sum:
             head += f"，月入合计{gold_sum:.2f}"
         return {"总览": head + "。", "条陈": blocks}
+
+    # ---- local market price trends (《食货志》) ----
+    def _trade_county_of(self, tid):
+        """Title id -> its county: a county is itself; a barony or a merchant-family seat
+        carries the county in `capital` (market titles are barony ids)."""
+        if not isinstance(tid, int):
+            return None
+        t = self._lt.get(str(tid)) or {}
+        if str(t.get("key") or "").startswith("c_"):
+            return tid
+        cap = t.get("capital")
+        return int(cap) if isinstance(cap, int) else tid
+
+    def _local_market_ids(self):
+        """Markets on the subject's land at as_of, most-held-counties first.
+
+        Held titles come from the title-hold intervals (domain as fallback). A market lists
+        its barony title ids, mapped to counties through `capital`, so a held county or
+        barony named by `_trade_county_of` matches the market that serves it. When no
+        holding matches, the capital county and then the capital province stand in."""
+        pid = self.cache.get("player_id")
+        mk = self.cache.get("trade_markets") or {}
+        if pid is None or not mk:
+            return []
+        ao = self.as_of or self.cache.get("last_date")
+        ao_k = cl.date_key(ao) if ao else None
+        held = set()
+        try:
+            for tid, ivs in (self._hold_intervals(pid, self.as_of) or {}).items():
+                for (g, l, _lt) in ivs:
+                    if ao_k is not None and cl.date_key(g) > ao_k:
+                        continue
+                    if l and ao_k is not None and cl.date_key(l) <= ao_k:
+                        continue
+                    held.add(int(tid))
+                    break
+        except Exception:
+            pass
+        if not held:
+            rec = (self.cache.get("characters") or {}).get(str(pid)) or {}
+            held |= {int(x) for x in ((rec.get("landed") or {}).get("domain") or [])
+                     if isinstance(x, int)}
+        held_c = {c for c in (self._trade_county_of(t) for t in held) if c}
+        idx = {}
+        for mid, m in mk.items():
+            cs = {c for c in (self._trade_county_of(t)
+                              for t in (m.get("titles") or [])) if c}
+            if cs:
+                idx[mid] = cs
+        hits = [mid for mid, cs in idx.items() if held_c & cs]
+        if hits:
+            hits.sort(key=lambda mid: -len(held_c & idx[mid]))
+            return hits
+        cand = set()
+        cap = self._capital_title_at(self.as_of)
+        if isinstance(cap, int):
+            cand.add(self._trade_county_of(cap))
+            t = self._lt.get(str(cap)) or {}
+            if isinstance(t.get("capital"), int):
+                cand.add(t["capital"])
+        if cand:
+            hits = [mid for mid, cs in idx.items() if cand & cs]
+            if hits:
+                return hits
+        prov = self._capital_province_at(self.as_of)
+        if isinstance(prov, int):
+            cid = self.county_at_province(prov)
+            hits = [mid for mid, cs in idx.items() if cid in cs] if cid else []
+            if hits:
+                return hits
+        return []
+
+    @staticmethod
+    def _price_trend_word(pts):
+        """Trend word from the interval's own price points (first/last versus high/low)."""
+        if len(pts) < 2:
+            return ""
+        vals = [p for _, p in pts]
+        first, last = vals[0], vals[-1]
+        high, low = max(vals), min(vals)
+        if high <= low or (high - low) / low < 0.01:
+            return "价位平稳"
+
+        def _pos(p):
+            return (p - low) / (high - low)
+
+        p0, p1 = _pos(first), _pos(last)
+        if p0 >= 0.6 and p1 <= 0.4:
+            return "高开低收"
+        if p0 <= 0.4 and p1 >= 0.6:
+            return "低开高收"
+        hi_i = max(range(len(vals)), key=lambda i: vals[i])
+        if 0 < hi_i < len(vals) - 1 and p1 < 0.5:
+            return "冲高回落"
+        if abs(last / first - 1.0) < 0.02:
+            return "窄幅波动"
+        return "先涨后跌" if last < first else "稳步上行"
+
+    @staticmethod
+    def _price_pct(ch):
+        """Magnitude of a price change, short enough for prose: 0.73%, 0.06%, 不足0.01%."""
+        pct = abs(ch) * 100.0
+        if pct >= 1:
+            return f"{pct:.1f}%"
+        if pct >= 0.01:
+            return f"{pct:.2f}%"
+        return "不足0.01%"
+
+    def food_goods_lines(self):
+        """《食货志》 material: price-trend conclusions for the local market's active goods.
+
+        Only the conclusion reaches the model — interval first/last/high/low, the largest
+        rise and fall with their years, and one trend word per good. The per-snapshot price
+        matrix stays in market_prices.db."""
+        pid = self.cache.get("player_id")
+        mids = self._local_market_ids()
+        if pid is None or not mids:
+            return {"总览": "", "条陈": []}
+        data_dir = os.path.join((self.cfg or {}).get("output_dir", ""),
+                                self.cache.get("output_folder") or "", "data")
+        db = os.path.join(data_dir, "market_prices.db")
+        if not os.path.exists(db):
+            return {"总览": "", "条陈": []}
+        lo, ao = self._trade_route_window()
+        lo_k = cl.date_key(lo) if lo else None
+        ao_k = cl.date_key(ao) if ao else None
+        try:
+            import market_prices as _mp
+            rows = _mp.prices(self.cache.get("playthrough_id"),
+                              market_id=int(mids[0]), data_dir=data_dir)
+        except Exception:
+            return {"总览": "", "条陈": []}
+        rows = [r for r in rows
+                if (lo_k is None or cl.date_key(r.get("date")) > lo_k)
+                and (ao_k is None or cl.date_key(r.get("date")) <= ao_k)]
+        if len({r.get("date") for r in rows}) < 2:
+            return {"总览": "", "条陈": []}
+        series = {}
+        for r in rows:
+            gk = r.get("good_key")
+            if gk:
+                series.setdefault(gk, []).append(r)
+        active = []
+        for gk, rs in series.items():
+            vol = max((r.get("need") or 0) + (r.get("production") or 0)
+                      + abs(r.get("import") or 0) + abs(r.get("export") or 0)
+                      for r in rs)
+            if vol > 0:
+                active.append((vol, gk, rs))
+        active.sort(key=lambda x: -x[0])
+        blocks = []
+        for _vol, gk, rs in active[:FOOD_GOODS_MAX]:
+            rs.sort(key=lambda r: cl.date_key(r.get("date")))
+            pts = []
+            for r in rs:
+                p = r.get("sell_price") or r.get("buy_price")
+                if isinstance(p, (int, float)) and p > 0:
+                    pts.append((r.get("date"), float(p)))
+            if len(pts) < 2:
+                continue
+            first, last = pts[0][1], pts[-1][1]
+            hi = max(pts, key=lambda x: x[1])
+            low = min(pts, key=lambda x: x[1])
+            rise = fall = None
+            for (d0, p0), (d1, p1) in zip(pts, pts[1:]):
+                if p0 <= 0:
+                    continue
+                ch = p1 / p0 - 1.0
+                if rise is None or ch > rise[0]:
+                    rise = (ch, d0, d1)
+                if fall is None or ch < fall[0]:
+                    fall = (ch, d0, d1)
+
+            def _y(d):
+                return llm.fmt_cn_year(str(d).split(".")[0])
+
+            seg = (f"{self._trade_good_word(gk)}：区间初{first:.3f}（{_y(pts[0][0])}），"
+                   f"区间末{last:.3f}（{_y(pts[-1][0])}）；"
+                   f"高{hi[1]:.3f}、低{low[1]:.3f}")
+            if rise:
+                seg += f"；最大涨幅{self._price_pct(rise[0])}（{_y(rise[1])}→{_y(rise[2])}）"
+            if fall:
+                seg += f"；最大跌幅{self._price_pct(fall[0])}（{_y(fall[1])}→{_y(fall[2])}）"
+            seg += f"；{self._price_trend_word(pts)}。"
+            blocks.append(seg)
+        if not blocks:
+            return {"总览": "", "条陈": []}
+        y0 = _y((lo or rows[0].get("date")))
+        y1 = _y((ao or rows[-1].get("date")))
+        head = (f"本地市场为{self._trade_market_word(mids[0])}，{y0}至{y1}间"
+                f"常易之货{len(blocks)}种，以下按成交量列出各货的价势。")
+        return {"总览": head, "条陈": blocks}
 
     def _office_name(self, cid):
         """Office plus name, e.g. 「交州刺史应偁」 — the office entry point of person_label."""
@@ -31272,6 +31470,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # 《商路志》 material: routes the played chain opened/modified/inherited, with the
         # decade window already applied (see Facts.trade_routes_lines).
         "trade_routes": f.trade_routes_lines(),
+        # 《食货志》 material: price-trend conclusions of the local market's active goods
+        # (see Facts.food_goods_lines).
+        "food_goods": f.food_goods_lines(),
         # data source of 《家族恩怨录》 and 《宝物志》
         "house_feuds": f.house_feuds(),
         "family_artifacts": f.family_artifacts(),

@@ -1874,6 +1874,17 @@ def _article_facts(facts, cache, key, section=None):
         else:
             rest = items[2:] if len(items) > 2 else items[-1:]
             _set_block(blocks, "商路条陈", "\n\n".join(rest))
+    elif key == "shihuo":
+        # overview plus the two busiest goods in the lead, the rest in the chronicle
+        fg = facts.get("food_goods") or {}
+        items = list(fg.get("条陈") or [])
+        if _sec_key(section) == "lead":
+            parts = [fg.get("总览")] if fg.get("总览") else []
+            parts += items[:2] if len(items) > 2 else items
+            _set_block(blocks, "市廛总览", "\n\n".join(parts))
+        else:
+            rest = items[2:] if len(items) > 2 else items[-1:]
+            _set_block(blocks, "物价条陈", "\n\n".join(rest))
     elif key == "feuds":
         feuds = facts.get("house_feuds") or []
         if feuds:
@@ -3624,6 +3635,7 @@ _ARTICLE_PRIO = {
     "enemy": 80,       # enemy
     "feuds": 76,       # family feuds
     "shanglu": 78,     # trade routes (CK3 1.21)
+    "shihuo": 66,      # local market price trends (CK3 1.21, landed only)
     "artifacts": 74,   # artifacts
     "liyi": 72,        # rites
     "chaoju": 70,      # dynasty chronicle (final article only)
@@ -4040,6 +4052,13 @@ def build_articles(facts, cache, cfg):
             "subject": None, "theme": "主角经营的商路与沿途市场",
             "focus": "逐条写商路的开设、承袭、货物、市场、商队与盈亏",
             "sections": mk_sections("shanglu")})
+    if not facts.get("protagonist", {}).get("landless") and \
+            (facts.get("food_goods") or {}).get("总览"):
+        articles.append({
+            "key": "shihuo", "title": "食货志·物价盈虚",
+            "subject": None, "theme": "本地市场的货殖与物价",
+            "focus": "按成交量写常易之货的价势、最大涨跌幅与走势断语",
+            "sections": mk_sections("shihuo")})
     if facts.get("imperial_spouses"):
         articles.append({
             "key": "qizu", "title": "妻族传·帝胄姻亲",

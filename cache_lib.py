@@ -5461,4 +5461,6 @@ def _latch_trade_routes(cache, melt, date_label):
             continue
         markets[str(mid)] = {"location": mrec.get("location"),
                              "duchy": mrec.get("duchy"),
-                             "toll": mrec.get("toll_level")}
+                             "toll": mrec.get("toll_level"),
+                             # barony ids: facts maps each to its county via `capital`
+                             "titles": list(mrec.get("titles") or [])}
