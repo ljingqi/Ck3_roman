@@ -19547,6 +19547,13 @@ class Facts:
                 return v
         return self._TRADE_MODE_FALLBACK.get(str(mode or ""), "贸易路线")
 
+    @staticmethod
+    def _money_text(v):
+        """A save-side gold value on the narrative's hundred-fold scale, without trailing zeros."""
+        if not isinstance(v, (int, float)):
+            return ""
+        return f"{v * 100:.2f}".rstrip("0").rstrip(".")
+
     def _trade_good_word(self, gk):
         gk = str(gk or "")
         return L.loc(self.table, gk) or gk
@@ -19688,7 +19695,7 @@ class Facts:
                 nm = self._trade_good_word(gk)
                 bp = base_prices.get(gk)
                 if isinstance(bp, (int, float)):
-                    nm += f"（基价{bp:g}）"
+                    nm += f"（基价{self._money_text(bp)}）"
                 goods.append(nm)
             if goods:
                 lines.append("货物：" + "、".join(goods))
@@ -19734,7 +19741,7 @@ class Facts:
             money = []
             g = row.get("gold")
             if isinstance(g, (int, float)):
-                money.append(f"月入{g:.2f}")
+                money.append(f"月入{self._money_text(g)}")
             # A route is a flow: merge every transaction at the same market for the same good,
             # so the line states the whole route's traffic rather than one arbitrary order.
             flows = {}   # (market, 买入/卖出, good) -> Σ amount, in first-appearance order
@@ -19819,7 +19826,7 @@ class Facts:
                 f"分配路线{mode_n['distribution']}条")
         head += f"；行经市场{len(markets)}座"
         if gold_sum:
-            head += f"，月入合计{gold_sum:.2f}"
+            head += f"，月入合计{self._money_text(gold_sum)}"
         return {"总览": head + "。", "条陈": blocks}
 
     # ---- local market price trends (《食货志》) ----
