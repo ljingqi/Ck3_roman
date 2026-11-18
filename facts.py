@@ -26238,6 +26238,17 @@ def _consort_row_entry(f, sid, kind="", lineality=False):
     nm = f.kin_label(sid, f.as_of)
     if not nm:
         return ""
+    # The full label may carry an office word in front of the name (「老板娘伊玛希娜」).
+    # That word is one more concurrent identity, so it needs its own 「兼」: the kin words
+    # and the office are joined the same way the inline chains join them.
+    bare = ""
+    head = ""
+    try:
+        bare = f.name_with_regnal(sid, f.as_of) or ""
+    except Exception:                                        # noqa: BLE001
+        bare = ""
+    if bare and nm.endswith(bare) and len(nm) > len(bare):
+        head = nm[:-len(bare)].strip()
     pid = f.cache.get("player_id")
     parts = [kind] if kind else []
     try:
@@ -26255,6 +26266,13 @@ def _consort_row_entry(f, sid, kind="", lineality=False):
     if not parts:
         return nm
     note = f.marriage_lineality_note(pid, sid, before=f.as_of) if lineality else ""
+    if head and bare and not re.search(r"[，、；。]", head) and not head.endswith("兼"):
+        try:
+            acc = f.accolade_word_at(sid, f.as_of) or ""
+        except Exception:                                    # noqa: BLE001
+            acc = ""
+        if not (acc and acc in head):
+            return "兼".join(parts) + "兼" + head + bare + note
     return "兼".join(parts) + nm + note
 
 
