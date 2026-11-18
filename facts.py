@@ -26399,7 +26399,23 @@ def _protagonist(f):
     # Only a true landless-adventurer camp (x_d_laamp_ / mercenary company / holy order) takes
     # the camp branch; family estates (x_nf_) and nomadic yurts (x_c_nomad_) are a seat of
     # power, not a camp.
-    if f.title_kind(ptid) == "camp" or gov_asof == "landless_adventurer_government":
+    # A merchant company is landless like an adventurer camp, but its seat is a domicile,
+    # not a camp: state the company and its seat instead of a domain.
+    if gov_asof == "merchant_government" or \
+            (ptid is not None and f._is_merchant_family_title(ptid)):
+        # ---- landless merchant company ----
+        p["merchant_company"] = True
+        p["company_name"] = f.title(ptid) if ptid is not None else ""
+        since = (ld or {}).get("became_ruler_date")
+        if since:
+            p["company_since"] = f.date(since)
+        prov = (ld or {}).get("domicile_province")
+        county_tid = f.county_at_province(prov) if isinstance(prov, int) else None
+        if county_tid is not None:
+            p["company_seat"] = f.title_base_name(county_tid) or ""
+        if not p.get("company_name"):
+            p["company_name"] = L.loc(f.table, "merchant_domicile_name") or "贸易商会"
+    elif f.title_kind(ptid) == "camp" or gov_asof == "landless_adventurer_government":
         # ---- landless adventurer: camp ----
         p["landless"] = True
         camp_tid = ptid if f.title_kind(ptid) == "camp" \

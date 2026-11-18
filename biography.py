@@ -923,7 +923,20 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     # personal tenets: sequence assembled in facts (facts.personal_tenet_lines), landed rulers only
     if p.get("personal_tenets"):
         lines.append(f"个人教义：{p['personal_tenets']}")
-    if p.get("landless"):
+    if p.get("merchant_company"):
+        _co = []
+        if p.get("government"):
+            _co.append(f"政体{p['government']}")
+        if p.get("company_name"):
+            if p.get("company_since"):
+                _co.append(f"{p['company_since']}起经营{p['company_name']}")
+            else:
+                _co.append(f"经营{p['company_name']}")
+        if p.get("company_seat"):
+            _co.append(f"商会设于{p['company_seat']}")
+        if _co:
+            lines.append("，".join(_co) + "。")
+    elif p.get("landless"):
         camp_bits = []
         if p.get("camp_name"):
             camp_bits.append(f"营{p['camp_name']}")
@@ -3652,7 +3665,7 @@ _ARTICLE_PRIO = {
     "artifacts": 74,   # artifacts
     "liyi": 72,        # rites
     "chaoju": 70,      # dynasty chronicle (final article only)
-    "youxia": 68,      # knights-errant (landless only)
+    "youxia": 68,      # knights-errant and merchant companies (landless)
     "qizu": 60,        # wife's kin
     "qunying": 50,     # court notables
 }
@@ -4058,7 +4071,8 @@ def build_articles(facts, cache, cfg):
             "subject": None, "theme": f"被主角杀死的 {len(killed)} 人的合传",
             "focus": "为每名死者立小传：其生平、与主角的交集、死时的情形",
             "sections": _assassin_sections(len(killed))})
-    if facts.get("protagonist", {}).get("landless"):
+    if facts.get("protagonist", {}).get("landless") or \
+            facts.get("protagonist", {}).get("merchant_company"):
         articles.append({
             "key": "youxia", "title": "游侠列传·行纪",
             "subject": None, "theme": "漂泊不定的行旅记录",
