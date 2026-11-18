@@ -10256,7 +10256,7 @@ class Facts:
         `dead_flavor=False` ignores the baked death-time style and reads the title held on
         `date` itself (a dead subject's accession-day identity, which the baked word would
         replace with his final, later title)."""
-        rhw = self.religious_head_word(cid)
+        rhw = self.religious_head_word(cid, date=date)
         if rhw:
             return rhw
         # Japan's top titles (e_japan / 高御座) use the bare office word, with no
@@ -11594,7 +11594,7 @@ class Facts:
         apw = self.antipope_label(cid, date)
         if apw:
             return self._join_office(apw, pn)
-        rhw = self.religious_head_word(cid)
+        rhw = self.religious_head_word(cid, date=date)
         if rhw:
             return self._join_office(rhw, pn)
         # Mod display names (大梦春秋III): an office holder is named by his lord's realm and his
@@ -16643,7 +16643,7 @@ class Facts:
             loc = self._antipope_location_word(off, date)
         return f"{loc}{concept}" if loc else concept
 
-    def religious_head_word(self, cid):
+    def religious_head_word(self, cid, date=None):
         """Religious leader appellation: the word for the character when he is the religious head
         of his faith (holder of a faith.religious_head title such as the Papal State), else ''.
 
@@ -16651,7 +16651,8 @@ class Facts:
         generic title word instead of being styled 「国王主教」. In 1.20
         `faith.religious_head` is empty, so the test goes through `rites.head_of_rite` and then the
         papal-seat title. An antipope matches neither, so a final clause detects him; otherwise he
-        would fall back to `official_title`."""
+        would fall back to `official_title`. `date` anchors the tenure read for a character who
+        held the papal seat in the past (a dead pope), defaulting to the death day."""
         rid0 = self._rite_id(cid)
         fid = self._faith_id(cid)
         if fid is None and rid0 is None:
@@ -16686,6 +16687,19 @@ class Facts:
             v = L.loc(self.table, "religiousheadname_pope")
             if v and not v.startswith("$") and not v.startswith("["):
                 return v
+        # A pope who is dead in this final biography no longer heads the current rite, but the
+        # title history still records the papal tenure. Read it at the date anchor (the death
+        # day for the dead) so the office word matches the man at the moment being written.
+        anchor = self._anchor_date(cid, date)
+        if anchor:
+            ak = cl.date_key(anchor)
+            for tid, ivs in (self._hold_intervals(cid, anchor) or {}).items():
+                tkey = (self._lt.get(str(tid)) or {}).get("key") or ""
+                if ("papal" in tkey or "papacy" in tkey) \
+                        and any(self._iv_covers(iv, ak) for iv in ivs):
+                    v = L.loc(self.table, "religiousheadname_pope")
+                    if v and not v.startswith("$") and not v.startswith("["):
+                        return v
         # Antipope (the sponsor heads a rival rite). This function is the generic religious-head
         # word — callers add realm or title context to its result — so only the bare concept word
         # is returned here; the prefixed full appellation comes from `antipope_label`.
@@ -19988,23 +20002,16 @@ class Facts:
             return {"总览": "", "条陈": blocks}
         mode_n = {"profit": 0, "commission": 0, "distribution": 0}
         markets = set()
-        gold_sum = 0.0
         for p in picks:
             row = p["row"]
             if row.get("mode") in mode_n:
                 mode_n[row["mode"]] += 1
             for mid in row.get("markets") or []:
                 markets.add(mid)
-            if p["hist"] and p["hist"][-1].get("owner") == pid:
-                g = row.get("gold")
-                if isinstance(g, (int, float)):
-                    gold_sum += g
         head = (f"一生共经营商路{len(picks)}条：盈利路线{mode_n['profit']}条、"
                 f"委托路线{mode_n['commission']}条、"
                 f"分配路线{mode_n['distribution']}条")
         head += f"；行经市场{len(markets)}座"
-        if gold_sum:
-            head += f"，月入合计{self._money_text(gold_sum)}"
         return {"总览": head + "。", "条陈": blocks}
 
     # ---- local market price trends (《食货志》) ----
@@ -30285,7 +30292,8 @@ def _killed_by_player(f):
                        or cl.date_key(e["death_date"]) >= lok]
     if len(out) > KILL_LOWBORN_THRESHOLD:
         keep = _kill_keep_ids(cache, pid)
-        out = [e for e in out if e["house"] or e["id"] in keep]
+        out = [e for e in out
+               if e["house"] or e["id"] in keep or (e.get("office") or "").strip()]
     # Merge kin who died on the same day; done after the window and lowborn filters, and the
     # members are no longer listed separately from here on (the slice works per group).
     return _group_killed_by_kin(out, f)
