@@ -30362,9 +30362,11 @@ def _wandering_trail(f):
             else:
                 groups.append((hid, tid))
 
-        def _label(h, tid):
+        def _label(h, tid, index=True):
             """Title-bearing appellation for one chain step; the brief label wins when it
-            already carries a title, otherwise the chain step supplies the office word."""
+            already carries a title, otherwise the chain step supplies the office word. The top
+            liege is not registered for the section pass: its own kin word is worded from the
+            subject's liege (「最高领主的表舅」) and would read as the line's role word."""
             if not isinstance(h, int):
                 return ""
             nm = f.name_with_regnal(h, d) or f.name_or(h, "")
@@ -30378,7 +30380,8 @@ def _wandering_trail(f):
                 final = f"{office}{nm}"
             else:
                 final = lab or nm
-            f._log_label(h, final)
+            if index:
+                f._log_label(h, final)
             return final
 
         with f.log_names() as lg:
@@ -30390,7 +30393,7 @@ def _wandering_trail(f):
                     bits.append(f"{lab}执掌")
                 if len(groups) > 1 and groups[-1][0] != h:
                     th, ttid = groups[-1]
-                    tlab = _label(th, ttid)
+                    tlab = _label(th, ttid, index=False)
                     if tlab:
                         bits.append(f"最高领主{tlab}")
             line = "，".join(bits) + "。"

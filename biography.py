@@ -1542,18 +1542,6 @@ def _kin_tag_line(facts, scope, line):
         if not w:
             scan = i + len(label)
             continue
-        # a kin word may open with the very words already in front of the name (「最高领主」 + its
-        # own 「最高领主的表舅」): keep the phrase once by dropping the repeated head
-        mark = 0
-        for n in range(min(len(w), i, 8), 1, -1):
-            if line[i - n:i] == w[:n]:
-                mark = n
-                break
-        if mark:
-            w = w[mark:]
-            if not w:
-                scan = i + len(label)
-                continue
         line = f"{line[:i]}{w}{line[i:]}"
         scan = i + len(w) + len(label)
     return line
