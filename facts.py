@@ -144,6 +144,8 @@ PARTICIPANT_SLOTS = {
     "had_a_threesome_memory": "partner_1",
     # Slot names taken from the placeholders in the game localization text ([rescuer]/[old_friend]/...).
     "saved_from_assault_memory": "rescuer",
+    # The bystander is the local lord whose holding the party was attacked outside.
+    "ignored_assault_memory": "bystander",
     "stopped_being_friends": "old_friend",
     "lover_died": "dead_relation", "soulmate_died": "dead_relation",
     "best_friend_died": "dead_relation", "nemesis_died": "dead_relation",
@@ -12178,7 +12180,7 @@ class Facts:
                 return v
         return None
 
-    def _secret_place(self, province):
+    def _event_place(self, province):
         """Event place for a secret or memory: the barony name first (「阿尔勒」), then the
         county label (「阿尔勒伯爵领」)."""
         if province is None:
@@ -12208,7 +12210,7 @@ class Facts:
             reason = str(v.get("reason") or "")
             base = reason[:-len("_corresponding")] \
                 if reason.endswith("_corresponding") else reason
-            place = self._secret_place(v.get("province"))
+            place = self._event_place(v.get("province"))
             if base == "lover_woods" and place and tname:
                 # In the base key the first role is the seducer; the corresponding key swaps
                 # the roles, so the relation's second role is the seducer there.
@@ -12592,25 +12594,36 @@ class Facts:
     # `government_has_flag = government_is_tribal` is set on exactly these two government types
     # (game/common/governments/00_government_types.txt:229, :306).
     _KNIGHT_TRIBAL_GOVERNMENTS = frozenset({"tribal_government", "wanua_government"})
+    # The game's first arm: `government_is_merchant` (merchant_government) or
+    # `government_is_republic` (republic_government) knights are 镖人.
+    _KNIGHT_MERCHANT_GOVERNMENTS = frozenset({"merchant_government", "republic_government"})
 
     def knight_word(self, cid, date=None):
         """Game word for a court knight, from `KnightCulture` (no-tooltip variant).
 
-        Arms follow the game's order: landless adventurer (not errant, not Christian, not
-        Frankish), language pillars, Zoroastrian/Iranian, Islamic/Arabic, tribal or
-        non-Christian/non-Frankish, then the default. Culture, faith and government are the
-        knight's own, matching the custom localization's character scope; ''-government falls
-        through to the last two arms as in the game."""
+        Arms follow the game's order: merchant/republic (镖人), landless adventurer (not errant,
+        not Christian, not Frankish), language pillars, Zoroastrian/Iranian, Islamic/Arabic,
+        tribal or non-Christian/non-Frankish, then the default. Culture and faith are the
+        knight's own, matching the custom localization's character scope. A courtier has no
+        government of his own in the save, so the court he serves resolves it — a merchant
+        company's knights are exactly the ones the game's first arm names."""
         fallback = L.loc(self.table, "knight_default_no_tooltip") or "骑士"
         if cid is None:
             return fallback
         gov = self._gov_for_word(cid, None, date) or ""
+        if not gov:
+            emp = (((self.cache.get("characters") or {}).get(str(cid)) or {})
+                   .get("court") or {}).get("employer")
+            if isinstance(emp, int):
+                gov = self._effective_government(emp, date) or ""
         lang = self._culture_language_id(cid, date) or ""
         _ftag, rel = self._faith_tags(cid, date)
         christian = rel == "christianity_religion"
         frankish = lang == "language_frankish"
         arm = ""
-        if gov == "landless_adventurer_government" \
+        if gov in self._KNIGHT_MERCHANT_GOVERNMENTS:
+            arm = "enforcer"
+        elif gov == "landless_adventurer_government" \
                 and not self._has_trait_at(cid, "knight_errant", date) \
                 and not christian and not frankish:
             arm = "champion"
@@ -22376,6 +22389,79 @@ def _lovers_in_same_prison(f, a, b, date):
     return W["lovers_same_prison_no_jailer"].format(name=an, other=bn) + "。"
 
 
+def _same_day_sacrificed_knight(f, owner_id, date, province=None):
+    """Knight of a `knight_sacrificed_memory` created on `date` for `owner_id` (None if any).
+
+    Scans the owner's memories in this cache and in campaign peers, because an old memory may
+    only survive in the save where it was first observed. When both the assault and the
+    sacrifice name a province, the two must agree."""
+    if not date:
+        return None
+    seen = set()
+    for src in [f.cache] + list((f.campaign or {}).values()):
+        if not isinstance(src, dict) or id(src) in seen:
+            continue
+        seen.add(id(src))
+        rec = (src.get("characters") or {}).get(str(owner_id)) or {}
+        for m in rec.get("memories") or []:
+            if m.get("type") != "knight_sacrificed_memory":
+                continue
+            if str(m.get("creation_date") or "") != str(date):
+                continue
+            sac = f._mem_var(m, "sacrifice_location")
+            if isinstance(sac, int) and isinstance(province, int) and sac != province:
+                continue
+            knight = (m.get("participants") or {}).get("knight")
+            if isinstance(knight, int) and knight != owner_id:
+                return knight
+    return None
+
+
+def _ignored_assault_sentence(f, owner_id, mem):
+    """The travel assault: party attacked outside the local lord's holding, no help, and the
+    knight ordered to hold the rear died the same day.
+
+    The generic template read this memory as 「受辱未报」, dropping the bystander, the place and
+    the knight's sacrifice; the model then invented the setting. Every element here is in the
+    save (participants.bystander, vars.attack_location, a same-day knight_sacrificed_memory)."""
+    d = mem.get("creation_date")
+    parts = mem.get("participants") or {}
+    bystander = parts.get("bystander")
+    prov = f._mem_var(mem, "attack_location")
+    place = f._event_place(prov) if isinstance(prov, int) else ""
+    owner = f.event_name(owner_id, date=d) or f.name_or(owner_id, "")
+    if not owner:
+        return None
+    blabel = ""
+    if isinstance(bystander, int) and bystander != owner_id:
+        # full style carries the local lord's title (「贝尔凯尔市长…」); this is exactly the
+        # case where a barony-level title is wanted.
+        blabel = f.person_label(bystander, date=d, style="full") \
+            or f.event_name(bystander, date=d) or ""
+    knight = _same_day_sacrificed_knight(f, owner_id, d, prov)
+    klabel = ""
+    if isinstance(knight, int):
+        kw = f.knight_word(knight, date=d) or "骑士"
+        kn = f.name_with_regnal(knight, d) or f.name_or(knight, "")
+        if kn:
+            klabel = f"{kw}{kn}"
+            f._log_label(knight, klabel)
+    if blabel and place:
+        # The lord's full label usually already carries the holding (「贝尔凯尔市长…」), so the
+        # place is spelled out only when the label does not name it.
+        where = "" if place in blabel else f"位于{place}"
+        s = f"{owner}的旅团在{blabel}{where}的地产外遭到强盗骑兵袭击，其未加援手"
+    elif place:
+        s = f"{owner}的旅团在{place}郊外遭到强盗骑兵袭击"
+    elif blabel:
+        s = f"{owner}的旅团遭到强盗骑兵袭击，{blabel}未加援手"
+    else:
+        s = f"{owner}的旅团遭到强盗骑兵袭击"
+    if klabel:
+        s += f"；{klabel}受命留下断后，当日战死"
+    return s + "。"
+
+
 def _mem_sentence(f, owner_id, mem):
     """One memory -> clean Chinese sentence.
 
@@ -22469,6 +22555,8 @@ def _mem_sentence_body(f, owner_id, mem):
             if wn:
                 field = f.education_field(ward, mem.get("creation_date"))
                 return f"{wn}完成{field}教育。" if field else f"{wn}完成教育。"
+    if mtype == "ignored_assault_memory":
+        return _ignored_assault_sentence(f, owner_id, mem)
     tpl = MEMORY_TEMPLATES.get(mtype)
     if not tpl:
         return None

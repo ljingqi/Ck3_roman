@@ -976,7 +976,8 @@ MEMORY_TEMPLATES = {
     "exiled_by_kin_memory": "{name}为亲属{other}所放逐，去族而居。",
     "defected_from_kin_memory": "{name}率部众离{other}自立，别为一族。",
     "grand_wedding_completed_guest": "{name}出席大婚。",
-    "ignored_assault_memory": "{name}受辱未报。",
+    "ignored_assault_memory": "{name}的旅团遇袭，{other}未加援手。",
+    "ignored_assault_memory_no_other": "{name}的旅团遇袭。",
     # Successful murder, from the protagonist's view; the mysterious flavour comes
     # from the victim's death record.
     "successful_murder": "{name}谋杀{other}。",
