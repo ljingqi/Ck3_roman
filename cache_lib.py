@@ -2795,6 +2795,27 @@ def player_domicile(melt, domain, cid):
     return None
 
 
+def _barony_holder(melt, province):
+    """Holder of the barony under `province` in this melt (None when unknown).
+
+    The merchant patron is the ruler of the holding where the domicile sits; the save
+    stores that only as the barony's current holder, so each snapshot records its own.
+    """
+    if not isinstance(province, int):
+        return None
+    ent = localization.province_map().get(int(province)) or {}
+    key = ent.get("barony") or ""
+    if not key:
+        return None
+    lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
+    for t in lt.values():
+        if not isinstance(t, dict) or t.get("key") != key:
+            continue
+        h = t.get("holder")
+        return h if isinstance(h, int) else None
+    return None
+
+
 def _war_side_id(side):
     """A war's attacker/defender section -> the leading character id, or None.
 
@@ -3912,10 +3933,14 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
             # save's seat; this track lets a past date find the patron of its own day.
             _dom_prov = rec["landed"].get("domicile_province")
             if isinstance(_dom_prov, int):
+                _dom_patron = _barony_holder(melt, _dom_prov)
                 _dom_hist = cache.setdefault("player_domicile_history", [])
-                if not _dom_hist or _dom_hist[-1].get("province") != _dom_prov:
+                if (not _dom_hist
+                        or _dom_hist[-1].get("province") != _dom_prov
+                        or _dom_hist[-1].get("patron") != _dom_patron):
                     _dom_hist.append({"date": date_label, "province": _dom_prov,
-                                      "domicile_type": rec["landed"].get("domicile_type")})
+                                      "domicile_type": rec["landed"].get("domicile_type"),
+                                      "patron": _dom_patron})
             # Player location history, change points only
             loc = (c.get("alive_data") or {}).get("location") or {}
             prov = loc.get("location") if isinstance(loc, dict) else loc

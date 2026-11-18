@@ -7400,14 +7400,25 @@ class Facts:
             if self._route_owned_at(row, d):
                 return True
         entry = self._domicile_at(d)
+        if entry and entry.get("patron") is not None:
+            return entry.get("patron") == c
         prov = (entry or {}).get("province")
         if not isinstance(prov, int):
             return False
+        anchor = self._anchor_date(c, d)
         barony = self.barony_at_province(prov)
+        if barony is not None:
+            hist = (self._lt.get(str(barony)) or {}).get("history")
+            if isinstance(hist, dict) and hist:
+                return self._title_holder_at(barony, anchor) == c
+        # Barony titles often carry no holder history while the county does; older caches
+        # predate the per-snapshot patron track, so fall back to the county of the province.
+        county = self.county_at_province(prov)
+        if county is not None:
+            return self._title_holder_at(county, anchor) == c
         if barony is None:
             return False
-        holder = self._title_holder_at(barony, self._anchor_date(c, d))
-        return holder == c
+        return self._title_holder_at(barony, anchor) == c
 
     def identity_parts(self, cid, subject, paths=True, date=None):
         """Ordered `[(category, word, source)]` identities of `cid` as seen from `subject`.
@@ -29840,7 +29851,8 @@ def _victim_identity_parts(f, cid, pid, date=None):
     itself establishes then takes the relation slot (after the kin words, before the offices), which
     is exactly where `identity_parts` would have put a scripted one. A path word is more specific
     than that bare 「仇敌」 (「领主的表姨」 says how she stood to him, 「仇敌」 only what he did), so
-    it takes the slot instead and no enmity word is added."""
+    it takes the slot instead and no enmity word is added. A patron tie is social and the enmity is
+    emotional: they are different relations, so both stay (「庇护者兼仇敌」)."""
     parts = list(f.identity_parts(cid, pid, date=date))
     if any(_cat in ("relation", "path") for _cat, _w, _src in parts):
         return parts
