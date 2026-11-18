@@ -3907,6 +3907,15 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         if cid == player_id:
             ld = c.get("landed_data") or {}
             rec["landed"] = player_landed_block(melt, cid, ld)
+            # Domicile seat history, change points only. The patron of a merchant company is
+            # the holder of the barony under its domicile, and the cache keeps only the last
+            # save's seat; this track lets a past date find the patron of its own day.
+            _dom_prov = rec["landed"].get("domicile_province")
+            if isinstance(_dom_prov, int):
+                _dom_hist = cache.setdefault("player_domicile_history", [])
+                if not _dom_hist or _dom_hist[-1].get("province") != _dom_prov:
+                    _dom_hist.append({"date": date_label, "province": _dom_prov,
+                                      "domicile_type": rec["landed"].get("domicile_type")})
             # Player location history, change points only
             loc = (c.get("alive_data") or {}).get("location") or {}
             prov = loc.get("location") if isinstance(loc, dict) else loc
