@@ -12169,6 +12169,71 @@ class Facts:
             return "自己"
         return self.event_name(o, date=self.as_of) or ""
 
+    def _lover_relation(self, a, b):
+        """`(reason, province)` of the lover relation a→b, melt first with the per-save latch
+        filling gaps; None when the pair has no such relation or it records no reason."""
+        for idx in (self._any_opinion_index(), self._cached_opinion_index()):
+            v = (idx.get((a, b)) or {}).get("lover")
+            if isinstance(v, dict) and v.get("reason"):
+                return v
+        return None
+
+    def _secret_place(self, province):
+        """Event place for a secret or memory: the barony name first (「阿尔勒」), then the
+        county label (「阿尔勒伯爵领」)."""
+        if province is None:
+            return ""
+        bid = self.barony_at_province(province)
+        if bid is not None:
+            nm = self.title(bid)
+            if nm:
+                return nm
+        return _province_label(self, province)
+
+    def _lover_reason_topic(self, owner, target):
+        """The game's own wording for why the lover tie formed, without the holder's name.
+
+        `lover_woods` / `lover_woods_corresponding` keep the game's hunting occasion and verb
+        (「在阿尔勒的狩猎期间勾引了…」); the holder is the grammatical subject in the active
+        form and the object in the passive one, so the phrase fits after the sentence's owner.
+        Other reason keys use their localized template with the subject dropped when the holder
+        is that subject; '' when the direction cannot be expressed or no reason is recorded."""
+        if not isinstance(owner, int) or not isinstance(target, int):
+            return ""
+        tname = self.event_name(target, date=self.as_of) or self.name_or(target, "")
+        for a, b in ((owner, target), (target, owner)):
+            v = self._lover_relation(a, b)
+            if not v:
+                continue
+            reason = str(v.get("reason") or "")
+            base = reason[:-len("_corresponding")] \
+                if reason.endswith("_corresponding") else reason
+            place = self._secret_place(v.get("province"))
+            if base == "lover_woods" and place and tname:
+                # In the base key the first role is the seducer; the corresponding key swaps
+                # the roles, so the relation's second role is the seducer there.
+                seducer = b if reason.endswith("_corresponding") else a
+                if owner == seducer:
+                    return f"在{place}的狩猎期间勾引了{tname}"
+                return f"在{place}的狩猎期间被{tname}勾引"
+            tpl = _reason_template(reason)
+            if not tpl:
+                continue
+            names = [self.event_name(a, date=self.as_of) or self.name_or(a, ""),
+                     self.event_name(b, date=self.as_of) or self.name_or(b, ""), ""]
+            _s, subj = _sub_relation_loc(self, tpl, a, b, province=v.get("province"),
+                                         names=["", "", ""], want_subject=True)
+            if subj != owner:
+                continue          # the sentence would not start from the secret holder
+            names[0 if subj == a else 1] = "\x00"
+            s = _sub_relation_loc(self, tpl, a, b, province=v.get("province"), names=names)
+            s = re.sub(r"[，,、；;]\s*\x00", "", s)
+            s = re.sub(r"\x00[，,、；;]\s*", "", s).replace("\x00", "")
+            s = s.strip().rstrip("。").strip()
+            if s:
+                return s
+        return ""
+
     def secret_topic(self, rec, self_cid=None):
         """Secret topic phrase without the holder: "在张朴主持的乡试中舞弊" / "谋害叠溪寋" /
         "与阿足私通"; unknown types fall back to the game's localization type name.
@@ -12233,6 +12298,12 @@ class Facts:
             # the tenet is not recoverable (e.g. no personal-tenet history in this cache);
             # the secret is always about its holder, so a target clause would only say "自己"
             return L.loc(self.table, tp) or "禁忌个人信条"
+        if tp == "secret_lover" and isinstance(owner, int) and isinstance(tgt, int):
+            # The tie's reason is stored on the relation entry, not on the secret; render the
+            # game's own occasion (lover_woods: hunting at the province) in place of 「私通」.
+            topic = self._lover_reason_topic(owner, tgt)
+            if topic:
+                return topic
         tpl = SECRET_TOPICS.get(tp)
         if tpl:
             if "{target}" in tpl:
