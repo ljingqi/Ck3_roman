@@ -26499,18 +26499,6 @@ def _protagonist(f):
             except Exception:
                 return None
         bits = []
-        age = None
-        try:
-            by = int((rec.get("birth") or "0.0.0").split(".")[0])
-            # a decade biography computes the age at as_of, not at the last snapshot,
-            # so a later age cannot leak into an earlier year
-            cy_src = (f.as_of or melt.get("date") or "0.0.0")
-            cy = int(str(cy_src).split(".")[0])
-            age = cy - by
-        except Exception:
-            pass
-        if age is not None:
-            bits.append(f"年{age}岁")
         # health / stress are given only as game band words (plain modern Chinese),
         # never as raw numbers such as 5.5 or 69
         hs = health_state_zh(ad.get("health"))
@@ -26524,6 +26512,8 @@ def _protagonist(f):
         # LEVELS_* plus the localization key <kind>_level_N, e.g. 戴罪之人 / 崭露头角 / 七品).
         # Influence and merit are currencies only some governments carry (see `_INFLUENCE_GOVS`); a
         # realm without the flag shows none of it, so a value the save still stores is not written.
+        # Piety is a standing before one's faith, so it is worded as such: the game's band word
+        # alone ("戴罪之人") leaves the reader guessing whose judgment it is.
         for kind, label in (("piety", "虔诚"), ("prestige", "威望"),
                             ("influence", "影响力"), ("merit", "功勋")):
             if kind == "influence" and gov_asof not in f._INFLUENCE_GOVS:
@@ -26533,6 +26523,11 @@ def _protagonist(f):
             v = (ad.get(kind) or {}).get("currency")
             w = L.level_word(f.table, f._bands, kind, v)
             if w:
+                if kind == "piety":
+                    fn = f._faith_name(f._faith_id(pid, f.as_of))
+                    if fn:
+                        bits.append(f"被{fn}视为{w}")
+                        continue
                 # when the band word already contains the label, emit the band word
                 # alone: piety_level_2 is "虔诚信者", and prefixing the label would
                 # give "虔诚虔诚信者"
