@@ -12536,14 +12536,24 @@ class Facts:
                            + "；".join(clauses) + "。")
         return out
 
-    def secrets_known_by(self, cid, date=None):
-        """Secret records cid knows about but does not own (the leverage dimension)."""
+    def secrets_known_by(self, cid, date=None, active_only=False):
+        """Secret records cid knows about but does not own (the leverage dimension).
+
+        With `active_only` (decade biographies), a record whose secret was already lost by `date`
+        or whose holder is already dead is dropped: leverage over a dead man no longer exists in
+        the world. The final biography keeps every known secret (`active_only=False`)."""
         cut = date or self._secret_cut()
         ck = cl.date_key(cut) if cut else None
         out = []
         for sid, rec in (self.cache.get("secrets_history") or {}).items():
             if not isinstance(rec, dict) or rec.get("owner") == cid:
                 continue
+            if active_only:
+                la = rec.get("lost_at")
+                if ck is not None and la and cl.date_key(la) <= ck:
+                    continue
+                if self._dead_at(rec.get("owner"), cut):
+                    continue
             for k in rec.get("known_by") or []:
                 if k.get("id") != cid:
                     continue
@@ -31327,7 +31337,7 @@ def _secrets_facts(f, timeline=None):
     # date while neighbouring lines did, and the prompt asked for the year of record, leaving
     # the model to hedge. The year is supplied here instead.
     groups = {}
-    for rec in f.secrets_known_by(pid, cut):
+    for rec in f.secrets_known_by(pid, cut, active_only=bool(f.decade)):
         o = rec.get("owner")
         if isinstance(o, int):
             groups.setdefault(o, []).append(rec)
