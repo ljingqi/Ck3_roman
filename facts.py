@@ -30253,19 +30253,51 @@ def _wandering_trail(f):
         if county is None:
             continue
         cname = f.title(county)
-        holder = ""
-        chain = f.liege_chain(county) if county else []
-        if chain:
-            h = chain[0][1]
-            if h is not None:
-                holder = f.name_or(h, "")
-        bits = [f"{f.date(loc.get('date'))}驻{cname}"]
-        if holder:
-            bits.append(f"{holder}执掌")
-        top = chain[-1] if chain else None
-        if top and top[1] is not None:
-            bits.append(f"最高领主{f.name_or(top[1])}")
-        out.append("，".join(bits) + "。")
+        d = loc.get("date")
+        # Fold consecutive titles of one holder into the highest one: a man who is both count
+        # and king is written once, with the higher title (「只写首要头衔」). The chain's holder
+        # is used as-is; the title word is read at the visit day.
+        groups = []
+        for tid, hid in (f.liege_chain(county) if county else []):
+            if groups and groups[-1][0] == hid:
+                groups[-1] = (hid, tid)
+            else:
+                groups.append((hid, tid))
+
+        def _label(h, tid):
+            """Title-bearing appellation for one chain step; the brief label wins when it
+            already carries a title, otherwise the chain step supplies the office word."""
+            if not isinstance(h, int):
+                return ""
+            nm = f.name_with_regnal(h, d) or f.name_or(h, "")
+            if not nm:
+                return ""
+            lab = f._person_label_uncached(h, d, "brief") or ""
+            office = f.title_office_text(h, tid, d) if tid is not None else ""
+            if lab and lab != nm and lab.endswith(nm):
+                final = lab
+            elif office:
+                final = f"{office}{nm}"
+            else:
+                final = lab or nm
+            f._log_label(h, final)
+            return final
+
+        with f.log_names() as lg:
+            bits = [f"{f.date(d)}驻{cname}"]
+            if groups:
+                h, tid = groups[0]
+                lab = _label(h, tid)
+                if lab:
+                    bits.append(f"{lab}执掌")
+                if len(groups) > 1 and groups[-1][0] != h:
+                    th, ttid = groups[-1]
+                    tlab = _label(th, ttid)
+                    if tlab:
+                        bits.append(f"最高领主{tlab}")
+            line = "，".join(bits) + "。"
+        f.index_names(line, lg, owner=pid, date=d)
+        out.append(line)
     return out
 
 
