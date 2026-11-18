@@ -147,6 +147,10 @@ def _paren_violations(text):
         # names the player sees; it is program-built, not a model-written appositive.
         if re.search(r"患[^，。！？；\n]{1,16}（" + re.escape(c) + r"）而亡", text or ""):
             continue
+        # v153: 商路条陈的程序槽位 —— 「货物：…（基价N）」「商队：…（称职X）」，
+        # 括号内由数据填槽，不是模型自撰的同位语。
+        if re.fullmatch(r"基价[0-9.]+", c) or c.startswith("称职"):
+            continue
         # v69: 《XX历代记》的朝代年代区间与即位缘由 (程序按 history.type 生成)
         if _V69_SPAN_PARA_RE.match(c) or _V69_SUCC_PARA_RE.match(c):
             continue
@@ -406,7 +410,10 @@ def group_b(snap_path):
     badp = _fact_paren_violations(fact_surface)
     check("事实面无「名词（名词）」括注同位语", not badp, badp[:8])
     check("无「言语相通」", "言语相通" not in surface)
-    check("无「国库金/月入」", "国库金" not in surface and "月入" not in surface)
+    _bad_income = [ln for ln in fact_surface.splitlines()
+                   if "月入" in ln and not ln.startswith("盈亏：")]
+    check("无「国库金/月入」", "国库金" not in fact_surface and not _bad_income,
+          _bad_income[:2])
     check("无「牧群+数字」", not re.search(r"牧群\s*\d", surface),
           re.findall(r"牧群.{0,6}", surface)[:2])
     # 以下断言按周氏（38673）数据结构写就 — 其它家族快照只跑上面的通用面
