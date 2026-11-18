@@ -19705,10 +19705,13 @@ class Facts:
                     continue
                 seen.add(nm)
                 stops.append(nm)
-            if stops:
-                seg = "、".join(stops[:6])
-                if len(stops) > 6:
-                    seg += f"等{len(stops)}站"
+            # A route's path runs through its markets; the market line already names them.
+            # Only the transit stops that are not markets add anything.
+            extra = [s for s in stops if s not in set(mkts)]
+            if extra:
+                seg = "、".join(extra[:6])
+                if len(extra) > 6:
+                    seg += f"等{len(extra)}站"
                 lines.append("沿途：" + seg)
             tr = row.get("trader") or {}
             if tr.get("character"):
@@ -19794,6 +19797,10 @@ class Facts:
                 lines.append(f"经营至{llm.fmt_cn_date(last)}")
             blocks.append("\n".join(lines))
 
+        if self.decade:
+            # The decade article lists the routes themselves; a count-and-tally overhead is
+            # already visible from the list and adds no material of its own.
+            return {"总览": "", "条陈": blocks}
         mode_n = {"profit": 0, "commission": 0, "distribution": 0}
         markets = set()
         gold_sum = 0.0
@@ -19807,18 +19814,9 @@ class Facts:
                 g = row.get("gold")
                 if isinstance(g, (int, float)):
                     gold_sum += g
-        if self.decade:
-            opened = sum(1 for p in picks
-                         if p["origin"] == "opened" and _inside(p["origin_date"]))
-            inherited = sum(1 for p in picks
-                            if p["origin"] == "inherited" and _inside(p["origin_date"]))
-            changed = sum(1 for p in picks if p["changes"])
-            head = (f"本十年涉及商路{len(picks)}条：新开{opened}条、"
-                    f"承袭{inherited}条、改易{changed}条")
-        else:
-            head = (f"一生共经营商路{len(picks)}条：盈利路线{mode_n['profit']}条、"
-                    f"委托路线{mode_n['commission']}条、"
-                    f"分配路线{mode_n['distribution']}条")
+        head = (f"一生共经营商路{len(picks)}条：盈利路线{mode_n['profit']}条、"
+                f"委托路线{mode_n['commission']}条、"
+                f"分配路线{mode_n['distribution']}条")
         head += f"；行经市场{len(markets)}座"
         if gold_sum:
             head += f"，月入合计{gold_sum:.2f}"

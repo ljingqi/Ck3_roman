@@ -4064,7 +4064,7 @@ def build_articles(facts, cache, cfg):
             "subject": None, "theme": "漂泊不定的行旅记录",
             "focus": "按行程次序写漂泊：每到一地的时间、驻扎的地方、与当地势力的交集",
             "sections": mk_sections("youxia")})
-    if (facts.get("trade_routes") or {}).get("总览"):
+    if (facts.get("trade_routes") or {}).get("条陈"):
         articles.append({
             "key": "shanglu", "title": "商路志·舟车所至",
             "subject": None, "theme": "主角经营的商路与沿途市场",
