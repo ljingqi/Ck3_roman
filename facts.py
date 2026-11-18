@@ -7339,6 +7339,76 @@ class Facts:
                         offer((3, kr, rr, _PATH_HOP2_RANK["office"], a, b), w1, w2, k3)
         return best[1] if best else ""
 
+    def _domicile_at(self, date=None):
+        """The player's domicile entry in force on `date` (last change point at or before it)."""
+        hist = [e for e in (self.cache.get("player_domicile_history") or [])
+                if isinstance(e, dict)]
+        if not hist:
+            return None
+        ao = cl.date_key(date or self.as_of) if (date or self.as_of) else None
+        best = None
+        for e in hist:
+            if ao is not None and cl.date_key(e.get("date")) > ao:
+                break
+            best = e
+        return best
+
+    def _route_owned_at(self, row, date):
+        """True when the protagonist owned the trade route on `date` (owner history)."""
+        pid = self.cache.get("player_id")
+        hist = [h for h in (row.get("owner_history") or []) if isinstance(h, dict)]
+        if pid is None or not hist:
+            return False
+        ao = cl.date_key(date)
+        owner = None
+        for h in hist:
+            if cl.date_key(h.get("date")) <= ao:
+                owner = h.get("owner")
+        return owner == pid
+
+    def is_patron_of(self, cid, date=None, subject=None):
+        """True when `cid` was the merchant patron of `subject` (default: the protagonist) on `date`.
+
+        The game derives a patron from the holding that contains the company's domicile and stores
+        no patron field. Two dated signals stand in: a commission route's commissioner (the route
+        trigger requires him to stand in a tributary tie with the merchant company) and the holder
+        of the barony under the domicile. Either one is enough; no signal means no word.
+        """
+        pid = self.cache.get("player_id") if subject is None else subject
+        if cid is None or pid is None:
+            return False
+        try:
+            c, p = int(cid), int(pid)
+        except (TypeError, ValueError):
+            return False
+        if c == p or p != self.cache.get("player_id"):
+            return False
+        d = date or self.as_of
+        if not d:
+            return False
+        for row in self.cache.get("trade_routes") or []:
+            if not isinstance(row, dict):
+                continue
+            if row.get("mode") != "commission" or row.get("commissioner") != c:
+                continue
+            created = row.get("created") or row.get("first_seen")
+            if created and cl.date_key(created) > cl.date_key(d):
+                continue
+            exp = row.get("commission_expiration")
+            if exp and cl.date_key(d) > cl.date_key(exp):
+                continue
+            if self._route_owned_at(row, d):
+                return True
+        entry = self._domicile_at(d)
+        prov = (entry or {}).get("province")
+        if not isinstance(prov, int):
+            return False
+        barony = self.barony_at_province(prov)
+        if barony is None:
+            return False
+        holder = self._title_holder_at(barony, self._anchor_date(c, d))
+        return holder == c
+
     def identity_parts(self, cid, subject, paths=True, date=None):
         """Ordered `[(category, word, source)]` identities of `cid` as seen from `subject`.
 
@@ -7402,6 +7472,9 @@ class Facts:
         for fw in self.former_kin_words_for(c, s, date=date):
             _put("former", fw, "former")
         _put("relation", self.relation_word_for(c, s, date=date), "relation")
+        if self.is_patron_of(c, date=date, subject=s):
+            _put("patron", L.loc(self.table, "game_concept_merchant_patron") or "庇护者",
+                 "patron")
         # The offices stand after the path word in reading order, but they are collected first:
         # their presence decides whether a gap exists at all. A court artisan of the subject has a
         # direct tie already, so a path word there would put a second, weaker label on him
@@ -29759,7 +29832,7 @@ def _kill_kin_note(f, members):
     return "同胞兄弟姐妹"
 
 
-def _victim_identity_parts(f, cid, pid):
+def _victim_identity_parts(f, cid, pid, date=None):
     """`Facts.identity_parts` for a victim of the protagonist, with the enmity the roster implies.
 
     Every entry of 《刺客列传》 was killed by the protagonist, and the save drops the opinion once
@@ -29768,7 +29841,7 @@ def _victim_identity_parts(f, cid, pid):
     is exactly where `identity_parts` would have put a scripted one. A path word is more specific
     than that bare 「仇敌」 (「领主的表姨」 says how she stood to him, 「仇敌」 only what he did), so
     it takes the slot instead and no enmity word is added."""
-    parts = list(f.identity_parts(cid, pid))
+    parts = list(f.identity_parts(cid, pid, date=date))
     if any(_cat in ("relation", "path") for _cat, _w, _src in parts):
         return parts
     cut = len(parts)
@@ -29940,7 +30013,8 @@ def _killed_by_player(f):
             # The victim's relation to the article's protagonist, computed from that protagonist as
             # the reference person (`Facts.identity_parts`), e.g. 仇敌 / 仇敌兼舅舅.
             "identity": "兼".join(
-                w for _cat, w, _src in _victim_identity_parts(f, cid, pid) if w),
+                w for _cat, w, _src in _victim_identity_parts(
+                    f, cid, pid, date=(prof.get("death") or {}).get("date")) if w),
             # the victim's latest knowable barony before death ('' if none, the caller then
             # omits the note)
             "victim_place": f.victim_place(cid),
