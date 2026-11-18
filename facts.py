@@ -20093,9 +20093,9 @@ class Facts:
             def _y(d):
                 return llm.fmt_cn_year(str(d).split(".")[0])
 
-            seg = (f"{self._trade_good_word(gk)}：{_y(pts[0][0])}{first:.3f}，"
-                   f"{_y(pts[-1][0])}{last:.3f}；"
-                   f"高{hi[1]:.3f}、低{low[1]:.3f}")
+            seg = (f"{self._trade_good_word(gk)}：{_y(pts[0][0])}{self._money_text(first)}，"
+                   f"{_y(pts[-1][0])}{self._money_text(last)}；"
+                   f"高{self._money_text(hi[1])}、低{self._money_text(low[1])}")
             if rise:
                 seg += f"；最大涨幅{self._price_pct(rise[0])}"
             if fall:
