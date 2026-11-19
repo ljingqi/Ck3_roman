@@ -11,9 +11,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm                 # noqa: E402
 import localization as L    # noqa: E402
 
-_SCHEMA = 6   # evaluates `flag` against the holder's dated character flags (the march /
-              # palatinate / castellan contract family), so a duchy with `margrave_flag`
-              # resolves to 侯爵 instead of the generic 公爵
+_SCHEMA = 7   # evaluates `realm_laws` against the character's active laws: the republic
+              # words are gated on the succession / term-length law, so an elective duchy
+              # resolves to 大市长 rather than the higher-priority 专制君主 of the despotic law.
+              # Schema 6 added the holder's dated character flags for the march / palatinate /
+              # castellan contract family.
 _TABLE = None
 
 # Character flags the table may evaluate. The rest (cardinal_flag, ceremonial_liege_flag,
@@ -158,6 +160,7 @@ def build_flavorization(cfg):
                     "religions": _list_of(items, "religions"),
                     "titles": _list_of(items, "titles"),
                     "flags": flags,
+                    "realm_laws": _list_of(items, "realm_laws"),
                     "obligation_flags": obligation_flags,
                     "rules": rules,
                     "unsupported": unsupported,
@@ -204,7 +207,8 @@ def table(cfg=None):
 
 def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             faith="", religion="", rite="", title_key="", independent=True, top=None,
-            obligation_flags=None, character_flags=None, cfg=None, special="holder"):
+            obligation_flags=None, character_flags=None, realm_laws=None, cfg=None,
+            special="holder"):
     """Return the winning localization key (block name) or '' under the game's rules.
 
     Conditions are tried from the highest priority down and all must match; an empty
@@ -217,7 +221,9 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
     which entries not marked `top_liege = no` are judged against (the game's default).
     `obligation_flags` are the character's decoded contract obligation flags and must
     intersect an entry's own flags; `character_flags` are the character's own flags at the same
-    date and must intersect an entry's `flag` condition. `special` selects the entry class — "holder" by
+    date and must intersect an entry's `flag` condition. `realm_laws` are the laws active on the
+    context character and must intersect an entry's `realm_laws` condition (`_flavourization.info:377-383`);
+    a character whose laws are unknown skips such entries. `special` selects the entry class — "holder" by
     default (ruler addresses), "ruler_child" for prince/princess entries, the two classes
     never competing; `rite` is the character's rite_type, and an entry with `rites` cannot
     match when the rite is unknown."""
@@ -305,6 +311,13 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
         if want_chars:
             have = set(character_flags or [])
             if not have.intersection(want_chars):
+                continue
+        # Realm-law condition: the republic words are gated on the succession law (elective /
+        # appointment / despotic) and on the term length, so only the law actually enacted
+        # matches; unknown laws match none of them.
+        want_laws = e.get("realm_laws") or []
+        if want_laws:
+            if not set(realm_laws or []).intersection(want_laws):
                 continue
         best_key, best_pri, best_rites = e["key"], prio, bool(rts_e)
     return best_key

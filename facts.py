@@ -9375,6 +9375,31 @@ class Facts:
             return ""
         return str(cl.rite_entry(self.melt, rid).get("rite_type") or "")
 
+    def _realm_laws_at(self, cid, date=None):
+        """Laws active on the character's realm, for flavorization's `realm_laws` condition.
+
+        The game evaluates `realm_laws` on the laws stored on the context character
+        (`_flavourization.info:377-383`); a date is accepted for symmetry with the other
+        condition readers, but the save keeps no law history — the melt carries the character's
+        own `landed_data.laws` at the melt's date. Characters the melt knows nothing about
+        (courtiers without a realm) return None, and law-gated entries are then skipped
+        rather than matched blindly.
+        """
+        if cid is None:
+            return None
+        laws = ((self._chars.get(str(cid)) or {}).get("landed_data") or {}).get("laws")
+        if isinstance(laws, str):
+            laws = [x for x in laws.replace(",", " ").split() if x]
+        if isinstance(laws, list) and laws:
+            return [str(x) for x in laws]
+        if self.cache.get("player_id") is not None \
+                and str(cid) == str(self.cache.get("player_id")):
+            pl = (self.cache.get("characters") or {}).get(str(cid)) or {}
+            laws = (pl.get("landed") or {}).get("laws")
+            if isinstance(laws, list) and laws:
+                return [str(x) for x in laws]
+        return None
+
     def _top_liege_of(self, cid, tid):
         """Top liege along de_facto_liege; returns (cid, tid) when the character is already top."""
         seen = set()
@@ -9462,6 +9487,7 @@ class Facts:
                 # them here: the title-name suffix is a different table entry class whose callers
                 # have not been swept for this condition.
                 character_flags=(self._char_flags(ctx, date) if kind == "character" else None),
+                realm_laws=self._realm_laws_at(ctx, date),
                 special=(special or "holder"))
         except Exception:
             return ""
