@@ -1397,8 +1397,8 @@ EMPTY_CACHE = {
     "player_law_history": [],
     # Voting sessions on titles the protagonist holds, keyed title>law>start>end>proposer
     "player_law_proposals": {},
-    # Pending-law state per held title {title: {date, group, ended, proposal}} (v158)
-    "player_title_law_states": {},
+    # Pending-law change points per held title [{date, title, group, ended, proposal}] (v158)
+    "player_title_law_states": [],
 }
 
 
@@ -4542,17 +4542,21 @@ def latch_player_laws(cache, date_label, player_id, char, melt):
         else:
             row["last_seen"] = date_label
 
-    states = cache.setdefault("player_title_law_states", {})
+    states = cache.setdefault("player_title_law_states", [])
+    prev_state = {}
+    for row in states:
+        prev_state[str(row.get("title"))] = row
     for tid, e in held.items():
         group = str(e.get("proposed_law_group") or "")
         ended = _norm_law_date(e.get("voting_session_ended")) or ""
         if not group and not ended:
             continue
-        row = states.get(tid)
-        if row is None or row.get("group") != group or row.get("ended") != ended:
-            states[tid] = {"date": date_label, "title": tid,
-                           "group": group, "ended": ended,
-                           "proposal": _norm_law_date(e.get("law_proposal_date"))}
+        old = prev_state.get(tid) or {}
+        if old.get("group") == group and old.get("ended") == ended:
+            continue
+        states.append({"date": date_label, "title": tid,
+                       "group": group, "ended": ended,
+                       "proposal": _norm_law_date(e.get("law_proposal_date"))})
 
 
 def _latch_dead_prunable(cache, melt, _new_deaths=None):
