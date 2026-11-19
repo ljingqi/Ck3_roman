@@ -13715,16 +13715,36 @@ class Facts:
     def prison_death_clause(self, victim, date=None):
         """Death record for the closing sentence → {date, reason, killer} or {}.
 
-        Cache first; when the cache holds no death (the victim died past the cache's last save)
-        fall back to the melt's `dead_data`."""
+        Cache first; then the melt's `dead_data` from living / dead_unprunable /
+        characters.dead_prunable (a prisoner who dies is pruned out of `living`). A death
+        later than this volume's cutoff does not belong in it: the 943.9.26 death must not
+        be written into a decade ending 938.12.31."""
+        cut = self.as_of or self.cache.get("last_date")
+        cut_k = cl.date_key(cut) if cut else None
+
+        def _ok(dd):
+            if not dd.get("date"):
+                return None
+            if cut_k is not None and cl.date_key(str(dd["date"])) > cut_k:
+                return None
+            return dd
+
         rec = ((self.cache.get("characters") or {}).get(str(victim)) or {})
-        dd = rec.get("death") or {}
-        if dd.get("date"):
+        dd = _ok(rec.get("death") or {})
+        if dd:
             return dd
         for seg in ("living", "dead_unprunable"):
             c = (self.melt.get(seg) or {}).get(str(victim))
-            if isinstance(c, dict) and (c.get("dead_data") or {}).get("date"):
-                return c["dead_data"]
+            if isinstance(c, dict):
+                dd = _ok(c.get("dead_data") or {})
+                if dd:
+                    return dd
+        c = ((self.melt.get("characters") or {}).get("dead_prunable") or {}) \
+            .get(str(victim))
+        if isinstance(c, dict):
+            dd = _ok(c.get("dead_data") or {})
+            if dd:
+                return dd
         return {}
 
     def _death_int(self, v):
@@ -13849,6 +13869,38 @@ class Facts:
                     "source": "history", "reason": ""}
         return out
 
+    def battle_capture_phrase(self, victim, jailer, date, victim_name,
+                              jailer_name=""):
+        """Battle-capture head, naming the actual captor when he is the jailer's courtier.
+
+        '' when the save proves no battle capture that day (the caller keeps its own
+        fallback). `jailer_name` lets the caller keep the label it already chose (the
+        timeline uses the as-of name, a decade's own); the captor's regnal name is used
+        without the offices an event label would add."""
+        W = _style.FACT_WORDING
+        cap = self._battle_captor(victim, jailer, date)
+        if cap is None:
+            return ""
+        jn = jailer_name or (self._feud_role_title(jailer, date)
+                             if isinstance(jailer, int) else "")
+        if not jn:
+            return W["prison_held"].format(victim=victim_name)
+        if cap != jailer and self._court_member_of(cap, jailer):
+            cn = self.name_with_regnal(cap, date)
+            if cn:
+                return W["prison_captured_battle_under"].format(
+                    jailer=jn, winner=cn, victim=victim_name)
+        return W["prison_captured_battle"].format(jailer=jn, victim=victim_name)
+
+    def held_clause(self, victim, entry_date, victim_name):
+        """Closing clause for a term still open at the observation bound: house arrest when
+        the fresh cell grade proves it, otherwise the plain "still held"."""
+        key = ("prison_still_held_house"
+               if self._prison_type_fresh(victim, entry_date) == "house_arrest"
+               else "prison_still_held")
+        return _style.FACT_WORDING[key].format(bound=self._prison_bound(),
+                                               victim=victim_name)
+
     def prison_capture_head(self, victim, jailer, date, cluster_n=1):
         """Opening clause of a prison row (who captured whom, with hard evidence for the manner).
 
@@ -13871,7 +13923,9 @@ class Facts:
         if cm == "diarchy":
             return W["prison_captured_diarch"].format(jailer=jn, victim=vn)
         if cm in ("battle", "battle_poi"):
-            return W["prison_captured_battle"].format(jailer=jn, victim=vn)
+            _ph = self.battle_capture_phrase(victim, jailer, date, vn,
+                                             jailer_name=jn)
+            return _ph or W["prison_captured_battle"].format(jailer=jn, victim=vn)
         if cm == "raid":
             return W["prison_raid_captured"].format(jailer=jn, victim=vn)
         if cm == "batch":
@@ -13893,7 +13947,7 @@ class Facts:
         # jailer's own fate (see the wording note in style.FACT_WORDING)
         vn = self._feud_role_title(victim, entry_date) if isinstance(victim, int) else ""
         if kind == "held":
-            tail = W["prison_still_held"].format(bound=self._prison_bound(), victim=vn)
+            tail = self.held_clause(victim, entry_date, vn)
             tail += self.prison_handover_clause(victim, date=entry_date)
             return (tail, "held", "")
         if kind == "enslaved":
@@ -14021,18 +14075,27 @@ class Facts:
         return fam
 
     def _prison_bound(self):
-        """Observation bound for the prison closing clause → "{date}末档" or "末档".
+        """Observation bound for the prison closing clause → "938年末" / "944年初" /
+        "938年6月"; "末档" only when no cutoff date exists.
 
-        A decade volume is bounded by its own cutoff date, the final volume by the cache's last
-        save. The literal 末档 must stay — a bare date would be read as the release date."""
-        last = self.cache.get("last_date")
-        cut = self.as_of or last
+        A decade volume is bounded by its own cutoff date, the final volume by the cache's
+        last save. The bound is a narrative date, not a save-file term: the following
+        "仍被软禁 / 仍在押" already says the custody is open at that point."""
+        cut = self.as_of or self.cache.get("last_date")
         if not cut:
             return "末档"
-        if last and str(cut) == str(last):
+        parts = str(cut).split(".")
+        if len(parts) != 3:
             return "末档"
-        d = self.date(cut)
-        return f"{d}末档" if d else "末档"
+        try:
+            y, m, d = (int(x) for x in parts)
+        except ValueError:
+            return "末档"
+        if (m, d) == (12, 31):
+            return f"{y}年末"
+        if (m, d) == (1, 1):
+            return f"{y}年初"
+        return f"{y}年{m}月"
 
     def prison_handover_clause(self, victim, date=None):
         """Jailer-handover clause for this prisoner → "，881年1月1日转归埃尔梅辛达"; '' when there
@@ -14095,26 +14158,58 @@ class Facts:
         self._mem_holder = out
         return out
 
-    def _battle_by_date(self):
-        """{date: [(type, loser, winner, owner)]} over every battle/war memory in this save (lazy).
+    _BATTLE_MEMORY_TYPES = ("battle_won_memory", "battle_lost_memory",
+                            "war_won", "war_lost")
 
-        Source `character_memory_manager.database`, from any holder, so it does not depend on the
-        protagonist being present. Only `battle_*_memory` means "a battle was fought that day";
-        `war_won` / `war_lost` are war-end memories, so `capture_manner` takes only the `battle_`
-        prefix. The holder is the subject: holder of `*_won` = winner (participants carry only
-        `loser`), holder of `*_lost` = loser (participants carry `winner`)."""
+    def _battle_by_date(self):
+        """{date: [(type, loser, winner, owner, ruler)]} over every battle/war memory (lazy).
+
+        The cache is scanned first: a battle memory expires after five years and leaves the
+        melt, but `cache_lib` keeps it with `first_seen`, so a decade whose battle falls
+        outside the current memory window still sees it (v158: the 930.5.2 capture memory
+        was gone from the 938 melt). Melt entries fill characters the cache does not cover.
+        Only `battle_*_memory` means "a battle was fought that day"; `war_won` / `war_lost`
+        are war-end memories, so `capture_manner` takes only the `battle_` prefix. The
+        holder is the subject: holder of `*_won` = winner (participants carry only `loser`),
+        holder of `*_lost` = loser (participants carry `winner`). `ruler` is the other
+        side's ruler (winner's liege in a lost memory, loser's liege in a won one)."""
         cached = getattr(self, "_battle_idx", None)
         if cached is not None:
             return cached
         out = {}
+
+        def _put(d, rec):
+            if d:
+                out.setdefault(str(d), []).append(rec)
+
+        seen = set()
+        for cid, rec in (self.cache.get("characters") or {}).items():
+            if not isinstance(rec, dict):
+                continue
+            try:
+                owner = int(cid)
+            except (TypeError, ValueError):
+                continue
+            for m in rec.get("memories") or []:
+                if not isinstance(m, dict):
+                    continue
+                t = m.get("type") or ""
+                if t not in self._BATTLE_MEMORY_TYPES:
+                    continue
+                mid = m.get("id")
+                if mid is not None:
+                    seen.add(str(mid))
+                parts = m.get("participants") or {}
+                _put(m.get("creation_date"),
+                     (t, parts.get("loser"), parts.get("winner"),
+                      owner, parts.get("ruler")))
         holder = self._mem_holder_index()
         db = (self.melt.get("character_memory_manager") or {}).get("database") or {}
         for mid, e in db.items():
-            if not isinstance(e, dict):
+            if not isinstance(e, dict) or str(mid) in seen:
                 continue
             t = e.get("type") or ""
-            if t not in ("battle_won_memory", "battle_lost_memory",
-                         "war_won", "war_lost"):
+            if t not in self._BATTLE_MEMORY_TYPES:
                 continue
             parts = e.get("participants") or {}
             owner = e.get("owner")
@@ -14123,23 +14218,55 @@ class Facts:
                     owner = holder.get(int(mid))
                 except (TypeError, ValueError):
                     owner = None
-            d = e.get("creation_date")
-            if not d:
-                continue
-            out.setdefault(str(d), []).append(
-                (t, parts.get("loser"), parts.get("winner"), owner))
+            _put(e.get("creation_date"),
+                 (t, parts.get("loser"), parts.get("winner"),
+                  owner, parts.get("ruler")))
         self._battle_idx = out
         return out
 
     @staticmethod
     def _battle_winner(rec):
-        """Battle/war memory → (loser, winner); a missing winner is filled from the holder."""
-        t, loser, winner, owner = rec
-        if winner is None:
-            # the holder of `*_won` is the winner; `*_lost` should carry winner in participants
-            if t.endswith("_won") or "won" in t:
+        """Battle/war memory → (loser, winner), with both sides filled from the holder."""
+        t, loser, winner, owner, _ruler = rec
+        if t.endswith("_won") or "won" in t:
+            # the holder of `*_won` is the winner; participants carry only the loser
+            if winner is None:
                 winner = owner
+        elif loser is None:
+            # the holder of `*_lost` is the loser; participants carry only the winner
+            loser = owner
         return loser, winner
+
+    def _battle_captor(self, victim, jailer, date):
+        """Winning character id of the battle that took `victim` on `date`, or None.
+
+        The victim must be the loser. The winner proves the capture when he is the jailer
+        himself or when the jailer is the `ruler` slot of a `battle_lost_memory` (the
+        winner's liege — the person the imprisonment actually names). A fresh `dungeon`
+        grade refutes a battle capture: the engine always writes `house_arrest` for one."""
+        if victim is None or not date:
+            return None
+        if self._prison_type_fresh(victim, date) == "dungeon":
+            return None
+        for rec in self._battle_by_date().get(str(date), ()):
+            t = rec[0]
+            if not str(t).startswith("battle_"):
+                continue
+            loser, winner = self._battle_winner(rec)
+            if loser != victim or winner is None:
+                continue
+            if jailer is None or winner == jailer:
+                return winner
+            if str(t) == "battle_lost_memory" and rec[4] == jailer:
+                return winner
+        return None
+
+    def _court_member_of(self, cid, employer):
+        """Whether `cid`'s court employer is `employer` (cache court latch)."""
+        if not isinstance(cid, int) or not isinstance(employer, int):
+            return False
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        return (rec.get("court") or {}).get("employer") == employer
 
     def _var_flags(self, cid):
         """Set of flag names in a character's `alive_data.variables` (`dead_data` for the dead)."""
@@ -14552,18 +14679,14 @@ class Facts:
             hits = self._battle_poi_hits(jailer, date, victim=victim)
             if hits:
                 return ("battle_poi", f"province={hits[0]}")
-        # same-day real battle memory (only `battle_*_memory`) with the prisoner as loser and, when
-        # the jailer is known, as winner too — several battles can share one day. `war_won` /
-        # `war_lost` are war-end memories and are excluded, so such days fall back to a bare 囚禁
-        # instead of claiming a battle capture.
-        for rec in (() if _no_battle else self._battle_by_date().get(str(date), [])):
-            if not str(rec[0]).startswith("battle_"):
-                continue
-            loser, winner = self._battle_winner(rec)
-            _ok = (loser == victim) and (winner == jailer if jailer is not None
-                                         else True)
-            if _ok:
-                return ("battle", f"{rec[0]} loser={loser} winner={winner}")
+        # same-day real battle memory (only `battle_*_memory`) with the prisoner as loser.
+        # The winner may be the jailer himself or a courtier fighting for him, in which case
+        # the imprisonment names the winner's ruler (the `ruler` slot); `_battle_captor`
+        # accepts both. `war_won` / `war_lost` are war-end memories and are excluded, so
+        # such days fall back to a bare 囚禁 instead of claiming a battle capture.
+        _cap = None if _no_battle else self._battle_captor(victim, jailer, date)
+        if _cap is not None:
+            return ("battle", f"captor={_cap} jailer={jailer}")
         # prisoner is a minor, or the cluster contains one ⇒ no defeat capture (that pool is adult
         # combatants only, while a city fall also takes court and family)
         _age = self._age_at(victim, date)
@@ -25188,8 +25311,11 @@ def _pair_imprisonments(events, f, pid, pname=""):
                 body = W["prison_captured_diarch"].format(jailer=jn or "其监禁者",
                                                           victim=vn)
             elif _cm in ("battle", "battle_poi"):
-                body = W["prison_captured_battle"].format(jailer=jn or "其监禁者",
-                                                          victim=vn)
+                _ph = (f.battle_capture_phrase(victim, r["jailer"], r["date"], vn,
+                                           jailer_name=jn)
+                       if r["jailer"] is not None else "")
+                body = _ph or W["prison_captured_battle"].format(
+                    jailer=jn or "其监禁者", victim=vn)
             elif _cm == "raid":
                 body = W["prison_raid_captured"].format(jailer=jn or "其监禁者",
                                                         victim=vn)
@@ -25339,7 +25465,7 @@ def _pair_imprisonments(events, f, pid, pname=""):
                     # and no death record, the program states what happened afterwards instead of
                     # leaving silence for the model to fill in. The bound is the article's cutoff
                     # (decade) or the last save, and a handover of the jailer is written too.
-                    body += W["prison_still_held"].format(bound=f._prison_bound(), victim=vn)
+                    body += f.held_clause(victim, r["date"], vn)
                     body += f.prison_handover_clause(victim)
                     o_kind = "held"
             e = events[r["idx"]]

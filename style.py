@@ -405,6 +405,9 @@ FACT_WORDING = {
     # date, or the last archive for the final biography). The program states the
     # whole clause so the model has no blank to fill in.
     "prison_still_held": "，至{bound}{victim}仍在押",
+    # Battlefield capture writes house_arrest (combat_events.txt), so a term whose fresh
+    # grade proves it reads 软禁 instead of the wrong 牢里.
+    "prison_still_held_house": "，至{bound}{victim}仍被软禁",
     # Other branch of the release split: escape (escaped_from_prison_memory).
     "prison_escaped": "，{span}后{victim}越狱逃脱",
     "prison_escape_on": "，{date}{victim}越狱脱身",
@@ -416,6 +419,9 @@ FACT_WORDING = {
     # `melt["sieges"]` keeps only ongoing sieges), so the undecidable case keeps the bare
     # wording with no mode stated, leaving the model no room to invent a capture scene.
     "prison_captured_battle": "{jailer}于战阵俘获{victim}",
+    # The winner is the jailer's courtier, not the jailer: name the man who actually took
+    # the prisoner, so the model cannot turn the ruler into the one who did it.
+    "prison_captured_battle_under": "{jailer}麾下{winner}于战阵俘获{victim}",
     "prison_captured_diarch": "{jailer}以摄政之权拘押{victim}",
     "prison_batch_seized": "{jailer}拘押{victim}",
     # A minor prisoner rules out capture in battle: the defeat pool holds only the
