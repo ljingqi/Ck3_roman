@@ -2697,12 +2697,12 @@ class Facts:
             if k:
                 self._title_by_key[k] = int(tid)
         self._gov_cache = {}
-        self._script_ranks = {}  # x_script_* tid -> rank (template tier or de jure structure)
-        self._script_rank_busy = set()  # cycle guard while inferring a script title's rank
+        self._dynamic_ranks = {}  # x_ tid -> rank (template tier or de jure structure)
+        self._dynamic_rank_busy = set()  # cycle guard while inferring a dynamic title's rank
         # Tier of dynamic (x_) titles from the save's `dynamic_templates` list. A title created by
         # create_dynamic_title carries no k_/d_ prefix and, when titular, has no de jure position
         # either; this list is then the only tier the save records. Only x_ keys are collected;
-        # `_script_title_rank` gates by kind (camp/estate/clerical/landless) before reading it.
+        # `_dynamic_title_rank` gates by kind (camp/estate/clerical/landless) before reading it.
         self._x_tpl_rank = {}
         _rank_of_tier = {v: k for k, v in self._RANK_TIER.items()}
         for _tpl in ((melt.get("landed_titles") or {}).get("dynamic_templates") or []):
@@ -3658,10 +3658,12 @@ class Facts:
     def _effective_government(self, cid, date=None):
         """Government shown on a date, correcting the save's yearly sampling lag once.
 
-        A ruler who takes land late in the year still carries `landless_adventurer_government`
-        in that year's sample. When the day's primary title is already landed (rank >= 2), the
-        next sampled non-landless government within 400 days is the state the game shows; a
-        landed sample never turns landless, and without a later sample the sample stands.
+        A ruler who takes land late in the year still carries a landless government
+        (`landless_adventurer_government`, or `merchant_government` before a republic is
+        founded) in that year's sample. When the day's primary title is already landed
+        (rank >= 2), the next sampled landed government within 400 days is the state the game
+        shows; a landed sample never turns landless, and without a later sample the sample
+        stands.
         """
         key = (str(cid), str(date or ""))
         memo = getattr(self, "_eff_gov_memo", None)
@@ -3671,7 +3673,8 @@ class Facts:
             return memo[key]
         gov = self._character_government(cid, date)
         res = gov
-        if gov == "landless_adventurer_government" and date and cid is not None:
+        _lag_govs = ("landless_adventurer_government", "merchant_government")
+        if gov in _lag_govs and date and cid is not None:
             try:
                 _tier, _tid = self._primary_title_at(cid, as_of=date)
             except Exception:
@@ -3688,7 +3691,7 @@ class Facts:
                     if gap > 400:
                         break
                     nxt = h.get("government") or ""
-                    if nxt and nxt != "landless_adventurer_government":
+                    if nxt and nxt not in _lag_govs:
                         res = nxt
                         break
         memo[key] = res
@@ -3897,8 +3900,8 @@ class Facts:
                 or (tnd.get("name") or "").strip() \
                 or L.loc(self.table, key) or key
         if key.startswith("x_") and not self._is_landed_title(tid):
-            # landless camps/orders and similar: name only. A script-created landed title
-            # (x_script_* with a de jure rank) falls through to the tier word below.
+            # landless camps/orders and similar: name only. A dynamic landed title (x_ with a
+            # template or de jure rank) falls through to the tier word below.
             return name if site else (self._specific_name(tid) or name)
         # Cardinal titles (d_cd_*) take no tier word: they are landless titular titles
         # (`landless = yes`, `destroy_on_succession = yes`), and a tier word would read as if
@@ -4643,8 +4646,8 @@ class Facts:
             if self._dyn_named(tid) or key.startswith(("x_", "e_minister_")):
                 return nm
         elif key.startswith("x_") and not self._is_landed_title(tid):
-            # camps/house titles and unlanded script titles: name only. A script-created landed
-            # title (x_script_* with a template or de jure rank) falls through to the tier word.
+            # camps/house titles and unlanded script titles: name only. A dynamic landed title
+            # (x_ with a template or de jure rank) falls through to the tier word.
             return self._name_at_date(tid, date) or L.loc(self.table, key) or key
         else:
             # a dynamic title name is already the game's complete display name: no tier word
@@ -4960,23 +4963,42 @@ class Facts:
         return (t.get("type") == "title_type_merchant_family"
                 or t.get("history_government") == "merchant_government")
 
-    def _script_title_rank(self, tid):
-        """Rank of a script-created landed title (`x_script_*`): the save's dynamic template tier
-        first, then its de jure position.
+    def _merchant_family_title_at(self, cid, date=None):
+        """The merchant-family company title the character holds at date, else None.
 
-        The save does not write a tier field for a title created by `create_dynamic_title`, and its
-        key carries no `k_`/`d_` prefix, so `_TT_RANK` cannot answer. `dynamic_templates` records
-        the tier the script asked for (`{key: x_script_3261, tier: duchy}`), and for a titular
-        creation with no de jure liege or vassals it is the only tier the save holds. A template
-        rank of 2 or above wins; without a template (older saves) the de jure hierarchy answers: a
-        kingdom sits under an empire (rank 5 -> 4), a duchy under a kingdom (4 -> 3), a county
-        under a duchy (3 -> 2), and a titular creation's highest de jure vassal supplies the same
-        relation from below.
+        A merchant who founds a landed republic keeps the family company, so the biography
+        still needs its name for the itinerary article after the office line has become a
+        landed one.
+        """
+        if cid is None:
+            return None
+        for tid, ivs in (self._hold_intervals(cid, date or self.as_of) or {}).items():
+            if not self._is_merchant_family_title(tid):
+                continue
+            if any(iv[1] is None for iv in ivs):
+                return tid
+        return None
 
-        Only titles whose `landless` field is absent qualify; `x_script_*` peasant revolts and
-        curias keep `landless = true` and stay rank 0. A title with neither a template tier nor a
-        liege nor vassals also stays 0: without a tier there is nothing to promote, and the old
-        name-only behaviour is safer than a guessed rank.
+    def _dynamic_title_rank(self, tid):
+        """Rank of a dynamic (`x_`) landed title: the save's dynamic template tier first, then
+        the de jure position for script titles.
+
+        The save does not write a tier field for a title created by `create_dynamic_title`, and
+        its key carries no `k_`/`d_` prefix, so `_TT_RANK` cannot answer. `dynamic_templates`
+        records the tier the script asked for (`{key: x_d_republic_2436, tier: duchy}`), and for
+        a titular creation with no de jure liege or vassals it is the only tier the save holds.
+        A template rank of 2 or above wins.
+
+        Without a template, older saves fall back to the de jure hierarchy for `x_script_*`
+        titles only (a kingdom sits under an empire, a duchy under a kingdom, a county under a
+        duchy, and a titular creation's highest de jure vassal supplies the same relation from
+        below). Other `x_` families keep rank 0 when their template is missing.
+
+        Only titles whose `landless` field is absent qualify; `x_script_*` peasant revolts,
+        curias, mercenary companies and other landless `x_` titles keep `landless = true` and
+        stay rank 0. A title with neither a template tier nor a liege nor vassals also stays 0:
+        without a tier there is nothing to promote, and the old name-only behaviour is safer
+        than a guessed rank.
         """
         if tid is None:
             return 0
@@ -4984,21 +5006,24 @@ class Facts:
             tid = int(tid)
         except (TypeError, ValueError):
             return 0
-        hit = self._script_ranks.get(tid)
+        hit = self._dynamic_ranks.get(tid)
         if hit is not None:
             return hit
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
-        if not key.startswith("x_script_") or t.get("landless"):
-            self._script_ranks[tid] = 0
+        if not key.startswith("x_") or t.get("landless"):
+            self._dynamic_ranks[tid] = 0
             return 0
         tpl = self._x_tpl_rank.get(key)
         if tpl is not None and tpl >= 2:
-            self._script_ranks[tid] = tpl
+            self._dynamic_ranks[tid] = tpl
             return tpl
-        if tid in self._script_rank_busy:    # de jure cycle: fall back to "no rank"
+        if not key.startswith("x_script_"):
+            self._dynamic_ranks[tid] = 0
             return 0
-        self._script_rank_busy.add(tid)
+        if tid in self._dynamic_rank_busy:    # de jure cycle: fall back to "no rank"
+            return 0
+        self._dynamic_rank_busy.add(tid)
         try:
             rank = 0
             liege = t.get("de_jure_liege")
@@ -5013,23 +5038,24 @@ class Facts:
                 if vmax >= 1:
                     rank = vmax + 1
         finally:
-            self._script_rank_busy.discard(tid)
-        self._script_ranks[tid] = rank
+            self._dynamic_rank_busy.discard(tid)
+        self._dynamic_ranks[tid] = rank
         return rank
 
-    def _is_landed_script(self, tid):
-        """True for a script-created *landed* title: `x_script_*`, no `landless` field, not a
-        clerical province / estate / camp / yurt, and a de jure rank of 2 or above."""
+    def _is_dynamic_landed(self, tid):
+        """True for a dynamic *landed* title: `x_`, no `landless` field, not a clerical
+        province / estate / camp / yurt, and a dynamic rank of 2 or above (template tier, or
+        the de jure position of an older `x_script_*`)."""
         if tid is None:
             return False
         t = self._lt.get(str(tid)) or {}
         key = t.get("key") or ""
-        if not key.startswith("x_script_") or t.get("landless"):
+        if not key.startswith("x_") or t.get("landless"):
             return False
         if self._is_nomad_camp(tid) or self._is_estate_title(tid) \
                 or self._is_clerical_title(tid) or self._is_adventurer_camp(tid):
             return False
-        return self._script_title_rank(tid) >= 2
+        return self._dynamic_title_rank(tid) >= 2
 
     def _eff_rank(self, tid):
         """Effective rank of a title: a house estate (`_nf_`) is family property, not land, so it
@@ -5040,16 +5066,17 @@ class Facts:
         ranking an estate by its `c_`/`d_` prefix would let a landless clan enter the primary
         title slot as a county.
 
-        A script-created landed title (`x_script_*`, no prefix tier) reads its rank from the de jure
-        hierarchy (see `_script_title_rank`); the other `x_` keys stay rank 0.
+        A dynamic landed title (`x_`, no `landless` field) reads its rank from the save's dynamic
+        template tier or the de jure hierarchy (see `_dynamic_title_rank`); landless `x_` keys
+        stay rank 0.
         """
         if tid is None:
             return 0
         if self._is_estate_title(tid) or self._is_merchant_family_title(tid):
             return 0
         key = (self._lt.get(str(tid)) or {}).get("key") or ""
-        if key.startswith("x_script_"):
-            return self._script_title_rank(tid)
+        if key.startswith("x_"):
+            return self._dynamic_title_rank(tid)
         return self._TT_RANK.get(key[:2], 0)
 
     def _is_clerical_title(self, tid):
@@ -5093,10 +5120,11 @@ class Facts:
         The holder is unlanded but is not a landless adventurer: the game words him from the
         title's own government (校官 / 大团长 / 总修院长, see `_landless_holder_word`).
 
-        A script title created by `create_dynamic_title` is landed: the save leaves its `landless`
-        field absent (peasant revolts and curias carry `landless = true`), and its de jure position
-        yields rank 2 or above. Those titles are not landless; a titular `x_script_*` with no de
-        jure structure keeps the old landless reading because no tier can be inferred.
+        A title created by `create_dynamic_title` is landed: the save leaves its `landless`
+        field absent (peasant revolts and curias carry `landless = true`), and its dynamic
+        template tier yields rank 2 or above. Those titles are not landless; a dynamic `x_`
+        with no template and no de jure structure keeps the old landless reading because no
+        tier can be inferred.
         """
         if tid is None:
             return False
@@ -5108,8 +5136,8 @@ class Facts:
         if self._is_nomad_camp(tid) or self._is_estate_title(tid) \
                 or self._is_clerical_title(tid) or self._is_adventurer_camp(tid):
             return False
-        if key.startswith("x_script_"):
-            return not self._is_landed_script(tid)
+        if key.startswith("x_"):
+            return not self._is_dynamic_landed(tid)
         return True
 
     # Adventurer (camp) period intervals: the adventurer itinerary section covers only these.
@@ -5193,9 +5221,12 @@ class Facts:
 
         Counties and baronies never enter; at duchy level or above, kingdom rank keeps only the primary
         while duchy level keeps the primary plus every unlanded title (adventurer camp, ecclesiastical
-        province, mercenary company, holy order, script title). Court offices are posts, not land, and
-        nomadic yurts are dwellings (`landless: true`), so neither occupies the slot and [] means the
-        land lost that day is reported by `held_titles`.
+        province, mercenary company, holy order, script title). A merchant-family company is family
+        property, not an office: once the holder has real land (county rank or above) it yields to
+        the land instead of being listed beside it, and it stays the primary title while it is all
+        he holds. Court offices are posts, not land, and nomadic yurts are dwellings (`landless:
+        true`), so neither occupies the slot and [] means the land lost that day is reported by
+        `held_titles`.
         """
         if not held:
             return []
@@ -5208,8 +5239,10 @@ class Facts:
         if not items:
             return []  # court offices only (posts, not land)
         order = self._domain_order(cid) if cid is not None else {}
+        has_land = any(it[1] >= 2 and not self._is_landless_title(it[0]) for it in items)
         majors = [it for it in items
                   if (it[1] >= 3 or it[1] == 0)
+                  and not (has_land and self._is_merchant_family_title(it[0]))
                   and not self._is_nomad_camp(it[0])
                   and not self._is_estate_title(it[0])]
         if not majors:
@@ -5532,7 +5565,7 @@ class Facts:
                     continue
                 if key.startswith("x_") and not self._is_landed_title(t):
                     # Unknown script title: the name alone, never a claim of land or a camp.
-                    # A landed x_script_ falls through to the place name + ruler word below.
+                    # A landed dynamic x_ falls through to the place name + ruler word below.
                     parts.append(self._name_at_date(t, d) or self.title_base_name(t))
                     continue
                 # Land phases use the title's place name plus the game's ruler address word
@@ -9704,7 +9737,7 @@ class Facts:
 
             House estates, camps, court offices and unlanded script titles are excluded: their
             names are not landed place names and must not be prefixed to an office word. A landed
-            x_script_* counts (`_is_landed_title`).
+            dynamic x_ counts (`_is_landed_title`).
             """
             if tid is None:
                 return ""
@@ -10826,9 +10859,9 @@ class Facts:
     def _is_landed_title(self, tid):
         """Whether `tid` is a landed title (h_/e_/k_/d_/c_/b_), not an office, camp or estate.
 
-        A script-created landed title (`x_script_*` with no `landless` field and a de jure rank of
-        2 or above) counts as landed; its key carries no tier prefix, so the generic prefix test
-        would otherwise reject it.
+        A dynamic landed title (`x_` with no `landless` field and a dynamic rank of 2 or above)
+        counts as landed; its key carries no tier prefix, so the generic prefix test would
+        otherwise reject it.
         """
         if tid is None:
             return False
@@ -10836,7 +10869,7 @@ class Facts:
         if not key:
             return False
         if key.startswith("x_"):
-            return self._is_landed_script(tid)
+            return self._is_dynamic_landed(tid)
         if any(key.startswith(p) for p in self._NON_LANDED_KEY_PREFIXES):
             return False
         return key[:2] in ("h_", "e_", "k_", "d_", "c_", "b_")
@@ -26687,11 +26720,17 @@ def _protagonist(f):
     # power, not a camp.
     # A merchant company is landless like an adventurer camp, but its seat is a domicile,
     # not a camp: state the company and its seat instead of a domain.
+    _merchant_tid = f._merchant_family_title_at(pid, f.as_of)
+    if _merchant_tid is not None:
+        # The company survives a landed accession: keep it for the itinerary entry even when
+        # the profile's office line is no longer a merchant one.
+        p["merchant_family"] = True
     if gov_asof == "merchant_government" or \
             (ptid is not None and f._is_merchant_family_title(ptid)):
         # ---- landless merchant company ----
         p["merchant_company"] = True
-        p["company_name"] = f.title(ptid) if ptid is not None else ""
+        _co_tid = _merchant_tid if _merchant_tid is not None else ptid
+        p["company_name"] = f.title(_co_tid) if _co_tid is not None else ""
         since = (ld or {}).get("became_ruler_date")
         if since:
             p["company_since"] = f.date(since)

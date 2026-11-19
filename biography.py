@@ -4072,7 +4072,8 @@ def build_articles(facts, cache, cfg):
             "focus": "为每名死者立小传：其生平、与主角的交集、死时的情形",
             "sections": _assassin_sections(len(killed))})
     if facts.get("protagonist", {}).get("landless") or \
-            facts.get("protagonist", {}).get("merchant_company"):
+            facts.get("protagonist", {}).get("merchant_company") or \
+            facts.get("protagonist", {}).get("merchant_family"):
         articles.append({
             "key": "youxia", "title": "游侠列传·行纪",
             "subject": None, "theme": "漂泊不定的行旅记录",
