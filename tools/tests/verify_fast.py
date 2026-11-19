@@ -163,6 +163,7 @@ def _paren_violations(text):
 
 
 _SUCC_LINE_RE = re.compile(r"^\s*(?:承继|后任)：")
+_LAW_GUOTI_RE = re.compile(r"^\s*国体：")
 
 
 def _fact_paren_violations(text):
@@ -170,10 +171,13 @@ def _fact_paren_violations(text):
 
     「承继：<date>，<name>（<protagonist>的<兼 chain>）…」 is program-built (v126) and the
     parenthesis is what fixes a long chain's direction, so it is not the model-written
-    「名词（名词）」 apposition this check looks for. The whole line is program text anyway."""
+    「名词（名词）」 apposition this check looks for. The whole line is program text anyway.
+
+    v158: 律法志现行法度的国体行（「公民共和国（共和国）」）同样是程序按政体类型名与
+    层级名拼的，整行不是模型文字。"""
     kept = []
     for ln in (text or "").split("\n"):
-        if _SUCC_LINE_RE.match(ln):
+        if _SUCC_LINE_RE.match(ln) or _LAW_GUOTI_RE.match(ln):
             ln = re.sub(r"（[^（）]*）", "", ln)
         kept.append(ln)
     return _paren_violations("\n".join(kept))
@@ -575,6 +579,8 @@ def group_c(snap_path):
     # (旧措辞把「本传数据窗口内在押」写成无限期断言), 故收口词随之更新。
     _TAIL_OK = ("获释", "越狱", "没为奴隶", "处决", "死于狱中", "仍在押",
                 "遭驱逐", "遭强征入仕", "被迫出家获释", "受刑获释",
+                # v158: 战场俘获后软禁的收口（house_arrest），与本档为界同义
+                "仍被软禁",
                 # 热修 (2026-09-24): 食人硬证优先于「处决」, 囚期以吃掉收口
                 "被其吃掉")
     bad_tail = [v for v, tail in inpr
