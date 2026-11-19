@@ -1875,6 +1875,13 @@ def _article_facts(facts, cache, key, section=None):
         link = _murder_link_line(facts, key, sk)
         if link:
             blocks["说明"] = link
+    elif key == "lvzhi":
+        # current laws open the lead; the changes fill the chronicle (no mid without changes)
+        lw = facts.get("laws") or {}
+        if _sec_key(section) == "lead":
+            _set_block(blocks, "共和法度", "\n".join(lw.get("current") or []))
+        else:
+            _set_block(blocks, "法度沿革", "\n".join(lw.get("changes") or []))
     elif key == "shanglu":
         # overview plus the first routes in the lead, the rest in the chronicle; a short
         # list leaves one route to close the chronicle
@@ -2160,19 +2167,12 @@ def _shared_facts_block(facts, subject=None, key=None):
     nomad_st = facts.get("nomad_stations") or []
     if nomad_st:
         nomad_txt = _render_block("【游牧行踪】", nomad_st)
-    stats_txt = ""
-    ds = facts.get("decade_stats") or []
-    if ds:
-        label = "本十年" if facts.get("decade") else "一生"
-        stats_txt = f"【概览】{label}{'、'.join(ds)}。"
     head = f"【{'主角' if subject else '传主'}】{name}\n【家族】{house}"
     out = [f"{head}\n{life_note}" if life_note else head]
     if stations_txt:
         out.append("\n\n" + stations_txt)
     if nomad_txt:
         out.append("\n\n" + nomad_txt)
-    if stats_txt:
-        out.append("\n\n" + stats_txt)
     return F.sanitize_fact_text("".join(out), where="共享前缀") + ""
 
 
@@ -3654,6 +3654,7 @@ _ARTICLE_PRIO = {
     "benji": 100,      # annals
     "jiashi": 90,      # household
     "assassins": 84,   # assassins
+    "lvzhi": 79,       # republic laws
     "secrets": 82,     # secrets
     "friend": 80,      # friend
     "enemy": 80,       # enemy
@@ -3956,6 +3957,18 @@ def build_articles(facts, cache, cfg):
                     secs.append(_sec)
                     _prev_cut = _p.get("end") or _prev_cut
             return secs
+        if key == "lvzhi":
+            _src = style.SECTION_REQ.get(key, {})
+            secs = [{"key": "lead",
+                     "title": titles.get("lead") or defaults["lead"],
+                     "req": _section_req(_src.get("lead")
+                                         or "按传记笔法写作。", facts)}]
+            if (facts.get("laws") or {}).get("changes"):
+                secs.append({"key": "mid",
+                             "title": titles.get("mid") or defaults["mid"],
+                             "req": _section_req(_src.get("mid")
+                                                 or "按传记笔法写作。", facts)})
+            return secs
         if key == "liyi":
             # Rites tail: the material gate lives in facts.church_chronicle; an empty mid still
             # gets a tail
@@ -4069,9 +4082,15 @@ def build_articles(facts, cache, cfg):
             "subject": None, "theme": f"被主角杀死的 {len(killed)} 人的合传",
             "focus": "为每名死者立小传：其生平、与主角的交集、死时的情形",
             "sections": _assassin_sections(len(killed))})
+    if (facts.get("laws") or {}).get("current"):
+        articles.append({
+            "key": "lvzhi", "title": "律法志·共和法度",
+            "subject": None,
+            "theme": "共和国现行法度与本时期的修法",
+            "focus": "先列现行法度，再按时间写哪一年、哪一组由何法改为何法、谁提案",
+            "sections": mk_sections("lvzhi")})
     if facts.get("protagonist", {}).get("landless") or \
-            facts.get("protagonist", {}).get("merchant_company") or \
-            facts.get("protagonist", {}).get("merchant_family"):
+            facts.get("protagonist", {}).get("merchant_company"):
         articles.append({
             "key": "youxia", "title": "游侠列传·行纪",
             "subject": None, "theme": "漂泊不定的行旅记录",
