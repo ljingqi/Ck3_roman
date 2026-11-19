@@ -1393,6 +1393,12 @@ EMPTY_CACHE = {
     "char_vassal_history": {},
     # Mandate-of-Heaven cycle phase change points [{date, phase, start}]
     "dynastic_cycle_history": [],
+    # Law change points {date, government, laws, proposal_date, date_hint} (v158)
+    "player_law_history": [],
+    # Voting sessions on titles the protagonist holds, keyed title>law>start>end>proposer
+    "player_law_proposals": {},
+    # Pending-law state per held title {title: {date, group, ended, proposal}} (v158)
+    "player_title_law_states": {},
 }
 
 
@@ -3928,6 +3934,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
         if cid == player_id:
             ld = c.get("landed_data") or {}
             rec["landed"] = player_landed_block(melt, cid, ld)
+            latch_player_laws(cache, date_label, player_id, c, melt)
             # Domicile seat history, change points only. The patron of a merchant company is
             # the holder of the barony under its domicile, and the cache keeps only the last
             # save's seat; this track lets a past date find the patron of its own day.
@@ -4007,6 +4014,7 @@ def _extract_snapshot(cache, melt, date_label, _new_deaths=None):
     # Secrets, factions, epidemics, disease edges, hooks, marriage pairs, enslavement,
     # opinions, relation reasons, spouse/prison latches and Carnalitas traces: each helper
     # diffs or latches its slice of the snapshot into the cache (see its docstring).
+    _latch_dead_prunable(cache, melt, _new_deaths)
     _diff_secrets(cache, melt, date_label)
     _diff_factions(cache, melt, date_label)
     _diff_epidemics(cache, melt, date_label)
@@ -4453,6 +4461,140 @@ def _latch_prison_manners(cache, melt, date_label):
             holder, target = hook_slot_holder(first, second, k)
             _put(target, holder, made, "hook", "hook")
     return added
+
+
+_LAW_SENTINEL_DATE = "-5000.1.1"
+
+
+def _norm_law_date(d):
+    """A date string, or None for the save's 'no date' sentinel (-5000.1.1)."""
+    if d is None:
+        return None
+    s = str(d)
+    return None if s in ("", _LAW_SENTINEL_DATE) else s
+
+
+def latch_player_laws(cache, date_label, player_id, char, melt):
+    """Latch the protagonist's laws, the votes on his titles and the pending-law state.
+
+    player_law_history: change points {date, government, laws, proposal_date, date_hint}.
+    A government change happens between two saves, so its own date is unknown; the
+    date_hint comes from player_title_history entries inside the gap (the save only
+    shows the new state, v158).
+
+    player_law_proposals: voting sessions whose title the protagonist holds, keyed by
+    title>law>start>end>proposer (a session re-appears until it ends).
+
+    player_title_law_states: per title, the last meaningful {group, ended, proposal},
+    since the save carries only the present-day pending law.
+    """
+    if player_id is None or not isinstance(char, dict):
+        return
+    ld = char.get("landed_data") or {}
+    gov = ld.get("government") or ""
+    laws = sorted(str(x) for x in (ld.get("laws") or []) if x)
+    prop = _norm_law_date(ld.get("law_proposal_date"))
+    hist = cache.setdefault("player_law_history", [])
+    prev = hist[-1] if hist else None
+    if prev is None or laws != prev.get("laws") or gov != prev.get("government"):
+        row = {"date": date_label, "government": gov, "laws": laws,
+               "proposal_date": prop, "date_hint": None}
+        if prev is not None and gov != prev.get("government"):
+            for h in cache.get("player_title_history") or []:
+                d = h.get("date")
+                if (d and date_key(d) > date_key(prev["date"])
+                        and date_key(d) <= date_key(date_label)):
+                    row["date_hint"] = d
+        hist.append(row)
+
+    lt = (melt.get("landed_titles") or {}).get("landed_titles") or {}
+    held = {}
+    for tid, e in lt.items():
+        if not isinstance(e, dict):
+            continue
+        try:
+            if e.get("holder") is not None and int(e.get("holder")) == int(player_id):
+                held[str(tid)] = e
+        except (TypeError, ValueError):
+            continue
+
+    props = cache.setdefault("player_law_proposals", {})
+    db = (melt.get("voting_sessions") or {}).get("database") or {}
+    for sid, e in db.items():
+        if not isinstance(e, dict):
+            continue
+        tid = str(e.get("title"))
+        if tid not in held or not e.get("law"):
+            continue
+        key = ">".join(str(e.get(k)) for k in
+                       ("title", "law", "start_date", "end_date", "character"))
+        row = props.get(key)
+        if row is None:
+            props[key] = {
+                "title": tid, "law": str(e.get("law")),
+                "proposer": (e.get("character")
+                             if isinstance(e.get("character"), int) else None),
+                "start": _norm_law_date(e.get("start_date")),
+                "end": _norm_law_date(e.get("end_date")),
+                "votes": e.get("votes") or {},
+                "first_seen": date_label, "last_seen": date_label,
+            }
+        else:
+            row["last_seen"] = date_label
+
+    states = cache.setdefault("player_title_law_states", {})
+    for tid, e in held.items():
+        group = str(e.get("proposed_law_group") or "")
+        ended = _norm_law_date(e.get("voting_session_ended")) or ""
+        if not group and not ended:
+            continue
+        row = states.get(tid)
+        if row is None or row.get("group") != group or row.get("ended") != ended:
+            states[tid] = {"date": date_label, "title": tid,
+                           "group": group, "ended": ended,
+                           "proposal": _norm_law_date(e.get("law_proposal_date"))}
+
+
+def _latch_dead_prunable(cache, melt, _new_deaths=None):
+    """Record the deaths of already-cached characters from characters.dead_prunable.
+
+    The per-snapshot character loop visits only the target set, so a character who
+    drops out of it (a battle memory expires after five years) never receives the
+    death that a later save carries in dead_prunable. Only records already present
+    in the cache are updated, so the pruned bucket does not flood the cache with
+    strangers (v158).
+    """
+    kept = cache.get("characters") or {}
+    n = 0
+    for cid, c in _dead_prunable(melt).items():
+        rec = kept.get(str(cid))
+        if not isinstance(rec, dict) or rec.get("death"):
+            continue
+        c = _as_char(_collapse_char_value(c))
+        if not isinstance(c, dict):
+            continue
+        dd = c.get("dead_data")
+        if not isinstance(dd, dict) or not dd.get("date"):
+            continue
+        rec["death"] = {
+            "date": dd.get("date"),
+            "reason": dd.get("reason"),
+            "killer": dd.get("killer"),
+            "liege": dd.get("liege"),
+            "liege_title": dd.get("liege_title"),
+            "named_title": dd.get("named_title"),
+        }
+        if (rec.get("last_location") or {}).get("province") is not None:
+            rec["death"]["location_province"] = rec["last_location"]["province"]
+        # Only the memoryless need a backtrack (pipeline._recover_dead_memories filters
+        # the rest), so the list stays the size of that work, not of the pruned bucket.
+        if _new_deaths is not None and not rec.get("memories"):
+            try:
+                _new_deaths.append(int(cid))
+            except (TypeError, ValueError):
+                pass
+        n += 1
+    return n
 
 
 def _diff_hooks(cache, melt, date_label):
