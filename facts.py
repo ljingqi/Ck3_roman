@@ -19863,6 +19863,13 @@ class Facts:
             return ""
         return f"{v * 100:.2f}".rstrip("0").rstrip(".")
 
+    @staticmethod
+    def _money_plain(v):
+        """A save-side gold value as stored, without trailing zeros (route income)."""
+        if not isinstance(v, (int, float)):
+            return ""
+        return f"{v:.2f}".rstrip("0").rstrip(".")
+
     def _trade_good_word(self, gk):
         gk = str(gk or "")
         return L.loc(self.table, gk) or gk
@@ -19910,6 +19917,57 @@ class Facts:
                 lo = start
         return lo, ao
 
+    def _route_origin_goods(self, row):
+        """The route's goods on its first day, reconstructed by walking `changes` backwards."""
+        goods = list(row.get("goods") or [])
+        created = cl.date_key(str(row.get("created") or row.get("first_seen") or ""))
+        for c in reversed(row.get("changes") or []):
+            if not isinstance(c, dict):
+                continue
+            f = c.get("fields") or {}
+            if "goods" not in f:
+                continue
+            if cl.date_key(str(c.get("date") or "")) >= created:
+                goods = list((f.get("goods") or {}).get("from") or [])
+        return goods
+
+    def _trade_title_adj(self, cid, date):
+        """The primary title's adjective on `date`, as the game's route-name template reads it."""
+        if cid is None:
+            return ""
+        _tier, tid = self._primary_title_at(cid, as_of=date)
+        if tid is None:
+            return ""
+        t = self._lt.get(str(tid)) or {}
+        adj = str((t.get("title_name_data") or {}).get("adj") or "").strip()
+        if adj:
+            return L.loc(self.table, adj) or adj
+        return self._name_at_date(tid, date) or self.title_base_name(tid)
+
+    def _route_game_name(self, p):
+        """The game-localized route name (PROFIT/COMMISSION/DISTRIBUTION_TRADE_ROUTE_NAME)."""
+        row = p["row"]
+        mode = str(row.get("mode") or "")
+        goods = self._route_origin_goods(row)
+        good = self._trade_good_word(goods[0]) if goods else ""
+        if mode == "distribution":
+            mk = row.get("markets") or []
+            if len(mk) >= 2:
+                a, b = self._trade_market_word(mk[0]), self._trade_market_word(mk[-1])
+                if a and b:
+                    return f"{a}‑{b}路线"
+        elif mode == "commission":
+            comm = row.get("commissioner")
+            if isinstance(comm, int) and good:
+                adj = self._trade_title_adj(comm, p["created"] or p["origin_date"])
+                if adj:
+                    return f"{adj}{good}路线"
+        else:
+            adj = self._trade_title_adj(self.cache.get("player_id"), p["origin_date"])
+            if adj and good:
+                return f"{adj}{good}路线"
+        return self._trade_mode_word(mode)
+
     def trade_routes_lines(self):
         """Route material for 《商路志》: {"总览": text, "条陈": [one block per route]}.
 
@@ -19945,11 +20003,6 @@ class Facts:
                 if isinstance(prev, dict) and isinstance(prev.get("cid"), int):
                     pred_name = self.name(prev["cid"])
                 break
-        try:
-            import market_prices as _mp
-            base_prices = _mp.good_base_prices(self.cfg)
-        except Exception:
-            base_prices = {}
 
         picks = []
         for row in rows:
@@ -19983,31 +20036,27 @@ class Facts:
             return {"总览": "", "条陈": []}
         picks.sort(key=lambda p: (cl.date_key(p["origin_date"] or ""),
                                   str(p["row"].get("id"))))
+        seen_names = {}
+        for p in picks:
+            base = self._route_game_name(p)
+            n = seen_names.get(base, 0) + 1
+            seen_names[base] = n
+            p["route_name"] = (f"第{n}{base}" if n > 1 else base)
 
         blocks = []
         for i, p in enumerate(picks, 1):
             row, hist, idx = p["row"], p["hist"], p["idx"]
-            mode = self._trade_mode_word(row.get("mode"))
             if p["origin"] == "inherited":
                 src = p["src_name"] or "先代"
-                head = (f"第{i}条　{mode}，承袭自{src}，"
+                head = (f"{p['route_name']}，承袭自{src}，"
                         f"{llm.fmt_cn_date(p['origin_date'])}接手")
                 if p["created"] and cl.date_key(p["created"]) != cl.date_key(p["origin_date"]):
                     head += f"；原开设于{llm.fmt_cn_date(p['created'])}"
             else:
-                head = f"第{i}条　{mode}"
+                head = p["route_name"]
                 if p["created"]:
                     head += f"，开设于{llm.fmt_cn_date(p['created'])}"
             lines = [head]
-            goods = []
-            for gk in row.get("goods") or []:
-                nm = self._trade_good_word(gk)
-                bp = base_prices.get(gk)
-                if isinstance(bp, (int, float)):
-                    nm += f"（基价{self._money_text(bp)}）"
-                goods.append(nm)
-            if goods:
-                lines.append("货物：" + "、".join(goods))
             mkts = [self._trade_market_word(mid) for mid in (row.get("markets") or [])]
             if mkts:
                 lines.append("经过市场：" + "、".join(mkts))
@@ -20050,7 +20099,7 @@ class Facts:
             money = []
             g = row.get("gold")
             if isinstance(g, (int, float)):
-                money.append(f"月入{self._money_text(g)}")
+                money.append(f"月入{self._money_plain(g)}")
             # A route is a flow: merge every transaction at the same market for the same good,
             # so the line states the whole route's traffic rather than one arbitrary order.
             flows = {}   # (market, 买入/卖出, good) -> Σ amount, in first-appearance order
