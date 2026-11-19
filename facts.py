@@ -26814,7 +26814,13 @@ def _protagonist(f):
             # The capital barony is implied by its county, so the folded list is what produces
             # "直辖N地": domain = the highest-tier titles (all of that tier) + the counties actually
             # held, secondary duchies and kingdoms not listed alongside (`domain_titles`).
-            keep, _folded = f.domain_titles(ld.get("domain") or [])
+            # A merchant company is a landless title: once a landed primary exists it stops being
+            # a fief in the list, which matters for a decade whose sampled domain is still the
+            # year-start merchant one (the republic founded that year is not in that sample).
+            _dom_ids = ld.get("domain") or []
+            if ptier is not None:
+                _dom_ids = [t for t in _dom_ids if not f._is_merchant_family_title(t)]
+            keep, _folded = f.domain_titles(_dom_ids)
             dom = []
             for tid in keep:
                 t = f.title(tid)
