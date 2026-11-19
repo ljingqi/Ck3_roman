@@ -2525,6 +2525,75 @@ _GENDER_LAWS = frozenset({
     "female_preference_law", "female_only_law"})
 
 
+# Republic law layout for 《律法志》: (prefix, display group, slot). The display group
+# order is _REPUBLIC_GROUP_ORDER; the slot orders laws inside one group.
+_REPUBLIC_LAW_SLOTS = (
+    ("republic_type_", "国体", 0),
+    ("republic_tier_", "国体", 1),
+    ("republic_assembly_authority_", "议会", 0),
+    ("republic_assembly_composition_", "议会", 1),
+    ("male_preference_law", "选举", 0),
+    ("republican_elective_succession_law", "选举", 1),
+    ("republic_assembly_voting_thresholds_", "表决与任期", 0),
+    ("republic_assembly_term_length_", "表决与任期", 1),
+    ("republic_war_declaration_", "宣战", 0),
+    ("republic_army_organization_", "军制", 0),
+    ("republic_execution_", "刑罚", 0),
+    ("republic_banishment_", "刑罚", 1),
+    ("republic_title_revocation_", "头衔与封臣", 0),
+    ("republic_retract_vassal_", "头衔与封臣", 1),
+    ("republic_vassal_refusal_", "头衔与封臣", 2),
+    ("budget_allocation_", "财政与贸易", 0),
+    ("republic_trade_specialization_", "财政与贸易", 1),
+    ("republic_trade_pricing_", "财政与贸易", 2),
+    ("republic_end_term_law_", "财政与贸易", 3),
+    ("top_liege_redirected_to_border_wars_law", "边境战争", 0),
+)
+_REPUBLIC_GROUP_ORDER = ("国体", "议会", "选举", "表决与任期", "宣战", "军制",
+                         "刑罚", "头衔与封臣", "财政与贸易", "边境战争", "其他")
+
+# Change-line families: a law or a title's proposed_law_group key -> the Chinese family
+# word used in "由…改为…". Longest/most specific prefix first.
+_REPUBLIC_LAW_FAMILIES = (
+    ("republic_assembly_composition", "议会结构"),
+    ("republic_assembly_authority", "议会权威"),
+    ("republic_assembly_voting_thresholds", "表决门槛"),
+    ("republic_assembly_term_length", "任期"),
+    ("republic_war_declaration", "宣战权"),
+    ("republic_army_organization", "军制"),
+    ("republic_title_revocation", "剥夺头衔"),
+    ("republic_retract_vassal", "收回封臣"),
+    ("republic_vassal_refusal", "封臣拒绝"),
+    ("republic_banishment", "驱逐"),
+    ("republic_execution", "处决"),
+    ("republic_trade_specialization", "贸易补贴"),
+    ("republic_trade_pricing", "产业赞助"),
+    ("republic_end_term_law", "提前选举"),
+    ("republic_type_", "国体"),
+    ("republic_tier_", "国体"),
+    ("budget_allocation", "俸禄预算"),
+    ("top_liege_redirected_to_border_wars_law", "边境战争"),
+)
+
+
+def _republic_law_slot(key):
+    """(display group, slot) of a republic law key; unknown keys go to 其他."""
+    for prefix, group, slot in _REPUBLIC_LAW_SLOTS:
+        if key == prefix or key.startswith(prefix):
+            return group, slot
+    return "其他", 99
+
+
+def _republic_law_family(key):
+    """Chinese family word of a law or proposed_law_group key, '' when unknown."""
+    if key in _GENDER_LAWS or str(key).endswith("_succession_law"):
+        return "选举制"
+    for prefix, word in _REPUBLIC_LAW_FAMILIES:
+        if str(key) == prefix or str(key).startswith(prefix):
+            return word
+    return ""
+
+
 def _camp_law_names(laws, table):
     """Camp law words. A gender-preference law and the camp's succession law are merged into
     one phrase (男性优先商会继承制) because the game applies them as a pair."""
@@ -19977,6 +20046,193 @@ class Facts:
                 return f"{adj}{good}路线"
         return self._trade_mode_word(mode)
 
+    # ---- republic laws ----
+
+    @staticmethod
+    def _law_year(date):
+        """Year number of a "Y.M.D" date string (0 when unparsable)."""
+        try:
+            return int(str(date or "").split(".")[0])
+        except (TypeError, ValueError):
+            return 0
+
+    def _law_zh(self, key):
+        return (L.loc(self.table, str(key)) or str(key)).strip()
+
+    def _law_proposer(self, cid):
+        """Proposer name for a law line: the player reads as his given name (奥斯武尔夫),
+        everyone else as the full display name."""
+        if not isinstance(cid, int):
+            return ""
+        rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+        if cid == self.cache.get("player_id"):
+            return rec.get("name_zh") or self.name_or(cid)
+        # name_full is the display name latched at merge time (佩特勒·德·罗斯); the
+        # live renderer can drop the "德" particle for this culture.
+        return rec.get("name_full") or self.name_or(cid)
+
+    def _republic_current_lines(self, laws):
+        """One "组名：法名。" line per display group, in fixed group order."""
+        by = {}
+        for key in laws:
+            group, slot = _republic_law_slot(str(key))
+            by.setdefault(group, []).append((slot, str(key)))
+        lines = []
+        for group in _REPUBLIC_GROUP_ORDER:
+            items = sorted(by.get(group) or [])
+            if not items:
+                continue
+            keys = [k for _slot, k in items]
+            if group == "国体":
+                typ = next((k for k in keys if k.startswith("republic_type_")), "")
+                tier = next((k for k in keys if k.startswith("republic_tier_")), "")
+                val = self._law_zh(typ) if typ else ""
+                if tier:
+                    t = self._law_zh(tier)
+                    val = f"{val}（{t}）" if val else t
+            elif group == "议会":
+                auth = next((k for k in keys
+                             if k.startswith("republic_assembly_authority_")), "")
+                comp = next((k for k in keys
+                             if k.startswith("republic_assembly_composition_")), "")
+                val = ((self._law_zh(auth) if auth else "")
+                       + (self._law_zh(comp) if comp else ""))
+            elif group == "选举":
+                gender = next((k for k in keys if k in _GENDER_LAWS), "")
+                succ = next((k for k in keys if k.endswith("_succession_law")), "")
+                val = ((self._law_zh(gender) if gender else "")
+                       + (self._law_zh(succ) if succ else ""))
+            elif group == "表决与任期":
+                slots = {}
+                for slot, key in items:
+                    slots.setdefault(slot, []).append(self._law_zh(key))
+                val = "；".join("、".join(v) for _s, v in sorted(slots.items()))
+            else:
+                val = "、".join(self._law_zh(k) for k in keys)
+            if val:
+                lines.append(f"{group}：{val}。")
+        return lines
+
+    def republic_laws(self):
+        """《律法志》 material: {"current": [lines], "changes": [lines]} for a republic.
+
+        The current block comes from the last law history point at or before `as_of`, never
+        from the cache's final save (a decade ending 938 must not show the 942/944 laws).
+        Changes are the law diffs between consecutive points inside the biography window.
+        Each line carries a year or year range; the proposer is written only when a session
+        or the player's own proposal date proves it. Returns {} outside a republic with laws.
+        """
+        hist = [h for h in (self.cache.get("player_law_history") or [])
+                if isinstance(h, dict) and h.get("date")]
+        as_of = self.as_of or self.cache.get("last_date") or ""
+        cur = None
+        for h in hist:
+            if not as_of or cl.date_key(h["date"]) <= cl.date_key(as_of):
+                cur = h
+        if cur is None:
+            pid = self.cache.get("player_id")
+            rec = ((self.cache.get("characters") or {}).get(str(pid)) or {}
+                   if pid is not None else {})
+            landed = rec.get("landed") or {}
+            laws = landed.get("laws") or []
+            gov = landed.get("government") or ""
+            if gov != "republic_government" or not laws:
+                return {}
+            cur = {"date": as_of, "government": gov, "laws": laws,
+                   "proposal_date": None, "date_hint": None}
+            hist = [cur]
+        if cur.get("government") != "republic_government" or not cur.get("laws"):
+            return {}
+
+        current = self._republic_current_lines(cur["laws"])
+        lo = self._bio_window_start()
+        lo_k = cl.date_key(lo) if lo else None
+        ao_k = cl.date_key(as_of) if as_of else None
+        changes = []
+        sessions = [v for v in
+                    (self.cache.get("player_law_proposals") or {}).values()
+                    if isinstance(v, dict)]
+        states = [s for s in (self.cache.get("player_title_law_states") or [])
+                  if isinstance(s, dict)]
+        for i in range(1, len(hist)):
+            prev, now = hist[i - 1], hist[i]
+            ck = cl.date_key(now["date"])
+            if lo_k is not None and not ck > lo_k:
+                continue
+            if ao_k is not None and ck > ao_k:
+                continue
+            pk = cl.date_key(prev["date"])
+            if prev.get("government") != now.get("government"):
+                hint = now.get("date_hint") or now["date"]
+                if lo_k is None or cl.date_key(hint) > lo_k:
+                    changes.append((
+                        cl.date_key(hint), -1,
+                        f"{self._law_year(hint)}年，政体由"
+                        f"{self._government_zh(prev.get('government'))}改为"
+                        f"{self._government_zh(now.get('government'))}。"))
+            if prev.get("government") != now.get("government"):
+                # A government switch is the baseline: the old government's laws are not
+                # "replaced" family by family, so only the government line is written.
+                continue
+            old, new = set(prev.get("laws") or []), set(now.get("laws") or [])
+            added, removed = new - old, old - new
+            if not added and not removed:
+                continue
+            fams = []
+            for key in sorted(added | removed):
+                fam = _republic_law_family(key)
+                if fam and fam not in fams:
+                    fams.append(fam)
+            fams.sort(key=lambda w: next(
+                (n for n, (_p, f) in enumerate(_REPUBLIC_LAW_FAMILIES) if f == w),
+                99))
+            for fam in fams:
+                gone = [self._law_zh(k) for k in sorted(removed)
+                        if _republic_law_family(k) == fam]
+                came = [self._law_zh(k) for k in sorted(added)
+                        if _republic_law_family(k) == fam]
+                year, proposer = None, ""
+                for v in sessions:
+                    if _republic_law_family(v.get("law")) != fam:
+                        continue
+                    ek = cl.date_key(v.get("end") or "")
+                    if pk < ek <= ck:
+                        year = self._law_year(v["end"])
+                        proposer = self._law_proposer(v.get("proposer"))
+                        break
+                if year is None:
+                    for s in states:
+                        if _republic_law_family(s.get("group")) != fam:
+                            continue
+                        # The state must have been seen inside this gap: a later snapshot's
+                        # stale ended date (the 936 row still carrying 932.10.4) cannot
+                        # attribute an earlier change.
+                        sk = cl.date_key(s.get("date") or "")
+                        if not (pk < sk <= ck):
+                            continue
+                        ek = cl.date_key(s.get("ended") or "")
+                        if pk < ek <= ck:
+                            year = self._law_year(s["ended"])
+                            pd = now.get("proposal_date")
+                            if pd and pk < cl.date_key(pd) <= ck:
+                                proposer = self._law_proposer(
+                                    self.cache.get("player_id"))
+                            break
+                if year is None:
+                    oy, ny = self._law_year(prev["date"]), self._law_year(now["date"])
+                    when = (f"{oy}年至{ny - 1}年"
+                            if ny - 1 > oy else f"{oy}年")
+                    sort_key = ny - 1
+                else:
+                    when, sort_key = f"{year}年", year
+                line = (f"{when}，{fam}由{'、'.join(gone)}"
+                        f"改为{'、'.join(came)}")
+                if proposer:
+                    line += f"，提案人{proposer}"
+                changes.append((sort_key, fams.index(fam), line + "。"))
+        changes.sort(key=lambda x: (x[0], x[1]))
+        return {"current": current, "changes": [c[2] for c in changes]}
+
     def trade_routes_lines(self):
         """Route material for 《商路志》: {"总览": text, "条陈": [one block per route]}.
 
@@ -32071,6 +32327,9 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
         # 《食货志》 material: price-trend conclusions of the local market's active goods
         # (see Facts.food_goods_lines).
         "food_goods": f.food_goods_lines(),
+        # 《律法志》 material: current republic laws plus the law changes inside this window
+        # (see Facts.republic_laws; {} outside a republic).
+        "laws": f.republic_laws(),
         # data source of 《家族恩怨录》 and 《宝物志》
         "house_feuds": f.house_feuds(),
         "family_artifacts": f.family_artifacts(),
@@ -32144,13 +32403,6 @@ def build_facts(cache, melt, names_path=None, as_of=None, decade=None,
     # Facts.timeline's owner check).
     facts["protagonist_imprisoned"] = bool(stats.get("被囚") or stats.get("越狱"))
     facts["protagonist_war"] = bool(stats.get("开战") or stats.get("应战"))
-    if stats:
-        # top 6 labels by count, descending, for the 【概览】 block ("本十年结怨9次…").
-        # Only positive counts are taken: a zero entry such as "囚禁他人0次" is a program
-        # placeholder (`stats["囚禁他人"]` is set to 0 unconditionally) and must not surface.
-        top = [(k, v) for k, v in sorted(stats.items(), key=lambda kv: -kv[1])
-               if v > 0][:6]
-        facts["decade_stats"] = [f"{k}{v}次" for k, v in top]
     # consort-clan biographies (princess titles or daughters/sisters of a Chinese emperor only)
     pid = cache.get("player_id")
     if pid is not None:
