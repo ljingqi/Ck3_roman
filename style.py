@@ -52,10 +52,15 @@ RULES = {
         "「一篇一题」：每篇先立一个主题与一个决定性时刻，"
         "整篇内容都围绕这个主题推进。"
     ),
+    # v158: 战场俘获与软禁的事实行已改写；正文叙述监所时统一用「狱中」，
+    # 「俘获」是与「囚禁」区分开的战阵用词。
+    "prison_wording": (
+        "「监所措辞」：叙述监禁之处，一律称「狱中」；在战阵上被擒称「俘获」。"
+    ),
 }
 
 # Order of the rules sent in the system message.
-_RULE_ORDER = ("nonfiction", "narrative", "narrative_focus")
+_RULE_ORDER = ("nonfiction", "narrative", "narrative_focus", "prison_wording")
 # Boards that carry secret facts and therefore also receive the secret rule.
 SECRET_BOARDS = ("secrets",)
 
