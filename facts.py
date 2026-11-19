@@ -690,9 +690,10 @@ _KIN_TEXT_CACHE = {}
 
 # ---- scripted relations (issue 3): a relation word prefixed to a blood-kin attributive ----
 # kind -> Chinese, from game_concepts_l_simp_chinese.yml (friend=朋友 … favorite_child=最宠爱的孩子).
-# The kind stored on an opinion names the OWNER's own role, so cid's role toward the subject is the
-# kind on the (owner=cid, target=subject) opinion; the reverse opinion is mapped through
-# RELATION_COUNTERPART. Only kinds present in the save's scripted_relations are listed.
+# The kind is not uniformly the owner's role: `_REL_TARGET_ROLE` kinds name the TARGET's role
+# (a guardian's opinion toward the ward stores `ward`; a debtor's opinion toward the lender stores
+# `creditor`), while `_REL_SYMMETRIC` kinds name both sides. Only kinds present in the save's
+# scripted_relations are listed.
 RELATION_WORDS = {
     "soulmate": "灵魂伴侣", "best_friend": "至交", "nemesis": "死敌",
     "blood_brother": "结义兄弟", "lover": "情人", "rival": "仇敌",
@@ -700,13 +701,14 @@ RELATION_WORDS = {
     "guardian": "监护人", "ward": "被监护人", "mentor": "导师", "student": "学生",
     "elder": "恩师", "disciple": "门生",
     "bully": "霸凌者", "victim": "出气筒", "favorite_child": "最宠爱的孩子",
+    "creditor": "债权人", "debtor": "债务人",
 }
 # When one person holds several relations, the most significant wins (advanced > basic > childhood),
 # so only one relation word is prefixed, matching the game's single-key RelationToMe.
 RELATION_PRIORITY = (
     "soulmate", "best_friend", "nemesis", "blood_brother", "lover", "rival", "friend",
     "grudge", "elder", "disciple", "mentor", "student", "guardian", "ward",
-    "crush", "bully", "victim", "favorite_child",
+    "crush", "bully", "victim", "favorite_child", "creditor", "debtor",
 )
 # Asymmetric relations: the counterpart role, used when only the subject's opinion is stored.
 RELATION_COUNTERPART = {
@@ -714,7 +716,21 @@ RELATION_COUNTERPART = {
     "guardian": "ward", "ward": "guardian",
     "mentor": "student", "student": "mentor",
     "elder": "disciple", "disciple": "elder",
+    "creditor": "debtor", "debtor": "creditor",
 }
+# Kinds whose stored name describes the TARGET, not the owner. On a direct opinion (owner=cid)
+# the word for cid is the counterpart; on the reverse opinion it is the kind itself.
+_REL_TARGET_ROLE = {
+    "guardian", "ward", "mentor", "student", "elder", "disciple",
+    "creditor", "debtor", "favorite_child",
+}
+# Kinds that describe both sides equally; safe to read from either opinion.
+_REL_SYMMETRIC = {
+    "soulmate", "best_friend", "nemesis", "blood_brother", "lover", "rival", "friend",
+}
+# Pairs latched with a first_seen date but without a memory type; `relation_word_for` gates them
+# by that date instead of `_rel_mem_date`.
+_LATCH_REL_KINDS = {"creditor", "debtor"}
 
 # ---- v124: path words (an identity reached through someone else) ----
 # 「{anchor word}的{word}」 -- the anchor is a person the reference character is himself named
@@ -1886,8 +1902,8 @@ class KinScope:
         """On first occurrence return this person's kin attributive and claim the slot, else ''.
 
         Concurrent relations are joined with 「兼」 in reading order -- primary kin term, further
-        blood routes (three blood terms at most), the one scripted relation, then every court office
-        the person holds in the subject's court (see `Facts.kin_chain_words_for`).
+        blood routes (three blood terms at most), the patron word, the one scripted relation, then
+        every court office the person holds in the subject's court (see `Facts.kin_chain_words_for`).
         `subject` overrides the reference person for sentences with their own subject; `date` is
         that sentence's own day, so a relation formed later stays out of it."""
         subj = self.subject if subject is None else subject
@@ -1909,8 +1925,8 @@ class KinScope:
 
     def mark(self, cid, base, facts, date=None):
         """Prefix cid's term `base` with its kin attributive, joined with 「兼」 when several relations
-        hold concurrently (primary kin term, blood routes, the one scripted relation, then every
-        court office; first occurrence only); returns the final text."""
+        hold concurrently (primary kin term, blood routes, the patron word, the one scripted
+        relation, then every court office; first occurrence only); returns the final text."""
         if not base or cid is None or self.subject is None:
             return base
         try:
@@ -6545,9 +6561,10 @@ class Facts:
         return words
 
     # Order of the categories in a composed identity list (user 2026-10-05): the marriage first,
-    # then the blood routes (three at most), then the affinal routes (two at most), then the one
-    # scripted relation, then every office the person holds in the reference person's court.
-    _IDENTITY_ORDER = ("marriage", "blood", "affinal", "former", "relation", "path", "office")
+    # then the blood routes (three at most), then the affinal routes (two at most), then the
+    # patron word, then the one scripted relation, then every office the person holds in the
+    # reference person's court.
+    _IDENTITY_ORDER = ("marriage", "blood", "affinal", "former", "patron", "relation", "path", "office")
     # Affinal terms one composed identity list may carry. A budget of its own, so an in-law route
     # never eats into the blood routes' budget (user 2026-10-06: both ties must be visible on the
     # same person, 「兄弟兼堂表兄弟兼姻亲兄弟兼朋友」).
@@ -7517,10 +7534,10 @@ class Facts:
             _put("affinal", a, "affinal")
         for fw in self.former_kin_words_for(c, s, date=date):
             _put("former", fw, "former")
-        _put("relation", self.relation_word_for(c, s, date=date), "relation")
         if self.is_patron_of(c, date=date, subject=s):
             _put("patron", L.loc(self.table, "game_concept_merchant_patron") or "庇护者",
                  "patron")
+        _put("relation", self.relation_word_for(c, s, date=date), "relation")
         # The offices stand after the path word in reading order, but they are collected first:
         # their presence decides whether a gap exists at all. A court artisan of the subject has a
         # direct tie already, so a path word there would put a second, weaker label on him
@@ -7549,10 +7566,10 @@ class Facts:
 
         Compatibility shell over `identity_parts`: the marriage word first, then the further blood
         routes (three blood terms at most in all), then the affinal routes (two at most), then the
-        one scripted relation, then a path word when none of those exists, then every office the
-        person holds in the subject's court. e.g. a wife who is also the subject's daughter and
-        cousin, and his marshal -> [妻子, 女儿, 堂姐, 军事总管]. `paths=False` skips the path word
-        (the post-processing passes, which never rewrite one).
+        patron word, then the one scripted relation, then a path word when none of those exists,
+        then every office the person holds in the subject's court. e.g. a wife who is also the
+        subject's daughter and cousin, and his marshal -> [妻子, 女儿, 堂姐, 军事总管].
+        `paths=False` skips the path word (the post-processing passes, which never rewrite one).
 
         Reading order and caps follow the user's 2026-10-05 ruling: a character holds at most one
         scripted relation to another (nobody is both a rival and a lover), while offices are all
@@ -18348,19 +18365,51 @@ class Facts:
 
     def _relation_kinds_between(self, cid, subject):
         """Scripted-relation kinds naming `cid`'s role toward `subject`, from both the melt and the
-        per-tier cache latch. The kind on the opinion cid owns toward subject is cid's own role; the
-        reverse opinion (subject owns it) is mapped through RELATION_COUNTERPART to cid's side.
-        `potential_*` kinds are absent from RELATION_WORDS and so drop out."""
+        per-tier cache latch.
+
+        A direct opinion (owner=cid) stores a target-role kind for asymmetric pairs (a guardian's
+        opinion toward the ward says `ward`), so it is mapped through RELATION_COUNTERPART; a
+        symmetric kind stands as itself, and a one-way owner-role kind (`grudge`/`crush`) is cid's
+        own. On the reverse opinion (owner=subject) the target-role kind already names cid, a
+        counterpart pair maps through RELATION_COUNTERPART, and a one-way kind must be skipped
+        rather than read as cid's. `potential_*` kinds are absent from RELATION_WORDS and drop out."""
         out = set()
         for idx in (self._any_opinion_index(), self._cached_opinion_index()):
             for k in (idx.get((cid, subject)) or {}):
-                if k in RELATION_WORDS:
-                    out.add(k)
+                if k in _REL_TARGET_ROLE:
+                    ck = RELATION_COUNTERPART.get(k)
+                else:
+                    ck = k
+                if ck in RELATION_WORDS:
+                    out.add(ck)
             for k in (idx.get((subject, cid)) or {}):
-                ck = RELATION_COUNTERPART.get(k, k)
+                if k in _REL_TARGET_ROLE:
+                    ck = k
+                elif k in RELATION_COUNTERPART:
+                    ck = RELATION_COUNTERPART[k]
+                elif k in _REL_SYMMETRIC:
+                    ck = k
+                else:
+                    ck = ""
                 if ck in RELATION_WORDS:
                     out.add(ck)
         return out
+
+    def _rel_latch_date(self, cid, subject):
+        """Earliest latch `first_seen` of a creditor/debtor pair, either direction, or None.
+
+        These pairs carry no memory type, so they cannot use `_rel_mem_date`; the cache latch is
+        the only date the decade gate can read. None means the pair predates the latch or the
+        cache lacks it, and the caller then renders the word instead of dropping it."""
+        idx = self._cached_opinion_index()
+        best = None
+        for key in ((cid, subject), (subject, cid)):
+            row = idx.get(key) or {}
+            for k in _LATCH_REL_KINDS:
+                d = (row.get(k) or {}).get("_first_seen")
+                if d and (best is None or cl.date_key(d) < cl.date_key(best)):
+                    best = d
+        return best
 
     def relation_word_for(self, cid, subject, date=None):
         """The Chinese relation word for `cid`'s role toward `subject` (「朋友」/「仇敌」…), or '' when
@@ -18369,8 +18418,10 @@ class Facts:
         When several relations hold, RELATION_PRIORITY picks the single most significant one, matching
         the game's one-key RelationToMe. Kinds with a known memory type are gated by `_rel_mem_date`
         (the same rule `relation_reasons` uses) so a decade chapter never shows a friendship or feud
-        formed after its cutoff; childhood/TGP kinds with no memory type pass ungated. `date` tightens
-        that gate to the sentence's own day: a relation formed after it does not word the line."""
+        formed after its cutoff; creditor/debtor have no memory type and are gated by the latch
+        `first_seen` instead; other childhood/TGP kinds with no memory type pass ungated. `date`
+        tightens that gate to the sentence's own day: a relation formed after it does not word the
+        line."""
         try:
             cid, subject = int(cid), int(subject)
         except (TypeError, ValueError):
@@ -18390,6 +18441,13 @@ class Facts:
                     continue        # relation formed after as_of -> not rendered this decade
                 if date and cl.date_key(_rd) > cl.date_key(date):
                     continue        # relation formed after the sentence's own day
+            elif k in _LATCH_REL_KINDS:
+                _rd = self._rel_latch_date(cid, subject)
+                if _rd:
+                    if self.as_of and cl.date_key(_rd) > cl.date_key(self.as_of):
+                        continue
+                    if date and cl.date_key(_rd) > cl.date_key(date):
+                        continue
             return RELATION_WORDS.get(k, "")
         return ""
 
