@@ -20289,7 +20289,7 @@ class Facts:
                 hint = now.get("date_hint") or now["date"]
                 if lo_k is None or cl.date_key(hint) > lo_k:
                     changes.append((
-                        cl.date_key(hint), -1,
+                        self._law_year(hint), -1,
                         f"{self._law_year(hint)}年，政体由"
                         f"{self._government_zh(prev.get('government'))}改为"
                         f"{self._government_zh(now.get('government'))}。"))
