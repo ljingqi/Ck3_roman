@@ -8013,6 +8013,7 @@ class Facts:
             if nm and start:
                 pr = self._pronoun(pid)
                 _kin_part = f"{pr}的{kin_chain}，" if kin_chain else ""
+                _age_note = self._subject_age_note(start)
                 _heir_txt = ""
                 if fate:
                     _inherited, heir = self._succession_heir(pcid, pid, start)
@@ -8030,13 +8031,13 @@ class Facts:
                             _heir_txt = (f"{_hr_part}{hl}继位，"
                                          f"而命运的注视则降临在了{subj_lbl}身上")
                 if _heir_txt:
-                    out.append(f"承继：{self.date(start)}，{_kin_part}{nm}{fate}，"
+                    out.append(f"承继：{self.date(start)}{_age_note}，{_kin_part}{nm}{fate}，"
                                f"{_heir_txt}。")
                 elif fate:
-                    out.append(f"承继：{self.date(start)}，{_kin_part}{nm}{fate}，"
+                    out.append(f"承继：{self.date(start)}{_age_note}，{_kin_part}{nm}{fate}，"
                                f"{pr}从此作为命运的主角。")
                 else:
-                    out.append(f"承继：{self.date(start)}，{subj}继{who}之位。")
+                    out.append(f"承继：{self.date(start)}{_age_note}，{subj}继{who}之位。")
             elif nm:
                 out.append(f"承继：{subj}继{who}之位。")
         if idx + 1 < len(chain):
@@ -19805,6 +19806,14 @@ class Facts:
             return "%d岁" % age
         return self._year_only(date)
 
+    def _subject_age_note(self, date):
+        """「，时年N岁」 for the biography subject on `date`; '' without a birth date."""
+        pid = self.cache.get("player_id")
+        if pid is None or not date:
+            return ""
+        age = _chrono_year_age(self._birth_of(pid), date)
+        return f"，时年{age}岁" if age is not None else ""
+
     @staticmethod
     def _year_only(d):
         """Reduce a snapshot date to its year in the game's calendar: '871.1.1' → '871年',
@@ -20049,13 +20058,15 @@ class Facts:
             if p["origin"] == "inherited":
                 src = p["src_name"] or "先代"
                 head = (f"{p['route_name']}，承袭自{src}，"
-                        f"{llm.fmt_cn_date(p['origin_date'])}接手")
+                        f"{llm.fmt_cn_date(p['origin_date'])}接手"
+                        f"{self._subject_age_note(p['origin_date'])}")
                 if p["created"] and cl.date_key(p["created"]) != cl.date_key(p["origin_date"]):
                     head += f"；原开设于{llm.fmt_cn_date(p['created'])}"
             else:
                 head = p["route_name"]
                 if p["created"]:
-                    head += f"，开设于{llm.fmt_cn_date(p['created'])}"
+                    head += (f"，开设于{llm.fmt_cn_date(p['created'])}"
+                             f"{self._subject_age_note(p['created'])}")
             lines = [head]
             mkts = [self._trade_market_word(mid) for mid in (row.get("markets") or [])]
             if mkts:

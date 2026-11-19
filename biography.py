@@ -2148,10 +2148,8 @@ def _shared_facts_block(facts, subject=None, key=None):
                      "——此为终传")
     elif death:
         life_note = ""
-    elif facts.get("as_of"):
-        life_note = f"【现状】在世，截至{_date(facts['as_of'])}"
     else:
-        life_note = "【现状】在世，截至最后一份存档"
+        life_note = "【现状】在世"
     # adventurer stations: camp stages and seats for the landless-adventurer period only
     stations_txt = ""
     stations = facts.get("protagonist_stations") or []
