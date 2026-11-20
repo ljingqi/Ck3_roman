@@ -20720,9 +20720,6 @@ class Facts:
                     segs.append("市场改为" + "、".join(
                         self._trade_market_word(x)
                         for x in ((fields["markets"] or {}).get("to") or [])))
-                if "trader" in fields:
-                    nid = (fields["trader"] or {}).get("to")
-                    segs.append("商队改为" + (self.name(nid) if nid else "无"))
                 if "commissioner" in fields and (fields["commissioner"] or {}).get("to"):
                     segs.append("委托人改为" + self.name(
                         (fields["commissioner"] or {})["to"]))
