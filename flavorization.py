@@ -11,11 +11,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm                 # noqa: E402
 import localization as L    # noqa: E402
 
-_SCHEMA = 7   # evaluates `realm_laws` against the character's active laws: the republic
-              # words are gated on the succession / term-length law, so an elective duchy
-              # resolves to 大市长 rather than the higher-priority 专制君主 of the despotic law.
-              # Schema 6 added the holder's dated character flags for the march / palatinate /
-              # castellan contract family.
+_SCHEMA = 8   # keeps tierless `special = domicile` character words (republic patricians,
+              # merchant-company heads, Japanese/Korean/East-Asian estate holders) and their
+              # `domicile_type` condition. Schema 7 evaluated `realm_laws` against the
+              # character's active laws: the republic words are gated on the succession /
+              # term-length law, so an elective duchy resolves to 大市长 rather than the
+              # higher-priority 专制君主 of the despotic law. Schema 6 added the holder's dated
+              # character flags for the march / palatinate / castellan contract family.
 _TABLE = None
 
 # Character flags the table may evaluate. The rest (cardinal_flag, ceremonial_liege_flag,
@@ -111,8 +113,10 @@ def build_flavorization(cfg):
                     tier = ""
                 # A tierless entry normally takes no part in tier-word lookup, but the `saint`
                 # class is a name prefix rather than a tier word and the game writes its entries
-                # without a tier (20_pam_flavorization.txt:193-263).
-                if not tier and special != "saint":
+                # without a tier (20_pam_flavorization.txt:193-263). `domicile` is similarly
+                # tierless: it names the holder of a patrician house / merchant company /
+                # estate, not a landed tier.
+                if not tier and special not in ("saint", "domicile"):
                     continue
                 rules = _rules_of(items)
                 # Anything not evaluable is marked unsupported: taking no word beats
@@ -124,10 +128,13 @@ def build_flavorization(cfg):
                 # `flag` is a character-flag condition (`_flavourization.info:223-226`). The
                 # vassal-contract flags are evaluable once the cache records a dated flag history;
                 # other flags keep their own branches in facts.py and stay unsupported here.
+                # `domicile_type` is evaluable only for the tierless `special = domicile` words;
+                # on a landed title it still marks the entry unsupported.
                 flags = _list_of(items, "flag")
                 obligation_flags = _list_of(items, "subject_contract_obligation_flags")
+                domicile_type = (items.get("domicile_type") or "").strip()
                 unsupported = bool(
-                    items.get("domicile_type")
+                    (domicile_type and special != "domicile")
                     or items.get("holding") or items.get("council_position")
                     or items.get("faith")
                     or items.get("_de_jure_liege")
@@ -140,9 +147,10 @@ def build_flavorization(cfg):
                 # `special = ruler_child` is evaluable: its `governments` list holds no
                 # tribal/nomad entry at any tier, so "is there a prince title here" must be
                 # asked of the table rather than defaulted. `saint` is evaluable too: it is the
-                # name prefix of a character with the `saint` trait (「圣」/「吾里」). Other
-                # `special` values keep their own branches and stay unsupported.
-                if special not in ("holder", "", "ruler_child", "saint"):
+                # name prefix of a character with the `saint` trait (「圣」/「吾里」). `domicile`
+                # is the tierless holder word for a house / company / estate. Other `special`
+                # values keep their own branches and stay unsupported.
+                if special not in ("holder", "", "ruler_child", "saint", "domicile"):
                     unsupported = True
                 try:
                     prio = int(float(items.get("priority") or 0))
@@ -152,6 +160,7 @@ def build_flavorization(cfg):
                     "key": key, "type": typ, "tier": tier,
                     "gender": (items.get("gender") or "").strip(),
                     "priority": prio, "special": special,
+                    "domicile_type": domicile_type,
                     "governments": _list_of(items, "governments"),
                     "name_lists": _list_of(items, "name_lists"),
                     "heritages": _list_of(items, "heritages"),
@@ -208,7 +217,7 @@ def table(cfg=None):
 def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
             faith="", religion="", rite="", title_key="", independent=True, top=None,
             obligation_flags=None, character_flags=None, realm_laws=None, cfg=None,
-            special="holder"):
+            special="holder", domicile_type=""):
     """Return the winning localization key (block name) or '' under the game's rules.
 
     Conditions are tried from the highest priority down and all must match; an empty
@@ -226,7 +235,8 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
     a character whose laws are unknown skips such entries. `special` selects the entry class — "holder" by
     default (ruler addresses), "ruler_child" for prince/princess entries, the two classes
     never competing; `rite` is the character's rite_type, and an entry with `rites` cannot
-    match when the rite is unknown."""
+    match when the rite is unknown. `domicile_type` selects a tierless `special = domicile`
+    word (patrician house, merchant company, estate) and is ignored by landed entries."""
     fl = table(cfg)
     ents = (fl.get("entries") or {})
     if not ents:
@@ -238,6 +248,9 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
         if e.get("unsupported"):
             continue
         if (e.get("special") or "holder") != (special or "holder"):
+            continue
+        want_dom = e.get("domicile_type") or ""
+        if want_dom and want_dom != domicile_type:
             continue
         tls = e.get("titles") or []
         if tls and title_key not in tls:
@@ -321,6 +334,23 @@ def resolve(kind, tier, gender, *, government="", name_list="", heritage="",
                 continue
         best_key, best_pri, best_rites = e["key"], prio, bool(rts_e)
     return best_key
+
+
+def resolve_domicile(domicile_type, gender, *, government="", name_list="", heritage="",
+                     faith="", religion="", rite="", title_key="", independent=True,
+                     top=None, obligation_flags=None, character_flags=None,
+                     realm_laws=None, cfg=None):
+    """The game's holder word for a domicile (patrician house, merchant company, estate).
+
+    These entries are tierless `special = domicile`; the `domicile_type` condition is the
+    class discriminator. A landed title word is never consulted: the result is the person
+    at the head of the house/company, not the ruler address."""
+    return resolve("character", "", gender, government=government, name_list=name_list,
+                   heritage=heritage, faith=faith, religion=religion, rite=rite,
+                   title_key=title_key, independent=independent, top=top,
+                   obligation_flags=obligation_flags, character_flags=character_flags,
+                   realm_laws=realm_laws, cfg=cfg, special="domicile",
+                   domicile_type=domicile_type)
 
 
 # Chinese / celestial word families this project does emit: their name conditions

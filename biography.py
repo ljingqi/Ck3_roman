@@ -901,6 +901,8 @@ def _profile_lines(facts, cid=None, with_real_parentage=False,
     for ln in (p.get("house_history") or []):
         if ln:
             lines.append(ln)
+    if p.get("house_head"):
+        lines.append(f"家主：{p['house_head']}。")
     for ln in (p.get("succession") or []):
         if not ln:
             continue

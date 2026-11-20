@@ -5630,7 +5630,7 @@ class Facts:
                         continue
                     if tk == "estate":
                         ew = self.estate_kind_word(t, cid)
-                        w = self._estate_holder_word(cid)
+                        w = self._estate_holder_word(cid, d, t)
                         base = f"{nm}{w}" if nm and w else (nm or "")
                         # the category word follows as a comma appositive
                         parts.append(f"{base}，{ew}" if base else "")
@@ -10089,7 +10089,7 @@ class Facts:
             return ""
         gov = self._gov_for_word(cid, tid, date) or ""
         if gov == "merchant_government" or self._is_merchant_family_title(tid):
-            return self._merchant_holder_word(cid)
+            return self._merchant_holder_word(cid, date)
         if gov not in self._LANDLESS_WORD_GOVS:
             return ""
         fk = self._flavor_key("character", "duchy", cid, tid=tid,
@@ -10102,18 +10102,100 @@ class Facts:
             return v
         return ""
 
-    def _merchant_holder_word(self, cid):
-        """Holder word of a merchant-family company: the game's 老板 / 女老板.
+    def _domicile_word(self, cid, domicile_type, date=None):
+        """Holder word of a domicile (patrician house, merchant company, estate) from the game.
 
-        These words live on the tierless `special = domicile` flavorization entries
-        (`00_title_holders.txt:13627`), which the flavorization table drops, so they are read
-        from localization directly."""
+        The words are tierless `special = domicile` flavorization entries, keyed by
+        `domicile_type`; `resolve_domicile` applies the government / culture / faith conditions.
+        Returns '' when the table has no entry for this character.
+        """
+        if cid is None or not domicile_type or not self._flavor:
+            return ""
+        ce = self._culture_entry(cid, date)
+        ftag, rtag = self._faith_tags(cid, date)
+        gov = self._effective_government(cid, date or self.as_of) \
+            or self._gov_for_word(cid, None, date)
+        try:
+            key = FZ.resolve_domicile(
+                domicile_type, "female" if self._is_female(cid) else "male",
+                government=gov or "", name_list=ce.get("name_list") or "",
+                heritage=ce.get("heritage") or "", faith=ftag, religion=rtag,
+                rite=self._rite_type(cid, date), independent=True,
+                realm_laws=self._realm_laws_at(cid, date))
+        except Exception:
+            return ""
+        if not key:
+            return ""
+        v = L.loc(self.table, key)
+        if v and not v.startswith(("$", "[")):
+            return v
+        return ""
+
+    def _merchant_holder_word(self, cid, date=None):
+        """Holder word of a merchant-family company: 老板 / 女老板, or 贵人 in a republic.
+
+        A merchant who founds a landed republic keeps the family company, but the game then
+        words the family head through `republic_estate_holder_*` (default 贵人, with culture
+        variants 市民 / 自由民 / 巨贾 / 瓦吉赫). Only a landless merchant company stays 老板.
+        """
+        if (self._effective_government(cid, date or self.as_of) or "") \
+                == "republic_government":
+            v = self._domicile_word(cid, "merchant_company", date)
+            if v:
+                return v
         female = self._is_female(cid)
         v = L.loc(self.table, "landless_merchant_female" if female
                   else "landless_merchant_male")
         if v and not v.startswith(("$", "[")):
             return v
         return "女老板" if female else "老板"
+
+    def _is_house_head(self, cid, date=None):
+        """Whether `cid` heads his house (the save stores only the current head)."""
+        if cid is None:
+            return False
+        hid = self._house_of(cid)
+        if hid is None:
+            return False
+        h = ((self.melt.get("dynasties") or {}).get("dynasty_house") or {}).get(str(hid)) or {}
+        try:
+            head = int(h.get("head_of_house")) if h.get("head_of_house") is not None else None
+        except (TypeError, ValueError):
+            head = None
+        if head is not None:
+            return head == int(cid)
+        # A melody view (mini melt without dynasties) can still settle this: the family title's
+        # holder is the house head in a republic.
+        return self._merchant_family_title_at(cid, date) is not None
+
+    def patrician_house_word(self, cid, date=None):
+        """`XX家族贵人` for a republic's family head, else ''.
+
+        A patrician family's head is the holder of the house title (`title_type_merchant_family`),
+        and the game's word is `republic_estate_holder_*` — 贵人 by default, culture variants
+        市民 / 自由民 / 巨贾 / 瓦吉赫. The label reuses the house name; only a real republic
+        with the family title and the head-of-house relationship qualifies.
+        """
+        if cid is None or not self._is_house_head(cid, date):
+            return ""
+        if (self._effective_government(cid, date or self.as_of) or "") \
+                != "republic_government":
+            return ""
+        tid = self._merchant_family_title_at(cid, date)
+        if tid is None:
+            hid = self._house_of(cid)
+            h = ((self.melt.get("dynasties") or {}).get("dynasty_house") or {}).get(str(hid)) or {}
+            tid = h.get("house_title")
+        if tid is None or not self._is_merchant_family_title(tid):
+            return ""
+        word = self._domicile_word(cid, "merchant_company", date)
+        if not word:
+            return ""
+        label = self._house_label_at(cid, date) or self._house_label(self._house_of(cid))
+        label = re.sub(r"(?:家族|氏|家)$", "", label or "")
+        if not label:
+            return ""
+        return f"{label}家族{word}"
 
     def _unlanded_office_text(self, cid, tid, date=None):
         """Label text of an unlanded office: the office's own name plus its holder word.
@@ -10495,7 +10577,7 @@ class Facts:
             if tid is not None:
                 if self._is_estate_title(tid):
                     nm = self.title_base_name(tid) or ""
-                    sq = self._estate_holder_word(cid)
+                    sq = self._estate_holder_word(cid, anchor, tid)
                     return f"{nm}{sq}" if nm else sq
                 # v119: a landless adventurer camp — and any other unlanded office — is rank 0, so
                 # it never reaches the landed branch below and used to fall through to the bare
@@ -11902,21 +11984,30 @@ class Facts:
     _KOREAN_ESTATE_TPL = {"korean", "silla", "goryeo", "baekje",
                           "goguryeo", "balhae", "khitan"}
 
-    def _estate_holder_word(self, cid):
+    def _estate_holder_word(self, cid, date=None, tid=None):
         """Estate holder word, taken from the game's own text.
 
-        The East Asian branches use their localization keys (Japan 当主/女士, Korea 户长/夫人,
-        celestial 乡绅/夫人); everyone else uses `game_concept_house_head` = 家主."""
+        The East Asian branches ask the domicile table (Japan 当主/女士, Korea 户长/夫人,
+        celestial 乡绅/夫人); others keep `game_concept_house_head` = 家主.
+        """
         female = self._is_female(cid)
         tpl = self.culture_template(cid) or ""
         if tpl == "japanese":
+            dtyp = "japanese_manor"
             key = "estate_holder_female_japanese" if female else "estate_holder_male_japanese"
         elif tpl in self._KOREAN_ESTATE_TPL:
+            dtyp = "east_asian_estate"
             key = "estate_holder_female_korean" if female else "estate_holder_male_korean"
         elif tpl in self._EAST_ASIAN_ESTATE_TPL:
+            dtyp = "east_asian_estate"
             key = "celestial_estate_holder_female" if female else "celestial_estate_holder_male"
         else:
+            dtyp = ""
             key = "game_concept_house_head"
+        if dtyp:
+            v = self._domicile_word(cid, dtyp, date)
+            if v:
+                return v
         v = L.loc(self.table, key)
         if v and not v.startswith("$") and not v.startswith("["):
             return v
@@ -27296,7 +27387,7 @@ def _protagonist(f):
                 if _ivs and _ivs[-1][1] is None and f._is_estate_title(_etid):
                     p["estate_name"] = f._title_name_at(_etid, f.as_of) or "家族庄园"
                     p["estate_word"] = f.estate_kind_word(_etid, pid)
-                    p["estate_holder"] = f._estate_holder_word(pid)
+                    p["estate_holder"] = f._estate_holder_word(pid, f.as_of, _etid)
                     # seat county of the estate (the estate and an office seat are two
                     # different places)
                     _ep = f.estate_place_name(pid)
@@ -27582,6 +27673,9 @@ def _protagonist(f):
     ht = f.held_titles(pid)
     if ht:
         p["titles_held"] = "；".join(ht)
+    _hh = f.patrician_house_word(pid, f.as_of)
+    if _hh:
+        p["house_head"] = _hh
     # government change sentence (a switch to administrative government etc.),
     # emitted only when something actually changed
     gc = f.government_changes(pid)
