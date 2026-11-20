@@ -9493,18 +9493,65 @@ class Facts:
             return ""
         return str(cl.rite_entry(self.melt, rid).get("rite_type") or "")
 
+    @staticmethod
+    def _law_date_key(s):
+        """'953' -> (953, 12, 31), '953.6' -> (953, 6, 30); full dates pass through.
+
+        Year-only dates name a moment inside that year, so a law change later in the year must
+        still count; a date before the first sample uses the earliest laws on record.
+        """
+        try:
+            parts = [int(x) for x in str(s).split(".")]
+        except (TypeError, ValueError):
+            return (9999, 12, 31)
+        y = parts[0]
+        m = parts[1] if len(parts) > 1 else 12
+        d = parts[2] if len(parts) > 2 else (31 if m == 12 else 30)
+        return (y, m, d)
+
+    def _player_laws_at(self, cid, date):
+        """The player's laws in force at `date`, from `player_law_history`, or None.
+
+        Each sample is the state saved at `date`; its actual change point is `date_hint` (the
+        day the new laws took effect), else the proposal date, else the sample date. Before
+        the first change point the earliest sample is the only account on record."""
+        if self.cache.get("player_id") is None \
+                or str(cid) != str(self.cache.get("player_id")):
+            return None
+        hist = [e for e in (self.cache.get("player_law_history") or [])
+                if isinstance(e, dict) and isinstance(e.get("laws"), list)]
+        if not hist or not date:
+            return None
+        qk = self._law_date_key(date)
+        best, best_k = None, None
+        for e in hist:
+            eff = e.get("date_hint") or e.get("proposal_date") or e.get("date")
+            if not eff:
+                continue
+            ek = self._law_date_key(eff)
+            if ek <= qk and (best_k is None or ek >= best_k):
+                best, best_k = e, ek
+        if best is None:
+            best = min(hist, key=lambda e: self._law_date_key(
+                e.get("date_hint") or e.get("proposal_date") or e.get("date") or "9999"))
+        return [str(x) for x in best["laws"]]
+
     def _realm_laws_at(self, cid, date=None):
         """Laws active on the character's realm, for flavorization's `realm_laws` condition.
 
         The game evaluates `realm_laws` on the laws stored on the context character
-        (`_flavourization.info:377-383`); a date is accepted for symmetry with the other
-        condition readers, but the save keeps no law history — the melt carries the character's
-        own `landed_data.laws` at the melt's date. Characters the melt knows nothing about
-        (courtiers without a realm) return None, and law-gated entries are then skipped
-        rather than matched blindly.
+        (`_flavourization.info:377-383`). For the player, `player_law_history` supplies the
+        state in force at `date` (the title-creation line needs the elective republic of
+        928.4.14, not the despot law of the final melt). Other characters still read their
+        current `landed_data.laws`: the cache records no law history for them. Characters the
+        melt knows nothing about (courtiers without a realm) return None, and law-gated
+        entries are then skipped rather than matched blindly.
         """
         if cid is None:
             return None
+        dated = self._player_laws_at(cid, date)
+        if dated:
+            return dated
         laws = ((self._chars.get(str(cid)) or {}).get("landed_data") or {}).get("laws")
         if isinstance(laws, str):
             laws = [x for x in laws.replace(",", " ").split() if x]
