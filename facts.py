@@ -2404,6 +2404,13 @@ _PUBLIC_DEATH_REASONS = frozenset({
     "death_execution", "death_murder_known",
     "death_sacrificed_to_gods", "death_sacrificed_to_foreign_gods"})
 
+# The game gives citizen-mob killings no dedicated reason, so a republic murder/battle death
+# with no recorded killer is read as the capital's mob (user 2026-11-20). Disease, accidents,
+# execution, duel and disappearance keep their own wording.
+_REPUBLIC_MOB_DEATH_REASONS = frozenset({
+    "death_battle", "death_murder", "death_murder_known", "death_mysterious",
+    "death_assassination", "death_poison", "death_plotting", "death_court_intrigue"})
+
 # Public-archive death wording. `style.FLAVOR_DEATH_ZH` is omniscient and belongs to the assassin
 # chapter only; the public reading is the game localization value, listed here when it differs.
 PUBLIC_DEATH_ZH = {
@@ -7859,6 +7866,56 @@ class Facts:
                 nm = self.name(cid, date=None)
         return nm or ""
 
+    def _chain_player_title(self, cid, date=None):
+        """Title and dignity word of a chain member from his own cache (title, office)."""
+        try:
+            own = (self.campaign or {}).get(int(cid))
+        except (TypeError, ValueError):
+            own = None
+        if not isinstance(own, dict):
+            return "", ""
+        hist = [h for h in (own.get("player_title_history") or [])
+                if isinstance(h, dict) and h.get("name")]
+        chosen = None
+        if hist:
+            dk = cl.date_key(str(date)) if date else None
+            for h in sorted(hist, key=lambda x: cl.date_key(str(x.get("date") or ""))):
+                if dk is None or cl.date_key(str(h.get("date") or "")) <= dk:
+                    chosen = h
+            chosen = chosen or hist[0]
+        title = str((chosen or {}).get("name") or "").strip()
+        pn = _clean_ck3_loc(str(own.get("player_name") or "")).strip()
+        rec = (own.get("characters") or {}).get(str(cid)) or {}
+        given = str(rec.get("name_zh") or "").strip()
+        office = pn[:-len(given)].strip() if pn.endswith(given) and given else ""
+        return title, office
+
+    def _chain_titled_name(self, cid, date=None):
+        """Chain-member name carrying the next player's title when his cache knows one."""
+        nm = self._chain_person(cid, date)
+        title, office = self._chain_player_title(cid, date)
+        if not nm:
+            return nm
+        if title and nm.startswith(title):
+            # person_label may use the camp-purpose word (队长) while the game's own
+            # player_name uses the dignity word (头目); rebuild from the given name with
+            # the cache's wording so the two do not disagree.
+            try:
+                own = (self.campaign or {}).get(int(cid)) or {}
+            except (TypeError, ValueError):
+                own = {}
+            rec = (own.get("characters") or {}).get(str(cid)) or {}
+            given = str(rec.get("name_zh") or "").strip()
+            if given and given in nm:
+                return f"{title}{office}{nm[nm.find(given):]}"
+            return nm
+        if title and title in nm:
+            return nm
+        if office and nm.startswith(office):
+            return nm
+        pre = f"{title}{office}"
+        return f"{pre}{nm}" if pre else nm
+
     def _chain_game_name(self, cid):
         """The game's own rendered name of a chain member (his cache's `player_name`), else ''.
 
@@ -8111,7 +8168,7 @@ class Facts:
             nxt = chain[idx + 1]
             ncid = int(nxt["cid"])
             start = nxt.get("date") or ""
-            nm = self._chain_person(ncid)
+            nm = self._chain_titled_name(ncid, start)
             kin = self._chain_kin_word(pid, ncid)
             subj = _subj_name(start)
             kin_chain = kin[1:] if kin.startswith("其") else kin
@@ -18514,6 +18571,7 @@ class Facts:
             reason = d.get("reason")
         if killer is None:
             killer = d.get("killer")
+        _raw_killer = killer
         if date is None:
             date = d.get("date")
         # A public text hides the subject's role as killer: the clause falls back to the game's
@@ -18537,7 +18595,13 @@ class Facts:
                     return f"患{_dyn}（{_word}）而亡"
                 return f"患{_word}而亡"
         out = ""
-        if reason == "death_disappearance":
+        _mob = (_raw_killer is None
+                and reason in _REPUBLIC_MOB_DEATH_REASONS
+                and self._in_republic_at(cid, date))
+        if _mob:
+            _cap = self._realm_capital_place(cid, date)
+            out = f"被首都{_cap}的暴民杀死" if _cap else "被暴民杀死"
+        elif reason == "death_disappearance":
             # Disappearance means the body was never found, so the sentence states the outcome
             # alone and names no agent even in the insider reading (user 2026-10-08); the
             # assassination method pool is bypassed for this cause.
@@ -20530,15 +20594,29 @@ class Facts:
                             break
                 if year is None:
                     oy, ny = self._law_year(prev["date"]), self._law_year(now["date"])
-                    when = (f"{oy}年至{ny - 1}年"
-                            if ny - 1 > oy else f"{oy}年")
+                    # `now` is the first census showing the new law, so the change fell in
+                    # the year before it (the last census still showed the old law).
+                    when = f"{max(oy, ny - 1)}年"
                     sort_key = ny - 1
                 else:
                     when, sort_key = f"{year}年", year
+                added_sorted = [k for k in sorted(added)
+                                if _republic_law_family(k) == fam]
+                came = [self._law_zh(k) for k in added_sorted]
+                descs = []
+                for key in added_sorted:
+                    desc = L.law_description(key, self.cfg)
+                    if desc and desc not in descs:
+                        descs.append(desc)
                 line = (f"{when}，{fam}由{'、'.join(gone)}"
                         f"改为{'、'.join(came)}")
+                if descs:
+                    line += "：" + "；".join(descs)
                 if proposer:
-                    line += f"，提案人{proposer}"
+                    line = (f"{when}，在{proposer}的提议下，{fam}由"
+                            f"{'、'.join(gone)}改为{'、'.join(came)}")
+                    if descs:
+                        line += "：" + "；".join(descs)
                 changes.append((sort_key, fams.index(fam), line + "。"))
         changes.sort(key=lambda x: (x[0], x[1]))
         return {"current": current, "changes": [c[2] for c in changes]}
@@ -22309,6 +22387,60 @@ class Facts:
         unknown)."""
         prov = self._capital_province_at(date)
         if prov is None:
+            return ""
+        bid = self.barony_at_province(prov)
+        if bid is not None:
+            nm = self.title_base_name(bid)
+            if nm and not nm.startswith("b_"):
+                return nm
+        cid2 = self.county_at_province(prov)
+        if cid2 is not None:
+            nm = self.title_base_name(cid2)
+            if nm and not nm.startswith("c_"):
+                return nm
+        return ""
+
+    def _in_republic_at(self, cid, date=None):
+        """Whether the character lived under a republic on that day (self, primary title, liege)."""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return False
+        if self._effective_government(cid, date) == "republic_government":
+            return True
+        try:
+            _tier, tid = self._primary_title_at(cid, as_of=date)
+        except Exception:
+            tid = None
+        if tid is not None and self._title_government(tid, date) == "republic_government":
+            return True
+        liege = self._liege_cid(cid, date)
+        return (liege is not None
+                and self._effective_government(liege, date) == "republic_government")
+
+    def _realm_capital_place(self, cid, date=None):
+        """Place name of a character's realm capital on a date ('' when unknown)."""
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return ""
+        if cid == self.cache.get("player_id"):
+            return self.capital_place_at(date)
+        c = self._chars.get(str(cid)) or {}
+        tid = (c.get("landed_data") or {}).get("realm_capital")
+        if tid is None:
+            rec = (self.cache.get("characters") or {}).get(str(cid)) or {}
+            tid = (rec.get("landed") or {}).get("realm_capital")
+        if tid is None:
+            return ""
+        ent = self._lt.get(str(tid)) or {}
+        prov = self._prov_inv().get(ent.get("key") or "")
+        if not isinstance(prov, int):
+            cap = ent.get("capital")
+            key2 = ((self._lt.get(str(cap)) or {}).get("key")
+                    if isinstance(cap, int) else "")
+            prov = self._prov_inv().get(key2)
+        if not isinstance(prov, int):
             return ""
         bid = self.barony_at_province(prov)
         if bid is not None:
@@ -28227,7 +28359,7 @@ def _campaign_start(f):
 _SUCC_WORD = {
     "appointment_succession": "受任命继位",
     "appointment": "受任命",
-    "abdication": "受禅继位",
+    "abdication": "继承",
     "faction_demand": "被派系拥立",
     "election": "被选举继位",
     "granted": "受封头衔",
