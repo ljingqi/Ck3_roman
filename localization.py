@@ -540,6 +540,204 @@ def load_localization_table(cfg, force=False, report=None):
     return table
 
 
+# Law descriptions (common/laws modifier blocks + `_effects` localization)
+#
+# Law change lines need a short explanation of the new law. Some laws carry it in
+# `<key>_effects` (#weak paragraph), others only as a `modifier = { ... }` block in
+# common/laws/*.txt. Reading those files across drives at render time is slow, so the
+# explanation is resolved once into data/law_descriptions.json and only that table is
+# read while generating biographies.
+
+_LAW_DESC_CACHE = {}
+_EFFECT_PREFIX_RE = re.compile(r"\$EFFECT_LIST_BULLET\$|#indent_newline(?::\d+)?")
+_LAW_TOP_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{", re.M)
+_MODIFIER_HEAD_RE = re.compile(r"modifier\s*=\s*\{")
+_MODIFIER_LINE_RE = re.compile(r"([a-z_][a-z0-9_]*)\s*=\s*([^\s#{}]+)")
+_TRADE_CAT_RE = re.compile(
+    r"\[GetTradeGoodCategory\('([A-Za-z0-9_]+)'\)\.GetName\]")
+
+
+def _law_descriptions_path(cfg):
+    return os.path.join(cfg.get("data_dir", ""), "law_descriptions.json")
+
+
+def _braced_body(text, start):
+    """Text between the `{` at `start - 1` and its matching `}`, or "" when unbalanced."""
+    depth, i = 1, start
+    while i < len(text) and depth:
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        i += 1
+    return text[start:i - 1] if depth == 0 else ""
+
+
+def _law_effect_text(raw, table):
+    """New-law explanation from `<key>_effects`: the #weak paragraph when present,
+    otherwise the cleaned text if it is a readable single statement."""
+    if not raw:
+        return ""
+    m = re.search(r"#weak\s*(.*?)#!", raw, re.S)
+    if m:
+        text = clean_loc_value(m.group(1), table).strip(" \n　。;；")
+        return text
+    flat = _EFFECT_PREFIX_RE.sub("", raw)
+    text = clean_loc_value(flat, table).strip(" \n　。;；:：")
+    if not text:
+        return ""
+    if any(t in text for t in ("$", "[", "]", "#", "EmptyScope", "ScriptValue")):
+        return ""
+    if text.endswith("为年"):
+        return ""
+    return text
+
+
+def _first_modifier_block(body):
+    """First `modifier = { ... }` that is a direct child of the law body."""
+    depth, i = 0, 0
+    while i < len(body):
+        c = body[i]
+        if c == "#":
+            j = body.find("\n", i)
+            i = len(body) if j < 0 else j + 1
+            continue
+        if c == "{":
+            depth += 1
+            i += 1
+            continue
+        if c == "}":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0 and body.startswith("modifier", i) and (
+                i == 0 or not (body[i - 1].isalnum() or body[i - 1] == "_")):
+            m = _MODIFIER_HEAD_RE.match(body, i)
+            if m:
+                return _braced_body(body, m.end())
+        i += 1
+    return ""
+
+
+def _modifier_pairs(block):
+    """Direct key = value pairs of a modifier block (nested conditionals skipped)."""
+    out, depth = [], 0
+    for line in block.splitlines():
+        s = line.split("#", 1)[0].strip()
+        if not s:
+            continue
+        if depth == 0:
+            m = _MODIFIER_LINE_RE.match(s)
+            if m:
+                out.append((m.group(1), m.group(2)))
+        depth += s.count("{") - s.count("}")
+    return out
+
+
+def _modifier_name(key, table):
+    raw = table.get(key) or table.get("MOD_" + key.upper())
+    if not raw:
+        return ""
+    raw = _TRADE_CAT_RE.sub(
+        lambda m: table.get(m.group(1) + "_name") or table.get(m.group(1)) or "", raw)
+    text = clean_loc_value(raw, table).strip(" \n　")
+    if not text or any(t in text for t in ("$", "[", "]")):
+        return ""
+    return text
+
+
+def _modifier_value(key, raw):
+    try:
+        f = float(raw)
+    except (TypeError, ValueError):
+        return ""
+    if key.endswith("_mult") or (not f.is_integer() and abs(f) <= 1):
+        return f"{f * 100:+.0f}%"
+    if f.is_integer():
+        return f"{int(f):+d}"
+    return f"{f:+.0f}"
+
+
+def _law_modifier_text(body, table):
+    parts, seen = [], set()
+    for key, raw in _modifier_pairs(_first_modifier_block(body)):
+        if key in seen:
+            continue
+        name, val = _modifier_name(key, table), _modifier_value(key, raw)
+        if not name or not val:
+            continue
+        seen.add(key)
+        parts.append(f"{name} {val}")
+    return "、".join(parts)
+
+
+def build_law_descriptions(cfg):
+    """Every law's short explanation, resolved from common/laws/*.txt once."""
+    table = load_localization_table(cfg)
+    g = game_dir(cfg)
+    descs = {}
+    if not g:
+        return {"schema": 1, "entries": 0, "descriptions": descs}
+    lawdir = os.path.join(g, "common", "laws")
+    if not os.path.isdir(lawdir):
+        return {"schema": 1, "entries": 0, "descriptions": descs}
+    for fn in sorted(os.listdir(lawdir)):
+        if not fn.endswith(".txt"):
+            continue
+        with open(os.path.join(lawdir, fn), encoding="utf-8-sig") as fp:
+            text = fp.read()
+        for m in _LAW_TOP_RE.finditer(text):
+            key = m.group(1)
+            if key.startswith("@"):
+                continue
+            body = _braced_body(text, m.end())
+            desc = _law_effect_text(table.get(key + "_effects"), table)
+            if not desc:
+                desc = _law_modifier_text(body, table)
+            if desc:
+                descs[key] = desc
+    return {"schema": 1, "entries": len(descs), "descriptions": descs}
+
+
+def save_law_descriptions(cfg, data, path=None):
+    path = path or _law_descriptions_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(data, fp, ensure_ascii=False, sort_keys=True)
+    return path
+
+
+def load_law_descriptions(cfg):
+    """Read data/law_descriptions.json (cached by mtime); {} when not built yet."""
+    path = _law_descriptions_path(cfg)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = _LAW_DESC_CACHE.get(path)
+    if hit and hit[0] == sig:
+        return hit[1]
+    try:
+        with open(path, encoding="utf-8") as fp:
+            data = json.load(fp)
+    except Exception:
+        data = {}
+    _LAW_DESC_CACHE[path] = (sig, data)
+    return data
+
+
+def law_description(key, cfg=None):
+    """Short explanation of one law; falls back to its local `_effects` text."""
+    cfg = cfg or llm.load_config()
+    desc = (load_law_descriptions(cfg).get("descriptions") or {}).get(key)
+    if desc:
+        return desc
+    table = load_localization_table(cfg)
+    return _law_effect_text(table.get(key + "_effects"), table)
+
+
 # Province -> county/barony map
 
 def _province_map_path(cfg):

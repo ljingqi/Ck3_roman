@@ -2872,6 +2872,10 @@ def _table_builders():
          loc.save_title_name_flags),
         ("币种档位", loc._currency_levels_path, loc.build_currency_levels,
          loc.save_currency_levels),
+        # short explanations of every law, resolved from common/laws once so that
+        # biography rendering never reads the game drive
+        ("共和法度说明", loc._law_descriptions_path, loc.build_law_descriptions,
+         loc.save_law_descriptions),
         ("头衔风味规则", fl._path, fl.build_flavorization, fl.save_flavorization),
     ]
 
