@@ -52,15 +52,10 @@ RULES = {
         "「一篇一题」：每篇先立一个主题与一个决定性时刻，"
         "整篇内容都围绕这个主题推进。"
     ),
-    # v158: 战场俘获与软禁的事实行已改写；正文叙述监所时统一用「狱中」，
-    # 「俘获」是与「囚禁」区分开的战阵用词。
-    "prison_wording": (
-        "「监所措辞」：叙述监禁之处，一律称「狱中」；在战阵上被擒称「俘获」。"
-    ),
 }
 
 # Order of the rules sent in the system message.
-_RULE_ORDER = ("nonfiction", "narrative", "narrative_focus", "prison_wording")
+_RULE_ORDER = ("nonfiction", "narrative", "narrative_focus")
 # Boards that carry secret facts and therefore also receive the secret rule.
 SECRET_BOARDS = ("secrets",)
 
@@ -218,9 +213,7 @@ SECTION_REQ = {
     },
     "lvzhi": {
         "lead": "写共和国现行法度：按本篇分组逐条写；组合法名照本篇写法，年月数目照录。",
-        "mid": "按时间写修法：哪一年或哪几年、哪一组、由何法改为何法、提案人；"
-               "年份与提案人照本篇素材写，素材给年度区间就写年度区间，"
-               "不写具体月日，不加诊断括注。",
+        "mid": "按照时间顺序写出法律的修改。",
         "tail": None,
     },
     "youxia": {
@@ -332,7 +325,7 @@ PROMPTS = {
         "从他事业的开端依次写出；配偶与子女在婚配与家室诸事处出场。\n\n"
     ),
     "lead_user": (
-        "{shared}\n\n{theme}{intro_block}"
+        "{shared}\n\n{intro_block}"
         "{custom_note}{subject_note}相关事实：\n{facts}\n\n{events}"
         "本篇文章标题已定为《{title}》，本篇主题：{focus}。\n\n"
         "这是文章的开篇板块《{sec_title}》。要求：{sec_req}\n\n"
@@ -341,7 +334,7 @@ PROMPTS = {
         "分2~4个自然段，段与段之间以空行分隔；板块标题行由组装侧统一添加。"
     ),
     "mid_user": (
-        "{shared}\n\n{theme}{subject_note}"
+        "{shared}\n\n{subject_note}"
         "相关事实：\n{facts}\n\n{events}"
         "本篇文章标题已定为《{title}》，本篇主题：{focus}。\n\n"
         "请撰写板块《{sec_title}》。要求：{sec_req}\n\n"
@@ -798,9 +791,9 @@ TITLE_GAIN_VERBS = {
     "conquest_holy_war": "圣战征服",
     "migration": "迁得",
     "swear_fealty": "归附得",
-    "faction_demand": "迫得",
+    "faction_demand": "篡夺",
     "independency": "自立",
-    "abdication": "受禅",
+    "abdication": "继承",
     "leased_out": "租得",
     "negotiated": "议得",
     "stepped_down": "接任",

@@ -2266,7 +2266,6 @@ def build_lead_messages(article, facts, cache, intro, cfg):
     intro_block = "" if key == "chaoju" else f"【总纲】\n{intro}\n\n"
     user_msg = style.PROMPTS["lead_user"].format(
         shared=_shared_facts_block(facts, subject=article.get("subject"), key=key),
-        theme=_decade_theme_note(facts),
         intro=intro, intro_block=intro_block,
         custom_note=custom_note, subject_note=subject_note,
         facts=facts_txt,
@@ -2308,7 +2307,6 @@ def build_section_messages(article, section, facts, cache, lead_text, cfg):
     _dg_limit, _dg_tail = (120, 90) if key == "chaoju" else (260, 180)
     user_msg = style.PROMPTS["mid_user"].format(
         shared=_shared_facts_block(facts, subject=article.get("subject"), key=key),
-        theme=_decade_theme_note(facts),
         subject_note=subject_note, facts=facts_txt,
         events=(f"{events_block}\n\n" if events_block else ""),
         title=title, focus=article.get("focus") or article.get("theme") or "",
