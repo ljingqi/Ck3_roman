@@ -941,10 +941,9 @@ def _married(fam_a, a_id, b_id, chars):
 def kin_rev_index(chars):
     """Reverse-edge index {sib: {cid: [others]}, kid: {cid: [others]}} over the character table.
 
-    Both directions are unioned (built once per build); `real_father` counts as a father edge in
-    both directions, so a child recorded only under `real_father` is still that father's child
-    (before v108 the reverse lookup ignored it and the pair read as 父亲 one way and as nothing the
-    other, see logs/v108/v108_kin_sweep.txt A3).
+    Both directions are unioned (built once per build). Only the declared `father` edge counts;
+    `real_father` is a game secret that never becomes a public parent edge, so the index and
+    `kin_key` agree on the nominal father.
 
     Deliberately **not** memoized here: this module-level entry can be handed a table that a caller
     mutates in place (tools/tests/verify_fast.py:1822 rewrites one family record between two calls),
@@ -965,7 +964,7 @@ def kin_rev_index(chars):
         for x in (fam.get("child") or []):
             if isinstance(x, int):
                 kid.setdefault(cid, []).append(x)   # cid has x among his children
-        for parent_key in ("father", "mother", "real_father"):
+        for parent_key in ("father", "mother"):
             for x in (fam.get(parent_key) or []):
                 if isinstance(x, int):
                     kid.setdefault(x, []).append(cid)   # cid is a child of x
@@ -1359,8 +1358,7 @@ def _sex_sib_order(chars, rev, p, female):
     if memo is not None and mkey in memo:
         return memo[mkey]
     fam = _kin_family(chars, p)
-    parents = set(_kin_int_ids(fam, "father")) | set(_kin_int_ids(fam, "real_father")) \
-        | set(_kin_int_ids(fam, "mother"))
+    parents = set(_kin_int_ids(fam, "father")) | set(_kin_int_ids(fam, "mother"))
     ids = {p}
     if parents:
         for g in parents:
@@ -1401,8 +1399,8 @@ def _shared_parent_for_rank(chars, s, c, matri=None):
     one common parent and uses it; a true step-sibling pair has none and is not ranked.
     """
     fs, fc = _kin_family(chars, s), _kin_family(chars, c)
-    sf = set(_kin_int_ids(fs, "father")) | set(_kin_int_ids(fs, "real_father"))
-    cf = set(_kin_int_ids(fc, "father")) | set(_kin_int_ids(fc, "real_father"))
+    sf = set(_kin_int_ids(fs, "father"))
+    cf = set(_kin_int_ids(fc, "father"))
     sm = set(_kin_int_ids(fs, "mother"))
     cm = set(_kin_int_ids(fc, "mother"))
     common_f, common_m = sf & cf, sm & cm
@@ -1497,8 +1495,7 @@ def kin_key(cache, subject, cid, chars=None, spouse_back=None, rev=None, anc_mem
         return [k for k in (fam.get(key) or []) if isinstance(k, int)]
 
     def _fath(x):
-        f = _fam(x)
-        return set(_ids(f, "father")) | set(_ids(f, "real_father"))
+        return set(_ids(_fam(x), "father"))
 
     def _moth(x):
         return set(_ids(_fam(x), "mother"))
@@ -6301,8 +6298,9 @@ class Facts:
         Each entry is the **full list** of recorded parents (v108). The earlier `setdefault` kept
         only the first father/mother, so a child whose record lists two of them lost the second
         line outright and every route through it (7 children in 洪氏2, logs/v108/v108_kin_sweep.txt A8;
-        「儿子兼继子兼弟弟兼舅舅」 is uncomputable partly because of it). `real_father` joins the
-        father routes, the same union `kin_key` uses."""
+        「儿子兼继子兼弟弟兼舅舅」 is uncomputable partly because of it). Only the declared
+        `father`/`mother` edges feed the public graph; `real_father` is a game secret and never
+        becomes a public relation, the same rule `kin_key` follows."""
         if getattr(self, "_pmaps", None) is None:
             fath, moth = {}, {}
             for cid, rec in (self.cache.get("characters") or {}).items():
@@ -6312,7 +6310,6 @@ class Facts:
                     continue
                 fam = (rec or {}).get("family") or {}
                 for src, dst in ((fam.get("father"), fath),
-                                 (fam.get("real_father"), fath),
                                  (fam.get("mother"), moth)):
                     for p in (src or []):
                         try:
@@ -6371,9 +6368,10 @@ class Facts:
     def _parent_edges(self):
         """{cid: {parent ids}} over the cache's kinship graph, both directions united.
 
-        The child's own record carries `family.father`/`real_father`/`mother`, and a parent's
+        The child's own record carries `family.father`/`mother`, and a parent's
         `family.child` states the same edge from the other side; non-player records often hold only
-        one of the two, so the union is what a generational walk needs. Built once per run."""
+        one of the two, so the union is what a generational walk needs. `real_father` is a game
+        secret and stays out of the public graph. Built once per run."""
         if getattr(self, "_pedges", None) is None:
             par = {}
             for cid, rec in (self.cache.get("characters") or {}).items():
@@ -6381,7 +6379,7 @@ class Facts:
                     continue
                 c = int(cid)
                 fam = rec.get("family") or {}
-                for key in ("father", "mother", "real_father"):
+                for key in ("father", "mother"):
                     for x in (fam.get(key) or []):
                         if isinstance(x, int):
                             par.setdefault(c, set()).add(x)
@@ -6672,7 +6670,7 @@ class Facts:
         return out
 
     def _parent_ids(self, cid):
-        """Recorded parents of `cid` (every father/mother row, `real_father` included)."""
+        """Publicly recorded parents of `cid`: the declared father and mother rows."""
         fath, moth = self._parent_maps()
         return set(fath.get(int(cid)) or []) | set(moth.get(int(cid)) or [])
 
@@ -11700,7 +11698,7 @@ class Facts:
             for sib in self._sibling_ids(cid):
                 srec = recs.get(str(sib)) or {}
                 sfam = srec.get("family") or {}
-                if father not in (sfam.get("father"), sfam.get("real_father")):
+                if father not in (sfam.get("father") or []):
                     continue
                 if bool(self._is_female(sib)) != bool(fem):
                     continue
@@ -12182,7 +12180,7 @@ class Facts:
             rec = chars.get(str(k)) or {}
             kf = rec.get("family") or {}
             mom = (kf.get("mother") or [None])[0]
-            dad = (kf.get("real_father") or kf.get("father") or [None])[0]
+            dad = (kf.get("father") or [None])[0]
             key = (mom, dad)
             if key not in groups:
                 groups[key] = []
@@ -12293,6 +12291,55 @@ class Facts:
     def _secret_cut(self):
         """Cutoff for secret facts: `as_of` first, else the cache's last save date."""
         return self.as_of or self.cache.get("last_date")
+
+    def _secret_knows(self, rec, cid, date=None):
+        """Whether `cid` knows the secret record at `date`.
+
+        The holder knows his own secret; another character knows it from his `known_by` entry.
+        A record lost by that date counts as unknown, so a later biography keeps the account
+        it could actually have had."""
+        if not isinstance(rec, dict) or cid is None:
+            return False
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return False
+        cut = date or self._secret_cut()
+        ck = cl.date_key(cut) if cut else None
+        la = rec.get("lost_at")
+        if ck is not None and la and cl.date_key(la) <= ck:
+            return False
+        if rec.get("owner") == cid:
+            return True
+        for k in rec.get("known_by") or []:
+            if not isinstance(k, dict) or k.get("id") != cid:
+                continue
+            fs = k.get("from")
+            if ck is None or not fs or cl.date_key(fs) <= ck:
+                return True
+        return False
+
+    def _real_father_known(self, cid, date=None):
+        """Whether the player knows the secret behind `cid`'s real father.
+
+        A cuckoo heritage reaches the record only through a birth secret; without a record
+        naming `cid` there is nothing publicly known, so the answer stays False."""
+        pid = self.cache.get("player_id")
+        if pid is None or cid is None:
+            return False
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return False
+        for rec in (self.cache.get("secrets_history") or {}).values():
+            if not isinstance(rec, dict) or rec.get("target") != cid:
+                continue
+            if rec.get("type") not in ("secret_disputed_heritage",
+                                       "secret_unmarried_illegitimate_child"):
+                continue
+            if self._secret_knows(rec, pid, date):
+                return True
+        return False
 
     def secrets_owned_by(self, cid, date=None):
         """Secret records a person holds at `date`, ascending by first-seen date.
@@ -12505,21 +12552,23 @@ class Facts:
             return f"在{where or '科考'}中舞弊" if (tname or lvl) else "科考舞弊"
         if tp in ("secret_disputed_heritage",
                   "secret_unmarried_illegitimate_child"):
-            # Bloodline secrets must name the biological father, or the text cannot show that
-            # the player's daughter married the player's own illegitimate son. The father comes
-            # from the child's `real_father` (filled in by secret inference).
+            # A bloodline secret can name the biological father when the reader knows it; the
+            # father comes from the child's `real_father` (filled in by secret inference).
             tpl = SECRET_TOPICS.get(tp)
             if not tpl or not isinstance(tgt, int):
                 return ""
             child = self.person_label(tgt, date=self.as_of, style="brief") or ""
             if not child:
                 return ""
-            crec = (self.cache.get("characters") or {}).get(str(tgt)) or {}
-            rf = ((crec.get("family") or {}).get("real_father") or [None])[0]
-            rn = _self_or(rf)
+            # The biological father is named only to someone who knows the secret; another
+            # reader gets the short template without the father slot.
+            rn = ""
+            if self._secret_knows(rec, self_cid):
+                crec = (self.cache.get("characters") or {}).get(str(tgt)) or {}
+                rf = ((crec.get("family") or {}).get("real_father") or [None])[0]
+                rn = _self_or(rf)
             if rn:
                 return tpl.format(target=child, father=rn)
-            # biological father unknown → short template without the father slot
             return SECRET_TOPICS_NO_FATHER.get(tp, "").format(target=child)
         if tp == "secret_forbidden_personal_tenet":
             # The record names no tenet: the one it concerns is the holder's personal tenet that
@@ -19811,7 +19860,7 @@ class Facts:
         fam = rec.get("family") or {}
         chars = self.cache.get("characters") or {}
         parents = []
-        for key in ("father", "real_father", "mother"):
+        for key in ("father", "mother"):
             for x in (fam.get(key) or []):
                 if isinstance(x, int) and x not in parents:
                     parents.append(x)
@@ -23333,20 +23382,19 @@ def _mem_sentence_body(f, owner_id, mem):
             kid = parts.get("child")
             if isinstance(kid, int) and f._is_female(kid):
                 tpl = MEMORY_TEMPLATES.get(mem.get("type") + "_female") or tpl
-        # When the holder is the child's legal father the sentence is unambiguous, so no
-        # biological-father note is added (an illegitimate child is still his; the chronicle
-        # tracks the family line). With a different legal father the note is added, so that a
-        # mother's delivery is not read as the holder having a child.
+        # When the holder is the child's declared father the sentence is unambiguous, so no
+        # father note is added (the chronicle tracks the public family line). With a different
+        # declared father the note is added, so that a mother's delivery is not read as the
+        # holder having a child.
         kid = parts.get("child")
         if isinstance(kid, int):
             kfam = ((f.cache.get("characters") or {}).get(str(kid)) or {}).get("family") or {}
             kfather = (kfam.get("father") or [None])[0]
-            kreal = (kfam.get("real_father") or [None])[0]
-            who = kreal if isinstance(kreal, int) else kfather
+            who = kfather
             if isinstance(who, int) and owner_id is not None \
                     and who != owner_id and kfather != owner_id:
                 wname = f.event_name(who, date=f.as_of) or f.name_or(who)
-                # When the holder is neither the child's biological father nor its mother
+                # When the holder is neither the child's declared father nor its mother
                 # (typically a husband's `child_born`/`first_born` memory, which the game also
                 # records on conception), the mother becomes the subject and the husband a
                 # qualifier; otherwise the sentence said the husband "had a daughter", which
@@ -23358,10 +23406,10 @@ def _mem_sentence_body(f, owner_id, mem):
                         word = "女" if f._is_female(kid) else "子"
                         rel_w = f._consort_word(owner_id, kmother)
                         subj = f"{owner}之{rel_w}{mn}" if rel_w else mn
-                        return f"{subj}生{word}{other}，生父{wname}。"
+                        return f"{subj}生{word}{other}，其父{wname}。"
                 if wname:
-                    # In-line form: the biological father is appended as a clause
-                    tpl = tpl.rstrip("。") + "，生父{fname}。"
+                    # In-line form: the declared father is appended as a clause
+                    tpl = tpl.rstrip("。") + "，其父{fname}。"
                     extra_fname = wname
     # Torture memories are rendered by torture kind (castrated / blinded / disfigured /
     # maimed arm or leg, ...) with the victim's name, not by a bare "tortured" wording.
@@ -27657,14 +27705,13 @@ def _protagonist(f):
     # custom character (no genealogy): the generic kinship text is overridden
     if f.is_custom_start(pid):
         p["custom_start"] = True
-    # Real father (bastard scenario), decided by comparing ids with the legal father: a publicly
-    # acknowledged bastard has `real_father == father` (the game's
-    # `on_action/child_birth_on_actions.txt:781-817` sets `set_father = scope:real_father` in the same
-    # `is_bastard = yes` branch), so only a true cuckoo case emits the row.
+    # Real father (bastard scenario): a publicly acknowledged bastard has
+    # `real_father == father`, so only a true cuckoo case differs. The cuckoo relation is a game
+    # secret and stays out of the biography until the player himself knows it.
     _father_ids = {int(x) for x in (fam.get("father") or [])
                    if isinstance(x, int)}
     rf = (fam.get("real_father") or [None])[0]
-    if rf is not None and int(rf) not in _father_ids:
+    if rf is not None and int(rf) not in _father_ids and f._real_father_known(pid):
         rfname = f.kin_label(rf)
         if rfname:
             p["real_father"] = rfname
@@ -27961,10 +28008,11 @@ def _character_profiles(f):
         if f.is_custom_start(cid):
             prof["custom_start"] = True
         # same as `_protagonist_facts`: the real father is emitted only for a true
-        # cuckoo case (`father != real_father`); a publicly acknowledged bastard has
-        # `real_father == father` and gets no such row.
+        # cuckoo case (`father != real_father`) the player knows about.
         rf = (fam.get("real_father") or [None])[0]
-        if rf is not None and int(rf) not in _fids:
+        rf_known = (rf is not None and int(rf) not in _fids
+                    and f._real_father_known(cid))
+        if rf_known:
             rfname = f.kin_label(rf)
             if rfname:
                 prof["real_father"] = rfname
@@ -27974,7 +28022,7 @@ def _character_profiles(f):
             list(spouse_ids) + list(_conc_ids) + list(child_ids)
             + list(fam.get("father") or []) + list(fam.get("mother") or [])
             + list(fam.get("siblings") or [])
-            + ([rf] if isinstance(rf, int) else [])) if isinstance(x, int)})
+            + ([rf] if rf_known and isinstance(rf, int) else [])) if isinstance(x, int)})
         ht = f.held_titles(cid)
         if ht:
             prof["titles_held"] = "；".join(ht)
@@ -30106,7 +30154,7 @@ def relation_cause_lines(f, cid, rel_date):
             continue
         fam2 = (chars.get(str(cid2)) or {}).get("family") or {}
         rf = (fam2.get("real_father") or [None])[0]
-        if rf != pid:
+        if rf != pid or not f._real_father_known(cid2):
             continue
         c2name = f.name_or(cid2)
         b = (chars.get(str(cid2)) or {}).get("birth")
@@ -30359,6 +30407,8 @@ def _villain_chains(f):
             continue
         if rf != pid and lf != pid:
             continue
+        if not f._real_father_known(int(cid)):
+            continue
         cname = f.name_or(int(cid))
         if not cname:
             continue
@@ -30474,6 +30524,8 @@ def _villain_chains(f):
         mother = (hfam.get("mother") or [None])[0]
         if not (rf == pid or (mother in lovers)):
             continue
+        if not f._real_father_known(heir0):
+            continue
         if not in_span(hrec.get("birth")):
             continue
         if as_of_gap:
@@ -30573,7 +30625,7 @@ def _kin_blood_links(f):
         cf = rec.get("family") or {}
         rf = (cf.get("real_father") or [None])[0]
         rm = (cf.get("real_mother") or [None])[0]
-        if rf == pid or rm == pid:
+        if (rf == pid or rm == pid) and f._real_father_known(icid):
             bastards.add(icid)
     if not legal or not bastards:
         return []
